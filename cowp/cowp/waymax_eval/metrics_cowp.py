@@ -20,7 +20,10 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
         conv = bool(label["cowp/candidates/conventional_safe"][k])
         collision_or_offroad += int(not conv)
         traj = label["cowp/candidates/trajectory"][k]
-        progress.append(float(np.linalg.norm(traj[-1, :2] - traj[0, :2])) / max(float(np.linalg.norm(traj[-1, :2] - traj[0, :2])), 1.0))
+        # Ego progress in meters.  The previous expression divided the
+        # displacement by itself, making EP almost always equal to 1 and hiding
+        # progress regressions introduced by conservative fallback/ablations.
+        progress.append(float(np.linalg.norm(traj[-1, :2] - traj[0, :2])))
         wit = label["cowp/witness/exists"][k].astype(bool) & crit
         cf_count += int(conv)
         false_safe += int(conv and np.any(wit))

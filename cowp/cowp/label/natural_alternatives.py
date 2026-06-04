@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from cowp.core.constants import NaturalSource, PriorityRelation
-from cowp.core.types import ScenarioData, ensure_trajectory_7
+from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.label.burden import adaptive_beta, compute_burden
 from cowp.label.priority import determine_priority, priority_preserved
 from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged
@@ -52,16 +52,14 @@ def generate_natural_alternatives(scene: ScenarioData, critical: dict[str, np.nd
         fut_states = scene.states[idx, cur + 1 : cur + 1 + H, :]
         fut_mask = fut_states[:, 10] > 0.5
         if np.any(fut_mask):
-            logged = ensure_trajectory_7(fut_states)
-            if len(logged) < H:
-                logged = np.pad(logged, ((0, H - len(logged)), (0, 0)), mode="edge")
+            logged = future_states_to_traj7(fut_states, H, current_state=scene.states[idx, cur])
         else:
             logged = constant_accel_trajectory(scene.states[idx, cur], H, dt, accel=0.0)
         rho = PriorityRelation(int(critical.get("base_priority", np.zeros(A, dtype=np.int32))[a]))
         if rho == PriorityRelation.UNKNOWN:
             rho = determine_priority(scene, idx, ego_neutral_traj, logged, cfg)
         scene_current = scene.states[:, cur, :] if scene.states.ndim == 3 else None
-        beta[a] = adaptive_beta(scene_current, object_type, rho, cfg, use_adaptive=True)
+        beta[a] = adaptive_beta(scene_current, object_type, rho, cfg, use_adaptive=True, ego_index=scene.sdc_track_index)
         candidates: list[tuple[np.ndarray, NaturalSource, float]] = []
         if use_obs:
             count = 0

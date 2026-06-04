@@ -3,9 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 from cowp.core.constants import MechanismToken, PriorityRelation
-from cowp.core.types import ScenarioData, ensure_trajectory_7
+from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
+from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
 
 
@@ -63,7 +64,7 @@ def certify_witnesses(scene: ScenarioData, candidates: dict[str, np.ndarray], cr
             continue
         fut = scene.states[j, cur + 1 : cur + 1 + int(cfg.get("time", {}).get("future_steps", 80)), :]
         if len(fut) and np.any(fut[:, 10] > 0.5):
-            other_logged.append(ensure_trajectory_7(fut))
+            other_logged.append(future_states_to_traj7(fut, int(cfg.get("time", {}).get("future_steps", 80)), current_state=scene.states[j, cur]))
     for k in range(K):
         if not candidates["valid"][k]:
             continue
@@ -97,20 +98,30 @@ def certify_witnesses(scene: ScenarioData, candidates: dict[str, np.ndarray], cr
                     low_safe_mass += w
             natural_conflict_mass[k, a] = conflict_mass
             opr[k, a] = low_safe_mass if use_option else 1.0
+            option_loss = max(0.0, 1.0 - float(opr[k, a])) if use_option else 0.0
             resp_mask = response["valid"][k, a] & response["is_safe"][k, a]
             if np.any(resp_mask):
                 bvals = response["burden_total"][k, a]
-                r_idx = int(np.where(resp_mask)[0][np.argmin(bvals[resp_mask])])
-                min_safe_burden[k, a] = float(bvals[r_idx])
-                burden_total[k, a] = float(bvals[r_idx])
+                safe_indices = np.where(resp_mask)[0]
+                adjusted = []
+                for ridx in safe_indices:
+                    comps = response["burden_components"][k, a, ridx].copy()
+                    comps[4] = max(float(comps[4]), option_loss)
+                    adjusted.append(weighted_burden_total(comps, cfg))
+                best_local = int(np.argmin(np.asarray(adjusted, dtype=np.float32)))
+                r_idx = int(safe_indices[best_local])
+                min_safe_burden[k, a] = float(adjusted[best_local])
+                burden_total[k, a] = float(adjusted[best_local])
                 burden_components[k, a] = response["burden_components"][k, a, r_idx]
+                burden_components[k, a, 4] = max(float(burden_components[k, a, 4]), option_loss)
             else:
                 min_safe_burden[k, a] = np.inf
                 burden_total[k, a] = 2.0
                 burden_components[k, a, 3] = 2.0
             min_nat = float(np.min(natural["burden_neutral"][a, nat_valid_idx])) if len(nat_valid_idx) else 0.0
             c_i[k, a] = float(min_safe_burden[k, a] - min_nat) if np.isfinite(min_safe_burden[k, a]) else 2.0
-            positive = conflict_mass >= float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10)) and min_safe_burden[k, a] > beta
+            option_collapsed = use_option and opr[k, a] < float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
+            positive = conflict_mass >= float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10)) and (min_safe_burden[k, a] > beta or option_collapsed)
             exists[k, a] = bool(positive)
             if positive:
                 token[k, a] = int(_mechanism_token(burden_components[k, a], float(opr[k, a]), rho, cfg))

@@ -23,7 +23,7 @@ def _make_ego_neutral(candidates: dict[str, np.ndarray]) -> np.ndarray:
 
 def build_labels_for_scene(scene: ScenarioData, cfg: dict, ablation: dict | None = None) -> dict[str, np.ndarray | str]:
     candidates = generate_ego_candidates(scene, cfg)
-    critical = select_critical_agents(scene, cfg, candidates["trajectory"])
+    critical = select_critical_agents(scene, cfg, candidates)
     ego_neutral = _make_ego_neutral(candidates)
     natural = generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation)
     response = generate_safe_responses(scene, candidates, critical, natural, cfg)

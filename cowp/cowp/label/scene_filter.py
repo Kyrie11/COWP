@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from cowp.core.constants import ObjectType
-from cowp.core.types import ScenarioData, ensure_trajectory_7
+from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
 
 
@@ -38,7 +38,7 @@ def scene_types(scene: ScenarioData, cfg: dict) -> list[str]:
     out: set[str] = set()
     if not np.any(ego_valid):
         return []
-    ego = ensure_trajectory_7(ego_future[ego_valid])
+    ego = future_states_to_traj7(ego_future, int(cfg.get("time", {}).get("future_steps", 80)), current_state=scene.states[scene.sdc_track_index, cur])
     dy = ego[-1, 1] - ego[0, 1]
     dx = ego[-1, 0] - ego[0, 0]
     heading_change = abs(float(((ego[-1, 2] - ego[0, 2] + np.pi) % (2 * np.pi)) - np.pi))
@@ -51,7 +51,7 @@ def scene_types(scene: ScenarioData, cfg: dict) -> list[str]:
         mask = a_future[:, 10] > 0.5
         if not np.any(mask):
             continue
-        agent = ensure_trajectory_7(a_future[mask])
+        agent = future_states_to_traj7(a_future, len(ego), current_state=scene.states[i, cur])
         if regions:
             region, te, ti, _ = closest_conflict_for_pair(ego, agent, regions, dt=float(cfg.get("time", {}).get("dt", 0.1)))
             if region is not None and abs(te - ti) < 3.0:
@@ -74,7 +74,8 @@ def is_interaction_heavy(scene: ScenarioData, cfg: dict) -> tuple[bool, dict[str
         return False, {"basic_valid": False, "reasons": reasons, "scene_types": []}
     types = scene_types(scene, cfg)
     cur = scene.current_time_index
-    ego = ensure_trajectory_7(scene.states[scene.sdc_track_index, cur + 1 :, :])
+    horizon = int(cfg.get("time", {}).get("future_steps", 80))
+    ego = future_states_to_traj7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :], horizon, current_state=scene.states[scene.sdc_track_index, cur])
     min_future_dist = float("inf")
     for i in range(scene.num_agents):
         if i == scene.sdc_track_index or scene.states[i, cur, 10] < 0.5:
@@ -83,7 +84,7 @@ def is_interaction_heavy(scene: ScenarioData, cfg: dict) -> tuple[bool, dict[str
         mask = tr[:, 10] > 0.5
         if not np.any(mask):
             continue
-        ag = ensure_trajectory_7(tr[mask])
+        ag = future_states_to_traj7(tr, len(ego), current_state=scene.states[i, cur])
         T = min(len(ego), len(ag))
         if T:
             min_future_dist = min(min_future_dist, float(np.min(np.linalg.norm(ego[:T, :2] - ag[:T, :2], axis=-1))))

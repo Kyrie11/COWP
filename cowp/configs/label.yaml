@@ -5,6 +5,12 @@ time:
   rollout_horizon_steps: 80
   short_label_horizon_steps: 50
 
+dataset:
+  # The paper's label construction is intended for interaction-heavy scenes.
+  # Keeping this enabled prevents the label builder from filling the cache with
+  # ordinary cruising scenes that have no meaningful coercion witness.
+  require_interaction_heavy: true
+
 limits:
   max_agents: 128
   max_critical_agents: 8

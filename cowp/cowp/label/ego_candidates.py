@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from cowp.core.constants import MacroType
-from cowp.core.types import ScenarioData, ensure_trajectory_7
+from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import build_conflict_regions, tta_to_region
 from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged, smooth_stop_trajectory
 
@@ -36,10 +36,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict) -> dict[str, np.ndar
     K = int(limits.get("max_candidates", 64))
     cur = scene.current_time_index
     ego_cur = scene.states[scene.sdc_track_index, cur]
-    logged_full = ensure_trajectory_7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :])
-    if len(logged_full) < horizon:
-        pad = np.repeat(logged_full[-1:len(logged_full)], horizon - len(logged_full), axis=0) if len(logged_full) else constant_accel_trajectory(ego_cur, horizon, dt)
-        logged_full = np.concatenate([logged_full, pad], axis=0) if len(logged_full) else pad
+    logged_full = future_states_to_traj7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :], horizon, current_state=ego_cur)
     candidates: list[np.ndarray] = []
     macro: list[int] = []
     utility: list[float] = []

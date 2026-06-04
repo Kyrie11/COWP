@@ -101,6 +101,53 @@ def ensure_trajectory_7(traj: np.ndarray, default_length: float = 4.8, default_w
     raise ValueError(f"trajectory must have at least 5 columns, got {arr.shape}")
 
 
+def future_states_to_traj7(future_states: np.ndarray, horizon: int, current_state: np.ndarray | None = None) -> np.ndarray:
+    """Convert WOMD future states to a fixed-horizon [T,7] trajectory.
+
+    WOMD tracks may contain invalid future rows.  The previous implementation
+    often passed the full [T,11] state block directly to ``ensure_trajectory_7``;
+    invalid rows are usually zero-filled, so downstream collision, burden and
+    critical-agent logic could see artificial jumps to the origin.  This helper
+    keeps time alignment, replaces invalid rows by the nearest valid state, and
+    pads/truncates to ``horizon``.
+    """
+    horizon = int(horizon)
+    if horizon <= 0:
+        return np.zeros((0, 7), dtype=np.float32)
+
+    arr = np.asarray(future_states, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[0] == 0:
+        if current_state is not None:
+            base = ensure_trajectory_7(np.asarray(current_state, dtype=np.float32)[None, :])[0]
+        else:
+            base = np.zeros(7, dtype=np.float32)
+            base[5:7] = (4.8, 1.9)
+        return np.repeat(base[None, :], horizon, axis=0).astype(np.float32)
+
+    traj = ensure_trajectory_7(arr)
+    valid = arr[:, 10] > 0.5 if arr.shape[1] >= 11 else np.ones(arr.shape[0], dtype=bool)
+    if not np.any(valid):
+        if current_state is not None:
+            base = ensure_trajectory_7(np.asarray(current_state, dtype=np.float32)[None, :])[0]
+        else:
+            base = traj[0]
+        out = np.repeat(base[None, :], min(horizon, max(len(traj), 1)), axis=0)
+    else:
+        out = traj.copy()
+        first_valid = int(np.where(valid)[0][0])
+        out[:first_valid] = out[first_valid]
+        last = out[first_valid].copy()
+        for t in range(first_valid, len(out)):
+            if valid[t]:
+                last = out[t].copy()
+            else:
+                out[t] = last
+
+    if len(out) < horizon:
+        out = np.concatenate([out, np.repeat(out[-1:len(out)], horizon - len(out), axis=0)], axis=0)
+    return out[:horizon].astype(np.float32)
+
+
 def pad_array(arr: np.ndarray, shape: tuple[int, ...], pad_value: float | int | bool = 0) -> tuple[np.ndarray, np.ndarray]:
     arr = np.asarray(arr)
     out = np.full(shape, pad_value, dtype=arr.dtype if arr.size else np.asarray(pad_value).dtype)

@@ -55,6 +55,34 @@ def _point_to_xyz(point) -> tuple[float, float, float]:
     return (float(getattr(point, "x", 0.0)), float(getattr(point, "y", 0.0)), float(getattr(point, "z", 0.0)))
 
 
+def _as_int_tuple(value) -> tuple[int, ...]:
+    """Normalize protobuf scalar/repeated integer fields to a tuple.
+
+    WOMD proto versions differ for a few map fields.  In particular,
+    DynamicMapState.LaneState.lane is a scalar int64 in some releases, while
+    older code often treats lane-like fields as repeated containers.  Calling
+    ``tuple(int(x) for x in value)`` on a scalar int raises
+    ``TypeError: 'int' object is not iterable``.  This helper accepts both
+    layouts and also tolerates unset/None values.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, (int, np.integer)):
+        return (int(value),)
+    if isinstance(value, (str, bytes)):
+        try:
+            return (int(value),)
+        except ValueError:
+            return ()
+    try:
+        return tuple(int(x) for x in value)
+    except TypeError:
+        try:
+            return (int(value),)
+        except Exception:
+            return ()
+
+
 def _polyline(points) -> np.ndarray:
     return np.asarray([_point_to_xyz(p) for p in points], dtype=np.float32)
 
@@ -77,7 +105,7 @@ def parse_map_features(scenario) -> MapData:
         fid = int(getattr(feature, "id", len(map_data.stop_signs)))
         if feature.HasField("stop_sign"):
             ss = feature.stop_sign
-            lane_ids = tuple(int(x) for x in getattr(ss, "lane", []))
+            lane_ids = _as_int_tuple(getattr(ss, "lane", None))
             stop_controlled.update(lane_ids)
             map_data.stop_signs[fid] = {"lane_ids": lane_ids, "position": np.asarray(_point_to_xyz(ss.position), dtype=np.float32) if ss.HasField("position") else np.zeros(3, dtype=np.float32)}
     for feature in scenario.map_features:
@@ -114,9 +142,9 @@ def parse_map_features(scenario) -> MapData:
     for t, dyn in enumerate(scenario.dynamic_map_states):
         state = {"t": t, "lane_states": []}
         for lane_state in getattr(dyn, "lane_states", []):
-            lane_ids = tuple(int(x) for x in getattr(lane_state, "lane", []))
-            if not lane_ids and hasattr(lane_state, "lane_id"):
-                lane_ids = (int(lane_state.lane_id),)
+            lane_ids = _as_int_tuple(getattr(lane_state, "lane", None))
+            if not lane_ids:
+                lane_ids = _as_int_tuple(getattr(lane_state, "lane_id", None))
             for lid in lane_ids:
                 if lid in map_data.lanes:
                     map_data.lanes[lid].controlled_by_signal = True

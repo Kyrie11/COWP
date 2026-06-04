@@ -9,6 +9,7 @@ import numpy as np
 from cowp.data.parse_scenario_proto import iter_scenarios, scenario_to_scene
 from cowp.data.parse_tfexample import iter_tfexamples, scenario_id_from_tfexample
 from cowp.label.label_engine import build_labels_for_scene
+from cowp.label.scene_filter import is_interaction_heavy
 
 
 def _npz_key(key: str) -> str:
@@ -31,8 +32,14 @@ def build_labels_from_proto(proto_glob: str | list[str], output_dir: str | Path,
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     count = 0
+    filter_cfg = cfg.get("dataset", {})
+    require_interaction_heavy = bool(filter_cfg.get("require_interaction_heavy", False))
     for scenario in iter_scenarios(proto_glob):
         scene = scenario_to_scene(scenario, keep_raw=False)
+        if require_interaction_heavy:
+            heavy, _meta = is_interaction_heavy(scene, cfg)
+            if not heavy:
+                continue
         label = build_labels_for_scene(scene, cfg, ablation=ablation)
         save_label_npz(label, output_dir / f"{scene.scenario_id}.npz")
         count += 1

@@ -99,7 +99,7 @@ outputs:
 - `ablation.use_obs_branch / use_neutral_branch / use_priority_branch / use_option_preservation / use_hard_witness_rejection`
 
 ---
-
+[cowp_project_root_patch.diff](../../../../Download/cowp_project_root_patch.diff)
 ## 4. 端到端流程
 
 ### 4.1 构建 Scenario proto 索引
@@ -107,7 +107,7 @@ outputs:
 ```bash
 python cowp/scripts/00_index_womd.py \
   --data-config configs/data.yaml \
-  --proto-glob '/path/to/womd/scenario/training/*.tfrecord*' \
+  --proto-glob '/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/scenario/training/*.tfrecord*' \
   --output outputs/cowp/cowp_index.jsonl
 ```
 

@@ -16,7 +16,7 @@ def _profile_for_type(cfg: dict, object_type: int) -> dict:
     return bcfg.get("vehicle", {})
 
 
-def adaptive_beta(scene_states: np.ndarray | None, agent_type: int, rho: PriorityRelation, cfg: dict, use_adaptive: bool = True) -> float:
+def adaptive_beta(scene_states: np.ndarray | None, agent_type: int, rho: PriorityRelation, cfg: dict, use_adaptive: bool = True, ego_index: int = 0) -> float:
     bcfg = cfg.get("burden", {})
     if agent_type == int(ObjectType.PEDESTRIAN):
         beta = float(bcfg.get("beta0_pedestrian", 0.50))
@@ -29,7 +29,8 @@ def adaptive_beta(scene_states: np.ndarray | None, agent_type: int, rho: Priorit
         if np.any(cur_valid):
             speeds = scene_states[cur_valid, 5] if scene_states.shape[1] >= 6 else np.linalg.norm(scene_states[cur_valid, 3:5], axis=-1)
             low_speed = float(np.nanmean(speeds)) < float(bcfg.get("low_speed_threshold_mps", 5.0))
-            ego_pos = scene_states[0, :2]
+            ego_index = int(np.clip(ego_index, 0, len(scene_states) - 1))
+            ego_pos = scene_states[ego_index, :2]
             dist = np.linalg.norm(scene_states[cur_valid, :2] - ego_pos[None, :], axis=-1)
             dense = int(np.sum(dist < float(bcfg.get("dense_neighbor_count_radius_m", 30.0)))) >= int(bcfg.get("dense_neighbor_count_threshold", 8))
             if low_speed and dense:

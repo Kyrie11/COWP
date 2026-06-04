@@ -95,10 +95,12 @@ def validate_numeric_invariants(data: Mapping[str, np.ndarray], cfg: dict) -> li
         exists = np.asarray(data["cowp/witness/exists"], dtype=bool)
         mass = np.asarray(data.get("cowp/witness/natural_conflict_mass", np.zeros_like(exists, dtype=float)))
         min_b = np.asarray(data.get("cowp/witness/min_safe_burden", np.zeros_like(exists, dtype=float)))
+        opr = np.asarray(data.get("cowp/witness/opr", np.ones_like(exists, dtype=float)))
         beta = np.asarray(data.get("cowp/natural/beta", np.ones(exists.shape[1]) * 0.65))
+        alpha_opr = float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
         for k, a in zip(*np.where(exists)):
             if mass[k, a] < float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10)) - 1e-5:
                 errors.append(f"positive witness ({k},{a}) below conflict mass threshold")
-            if not (min_b[k, a] > beta[a]):
-                errors.append(f"positive witness ({k},{a}) min safe burden <= beta")
+            if not (min_b[k, a] > beta[a] or opr[k, a] < alpha_opr):
+                errors.append(f"positive witness ({k},{a}) has neither high safe-response burden nor option collapse")
     return errors
