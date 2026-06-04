@@ -1,0 +1,14 @@
+numpy>=1.23
+scipy>=1.10
+pyyaml>=6.0
+tqdm>=4.66
+matplotlib>=3.7
+pandas>=2.0
+pyarrow>=14.0
+pytest>=8.0
+torch>=2.1
+# Full WOMD/Waymax pipeline extras:
+# tensorflow>=2.11
+# waymo-open-dataset-tf-2-12-0
+# waymax
+# jax

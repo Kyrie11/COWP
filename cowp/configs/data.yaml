@@ -1,0 +1,21 @@
+womd:
+  scenario_proto_glob: /path/to/womd/scenario/training/*.tfrecord*
+  tfexample_glob: /path/to/womd/tfexample/training/*.tfrecord*
+  validation_proto_glob: /path/to/womd/scenario/validation/*.tfrecord*
+  validation_tfexample_glob: /path/to/womd/tfexample/validation/*.tfrecord*
+  include_sdc_paths: true
+  waymax_config_name: WOD_1_1_0_TRAINING
+
+outputs:
+  root: outputs/cowp
+  index_jsonl: outputs/cowp/cowp_index.jsonl
+  labels_dir: outputs/cowp/labels
+  tensor_cache_dir: outputs/cowp/tensor_cache
+  stress_dir: outputs/cowp/stress_set
+  diagnostics_dir: outputs/cowp/diagnostics
+
+splits:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  seed: 2026
