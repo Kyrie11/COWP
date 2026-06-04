@@ -1,8 +1,8 @@
 womd:
-  scenario_proto_glob: /path/to/womd/scenario/training/*.tfrecord*
-  tfexample_glob: /path/to/womd/tfexample/training/*.tfrecord*
-  validation_proto_glob: /path/to/womd/scenario/validation/*.tfrecord*
-  validation_tfexample_glob: /path/to/womd/tfexample/validation/*.tfrecord*
+  scenario_proto_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/scenario/training/*.tfrecord*
+  tfexample_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/training/*.tfrecord*
+  validation_proto_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/scenario/validation/*.tfrecord*
+  validation_tfexample_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/*.tfrecord*
   include_sdc_paths: true
   waymax_config_name: WOD_1_1_0_TRAINING
 
