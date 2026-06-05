@@ -12,12 +12,13 @@ def main() -> None:
     parser.add_argument("--label-config", default="configs/label.yaml")
     parser.add_argument("--labels-dir", default=None)
     parser.add_argument("--output", default=None)
+    parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = parser.parse_args()
     cfg = load_config(args.label_config, args.data_config)
     labels_dir = args.labels_dir or cfg["outputs"]["labels_dir"]
     output = args.output or cfg["outputs"].get("stress_manifest", "outputs/stress/cowp_stress_manifest.jsonl")
-    write_stress_manifest(labels_dir, output)
-    print(f"Wrote stress manifest to {output}")
+    n = write_stress_manifest(labels_dir, output, progress=not args.no_progress)
+    print(f"Wrote {n} stress scenes to {output}")
 
 
 if __name__ == "__main__":

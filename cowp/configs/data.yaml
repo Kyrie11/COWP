@@ -12,6 +12,7 @@ outputs:
   labels_dir: outputs/cowp/labels
   tensor_cache_dir: outputs/cowp/tensor_cache
   stress_dir: outputs/cowp/stress_set
+  stress_manifest: outputs/cowp/stress_set/cowp_stress_manifest.jsonl
   diagnostics_dir: outputs/cowp/diagnostics
 
 splits:

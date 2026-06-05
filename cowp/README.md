@@ -99,7 +99,6 @@ outputs:
 - `ablation.use_obs_branch / use_neutral_branch / use_priority_branch / use_option_preservation / use_hard_witness_rejection`
 
 ---
-[cowp_project_root_patch.diff](../../../../Download/cowp_project_root_patch.diff)
 ## 4. 端到端流程
 
 ### 4.1 构建 Scenario proto 索引

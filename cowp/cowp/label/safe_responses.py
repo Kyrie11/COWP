@@ -50,7 +50,7 @@ def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarra
             for decel in resp_cfg.get("emergency_decel_values_mps2", [-6.0, -8.0]):
                 for delay in resp_cfg.get("emergency_reaction_delay_s", [0.0, 0.2, 0.5]):
                     primitives.append((constant_accel_trajectory(curr, H, dt, accel=float(decel), start_delay_s=float(delay)), ResponseSource.EMG))
-            evaluated: list[tuple[float, np.ndarray, ResponseSource, bool, np.ndarray]] = []
+            evaluated: list[tuple[float, float, np.ndarray, ResponseSource, bool, np.ndarray]] = []
             for tr, src in primitives:
                 if not np.all(np.isfinite(tr)):
                     continue
@@ -58,15 +58,14 @@ def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarra
                 b, comps = compute_burden(tr, ego, cfg, object_type, natural_ref=nat_ref)
                 # Sort by safe first and lower burden; keep unsafe samples too for supervised safe classifier.
                 sort_cost = (0.0 if not unsafe.unsafe else 10.0) + b
-                evaluated.append((sort_cost, tr, src, not unsafe.unsafe, comps))
+                evaluated.append((sort_cost, b, tr, src, not unsafe.unsafe, comps))
             evaluated.sort(key=lambda x: x[0])
             beta = float(natural.get("beta", np.full(A, 0.65))[a])
-            for r, (_, tr, src, safe, comps) in enumerate(evaluated[:R]):
+            for r, (_, b, tr, src, safe, comps) in enumerate(evaluated[:R]):
                 traj[k, a, r] = tr
                 valid[k, a, r] = True
                 source[k, a, r] = int(src)
                 is_safe[k, a, r] = bool(safe)
-                b = compute_burden(tr, ego, cfg, object_type, natural_ref=nat_ref)[0]
                 burden_total[k, a, r] = b
                 burden_components[k, a, r] = comps
                 is_low[k, a, r] = safe and b <= beta

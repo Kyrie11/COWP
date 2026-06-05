@@ -21,14 +21,19 @@ def _make_ego_neutral(candidates: dict[str, np.ndarray]) -> np.ndarray:
     raise ValueError("No valid ego candidates available for neutral intervention.")
 
 
-def build_labels_for_scene(scene: ScenarioData, cfg: dict, ablation: dict | None = None) -> dict[str, np.ndarray | str]:
+def build_labels_for_scene(
+    scene: ScenarioData,
+    cfg: dict,
+    ablation: dict | None = None,
+    scene_meta: dict[str, object] | None = None,
+) -> dict[str, np.ndarray | str]:
     candidates = generate_ego_candidates(scene, cfg)
-    critical = select_critical_agents(scene, cfg, candidates)
+    regions = build_conflict_regions(scene.map_data, cfg)
+    critical = select_critical_agents(scene, cfg, candidates, conflict_regions=regions)
     ego_neutral = _make_ego_neutral(candidates)
     natural = generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation)
     response = generate_safe_responses(scene, candidates, critical, natural, cfg)
-    witness = certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation)
-    regions = build_conflict_regions(scene.map_data, cfg)
+    witness = certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions)
     max_c = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
     conflict_tensor = np.zeros((max_c, 8), dtype=np.float32)
     conflict_valid = np.zeros(max_c, dtype=bool)
@@ -39,6 +44,9 @@ def build_labels_for_scene(scene: ScenarioData, cfg: dict, ablation: dict | None
         "scenario/id": scene.scenario_id,
         "scenario/current_time_index": np.asarray(scene.current_time_index, dtype=np.int32),
         "scenario/timestamps_seconds": scene.timestamps.astype(np.float32),
+        "dataset/interaction_heavy": np.asarray(bool((scene_meta or {}).get("interaction_heavy", True)), dtype=bool),
+        "dataset/scene_types": np.asarray(",".join(str(x) for x in (scene_meta or {}).get("scene_types", []))),
+        "dataset/min_future_dist": np.asarray(float((scene_meta or {}).get("min_future_dist", np.inf)), dtype=np.float32),
         "cowp/candidates/trajectory": candidates["trajectory"],
         "cowp/candidates/macro_type": candidates["macro_type"],
         "cowp/candidates/valid": candidates["valid"],

@@ -10,6 +10,7 @@ dataset:
   # Keeping this enabled prevents the label builder from filling the cache with
   # ordinary cruising scenes that have no meaningful coercion witness.
   require_interaction_heavy: true
+  collect_scene_metadata: true
 
 limits:
   max_agents: 128
@@ -157,3 +158,18 @@ planning:
   ncf_gamma_infer: 0.10
   fallback_decel_mps2: -2.0
   emergency_decel_mps2: -6.0
+
+
+diagnostics:
+  # Soft distributional checks used by 06_diagnose_dataset.py. They are not
+  # hard schema invariants; they flag whether the generated labels look useful
+  # for the paper's false-safe / non-coercive supervision setting.
+  min_mean_candidate_valid: 12.0
+  min_mean_critical_valid: 1.0
+  target_positive_pair_ratio: [0.02, 0.35]
+  target_false_safe_candidate_ratio: [0.05, 0.45]
+  target_ncf_candidate_ratio: [0.10, 0.80]
+  min_stress_eligible_scene_ratio: 0.01
+  min_response_safe_pair_ratio: 0.60
+  min_mean_natural_alternatives: 4.0
+  min_mechanism_token_types: 2

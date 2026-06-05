@@ -34,14 +34,19 @@ def _ego_candidate_bank(scene: ScenarioData, cfg: dict, ego_candidates: dict[str
     return bank
 
 
-def select_critical_agents(scene: ScenarioData, cfg: dict, ego_candidates: dict[str, np.ndarray] | np.ndarray | None = None) -> dict[str, np.ndarray]:
+def select_critical_agents(
+    scene: ScenarioData,
+    cfg: dict,
+    ego_candidates: dict[str, np.ndarray] | np.ndarray | None = None,
+    conflict_regions: list | None = None,
+) -> dict[str, np.ndarray]:
     limits = cfg.get("limits", {})
     crit_cfg = cfg.get("critical", {})
     cur = scene.current_time_index
     max_a = int(limits.get("max_critical_agents", 8))
     ego_bank = _ego_candidate_bank(scene, cfg, ego_candidates)
     ego = ego_bank[0]
-    regions = build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     scores: list[tuple[float, int, float, float, PriorityRelation]] = []
     for i in range(scene.num_agents):
         if i == scene.sdc_track_index:

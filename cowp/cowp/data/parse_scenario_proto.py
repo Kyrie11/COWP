@@ -9,6 +9,7 @@ import numpy as np
 
 from cowp.core.constants import ObjectType
 from cowp.core.types import Lane, MapData, ScenarioData
+from cowp.utils.progress import tqdm_iter
 
 
 def _import_tensorflow():
@@ -200,24 +201,43 @@ def scenario_to_scene(scenario, keep_raw: bool = False) -> ScenarioData:
     )
 
 
-def write_index(patterns: str | list[str], output_jsonl: str | Path, limit: int | None = None) -> None:
+def _scenario_index_item(scenario) -> dict[str, object]:
+    """Extract a lightweight index row directly from a Scenario proto.
+
+    Indexing is primarily a path/proto sanity check and a lookup artifact.  It
+    should not pay the full label-construction cost of materializing all track
+    tensors and HD-map polylines.
+    """
+    tracks_to_predict = [int(getattr(r, "track_index", -1)) for r in getattr(scenario, "tracks_to_predict", [])]
+    return {
+        "scenario_id": str(scenario.scenario_id),
+        "num_agents": int(len(scenario.tracks)),
+        "num_steps": int(len(scenario.timestamps_seconds)),
+        "current_time_index": int(scenario.current_time_index),
+        "sdc_track_index": int(scenario.sdc_track_index),
+        "objects_of_interest": [int(x) for x in getattr(scenario, "objects_of_interest", [])],
+        "tracks_to_predict": tracks_to_predict,
+        "num_lanes": int(sum(1 for feature in scenario.map_features if feature.HasField("lane"))),
+        "num_map_features": int(len(scenario.map_features)),
+        "num_dynamic_map_states": int(len(getattr(scenario, "dynamic_map_states", []))),
+    }
+
+
+def write_index(patterns: str | list[str], output_jsonl: str | Path, limit: int | None = None, progress: bool = True) -> int:
     output_jsonl = Path(output_jsonl)
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     count = 0
+    iterator = tqdm_iter(
+        iter_scenarios(patterns),
+        enabled=progress,
+        total=limit,
+        desc="Index WOMD Scenario protos",
+        unit="scenario",
+    )
     with output_jsonl.open("w", encoding="utf-8") as f:
-        for scenario in iter_scenarios(patterns):
-            scene = scenario_to_scene(scenario, keep_raw=False)
-            item = {
-                "scenario_id": scene.scenario_id,
-                "num_agents": scene.num_agents,
-                "num_steps": scene.num_steps,
-                "current_time_index": scene.current_time_index,
-                "sdc_track_index": scene.sdc_track_index,
-                "objects_of_interest": scene.objects_of_interest.tolist(),
-                "tracks_to_predict": scene.tracks_to_predict.tolist(),
-                "num_lanes": len(scene.map_data.lanes),
-            }
-            f.write(json.dumps(item) + "\n")
+        for scenario in iterator:
+            f.write(json.dumps(_scenario_index_item(scenario)) + "\n")
             count += 1
             if limit is not None and count >= limit:
                 break
+    return count

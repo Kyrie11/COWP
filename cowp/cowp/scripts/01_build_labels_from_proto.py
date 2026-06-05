@@ -16,6 +16,10 @@ def main() -> None:
     ap.add_argument("--output-dir", default=None)
     ap.add_argument("--diagnostics-dir", default=None)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--skip-existing", action="store_true", help="Skip label files that already exist in the output directory.")
+    ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
+    ap.add_argument("--diagnostic-visualizations", action="store_true", help="Write a small gallery of high-signal witness diagnostic plots.")
+    ap.add_argument("--max-visualizations", type=int, default=16)
     ap.add_argument("--no-obs-branch", action="store_true")
     ap.add_argument("--no-neutral-branch", action="store_true")
     ap.add_argument("--no-priority-branch", action="store_true")
@@ -30,10 +34,25 @@ def main() -> None:
         "use_priority_branch": not args.no_priority_branch,
         "use_option_preservation": not args.no_option_preservation,
     }
-    n = build_labels_from_proto(proto_glob, output_dir, cfg, limit=args.limit, ablation=ablation)
+    n = build_labels_from_proto(
+        proto_glob,
+        output_dir,
+        cfg,
+        limit=args.limit,
+        ablation=ablation,
+        progress=not args.no_progress,
+        skip_existing=args.skip_existing,
+    )
     print(f"Built {n} label files in {output_dir}")
     diag = args.diagnostics_dir or cfg["outputs"]["diagnostics_dir"]
-    diagnose_dataset(output_dir, cfg, diag)
+    diagnose_dataset(
+        output_dir,
+        cfg,
+        diag,
+        progress=not args.no_progress,
+        make_visualizations=args.diagnostic_visualizations,
+        max_visualizations=args.max_visualizations,
+    )
     print(f"Wrote diagnostics to {diag}")
 
 

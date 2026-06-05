@@ -35,7 +35,16 @@ def _mechanism_token(comps: np.ndarray, opr: float, rho: PriorityRelation, cfg: 
     return [MechanismToken.HB, MechanismToken.HB, MechanismToken.AY, MechanismToken.SR, MechanismToken.OR, MechanismToken.PA][idx]
 
 
-def certify_witnesses(scene: ScenarioData, candidates: dict[str, np.ndarray], critical: dict[str, np.ndarray], natural: dict[str, np.ndarray], response: dict[str, np.ndarray], cfg: dict, ablation: dict | None = None) -> dict[str, np.ndarray]:
+def certify_witnesses(
+    scene: ScenarioData,
+    candidates: dict[str, np.ndarray],
+    critical: dict[str, np.ndarray],
+    natural: dict[str, np.ndarray],
+    response: dict[str, np.ndarray],
+    cfg: dict,
+    ablation: dict | None = None,
+    conflict_regions: list | None = None,
+) -> dict[str, np.ndarray]:
     ablation = ablation or {}
     use_option = bool(ablation.get("use_option_preservation", True))
     limits = cfg.get("limits", {})
@@ -57,7 +66,7 @@ def certify_witnesses(scene: ScenarioData, candidates: dict[str, np.ndarray], cr
     ncf = np.zeros(K, dtype=bool)
 
     cur = scene.current_time_index
-    regions = build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     other_logged = []
     for j in range(scene.num_agents):
         if j == scene.sdc_track_index:
