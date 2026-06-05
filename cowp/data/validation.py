@@ -10,7 +10,7 @@ import pandas as pd
 
 from cowp.core.constants import MacroType, MechanismToken, NaturalSource, TOKEN_NAMES
 from cowp.data.cache_schema import validate_numeric_invariants, validate_schema
-from cowp.utils.progress import tqdm_iter
+from utils.progress import tqdm_iter
 
 
 def validate_label_file(path: str | Path, cfg: dict) -> list[str]:
