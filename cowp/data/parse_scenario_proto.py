@@ -9,7 +9,7 @@ import numpy as np
 
 from cowp.core.constants import ObjectType
 from cowp.core.types import Lane, MapData, ScenarioData
-from cowp.utils.progress import tqdm_iter
+from utils.progress import tqdm_iter
 
 
 def _import_tensorflow():
