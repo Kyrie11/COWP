@@ -9,7 +9,7 @@ from cowp.data.parse_scenario_proto import iter_scenarios, scenario_to_scene
 from cowp.data.parse_tfexample import iter_tfexamples, scenario_id_from_tfexample
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy
-from cowp.utils.progress import tqdm_iter
+from utils.progress import tqdm_iter
 
 
 def _npz_key(key: str) -> str:
