@@ -26,9 +26,10 @@ def build_labels_for_scene(
     cfg: dict,
     ablation: dict | None = None,
     scene_meta: dict[str, object] | None = None,
+    conflict_regions: list | None = None,
 ) -> dict[str, np.ndarray | str]:
-    candidates = generate_ego_candidates(scene, cfg)
-    regions = build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
+    candidates = generate_ego_candidates(scene, cfg, conflict_regions=regions)
     critical = select_critical_agents(scene, cfg, candidates, conflict_regions=regions)
     ego_neutral = _make_ego_neutral(candidates)
     natural = generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from cowp.core.config import load_config
@@ -14,7 +15,10 @@ def main() -> None:
     ap.add_argument("--output", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
+    ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; indexing is CPU/I/O-bound.")
     args = ap.parse_args()
+    if args.cpu_only:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     cfg = load_config(args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
     output = args.output or cfg["outputs"]["index_jsonl"]

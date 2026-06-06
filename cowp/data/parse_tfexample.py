@@ -15,8 +15,7 @@ def _import_tensorflow():
     return tf
 
 
-def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
-    tf = _import_tensorflow()
+def resolve_glob_patterns(patterns: str | list[str]) -> list[str]:
     if isinstance(patterns, str):
         patterns = [patterns]
     files: list[str] = []
@@ -24,7 +23,15 @@ def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
         files.extend(sorted(glob.glob(pat)))
     if not files:
         raise FileNotFoundError(f"No tf.Example TFRecord files matched: {patterns}")
-    for rec in tf.data.TFRecordDataset(files):
+    return files
+
+
+def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
+    tf = _import_tensorflow()
+    files = resolve_glob_patterns(patterns)
+    dataset = tf.data.TFRecordDataset(files, num_parallel_reads=tf.data.AUTOTUNE)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    for rec in dataset:
         yield bytes(rec.numpy())
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from cowp.core.config import load_config
@@ -15,7 +16,12 @@ def main() -> None:
     ap.add_argument("--proto-glob", default=None)
     ap.add_argument("--output-dir", default=None)
     ap.add_argument("--diagnostics-dir", default=None)
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None, help="Stop after this many written label files.")
+    ap.add_argument("--max-scenarios-scanned", type=int, default=None, help="Stop after scanning this many Scenario records, even if many are filtered.")
+    ap.add_argument("--num-workers", type=int, default=1, help="Parallel CPU workers for label generation. Use 4-16 depending on CPU/RAM.")
+    ap.add_argument("--no-compress", action="store_true", help="Use np.savez instead of np.savez_compressed for faster label writes.")
+    ap.add_argument("--profile-jsonl", default=None, help="Optional per-scenario build timing JSONL.")
+    ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; label construction is CPU-bound.")
     ap.add_argument("--skip-existing", action="store_true", help="Skip label files that already exist in the output directory.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     ap.add_argument("--diagnostic-visualizations", action="store_true", help="Write a small gallery of high-signal witness diagnostic plots.")
@@ -25,6 +31,8 @@ def main() -> None:
     ap.add_argument("--no-priority-branch", action="store_true")
     ap.add_argument("--no-option-preservation", action="store_true")
     args = ap.parse_args()
+    if args.cpu_only:
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     cfg = load_config(args.label_config, args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
     output_dir = args.output_dir or cfg["outputs"]["labels_dir"]
@@ -42,6 +50,10 @@ def main() -> None:
         ablation=ablation,
         progress=not args.no_progress,
         skip_existing=args.skip_existing,
+        num_workers=args.num_workers,
+        max_scenarios_scanned=args.max_scenarios_scanned,
+        compress=not args.no_compress,
+        profile_jsonl=args.profile_jsonl,
     )
     print(f"Built {n} label files in {output_dir}")
     diag = args.diagnostics_dir or cfg["outputs"]["diagnostics_dir"]

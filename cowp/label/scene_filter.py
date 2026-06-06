@@ -31,7 +31,7 @@ def valid_scene_basic(scene: ScenarioData, cfg: dict) -> tuple[bool, list[str]]:
     return len(reasons) == 0, reasons
 
 
-def scene_types(scene: ScenarioData, cfg: dict) -> list[str]:
+def scene_types(scene: ScenarioData, cfg: dict, conflict_regions: list | None = None) -> list[str]:
     cur = scene.current_time_index
     ego_future = scene.states[scene.sdc_track_index, cur + 1 :, :]
     ego_valid = ego_future[:, 10] > 0.5
@@ -44,7 +44,7 @@ def scene_types(scene: ScenarioData, cfg: dict) -> list[str]:
     heading_change = abs(float(((ego[-1, 2] - ego[0, 2] + np.pi) % (2 * np.pi)) - np.pi))
     if abs(dy) > 2.5 and heading_change < np.deg2rad(30):
         out.add("LANE_CHANGE")
-    regions = build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     other_idxs = [i for i in range(scene.num_agents) if i != scene.sdc_track_index and scene.states[i, cur, 10] > 0.5]
     for i in other_idxs:
         a_future = scene.states[i, cur + 1 :, :]
@@ -68,11 +68,11 @@ def scene_types(scene: ScenarioData, cfg: dict) -> list[str]:
     return sorted(out)
 
 
-def is_interaction_heavy(scene: ScenarioData, cfg: dict) -> tuple[bool, dict[str, object]]:
+def is_interaction_heavy(scene: ScenarioData, cfg: dict, conflict_regions: list | None = None) -> tuple[bool, dict[str, object]]:
     ok, reasons = valid_scene_basic(scene, cfg)
     if not ok:
         return False, {"basic_valid": False, "reasons": reasons, "scene_types": []}
-    types = scene_types(scene, cfg)
+    types = scene_types(scene, cfg, conflict_regions=conflict_regions)
     cur = scene.current_time_index
     horizon = int(cfg.get("time", {}).get("future_steps", 80))
     ego = future_states_to_traj7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :], horizon, current_state=scene.states[scene.sdc_track_index, cur])

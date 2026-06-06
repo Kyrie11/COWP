@@ -28,7 +28,7 @@ def _candidate_valid(traj: np.ndarray, cfg: dict) -> bool:
     return True
 
 
-def generate_ego_candidates(scene: ScenarioData, cfg: dict) -> dict[str, np.ndarray]:
+def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: list | None = None) -> dict[str, np.ndarray]:
     limits = cfg.get("limits", {})
     cand_cfg = cfg.get("candidate", {})
     horizon = int(cfg.get("time", {}).get("future_steps", 80))
@@ -64,7 +64,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict) -> dict[str, np.ndar
     for decel in cand_cfg.get("yield_decel_values_mps2", [-1.0, -2.0, -3.0]):
         add(constant_accel_trajectory(ego_cur, horizon, dt, accel=float(decel)), MacroType.YIELD, util=0.5, neutral=float(decel) in (-2.0, -3.0))
         add(smooth_stop_trajectory(ego_cur, horizon, dt, decel=float(decel), creep_speed=0.0), MacroType.DECELERATE_CROSS, util=0.6)
-    regions = build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     if regions:
         keep = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0)
         nearest = min(regions, key=lambda r: np.linalg.norm(r.center_xy - ego_cur[:2]))

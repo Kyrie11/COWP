@@ -40,6 +40,25 @@ def trajectory_near_miss(traj_a: np.ndarray, traj_b: np.ndarray, threshold: floa
     return bool(np.any(mask)), mask, float(dmin)
 
 
+
+
+def _center_broadphase_far(traj_a: np.ndarray, traj_b: np.ndarray, cfg: dict, agent_type: int) -> tuple[bool, float]:
+    t = min(len(traj_a), len(traj_b))
+    if t == 0:
+        return True, float("inf")
+    dist = np.linalg.norm(traj_a[:t, :2] - traj_b[:t, :2], axis=-1)
+    dmin = float(np.min(dist)) if len(dist) else float("inf")
+    unsafe_cfg = cfg.get("unsafe", cfg)
+    near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0 if agent_type == 1 else 1.5))
+    dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0 if agent_type == 1 else 20.0))
+    # Conservative upper bound on vehicle half diagonals.  If the centers never
+    # come within this gate, collision, near-miss, TTC and RSS tests cannot fire.
+    half_a = 0.5 * np.sqrt(np.maximum(traj_a[:t, 5], 0.1) ** 2 + np.maximum(traj_a[:t, 6], 0.1) ** 2)
+    half_b = 0.5 * np.sqrt(np.maximum(traj_b[:t, 5], 0.1) ** 2 + np.maximum(traj_b[:t, 6], 0.1) ** 2)
+    max_half = float(np.nanmax(half_a + half_b)) if len(half_a) else 6.0
+    gate = max(dist_gate, near_thresh + max_half + float(unsafe_cfg.get("collision_inflation_m", 0.1)) + 1.0)
+    return dmin > gate, max(0.0, dmin - max_half)
+
 def offroad_severe_from_lane_distance(traj: np.ndarray, lane_dist: np.ndarray | None, threshold: float) -> tuple[bool, np.ndarray]:
     if lane_dist is None:
         return False, np.zeros(len(traj), dtype=bool)
@@ -49,6 +68,11 @@ def offroad_severe_from_lane_distance(traj: np.ndarray, lane_dist: np.ndarray | 
 
 def unsafe_between(ego_traj: np.ndarray, agent_traj: np.ndarray, cfg: dict, agent_type: int = 1, agent_lane_dist: np.ndarray | None = None) -> UnsafeResult:
     unsafe_cfg = cfg.get("unsafe", cfg)
+    t = min(len(ego_traj), len(agent_traj))
+    far, dmin_fast = _center_broadphase_far(ego_traj, agent_traj, cfg, agent_type)
+    if far and agent_lane_dist is None:
+        empty = np.zeros(t, dtype=bool)
+        return UnsafeResult(False, False, False, False, False, False, empty, dmin_fast)
     inflation = float(unsafe_cfg.get("collision_inflation_m", 0.1))
     collision, col_mask = trajectory_collision(ego_traj, agent_traj, inflation)
     near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0 if agent_type == 1 else 1.5))
@@ -66,7 +90,6 @@ def unsafe_between(ego_traj: np.ndarray, agent_traj: np.ndarray, cfg: dict, agen
         min_gap=float(unsafe_cfg.get("rss_min_gap_m", 2.0)),
     )
     offroad, off_mask = offroad_severe_from_lane_distance(agent_traj, agent_lane_dist, float(unsafe_cfg.get("severe_offroad_distance_m", 4.0)))
-    t = min(len(ego_traj), len(agent_traj))
     event_mask = np.zeros(t, dtype=bool)
     for m in (col_mask, near_mask, ttc_mask, rss_mask, off_mask):
         event_mask[: min(t, len(m))] |= m[: min(t, len(m))]

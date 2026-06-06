@@ -40,6 +40,15 @@ def segment_intersection(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndar
     return a + t * r
 
 
+
+
+def _bbox_xy(xy: np.ndarray) -> tuple[float, float, float, float]:
+    return (float(np.min(xy[:, 0])), float(np.min(xy[:, 1])), float(np.max(xy[:, 0])), float(np.max(xy[:, 1])))
+
+
+def _bbox_might_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float], margin: float) -> bool:
+    return not (a[2] + margin < b[0] or b[2] + margin < a[0] or a[3] + margin < b[1] or b[3] + margin < a[1])
+
 def lane_heading_at(lane: Lane, s_query: float | None = None) -> float:
     xy = lane.xy
     if len(xy) < 2:
@@ -60,7 +69,10 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
     merge_radius = float(conflict_cfg.get("merge_radius_m", 8.0))
     regions: list[ConflictRegion] = []
     lanes = list(map_data.lanes.values())
+    lane_bboxes = {lane.lane_id: _bbox_xy(lane.xy) for lane in lanes if len(lane.xy) >= 2}
     seen: set[tuple[int, int, int, int]] = set()
+    max_regions = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
+    bbox_margin = max(intersection_radius, merge_radius) + 2.0
     for i, lane_a in enumerate(lanes):
         xy_a = lane_a.xy
         if len(xy_a) < 2:
@@ -72,6 +84,9 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
             # Topological merges: two lanes exit into the same successor or endpoints are close.
             common_exit = set(lane_a.exit_lanes).intersection(lane_b.exit_lanes)
             endpoint_dist = float(np.linalg.norm(xy_a[-1] - xy_b[-1]))
+            if not common_exit and endpoint_dist >= 4.0:
+                if not _bbox_might_overlap(lane_bboxes[lane_a.lane_id], lane_bboxes[lane_b.lane_id], bbox_margin):
+                    continue
             if common_exit or endpoint_dist < 4.0:
                 hdiff = abs(float(normalize_angle(lane_heading_at(lane_a, None) - lane_heading_at(lane_b, None))))
                 center = 0.5 * (xy_a[-1] + xy_b[-1])
@@ -85,6 +100,8 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
                         "MAINLINE_OR_ARRIVAL",
                     )
                 )
+                if len(regions) >= max_regions:
+                    return regions[:max_regions]
                 continue
             for ia in range(len(xy_a) - 1):
                 for ib in range(len(xy_b) - 1):
@@ -109,7 +126,9 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
                         )
                     )
                     seen.add(key)
-    return regions[: int(cfg.get("limits", {}).get("max_conflict_regions", 64))]
+                    if len(regions) >= max_regions:
+                        return regions[:max_regions]
+    return regions[:max_regions]
 
 
 def tta_to_region(traj: np.ndarray, region: ConflictRegion, radius: float | None = None, dt: float = 0.1) -> float:
