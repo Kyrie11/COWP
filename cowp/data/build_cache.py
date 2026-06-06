@@ -13,7 +13,7 @@ from cowp.data.parse_tfexample import iter_tfexamples, scenario_id_from_tfexampl
 from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy
-from utils.progress import tqdm_iter
+from cowp.utils.progress import tqdm_iter
 
 
 def _npz_key(key: str) -> str:
