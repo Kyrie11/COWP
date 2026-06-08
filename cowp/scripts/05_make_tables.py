@@ -7,6 +7,7 @@ import pandas as pd
 
 from cowp.core.config import load_config
 from cowp.waymax_eval.rollout import offline_candidate_eval
+from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import stress_acceptance_metrics, witness_table_from_labels
 import numpy as np
@@ -27,13 +28,13 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     label_paths = sorted(Path(labels_dir).glob("*.npz"))
     label_dicts = []
-    for p in label_paths:
+    for p in tqdm_iter(label_paths, enabled=True, total=len(label_paths), desc="Load labels for tables", unit="file"):
         with np.load(p, allow_pickle=True) as data:
             label_dicts.append({k: data[k] for k in data.files})
     rows = []
     stress_rows = []
     for method in methods:
-        m = offline_candidate_eval(labels_dir, cfg, method=method)
+        m = offline_candidate_eval(labels_dir, cfg, method=method, progress=True)
         rows.append({"Method": method, **m})
         planner = planner_for_method(method, cfg)
         decisions = []

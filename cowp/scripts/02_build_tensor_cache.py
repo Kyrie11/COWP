@@ -16,7 +16,11 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--skip-existing", action="store_true", help="Skip merged cache files that already exist.")
     ap.add_argument("--verify-cache", action="store_true", help="Re-open newly written NPZ files to catch corrupt writes. Disabled by default for speed.")
-    ap.add_argument("--no-compress", action="store_true", help="Use np.savez instead of np.savez_compressed for faster cache writes.")
+    ap.add_argument("--compress", dest="compress", action="store_true", help="Use np.savez_compressed. Smaller but often much slower for WOMD tensor cache.")
+    ap.add_argument("--no-compress", dest="compress", action="store_false", help="Use np.savez. This is the default for fast tensor-cache construction.")
+    ap.set_defaults(compress=False)
+    ap.add_argument("--max-examples-scanned", type=int, default=None, help="Stop after scanning this many tf.Example records; useful for smoke/debug runs.")
+    ap.add_argument("--profile-jsonl", default=None, help="Optional per-written-cache timing JSONL.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; tensor-cache construction is CPU/I/O-bound.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = ap.parse_args()
@@ -31,9 +35,12 @@ def main() -> None:
         progress=not args.no_progress,
         verify_cache=args.verify_cache,
         skip_existing=args.skip_existing,
-        compress=not args.no_compress,
+        compress=args.compress,
+        max_examples_scanned=args.max_examples_scanned,
+        profile_jsonl=args.profile_jsonl,
     )
-    print(f"Built {n} merged tensor cache files")
+    mode = "compressed" if args.compress else "uncompressed"
+    print(f"Built {n} merged tensor cache files ({mode})")
 
 
 if __name__ == "__main__":

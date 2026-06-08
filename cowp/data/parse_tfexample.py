@@ -35,21 +35,61 @@ def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
         yield bytes(rec.numpy())
 
 
-def decode_tfexample(serialized: bytes) -> dict[str, np.ndarray | bytes]:
+def parse_tfexample(serialized: bytes):
+    """Parse one serialized WOMD tf.Example protobuf.
+
+    Keeping parsing separate from feature materialization lets cache-building
+    read only the scenario id for non-matching examples.  A full WOMD example can
+    contain many large float/int lists, so converting every feature to NumPy
+    before checking whether a proto-derived label exists is unnecessarily slow.
+    """
     tf = _import_tensorflow()
     example = tf.train.Example()
     example.ParseFromString(serialized)
+    return example
+
+
+def _feature_to_value(feat) -> np.ndarray | bytes:
+    kind = feat.WhichOneof("kind")
+    if kind == "float_list":
+        return np.asarray(feat.float_list.value, dtype=np.float32)
+    if kind == "int64_list":
+        return np.asarray(feat.int64_list.value, dtype=np.int64)
+    if kind == "bytes_list":
+        vals = list(feat.bytes_list.value)
+        return vals[0] if len(vals) == 1 else np.asarray(vals, dtype=object)
+    return np.asarray([], dtype=np.float32)
+
+
+def decode_parsed_tfexample(example) -> dict[str, np.ndarray | bytes]:
     out: dict[str, np.ndarray | bytes] = {}
     for key, feat in example.features.feature.items():
-        kind = feat.WhichOneof("kind")
-        if kind == "float_list":
-            out[key] = np.asarray(feat.float_list.value, dtype=np.float32)
-        elif kind == "int64_list":
-            out[key] = np.asarray(feat.int64_list.value, dtype=np.int64)
-        elif kind == "bytes_list":
-            vals = list(feat.bytes_list.value)
-            out[key] = vals[0] if len(vals) == 1 else np.asarray(vals, dtype=object)
+        out[key] = _feature_to_value(feat)
     return out
+
+
+def decode_tfexample(serialized: bytes) -> dict[str, np.ndarray | bytes]:
+    return decode_parsed_tfexample(parse_tfexample(serialized))
+
+
+def scenario_id_from_parsed_tfexample(example) -> str:
+    features = example.features.feature
+    for key in ("scenario/id", "scenario_id", "scenario/id_bytes"):
+        if key not in features:
+            continue
+        val = _feature_to_value(features[key])
+        if isinstance(val, bytes):
+            return val.decode("utf-8")
+        if isinstance(val, np.ndarray) and val.dtype == object and len(val):
+            first = val.flat[0]
+            return first.decode("utf-8") if isinstance(first, bytes) else str(first)
+        if isinstance(val, np.ndarray) and val.size:
+            return str(val.flat[0])
+    raise KeyError("Could not find scenario id in tf.Example. Expected one of scenario/id or scenario_id.")
+
+
+def scenario_id_from_serialized_tfexample(serialized: bytes) -> str:
+    return scenario_id_from_parsed_tfexample(parse_tfexample(serialized))
 
 
 def iter_tfexamples(patterns: str | list[str]) -> Iterator[dict[str, np.ndarray | bytes]]:
@@ -66,7 +106,7 @@ def scenario_id_from_tfexample(example: dict[str, np.ndarray | bytes]) -> str:
             if isinstance(val, np.ndarray) and val.dtype == object and len(val):
                 first = val.flat[0]
                 return first.decode("utf-8") if isinstance(first, bytes) else str(first)
-            if isinstance(val, np.ndarray):
+            if isinstance(val, np.ndarray) and val.size:
                 return str(val.flat[0])
     raise KeyError("Could not find scenario id in tf.Example. Expected one of scenario/id or scenario_id.")
 

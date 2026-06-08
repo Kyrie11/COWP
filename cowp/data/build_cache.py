@@ -9,7 +9,7 @@ from typing import Mapping
 import numpy as np
 
 from cowp.data.parse_scenario_proto import iter_scenario_records, iter_scenarios, scenario_to_scene
-from cowp.data.parse_tfexample import iter_tfexamples, scenario_id_from_tfexample
+from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, parse_tfexample, scenario_id_from_parsed_tfexample
 from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy
@@ -23,10 +23,17 @@ def _npz_key(key: str) -> str:
 def _write_npz(path: str | Path, arrays: Mapping[str, object], *, compress: bool = True) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if compress:
-        np.savez_compressed(path, **arrays)
-    else:
-        np.savez(path, **arrays)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with tmp.open("wb") as f:
+            if compress:
+                np.savez_compressed(f, **arrays)
+            else:
+                np.savez(f, **arrays)
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def save_label_npz(label: Mapping[str, object], path: str | Path, *, compress: bool = True) -> None:
@@ -214,6 +221,10 @@ def build_labels_from_proto(
     return count
 
 
+def _format_rate(num: int, den: int) -> str:
+    return f"{(100.0 * num / max(den, 1)):.3f}%"
+
+
 def build_tensor_cache(
     tfexample_glob: str | list[str],
     labels_dir: str | Path,
@@ -222,41 +233,82 @@ def build_tensor_cache(
     progress: bool = True,
     verify_cache: bool = False,
     skip_existing: bool = False,
-    compress: bool = True,
+    compress: bool = False,
+    max_examples_scanned: int | None = None,
+    profile_jsonl: str | Path | None = None,
 ) -> int:
     labels_dir = Path(labels_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     label_paths = {p.stem: p for p in sorted(labels_dir.glob("*.npz"))}
+    if not label_paths:
+        raise FileNotFoundError(f"No COWP label npz files found in {labels_dir}")
     remaining = set(label_paths)
     target = min(int(limit), len(label_paths)) if limit is not None else len(label_paths)
     count = 0
     scanned = 0
+    matched = 0
     skipped_existing = 0
+    decode_seconds = 0.0
+    write_seconds = 0.0
     written_paths: list[Path] = []
+    if profile_jsonl:
+        profile_path = Path(profile_jsonl)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text("", encoding="utf-8")
+    else:
+        profile_path = None
+
     iterator = tqdm_iter(
-        iter_tfexamples(tfexample_glob),
+        iter_tfexample_records(tfexample_glob),
         enabled=progress,
-        desc="Merge WOMD tf.Example with COWP labels",
+        total=max_examples_scanned,
+        desc="Scan WOMD tf.Example records and merge matching labels",
         unit="example",
     )
-    for example in iterator:
+
+    def update_postfix(stage: str, sid: str = "") -> None:
+        if hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(
+                stage=stage,
+                scanned=scanned,
+                matched=matched,
+                hit=_format_rate(matched, scanned),
+                written=count,
+                remaining=len(remaining),
+                existing=skipped_existing,
+                decode_s=f"{decode_seconds:.1f}",
+                write_s=f"{write_seconds:.1f}",
+                last=sid[:10],
+                refresh=True,
+            )
+
+    for raw in iterator:
         scanned += 1
-        sid = scenario_id_from_tfexample(example)
+        parsed = parse_tfexample(raw)
+        sid = scenario_id_from_parsed_tfexample(parsed)
         label_path = label_paths.get(sid)
         if label_path is None:
-            if hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(scanned=scanned, written=count, remaining=len(remaining), existing=skipped_existing)
+            if scanned == 1 or scanned % 100 == 0:
+                update_postfix("seeking_match", sid)
+            if max_examples_scanned is not None and scanned >= max_examples_scanned:
+                break
             continue
+        matched += 1
         out_path = output_dir / f"{sid}.npz"
         if skip_existing and out_path.exists():
             skipped_existing += 1
             remaining.discard(sid)
-            if hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(scanned=scanned, written=count, remaining=len(remaining), existing=skipped_existing)
+            update_postfix("skip_existing", sid)
             if len(remaining) == 0 or (limit is not None and count >= target):
                 break
+            if max_examples_scanned is not None and scanned >= max_examples_scanned:
+                break
             continue
+
+        t_decode = time.perf_counter()
+        example = decode_parsed_tfexample(parsed)
+        decode_seconds += time.perf_counter() - t_decode
         arrays = {}
         for key, val in example.items():
             safe = _npz_key(key)
@@ -264,18 +316,41 @@ def build_tensor_cache(
         with np.load(label_path, allow_pickle=True) as label:
             for key in label.files:
                 arrays[_npz_key(key)] = label[key]
+
+        t_write = time.perf_counter()
         _write_npz(out_path, arrays, compress=compress)
+        dt_write = time.perf_counter() - t_write
+        write_seconds += dt_write
+        if profile_path is not None:
+            with profile_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "scenario_id": sid,
+                    "output": str(out_path),
+                    "scanned": scanned,
+                    "written_index": count + 1,
+                    "num_arrays": len(arrays),
+                    "write_seconds": dt_write,
+                    "compress": bool(compress),
+                }, ensure_ascii=False) + "\n")
         written_paths.append(out_path)
         remaining.discard(sid)
         count += 1
-        if hasattr(iterator, "set_postfix"):
-            iterator.set_postfix(scanned=scanned, written=count, remaining=len(remaining), existing=skipped_existing)
+        update_postfix("wrote", sid)
         if limit is not None and count >= target:
             break
         if len(remaining) == 0:
+            break
+        if max_examples_scanned is not None and scanned >= max_examples_scanned:
             break
     if verify_cache:
         for p in tqdm_iter(written_paths, enabled=progress, desc="Verify written tensor cache", unit="file"):
             with np.load(p, allow_pickle=True) as data:
                 _ = data.files
+    if count == 0:
+        missing_preview = ", ".join(sorted(remaining)[:5])
+        raise RuntimeError(
+            "No merged tensor cache files were written. "
+            f"Scanned {scanned} tf.Example records and found {matched} label id matches. "
+            f"First missing label ids: {missing_preview}. Check that --tfexample-glob and --labels-dir use the same WOMD split/version."
+        )
     return count

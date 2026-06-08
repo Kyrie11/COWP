@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -65,6 +66,24 @@ def main() -> None:
         make_visualizations=args.diagnostic_visualizations,
         max_visualizations=args.max_visualizations,
     )
+    summary_path = Path(diag) / "dataset_diagnostics_summary.json"
+    if summary_path.exists():
+        with summary_path.open("r", encoding="utf-8") as f:
+            summary = json.load(f)
+        keys = [
+            "num_scenes",
+            "quality_assessment",
+            "positive_pair_ratio",
+            "false_safe_candidate_ratio",
+            "ncf_candidate_ratio",
+            "stress_eligible_scene_ratio",
+            "response_safe_pair_ratio",
+            "mean_natural_alternatives",
+            "validation_error_files",
+        ]
+        compact = {k: summary.get(k) for k in keys if k in summary}
+        print("Dataset diagnostics summary:")
+        print(json.dumps(compact, indent=2, ensure_ascii=False))
     print(f"Wrote diagnostics to {diag}")
 
 
