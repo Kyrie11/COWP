@@ -9,7 +9,7 @@ from typing import Mapping
 import numpy as np
 
 from cowp.data.parse_scenario_proto import iter_scenario_records, iter_scenarios, scenario_to_scene
-from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, parse_tfexample, scenario_id_from_parsed_tfexample
+from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, iter_tfexample_records_by_file, parse_tfexample, resolve_glob_patterns, scenario_id_from_parsed_tfexample
 from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy
@@ -225,6 +225,68 @@ def _format_rate(num: int, den: int) -> str:
     return f"{(100.0 * num / max(den, 1)):.3f}%"
 
 
+def build_tfexample_id_index(
+    tfexample_glob: str | list[str],
+    output_jsonl: str | Path,
+    *,
+    progress: bool = True,
+    max_examples_scanned: int | None = None,
+) -> dict[str, object]:
+    """Build a reusable scenario-id index for WOMD tf.Example shards.
+
+    The merge stage often has very sparse labels.  Without an index it may scan
+    tens or hundreds of thousands of tf.Example records before the first match.
+    This index stores only lightweight metadata and lets later merges restrict
+    scanning to the shards that contain target scenario ids.
+    """
+    output_jsonl = Path(output_jsonl)
+    output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+    files = resolve_glob_patterns(tfexample_glob)
+    scanned = 0
+    bad_records = 0
+    iterator = tqdm_iter(
+        iter_tfexample_records_by_file(files),
+        enabled=progress,
+        total=max_examples_scanned,
+        desc="Index WOMD tf.Example scenario ids",
+        unit="example",
+    )
+    with output_jsonl.open("w", encoding="utf-8") as f:
+        for filename, record_index, raw in iterator:
+            scanned += 1
+            try:
+                parsed = parse_tfexample(raw)
+                sid = scenario_id_from_parsed_tfexample(parsed)
+                f.write(json.dumps({"scenario_id": sid, "file": filename, "record_index": int(record_index)}, ensure_ascii=False) + "\n")
+            except Exception as exc:  # pragma: no cover - corrupt records are data dependent
+                bad_records += 1
+                f.write(json.dumps({"scenario_id": None, "file": filename, "record_index": int(record_index), "error": str(exc)}, ensure_ascii=False) + "\n")
+            if hasattr(iterator, "set_postfix") and (scanned == 1 or scanned % 100 == 0):
+                iterator.set_postfix(scanned=scanned, bad=bad_records, file=Path(filename).name[:24], refresh=True)
+            if max_examples_scanned is not None and scanned >= max_examples_scanned:
+                break
+    return {"index": str(output_jsonl), "files": len(files), "scanned": scanned, "bad_records": bad_records}
+
+
+def _files_for_label_ids_from_tfexample_index(index_jsonl: str | Path, label_ids: set[str]) -> tuple[list[str], dict[str, int]]:
+    files: set[str] = set()
+    matched_ids: set[str] = set()
+    total_rows = 0
+    index_jsonl = Path(index_jsonl)
+    with index_jsonl.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            total_rows += 1
+            row = json.loads(line)
+            sid = row.get("scenario_id")
+            if sid in label_ids:
+                matched_ids.add(str(sid))
+                files.add(str(row.get("file")))
+    stats = {"indexed_rows": total_rows, "indexed_label_matches": len(matched_ids), "indexed_files": len(files)}
+    return sorted(files), stats
+
+
 def build_tensor_cache(
     tfexample_glob: str | list[str],
     labels_dir: str | Path,
@@ -236,6 +298,8 @@ def build_tensor_cache(
     compress: bool = False,
     max_examples_scanned: int | None = None,
     profile_jsonl: str | Path | None = None,
+    tfexample_index_jsonl: str | Path | None = None,
+    build_index_if_missing: bool = False,
 ) -> int:
     labels_dir = Path(labels_dir)
     output_dir = Path(output_dir)
@@ -245,6 +309,29 @@ def build_tensor_cache(
         raise FileNotFoundError(f"No COWP label npz files found in {labels_dir}")
     remaining = set(label_paths)
     target = min(int(limit), len(label_paths)) if limit is not None else len(label_paths)
+
+    scan_glob: str | list[str] = tfexample_glob
+    index_stats: dict[str, int] = {}
+    if tfexample_index_jsonl is not None:
+        index_path = Path(tfexample_index_jsonl)
+        if build_index_if_missing or not index_path.exists():
+            summary = build_tfexample_id_index(tfexample_glob, index_path, progress=progress)
+            print(f"Built tf.Example id index: {json.dumps(summary, ensure_ascii=False)}")
+        if index_path.exists():
+            indexed_files, index_stats = _files_for_label_ids_from_tfexample_index(index_path, set(label_paths))
+            if indexed_files:
+                scan_glob = indexed_files
+                print(
+                    "Using tf.Example index: "
+                    f"{index_stats['indexed_label_matches']} / {len(label_paths)} label ids found in "
+                    f"{index_stats['indexed_files']} shard(s)."
+                )
+            else:
+                preview = ", ".join(sorted(label_paths)[:5])
+                raise RuntimeError(
+                    "The tf.Example id index contains no rows matching the current label ids. "
+                    f"First label ids: {preview}. This usually means the labels and tf.Example glob use different WOMD split/version."
+                )
     count = 0
     scanned = 0
     matched = 0
@@ -260,7 +347,7 @@ def build_tensor_cache(
         profile_path = None
 
     iterator = tqdm_iter(
-        iter_tfexample_records(tfexample_glob),
+        iter_tfexample_records(scan_glob),
         enabled=progress,
         total=max_examples_scanned,
         desc="Scan WOMD tf.Example records and merge matching labels",
@@ -348,9 +435,13 @@ def build_tensor_cache(
                 _ = data.files
     if count == 0:
         missing_preview = ", ".join(sorted(remaining)[:5])
+        index_hint = ""
+        if tfexample_index_jsonl is not None:
+            index_hint = f" tf.Example index stats: {index_stats}."
         raise RuntimeError(
             "No merged tensor cache files were written. "
             f"Scanned {scanned} tf.Example records and found {matched} label id matches. "
-            f"First missing label ids: {missing_preview}. Check that --tfexample-glob and --labels-dir use the same WOMD split/version."
+            f"First missing label ids: {missing_preview}. Check that --tfexample-glob and --labels-dir use the same WOMD split/version/shard subset."
+            + index_hint
         )
     return count

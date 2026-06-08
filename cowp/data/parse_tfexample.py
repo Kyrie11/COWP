@@ -35,6 +35,22 @@ def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
         yield bytes(rec.numpy())
 
 
+def iter_tfexample_records_by_file(patterns: str | list[str]) -> Iterator[tuple[str, int, bytes]]:
+    """Yield ``(filename, record_index, serialized_tfexample)`` for each TFRecord.
+
+    This is slower than a single interleaved TFRecordDataset, but it preserves
+    shard provenance.  The tensor-cache builder uses it to create a reusable
+    scenario-id index so later merges can scan only shards that contain the
+    requested label ids.
+    """
+    tf = _import_tensorflow()
+    files = resolve_glob_patterns(patterns)
+    for filename in files:
+        dataset = tf.data.TFRecordDataset([filename])
+        for record_index, rec in enumerate(dataset):
+            yield filename, record_index, bytes(rec.numpy())
+
+
 def parse_tfexample(serialized: bytes):
     """Parse one serialized WOMD tf.Example protobuf.
 

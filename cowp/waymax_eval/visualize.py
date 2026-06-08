@@ -28,6 +28,11 @@ def plot_witness_scene(label: dict[str, np.ndarray], candidate_idx: int, output_
     ego = label["cowp/candidates/trajectory"][candidate_idx]
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.plot(ego[:, 0], ego[:, 1], label=f"ego candidate {candidate_idx}")
+    if "waymax/candidate/ego_xy" in label and "waymax/candidate/ego_xy_valid" in label:
+        valid_waymax = label["waymax/candidate/ego_xy_valid"][candidate_idx].astype(bool)
+        if np.any(valid_waymax):
+            xy = label["waymax/candidate/ego_xy"][candidate_idx, valid_waymax]
+            ax.plot(xy[:, 0], xy[:, 1], linewidth=2.0, alpha=0.75, label="Waymax ego rollout")
     if "map/conflict_regions" in label and "map/conflict_region_valid" in label:
         valid_regions = label["map/conflict_region_valid"].astype(bool)
         regions = label["map/conflict_regions"][valid_regions]

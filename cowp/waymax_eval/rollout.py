@@ -54,23 +54,36 @@ def _call_policy(policy_fn: Callable, state, step: int, scenario_index: int):
         return policy_fn(state)
 
 
-def _make_waymax_environment():
+def _make_waymax_environment(max_num_objects: int | None = None):
     try:
+        import dataclasses
+        from waymax import config as _config  # type: ignore
         from waymax import dynamics  # type: ignore
         from waymax import env as waymax_env  # type: ignore
     except Exception as exc:  # pragma: no cover
-        raise ImportError("waymax.env and waymax.dynamics are required for real closed-loop rollout.") from exc
+        raise ImportError("waymax.env, waymax.config and waymax.dynamics are required for real closed-loop rollout.") from exc
 
     dynamics_cls = getattr(dynamics, "StateDynamics", None) or getattr(dynamics, "DeltaGlobal", None)
     env_cls = getattr(waymax_env, "MultiAgentEnvironment", None)
     if dynamics_cls is None or env_cls is None:
         raise RuntimeError("Unsupported Waymax API: expected waymax.dynamics.StateDynamics/DeltaGlobal and waymax.env.MultiAgentEnvironment.")
     dyn = dynamics_cls()
+    env_config = getattr(_config, "EnvironmentConfig", lambda: None)()
+    kwargs = {}
+    if hasattr(_config, "ObjectType") and hasattr(_config.ObjectType, "VALID"):
+        kwargs["controlled_object"] = _config.ObjectType.VALID
+    if max_num_objects is not None:
+        kwargs["max_num_objects"] = int(max_num_objects)
+    if env_config is not None and kwargs:
+        try:
+            env_config = dataclasses.replace(env_config, **kwargs)
+        except Exception:
+            pass
     try:
-        return env_cls(dynamics_model=dyn)
+        return env_cls(dynamics_model=dyn, config=env_config)
     except TypeError:
         try:
-            return env_cls(dynamics=dyn)
+            return env_cls(dynamics_model=dyn)
         except TypeError:
             return env_cls(dyn)
 
@@ -113,14 +126,14 @@ def waymax_closed_loop_rollout(
     """
     from cowp.waymax_eval.dataloader import waymax_state_generator
 
-    env = _make_waymax_environment()
     horizon = int(horizon_steps) if horizon_steps is not None else 80
     gen = waymax_state_generator(data_config)
     total = num_scenarios
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc="Waymax closed-loop rollout", unit="scenario")
     outputs = []
     for scenario_index, init_state in enumerate(iterator):
-        state = init_state
+        env = _make_waymax_environment(max_num_objects=getattr(init_state, "num_objects", None))
+        state = env.reset(init_state)
         steps = 0
         for step in range(horizon):
             action = _call_policy(policy_fn, state, step=step, scenario_index=scenario_index)

@@ -21,6 +21,8 @@ def main() -> None:
     ap.set_defaults(compress=False)
     ap.add_argument("--max-examples-scanned", type=int, default=None, help="Stop after scanning this many tf.Example records; useful for smoke/debug runs.")
     ap.add_argument("--profile-jsonl", default=None, help="Optional per-written-cache timing JSONL.")
+    ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional scenario-id index for tf.Example shards. If present, scan only shards containing label ids.")
+    ap.add_argument("--build-tfexample-index", action="store_true", help="Build or rebuild --tfexample-index-jsonl before merging. Useful when matched stays at zero.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; tensor-cache construction is CPU/I/O-bound.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = ap.parse_args()
@@ -38,6 +40,8 @@ def main() -> None:
         compress=args.compress,
         max_examples_scanned=args.max_examples_scanned,
         profile_jsonl=args.profile_jsonl,
+        tfexample_index_jsonl=args.tfexample_index_jsonl,
+        build_index_if_missing=args.build_tfexample_index,
     )
     mode = "compressed" if args.compress else "uncompressed"
     print(f"Built {n} merged tensor cache files ({mode})")

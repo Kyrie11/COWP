@@ -197,10 +197,30 @@ python cowp/scripts/02_build_tensor_cache.py \
   --data-config configs/data.yaml \
   --tfexample-glob '/path/to/womd/tfexample/training/*.tfrecord*' \
   --labels-dir outputs/cowp/labels \
-  --output-dir outputs/cowp/tensor_cache
+  --output-dir outputs/cowp/tensor_cache \
+  --tfexample-index-jsonl outputs/cowp/tfexample_training_index.jsonl \
+  --build-tfexample-index
 ```
 
-该阶段把原始 WOMD tf.Example tensors 与 `cowp/*` labels 合并到 `.npz` cache。训练期只读 cache，不重复执行几何/priority/witness label generation。
+该阶段把原始 WOMD tf.Example tensors 与 `cowp/*` labels 合并到 `.npz` cache。训练期只读 cache，不重复执行几何/priority/witness label generation。若进度条长期显示 `matched=0`，优先检查 labels 与 tf.Example 是否来自同一 WOMD split/version；`--tfexample-index-jsonl` 会把 scenario id 映射到 shard，后续只扫描命中 shard。
+
+### 4.6 可选：用真实 Waymax rollout 增强 label 数据集
+
+```bash
+python cowp/scripts/09_build_waymax_rollout_dataset.py \
+  --data-config configs/data.yaml \
+  --label-config configs/label.yaml \
+  --labels-dir outputs/cowp/labels \
+  --output-dir outputs/cowp/labels_waymax_rollout \
+  --tfexample-glob '/path/to/womd/tfexample/training/*.tfrecord*' \
+  --candidate-selection all \
+  --background-policy expert \
+  --jax-platform gpu \
+  --xla-no-preallocate \
+  --profile-jsonl outputs/cowp/waymax_rollout_profile.jsonl
+```
+
+该阶段对每个 COWP ego candidate 在 Waymax `MultiAgentEnvironment` 中执行 `reset` + 多步 `step`，用 candidate replay actor 控制 SDC，并用 expert/log、IDM 或 constant-speed actor 控制非 ego agent。输出仍保留原始 COWP witness labels，同时新增 `waymax/*` rollout 字段和诊断指标。
 
 ---
 

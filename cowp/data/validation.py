@@ -129,7 +129,32 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
     min_future_dist = float(np.asarray(data.get("dataset/min_future_dist", np.asarray(np.inf))).item())
     interaction_heavy = bool(np.asarray(data.get("dataset/interaction_heavy", np.asarray(True))).item())
 
-    return {
+    waymax_enabled = bool(np.asarray(data.get("waymax/enabled", np.asarray(False))).item())
+    waymax_rollout_valid = np.asarray(data.get("waymax/candidate/rollout_valid", np.zeros_like(cand_valid)), dtype=bool) & cand_valid
+    waymax_selected = np.asarray(data.get("waymax/candidate/selected_for_rollout", waymax_rollout_valid), dtype=bool) & cand_valid
+    waymax_seconds = np.asarray(data.get("waymax/candidate/rollout_seconds", np.zeros_like(cand_valid, dtype=np.float32)), dtype=np.float32)
+    waymax_metric_summary: dict[str, float] = {}
+    for key, value in data.items():
+        if not str(key).startswith("waymax/metrics/"):
+            continue
+        vals = np.asarray(value, dtype=np.float32)
+        if vals.shape[:1] == cand_valid.shape[:1]:
+            mask = waymax_rollout_valid & np.isfinite(vals)
+            metric_name = str(key).split("/", 2)[-1].replace("__", "_")
+            waymax_metric_summary[f"waymax_metric_mean_{metric_name}"] = float(np.nanmean(vals[mask])) if np.any(mask) else float("nan")
+
+    row_extra = {
+        "waymax_enabled": waymax_enabled,
+        "waymax_rollout_candidates": int(np.sum(waymax_rollout_valid)),
+        "waymax_rollout_candidate_ratio": _safe_ratio(np.sum(waymax_rollout_valid), np.sum(cand_valid)),
+        "waymax_selected_candidates": int(np.sum(waymax_selected)),
+        "waymax_missing_selected_candidates": int(np.sum(waymax_selected & ~waymax_rollout_valid)),
+        "waymax_rollout_seconds_sum": float(np.nansum(waymax_seconds[waymax_rollout_valid])) if np.any(waymax_rollout_valid) else 0.0,
+        "waymax_rollout_seconds_mean": float(np.nanmean(waymax_seconds[waymax_rollout_valid])) if np.any(waymax_rollout_valid) else 0.0,
+    }
+    row_extra.update(waymax_metric_summary)
+
+    row = {
         "scenario_id": sid,
         "interaction_heavy": interaction_heavy,
         "scene_types": scene_types,
@@ -185,6 +210,8 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
         "mechanism_tokens": ",".join(token_names),
         "mechanism_token_count": int(len(set(token_names))),
     }
+    row.update(row_extra)
+    return row
 
 
 def _counter_from_csv_tokens(series: pd.Series) -> Counter[str]:
@@ -226,6 +253,9 @@ def _make_quality_report(stats: dict[str, object], cfg: dict) -> dict[str, objec
     add_check("mean_natural_alternatives", float(stats.get("mean_natural_alternatives", 0.0)), float(stats.get("mean_natural_alternatives", 0.0)) >= float(diag_cfg.get("min_mean_natural_alternatives", 4.0)), f">= {diag_cfg.get('min_mean_natural_alternatives', 4.0)}")
     token_types = len(stats.get("mechanism_token_counts", {}) or {})
     add_check("mechanism_token_types", token_types, token_types >= int(diag_cfg.get("min_mechanism_token_types", 2)), f">= {diag_cfg.get('min_mechanism_token_types', 2)}")
+    if float(stats.get("waymax_enabled_scene_ratio", 0.0)) > 0.0:
+        add_check("waymax_missing_selected_candidates", int(stats.get("waymax_missing_selected_candidates", 0)), int(stats.get("waymax_missing_selected_candidates", 0)) == 0, "0", "error")
+        add_check("mean_waymax_rollout_candidate_ratio", float(stats.get("mean_waymax_rollout_candidate_ratio", 0.0)), float(stats.get("mean_waymax_rollout_candidate_ratio", 0.0)) >= float(diag_cfg.get("min_waymax_rollout_candidate_ratio", 0.90)), f">= {diag_cfg.get('min_waymax_rollout_candidate_ratio', 0.90)}")
 
     hard_fail = any((not c["ok"]) and c["severity"] == "error" for c in checks)
     warn_fail = any(not c["ok"] for c in checks)
@@ -365,7 +395,14 @@ def diagnose_dataset(
         "natural_source_scene_counts": dict(source_counter),
         "scene_type_counts": dict(scene_type_counter),
         "validation_error_files": int(len(validation_errors)),
+        "waymax_enabled_scene_ratio": float(df["waymax_enabled"].mean()) if not df.empty and "waymax_enabled" in df else 0.0,
+        "mean_waymax_rollout_candidate_ratio": _mean_col(df, "waymax_rollout_candidate_ratio"),
+        "waymax_missing_selected_candidates": int(_sum_col(df, "waymax_missing_selected_candidates")),
+        "mean_waymax_rollout_seconds_per_candidate": _safe_ratio(_sum_col(df, "waymax_rollout_seconds_sum"), _sum_col(df, "waymax_rollout_candidates")),
     }
+    if not df.empty:
+        for col in [c for c in df.columns if c.startswith("waymax_metric_mean_")]:
+            stats[col] = _mean_col(df, col)
     quality_report = _make_quality_report(stats, cfg)
     stats["quality_assessment"] = quality_report["assessment"]
     with (output_dir / "dataset_diagnostics_summary.json").open("w", encoding="utf-8") as f:

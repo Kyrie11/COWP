@@ -10,6 +10,7 @@ outputs:
   root: outputs/cowp
   index_jsonl: outputs/cowp/cowp_index.jsonl
   labels_dir: outputs/cowp/labels
+  waymax_rollout_labels_dir: outputs/cowp/labels_waymax_rollout
   tensor_cache_dir: outputs/cowp/tensor_cache
   stress_dir: outputs/cowp/stress_set
   stress_manifest: outputs/cowp/stress_set/cowp_stress_manifest.jsonl
