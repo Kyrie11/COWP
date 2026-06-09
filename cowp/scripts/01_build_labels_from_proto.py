@@ -22,6 +22,10 @@ def main() -> None:
     ap.add_argument("--num-workers", type=int, default=1, help="Parallel CPU workers for label generation. Use 4-16 depending on CPU/RAM.")
     ap.add_argument("--no-compress", action="store_true", help="Use np.savez instead of np.savez_compressed for faster label writes.")
     ap.add_argument("--profile-jsonl", default=None, help="Optional per-scenario build timing JSONL.")
+    ap.add_argument("--index-jsonl", default=None, help="Optional Scenario index JSONL used only to display a truthful progress total.")
+    ap.add_argument("--start-method", default=None, choices=["fork", "forkserver", "spawn"], help="Multiprocessing start method. Use spawn or forkserver to avoid forking after TensorFlow init.")
+    ap.add_argument("--max-pending-multiplier", type=int, default=4, help="Queue this many tasks per worker to hide slow-scenario stragglers.")
+    ap.add_argument("--continue-on-error", action="store_true", help="Log worker exceptions to profile JSONL and continue instead of failing immediately.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; label construction is CPU-bound.")
     ap.add_argument("--skip-existing", action="store_true", help="Skip label files that already exist in the output directory.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
@@ -33,7 +37,7 @@ def main() -> None:
     ap.add_argument("--no-option-preservation", action="store_true")
     args = ap.parse_args()
     if args.cpu_only:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
     cfg = load_config(args.label_config, args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
     output_dir = args.output_dir or cfg["outputs"]["labels_dir"]
@@ -55,6 +59,10 @@ def main() -> None:
         max_scenarios_scanned=args.max_scenarios_scanned,
         compress=not args.no_compress,
         profile_jsonl=args.profile_jsonl,
+        index_jsonl=args.index_jsonl,
+        start_method=args.start_method,
+        max_pending_multiplier=args.max_pending_multiplier,
+        fail_on_error=not args.continue_on_error,
     )
     print(f"Built {n} label files in {output_dir}")
     diag = args.diagnostics_dir or cfg["outputs"]["diagnostics_dir"]

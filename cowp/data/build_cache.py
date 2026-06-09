@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
 import time
+import traceback
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Mapping
@@ -12,7 +14,7 @@ from cowp.data.parse_scenario_proto import iter_scenario_records, iter_scenarios
 from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, iter_tfexample_records_by_file, parse_tfexample, resolve_glob_patterns, scenario_id_from_parsed_tfexample
 from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
-from cowp.label.scene_filter import is_interaction_heavy
+from cowp.label.scene_filter import is_interaction_heavy, valid_scene_basic
 from cowp.utils.progress import tqdm_iter
 
 
@@ -63,27 +65,77 @@ def _build_one_label_from_raw(
     compress: bool,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    t = time.perf_counter()
     scenario_pb2 = _import_scenario_proto()
     scenario = scenario_pb2.Scenario()
     scenario.ParseFromString(raw)
     sid = str(scenario.scenario_id)
+    timings["parse_proto_s"] = time.perf_counter() - t
+
     label_path = Path(output_dir) / f"{sid}.npz"
     if skip_existing and label_path.exists():
-        return {"status": "existing", "scenario_id": sid, "seconds": time.perf_counter() - t0}
+        return {"status": "existing", "scenario_id": sid, "seconds": time.perf_counter() - t0, "timings": timings}
 
+    t = time.perf_counter()
     scene = scenario_to_scene(scenario, keep_raw=False)
+    timings["scenario_to_scene_s"] = time.perf_counter() - t
+
     regions = None
     heavy_meta: dict[str, object] | None = None
+    filter_reason = ""
     if require_interaction_heavy or collect_scene_metadata:
+        # Cheap gate first.  Some invalid WOMD scenarios should not pay the
+        # O(lane-pairs * segment-pairs) conflict-region cost.
+        if require_interaction_heavy:
+            t = time.perf_counter()
+            basic_ok, basic_reasons = valid_scene_basic(scene, cfg)
+            timings["basic_filter_s"] = time.perf_counter() - t
+            if not basic_ok:
+                return {
+                    "status": "filtered",
+                    "scenario_id": sid,
+                    "filter_reason": ",".join(basic_reasons),
+                    "seconds": time.perf_counter() - t0,
+                    "timings": timings,
+                }
+
+        t = time.perf_counter()
         regions = build_conflict_regions(scene.map_data, cfg)
+        timings["conflict_regions_s"] = time.perf_counter() - t
+
+        t = time.perf_counter()
         heavy, meta = is_interaction_heavy(scene, cfg, conflict_regions=regions)
+        timings["interaction_filter_s"] = time.perf_counter() - t
         heavy_meta = dict(meta)
         heavy_meta["interaction_heavy"] = bool(heavy)
         if require_interaction_heavy and not heavy:
-            return {"status": "filtered", "scenario_id": sid, "seconds": time.perf_counter() - t0}
+            filter_reason = "not_interaction_heavy"
+            return {
+                "status": "filtered",
+                "scenario_id": sid,
+                "filter_reason": filter_reason,
+                "num_conflict_regions": len(regions),
+                "seconds": time.perf_counter() - t0,
+                "timings": timings,
+            }
+
+    t = time.perf_counter()
     label = build_labels_for_scene(scene, cfg, ablation=ablation, scene_meta=heavy_meta, conflict_regions=regions)
+    timings["label_engine_s"] = time.perf_counter() - t
+
+    t = time.perf_counter()
     save_label_npz(label, label_path, compress=compress)
-    return {"status": "written", "scenario_id": sid, "path": str(label_path), "seconds": time.perf_counter() - t0}
+    timings["write_npz_s"] = time.perf_counter() - t
+    return {
+        "status": "written",
+        "scenario_id": sid,
+        "path": str(label_path),
+        "num_conflict_regions": len(regions) if regions is not None else 0,
+        "seconds": time.perf_counter() - t0,
+        "timings": timings,
+    }
 
 
 def _append_profile(profile_jsonl: str | Path | None, result: Mapping[str, object]) -> None:
@@ -93,6 +145,16 @@ def _append_profile(profile_jsonl: str | Path | None, result: Mapping[str, objec
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8") as f:
         f.write(json.dumps(dict(result), ensure_ascii=False) + "\n")
+
+
+def _count_jsonl_rows(path: str | Path | None) -> int | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    with p.open("rb") as f:
+        return sum(1 for line in f if line.strip())
 
 
 def build_labels_from_proto(
@@ -107,6 +169,10 @@ def build_labels_from_proto(
     max_scenarios_scanned: int | None = None,
     compress: bool = True,
     profile_jsonl: str | Path | None = None,
+    index_jsonl: str | Path | None = None,
+    start_method: str | None = None,
+    max_pending_multiplier: int = 4,
+    fail_on_error: bool = True,
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -118,14 +184,19 @@ def build_labels_from_proto(
     scanned = 0
     skipped_filter = 0
     skipped_existing = 0
+    errors = 0
+    processed = 0
     filter_cfg = cfg.get("dataset", {})
     require_interaction_heavy = bool(filter_cfg.get("require_interaction_heavy", False))
     collect_scene_metadata = bool(filter_cfg.get("collect_scene_metadata", True))
     total = max_scenarios_scanned
+    if total is None:
+        total = _count_jsonl_rows(index_jsonl)
     desc = "Build COWP labels from Scenario protos"
 
     def handle_result(res: Mapping[str, object], iterator) -> None:
-        nonlocal count, skipped_filter, skipped_existing
+        nonlocal count, skipped_filter, skipped_existing, errors, processed
+        processed += 1
         status = str(res.get("status", "unknown"))
         if status == "written":
             count += 1
@@ -133,13 +204,18 @@ def build_labels_from_proto(
             skipped_filter += 1
         elif status == "existing":
             skipped_existing += 1
+        elif status == "error":
+            errors += 1
         _append_profile(profile_jsonl, res)
         if hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
-                scanned=scanned,
+                submitted=scanned,
+                processed=processed,
                 written=count,
                 filtered=skipped_filter,
                 existing=skipped_existing,
+                errors=errors,
+                status=status,
                 last_s=f"{float(res.get('seconds', 0.0)):.1f}",
                 last=str(res.get("scenario_id", ""))[:10],
                 refresh=True,
@@ -169,11 +245,12 @@ def build_labels_from_proto(
         return count
 
     workers = max(1, int(num_workers))
-    max_pending = max(workers * 2, workers)
+    max_pending = max(workers * max(1, int(max_pending_multiplier)), workers)
     raw_iter = iter(iter_scenario_records(proto_glob))
     futures = set()
     stop_submit = False
-    iterator = tqdm_iter(range(max_scenarios_scanned or 10**12), enabled=progress, total=total, desc=f"{desc} ({workers} workers)", unit="scenario")
+    progress_source = range(total) if total is not None else iter(int, 1)
+    iterator = tqdm_iter(progress_source, enabled=progress, total=total, desc=f"{desc} ({workers} workers)", unit="scenario")
 
     def submit_one(pool: ProcessPoolExecutor) -> bool:
         nonlocal scanned, stop_submit
@@ -202,13 +279,20 @@ def build_labels_from_proto(
         futures.add(fut)
         return True
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    mp_context = mp.get_context(start_method) if start_method else None
+    with ProcessPoolExecutor(max_workers=workers, mp_context=mp_context) as pool:
         while len(futures) < max_pending and submit_one(pool):
             pass
         while futures:
             done, futures = wait(futures, return_when=FIRST_COMPLETED)
             for fut in done:
-                res = fut.result()
+                try:
+                    res = fut.result()
+                except Exception as exc:
+                    res = {"status": "error", "error": repr(exc), "traceback": traceback.format_exc(), "seconds": 0.0}
+                    _append_profile(profile_jsonl, res)
+                    if fail_on_error:
+                        raise
                 try:
                     next(iterator)
                 except Exception:

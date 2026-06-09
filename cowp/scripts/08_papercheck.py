@@ -30,7 +30,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.cpu_only:
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     cfg = load_config(args.label_config, args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
