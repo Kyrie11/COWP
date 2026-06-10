@@ -157,6 +157,20 @@ def _count_jsonl_rows(path: str | Path | None) -> int | None:
         return sum(1 for line in f if line.strip())
 
 
+def _advance_progress(iterator) -> None:
+    """Advance either a tqdm object or a plain iterator by one processed item."""
+    if hasattr(iterator, "update"):
+        try:
+            iterator.update(1)
+            return
+        except Exception:
+            pass
+    try:
+        next(iterator)
+    except Exception:
+        pass
+
+
 def build_labels_from_proto(
     proto_glob: str | list[str],
     output_dir: str | Path,
@@ -290,16 +304,18 @@ def build_labels_from_proto(
                     res = fut.result()
                 except Exception as exc:
                     res = {"status": "error", "error": repr(exc), "traceback": traceback.format_exc(), "seconds": 0.0}
-                    _append_profile(profile_jsonl, res)
                     if fail_on_error:
+                        _append_profile(profile_jsonl, res)
                         raise
-                try:
-                    next(iterator)
-                except Exception:
-                    pass
+                _advance_progress(iterator)
                 handle_result(res, iterator)
             if limit is not None and count >= limit:
                 stop_submit = True
+                # Do not let a smoke-test limit overshoot by the whole pending queue.
+                # Running tasks may still finish, but queued tasks are cancelled.
+                for pending in list(futures):
+                    if pending.cancel():
+                        futures.remove(pending)
             while len(futures) < max_pending and not stop_submit and submit_one(pool):
                 pass
     return count

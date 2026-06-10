@@ -37,7 +37,7 @@ def main() -> None:
     ap.add_argument("--no-option-preservation", action="store_true")
     args = ap.parse_args()
     if args.cpu_only:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     cfg = load_config(args.label_config, args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
     output_dir = args.output_dir or cfg["outputs"]["labels_dir"]

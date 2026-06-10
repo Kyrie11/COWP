@@ -27,7 +27,7 @@ def main() -> None:
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = ap.parse_args()
     if args.cpu_only:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     cfg = load_config(args.data_config)
     n = build_tensor_cache(
         args.tfexample_glob or cfg["womd"]["tfexample_glob"],

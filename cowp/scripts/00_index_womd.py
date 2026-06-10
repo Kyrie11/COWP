@@ -18,7 +18,7 @@ def main() -> None:
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; indexing is CPU/I/O-bound.")
     args = ap.parse_args()
     if args.cpu_only:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     cfg = load_config(args.data_config)
     proto_glob = args.proto_glob or cfg["womd"]["scenario_proto_glob"]
     output = args.output or cfg["outputs"]["index_jsonl"]

@@ -21,22 +21,53 @@ class UnsafeResult:
     min_distance: float
 
 
+def _center_distance_and_halfdiag(traj_a: np.ndarray, traj_b: np.ndarray, *, inflation: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    t = min(len(traj_a), len(traj_b))
+    if t == 0:
+        return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float32)
+    a = traj_a[:t]
+    b = traj_b[:t]
+    dist = np.linalg.norm(a[:, :2] - b[:, :2], axis=-1)
+    len_a = np.maximum(a[:, 5] + 2.0 * inflation, 0.1)
+    wid_a = np.maximum(a[:, 6] + 2.0 * inflation, 0.1)
+    len_b = np.maximum(b[:, 5] + 2.0 * inflation, 0.1)
+    wid_b = np.maximum(b[:, 6] + 2.0 * inflation, 0.1)
+    halfdiag_sum = 0.5 * np.sqrt(len_a**2 + wid_a**2) + 0.5 * np.sqrt(len_b**2 + wid_b**2)
+    return dist.astype(np.float32, copy=False), halfdiag_sum.astype(np.float32, copy=False)
+
+
 def trajectory_collision(traj_a: np.ndarray, traj_b: np.ndarray, inflation: float = 0.1) -> tuple[bool, np.ndarray]:
     t = min(len(traj_a), len(traj_b))
     mask = np.zeros(t, dtype=bool)
-    for k in range(t):
-        mask[k] = obb_overlap(traj_a[k], traj_b[k], inflation)
+    if t == 0:
+        return False, mask
+    # A bounding-circle gate is exact as a negative test: if center distance is
+    # larger than the sum of inflated half diagonals, OBBs cannot overlap.  This
+    # avoids 80 SAT polygon checks for almost every non-contact pair.
+    center_dist, halfdiag_sum = _center_distance_and_halfdiag(traj_a, traj_b, inflation=inflation)
+    possible = np.where(center_dist <= halfdiag_sum + 1e-6)[0]
+    for k in possible:
+        mask[int(k)] = obb_overlap(traj_a[int(k)], traj_b[int(k)], inflation)
     return bool(np.any(mask)), mask
 
 
 def trajectory_near_miss(traj_a: np.ndarray, traj_b: np.ndarray, threshold: float = 1.0) -> tuple[bool, np.ndarray, float]:
     t = min(len(traj_a), len(traj_b))
     mask = np.zeros(t, dtype=bool)
-    dmin = float("inf")
-    for k in range(t):
-        d = obb_distance(traj_a[k], traj_b[k])
+    if t == 0:
+        return False, mask, float("inf")
+    # Another exact negative gate: polygon distance is at least
+    # center_distance - sum(half_diagonals).  Only the small candidate set can be
+    # within the near-miss threshold, so only those timesteps need exact polygon
+    # distances.
+    center_dist, halfdiag_sum = _center_distance_and_halfdiag(traj_a, traj_b, inflation=0.0)
+    lower_bound = np.maximum(0.0, center_dist - halfdiag_sum)
+    possible = np.where(lower_bound < float(threshold))[0]
+    dmin = float(np.min(lower_bound)) if len(lower_bound) else float("inf")
+    for k in possible:
+        d = obb_distance(traj_a[int(k)], traj_b[int(k)])
         dmin = min(dmin, d)
-        mask[k] = d < threshold
+        mask[int(k)] = d < threshold
     return bool(np.any(mask)), mask, float(dmin)
 
 
