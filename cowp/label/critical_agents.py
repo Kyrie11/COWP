@@ -86,7 +86,21 @@ def select_critical_agents(
         score += 2.0 if shared_conflict else 0.0
         score += 1.5 if rho == PriorityRelation.AGENT_PRIORITY else 0.0
         score += 1.0 if cur_dist < 20.0 else 0.0
-        if score >= float(crit_cfg.get("min_score", 1.5)) or cur_dist < float(crit_cfg.get("max_current_distance_m", 40.0)) or min_dist_future < float(crit_cfg.get("max_future_distance_m", 15.0)):
+
+        # Do not mark every vehicle inside a broad radius as critical.  COWP's
+        # feasibility test is universal over critical agents; overly broad
+        # selection both slows labeling and makes non-coercive candidates vanish
+        # for reasons unrelated to the candidate's actual burden transfer.
+        min_score = float(crit_cfg.get("min_score", 1.5))
+        max_current = float(crit_cfg.get("max_current_distance_m", 40.0))
+        max_future = float(crit_cfg.get("max_future_distance_m", 15.0))
+        always_current = float(crit_cfg.get("always_keep_current_distance_m", 18.0))
+        require_reason = bool(crit_cfg.get("current_distance_requires_future_or_conflict", True))
+        score_hit = score >= min_score
+        future_hit = min_dist_future < max_future
+        current_hit = cur_dist < max_current and (not require_reason or score_hit or future_hit or shared_conflict)
+        very_near_hit = cur_dist < always_current
+        if score_hit or future_hit or shared_conflict or current_hit or very_near_hit:
             scores.append((score, i, cur_dist, min_dist_future, rho))
     scores.sort(key=lambda x: (-x[0], x[2]))
     idx = np.full(max_a, -1, dtype=np.int32)

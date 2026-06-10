@@ -14,7 +14,10 @@ dataset:
 
 limits:
   max_agents: 128
-  max_critical_agents: 8
+  # Keep only the most relevant interaction partners.  The witness condition is
+  # universal over critical agents; filling every slot with merely nearby agents
+  # makes NCF candidates artificially rare and multiplies label-engine cost.
+  max_critical_agents: 6
   max_candidates: 64
   max_natural_alternatives: 24
   max_safe_responses: 32
@@ -24,6 +27,13 @@ limits:
 candidate:
   terminal_speed_offsets_mps: [-4, -2, 0, 2, 4]
   terminal_s_offsets_m: [-15, -8, 0, 8, 15, 25]
+  # Blend terminal speed and terminal progress targets into the acceleration
+  # primitive; without this, terminal_s_offsets_m changes only the utility, not
+  # the geometry, and the lattice collapses to many duplicates.
+  terminal_lattice_speed_position_blend: 0.5
+  dedup_endpoint_tolerance_m: 0.35
+  dedup_speed_tolerance_mps: 0.25
+  dedup_all_macro_types: false
   yield_decel_values_mps2: [-1.0, -2.0, -3.0]
   accelerate_values_mps2: [0.5, 1.0, 1.5]
   stop_margin_to_conflict_m: [2.0, 5.0, 8.0]
@@ -57,6 +67,10 @@ priority:
 critical:
   max_current_distance_m: 40.0
   max_future_distance_m: 15.0
+  # Very nearby agents are always kept; farther agents need either future
+  # proximity, shared conflict, priority, or objects-of-interest evidence.
+  always_keep_current_distance_m: 18.0
+  current_distance_requires_future_or_conflict: true
   min_score: 1.5
   tta_delta_threshold: 3.0
   vehicle_only_main: false
@@ -85,6 +99,12 @@ response:
   response_duration_s: [1.0, 2.0, 3.0]
   emergency_decel_values_mps2: [-6.0, -8.0]
   emergency_reaction_delay_s: [0.0, 0.2, 0.5]
+  # The stored tensor keeps only max_safe_responses anyway.  This cap keeps the
+  # primitive bank source-balanced while avoiding 100+ safety/burden evaluations
+  # for every (ego candidate, critical agent) pair.
+  max_response_primitives_per_agent: 48
+  max_predicted_responses_per_agent: 8
+  max_emergency_responses_per_agent: 4
 
 unsafe:
   collision_inflation_m: 0.1
@@ -166,6 +186,9 @@ diagnostics:
   # for the paper's false-safe / non-coercive supervision setting.
   min_mean_candidate_valid: 12.0
   min_mean_critical_valid: 1.0
+  max_mean_critical_valid: 6.5
+  min_scenes_with_ncf_candidate_ratio: 0.35
+  min_mean_candidate_endpoint_spread_m: 6.0
   target_positive_pair_ratio: [0.02, 0.35]
   target_false_safe_candidate_ratio: [0.05, 0.45]
   target_ncf_candidate_ratio: [0.10, 0.80]

@@ -9,6 +9,56 @@ from cowp.label.burden import compute_burden
 from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged
 
 
+def _subsample_by_source(
+    primitives: list[tuple[np.ndarray, ResponseSource]],
+    cfg: dict,
+) -> list[tuple[np.ndarray, ResponseSource]]:
+    """Keep a bounded but source-balanced response primitive bank.
+
+    Response generation dominates label-engine time because every primitive is
+    checked against every ego candidate and critical agent.  The output tensor
+    stores only max_safe_responses responses, so evaluating 100+ primitives per
+    pair has diminishing returns.  Keep observed/natural responses, a small hard
+    emergency set, and a uniformly sampled optimized lattice.
+    """
+    resp_cfg = cfg.get("response", {})
+    max_total = int(resp_cfg.get("max_response_primitives_per_agent", 48))
+    if max_total <= 0 or len(primitives) <= max_total:
+        return primitives
+
+    pred = [p for p in primitives if p[1] == ResponseSource.PRED]
+    opt = [p for p in primitives if p[1] == ResponseSource.OPT]
+    emg = [p for p in primitives if p[1] == ResponseSource.EMG]
+
+    max_pred = int(resp_cfg.get("max_predicted_responses_per_agent", 8))
+    max_emg = int(resp_cfg.get("max_emergency_responses_per_agent", 4))
+    kept: list[tuple[np.ndarray, ResponseSource]] = []
+    kept.extend(pred[: max(0, min(max_pred, max_total))])
+
+    emg_keep = emg[: max(0, min(max_emg, max_total - len(kept)))]
+    opt_budget = max_total - len(kept) - len(emg_keep)
+    if opt_budget > 0 and opt:
+        if len(opt) <= opt_budget:
+            kept.extend(opt)
+        else:
+            # Uniformly cover acceleration / delay / duration choices rather than
+            # taking only the first part of the nested loops.
+            idx = np.linspace(0, len(opt) - 1, opt_budget, dtype=np.int32)
+            used: set[int] = set()
+            for j in idx.tolist():
+                if j not in used:
+                    kept.append(opt[j])
+                    used.add(j)
+            j = 0
+            while len(kept) < max_total - len(emg_keep) and j < len(opt):
+                if j not in used:
+                    kept.append(opt[j])
+                    used.add(j)
+                j += 1
+    kept.extend(emg_keep)
+    return kept[:max_total]
+
+
 def _response_primitives_for_agent(
     scene: ScenarioData,
     agent_slot: int,
@@ -43,6 +93,7 @@ def _response_primitives_for_agent(
     for decel in resp_cfg.get("emergency_decel_values_mps2", [-6.0, -8.0]):
         for delay in resp_cfg.get("emergency_reaction_delay_s", [0.0, 0.2, 0.5]):
             primitives.append((constant_accel_trajectory(curr, H, dt, accel=float(decel), start_delay_s=float(delay)), ResponseSource.EMG))
+    primitives = _subsample_by_source(primitives, cfg)
     return idx, object_type, nat_ref, primitives
 
 

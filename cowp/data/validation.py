@@ -242,6 +242,10 @@ def _make_quality_report(stats: dict[str, object], cfg: dict) -> dict[str, objec
     add_check("validation_error_files", int(stats.get("validation_error_files", 0)), int(stats.get("validation_error_files", 0)) == 0, "0", "error")
     add_check("mean_candidate_valid", float(stats.get("mean_candidate_valid", 0.0)), float(stats.get("mean_candidate_valid", 0.0)) >= float(diag_cfg.get("min_mean_candidate_valid", 12.0)), f">= {diag_cfg.get('min_mean_candidate_valid', 12.0)}")
     add_check("mean_critical_valid", float(stats.get("mean_critical_valid", 0.0)), float(stats.get("mean_critical_valid", 0.0)) >= float(diag_cfg.get("min_mean_critical_valid", 1.0)), f">= {diag_cfg.get('min_mean_critical_valid', 1.0)}")
+    if "max_mean_critical_valid" in diag_cfg:
+        add_check("mean_critical_valid_upper", float(stats.get("mean_critical_valid", 0.0)), float(stats.get("mean_critical_valid", 0.0)) <= float(diag_cfg.get("max_mean_critical_valid", 6.5)), f"<= {diag_cfg.get('max_mean_critical_valid', 6.5)}")
+    add_check("scenes_with_ncf_candidate_ratio", float(stats.get("scenes_with_ncf_candidate_ratio", 0.0)), float(stats.get("scenes_with_ncf_candidate_ratio", 0.0)) >= float(diag_cfg.get("min_scenes_with_ncf_candidate_ratio", 0.0)), f">= {diag_cfg.get('min_scenes_with_ncf_candidate_ratio', 0.0)}")
+    add_check("mean_candidate_endpoint_spread_m", float(stats.get("mean_candidate_endpoint_spread_m", 0.0)), float(stats.get("mean_candidate_endpoint_spread_m", 0.0)) >= float(diag_cfg.get("min_mean_candidate_endpoint_spread_m", 0.0)), f">= {diag_cfg.get('min_mean_candidate_endpoint_spread_m', 0.0)}")
     pos_lo, pos_hi = diag_cfg.get("target_positive_pair_ratio", [0.02, 0.35])
     add_check("positive_pair_ratio", float(stats.get("positive_pair_ratio", 0.0)), float(pos_lo) <= float(stats.get("positive_pair_ratio", 0.0)) <= float(pos_hi), f"{pos_lo} - {pos_hi}")
     fs_lo, fs_hi = diag_cfg.get("target_false_safe_candidate_ratio", [0.05, 0.45])
@@ -368,6 +372,7 @@ def diagnose_dataset(
         "scenes_with_positive_witness": int((df["positive_pairs"] > 0).sum()) if not df.empty else 0,
         "scenes_with_false_safe_candidate": int((df["false_safe_candidates"] > 0).sum()) if not df.empty else 0,
         "scenes_with_ncf_candidate": int((df["ncf_candidates"] > 0).sum()) if not df.empty else 0,
+        "scenes_with_ncf_candidate_ratio": float((df["ncf_candidates"] > 0).mean()) if not df.empty else 0.0,
         "mean_candidate_valid": _mean_col(df, "candidate_valid"),
         "mean_critical_valid": _mean_col(df, "critical_valid"),
         "mean_valid_pairs": _mean_col(df, "valid_pairs"),

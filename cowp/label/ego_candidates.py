@@ -43,11 +43,32 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     is_logged: list[bool] = []
     is_neutral: list[bool] = []
 
+    def _near_duplicate(traj: np.ndarray, m: MacroType) -> bool:
+        """Avoid wasting candidate slots on nearly identical keep-lane endings."""
+        tol_m = float(cand_cfg.get("dedup_endpoint_tolerance_m", 0.35))
+        tol_v = float(cand_cfg.get("dedup_speed_tolerance_mps", 0.25))
+        if tol_m <= 0.0:
+            return False
+        # Preserve timing diversity for lane changes, stops and special macros by
+        # default.  The duplicate issue is mainly the terminal keep-lane lattice.
+        if not bool(cand_cfg.get("dedup_all_macro_types", False)) and m != MacroType.KEEP_LANE:
+            return False
+        end = traj[-1, :2]
+        v_end = float(np.linalg.norm(traj[-1, 3:5]))
+        for old_traj, old_macro in zip(candidates, macro):
+            if int(old_macro) != int(m):
+                continue
+            if float(np.linalg.norm(old_traj[-1, :2] - end)) <= tol_m:
+                old_v = float(np.linalg.norm(old_traj[-1, 3:5]))
+                if abs(old_v - v_end) <= tol_v:
+                    return True
+        return False
+
     def add(traj: np.ndarray, m: MacroType, util: float = 0.0, logged: bool = False, neutral: bool = False):
         if len(candidates) >= K:
             return
         traj = traj[:horizon].astype(np.float32)
-        if len(traj) == horizon and _candidate_valid(traj, cfg):
+        if len(traj) == horizon and _candidate_valid(traj, cfg) and not _near_duplicate(traj, m):
             candidates.append(traj)
             macro.append(int(m))
             speed = np.linalg.norm(traj[:, 3:5], axis=-1)
@@ -86,13 +107,19 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     add(smooth_stop_trajectory(ego_cur, horizon, dt, decel=-1.0, creep_speed=1.0), MacroType.CREEP, util=1.0)
     add(smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.0, creep_speed=0.0), MacroType.NEUTRAL_EGO, util=0.8, neutral=True)
 
-    # Fill remaining slots with terminal speed/position lattice variants.
+    # Fill remaining slots with terminal speed/position lattice variants.  Both
+    # terminal speed and progress offsets affect the primitive geometry; otherwise
+    # s_off only changes utility and the lattice collapses to duplicate paths.
+    T_sec = max(horizon * dt, 1e-3)
     for v_off in cand_cfg.get("terminal_speed_offsets_mps", [-4, -2, 0, 2, 4]):
         for s_off in cand_cfg.get("terminal_s_offsets_m", [-15, -8, 0, 8, 15, 25]):
             if len(candidates) >= K:
                 break
-            accel = float(np.clip(v_off / max(horizon * dt, 1e-3), -4.0, 2.5))
-            util = -0.02 * float(s_off)
+            accel_from_v = float(v_off) / T_sec
+            accel_from_s = 2.0 * float(s_off) / max(T_sec * T_sec, 1e-3)
+            blend = float(cand_cfg.get("terminal_lattice_speed_position_blend", 0.5))
+            accel = float(np.clip(blend * accel_from_v + (1.0 - blend) * accel_from_s, -4.0, 2.5))
+            util = -0.02 * float(s_off) + 0.03 * max(0.0, -float(v_off))
             add(constant_accel_trajectory(ego_cur, horizon, dt, accel=accel), MacroType.KEEP_LANE, util=util)
     traj = np.zeros((K, horizon, 7), dtype=np.float32)
     valid = np.zeros(K, dtype=bool)
@@ -114,5 +141,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         "ego_utility_prior": utility_arr,
         "is_logged": is_logged_arr,
         "is_neutral": is_neutral_arr,
-        "topology_id": np.zeros(K, dtype=np.int32),
+        # Use macro type as a coarse topology surrogate.  Downstream diagnostics
+        # should not see a degenerate single-topology candidate bank.
+        "topology_id": macro_arr.copy(),
     }
