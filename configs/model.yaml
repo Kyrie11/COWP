@@ -1,5 +1,6 @@
 model:
   d_state: 11
+  history_steps: 11
   d_model: 128
   num_heads: 4
   num_layers: 3

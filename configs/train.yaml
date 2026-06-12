@@ -5,7 +5,7 @@ train:
   lr: 0.0003
   weight_decay: 0.0001
   num_workers: 4
-  stage: witness
+  stage: all
   device: auto
   positive_pair_oversampling: true
   max_positive_pairs_per_scene: 8
@@ -16,14 +16,20 @@ loss_weights:
   neutral: 0.5
   priority_rule: 0.5
   diversity: 0.05
+  natural_traj_l1: 1.0
+  natural_mode_ce: 0.5
   response_safe_bce: 1.0
   response_low_bce: 1.0
   response_burden_l1: 0.5
+  response_components_l1: 0.25
+  response_traj_l1: 0.1
   witness_exist: 2.0
   witness_token: 1.0
   witness_burden: 0.5
+  witness_burden_components: 0.25
   witness_conflict: 0.3
   witness_opr: 0.5
   imitation: 1.0
   ranking: 1.0
   candidate_ncf_cls: 1.0
+  candidate_false_safe_cls: 0.5

@@ -10,6 +10,27 @@ from cowp.data.build_cache import build_labels_from_proto
 from cowp.data.validation import diagnose_dataset
 
 
+def _read_id_file(path: str | None) -> set[str] | None:
+    if not path:
+        return None
+    ids: set[str] = set()
+    with Path(path).open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+                sid = row.get("scenario_id", row.get("id"))
+                if sid is not None:
+                    ids.add(str(sid))
+                    continue
+            except Exception:
+                pass
+            ids.add(line.split()[0])
+    return ids
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build COWP counterfactual labels from WOMD Scenario protos.")
     ap.add_argument("--data-config", default="configs/data.yaml")
@@ -23,6 +44,8 @@ def main() -> None:
     ap.add_argument("--no-compress", action="store_true", help="Use np.savez instead of np.savez_compressed for faster label writes.")
     ap.add_argument("--profile-jsonl", default=None, help="Optional per-scenario build timing JSONL.")
     ap.add_argument("--index-jsonl", default=None, help="Optional Scenario index JSONL used only to display a truthful progress total.")
+    ap.add_argument("--allow-scenario-ids", default=None, help="Optional txt/jsonl scenario-id allowlist; other scenarios are filtered before label construction.")
+    ap.add_argument("--exclude-scenario-ids", default=None, help="Optional txt/jsonl scenario-id blocklist, used to prevent train/val leakage.")
     ap.add_argument("--start-method", default=None, choices=["fork", "forkserver", "spawn"], help="Multiprocessing start method. Use spawn or forkserver to avoid forking after TensorFlow init.")
     ap.add_argument("--max-pending-multiplier", type=int, default=4, help="Queue this many tasks per worker to hide slow-scenario stragglers.")
     ap.add_argument("--continue-on-error", action="store_true", help="Log worker exceptions to profile JSONL and continue instead of failing immediately.")
@@ -63,6 +86,8 @@ def main() -> None:
         start_method=args.start_method,
         max_pending_multiplier=args.max_pending_multiplier,
         fail_on_error=not args.continue_on_error,
+        allow_scenario_ids=_read_id_file(args.allow_scenario_ids),
+        exclude_scenario_ids=_read_id_file(args.exclude_scenario_ids),
     )
     print(f"Built {n} label files in {output_dir}")
     diag = args.diagnostics_dir or cfg["outputs"]["diagnostics_dir"]

@@ -9,8 +9,56 @@ import numpy as np
 
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
-from cowp.waymax_eval.metrics_cowp import metrics_from_labels
+from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality
 from cowp.waymax_eval.metrics_standard import waymax_metric_dict
+
+
+def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
+    out: dict[str, np.ndarray] = {}
+    for k, v in batch.items():
+        if k.startswith("cowp/") or k.startswith("map/") or k.startswith("scenario/") or k.startswith("dataset/"):
+            try:
+                out[k] = v[i].detach().cpu().numpy()
+            except Exception:
+                pass
+    return out
+
+
+def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5) -> tuple[list[int], list[np.ndarray]]:
+    import torch
+
+    scores = pred["planner_score"].detach()
+    witness_prob = torch.sigmoid(pred["witness"]["exist_logits"]).detach()
+    opr = pred["witness"]["opr"].detach()
+    cand_valid = batch["cowp/candidates/valid"].bool()
+    conventional = batch.get("cowp/candidates/conventional_safe", cand_valid).bool()
+    # Learned COWP selection: conventional geometric safety remains a hard rule,
+    # but witness rejection and ranking use model predictions rather than label certificates.
+    predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
+    accepted = cand_valid & conventional & ~predicted_bad
+    # Option preservation is a soft predicted gate; do not discard all candidates solely
+    # due to a noisy OPR estimate in early checkpoints.
+    accepted = accepted & (opr.min(dim=-1).values >= 0.05)
+    selected: list[int] = []
+    masks: list[np.ndarray] = []
+    B = scores.shape[0]
+    for b in range(B):
+        mask = accepted[b]
+        if mask.any():
+            masked = torch.where(mask, scores[b], torch.full_like(scores[b], float("inf")))
+            selected.append(int(torch.argmin(masked).item()))
+        else:
+            fallback = cand_valid[b] & conventional[b]
+            if fallback.any():
+                masked = torch.where(fallback, scores[b], torch.full_like(scores[b], float("inf")))
+                selected.append(int(torch.argmin(masked).item()))
+            elif cand_valid[b].any():
+                masked = torch.where(cand_valid[b], scores[b], torch.full_like(scores[b], float("inf")))
+                selected.append(int(torch.argmin(masked).item()))
+            else:
+                selected.append(-1)
+        masks.append(mask.detach().cpu().numpy())
+    return selected, masks
 
 
 def offline_candidate_eval(labels_dir: str | Path, cfg: dict, method: str = "cowp", progress: bool = True) -> dict[str, float]:
@@ -28,6 +76,67 @@ def offline_candidate_eval(labels_dir: str | Path, cfg: dict, method: str = "cow
         if hasattr(iterator, "set_postfix"):
             iterator.set_postfix(selected=decision.candidate_index, reason=decision.reason[:24], refresh=True)
     return metrics_from_labels(selected, labels)
+
+
+def learned_offline_candidate_eval(
+    cache_dir: str | Path,
+    checkpoint: str | Path,
+    cfg: dict,
+    *,
+    batch_size: int = 8,
+    device: str = "auto",
+    witness_threshold: float = 0.5,
+    progress: bool = True,
+) -> dict[str, object]:
+    import torch
+    from torch.utils.data import DataLoader
+
+    from cowp.data.dataset import TorchCOWPDataset, collate_torch
+    from cowp.models.cowp_model import COWPModel
+
+    dev = torch.device("cuda" if device == "auto" and torch.cuda.is_available() else ("cpu" if device == "auto" else device))
+    ckpt = torch.load(checkpoint, map_location=dev)
+    model_cfg = ckpt.get("cfg", cfg)
+    model = COWPModel(model_cfg).to(dev)
+    model.load_state_dict(ckpt["model"])
+    model.eval()
+
+    ds = TorchCOWPDataset(cache_dir)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=collate_torch)
+    labels: list[dict[str, np.ndarray]] = []
+    selected: list[int] = []
+    witness_rows: list[dict[str, float]] = []
+    iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc="Learned offline COWP eval", unit="batch")
+    with torch.no_grad():
+        for batch in iterator:
+            batch = {k: v.to(dev) for k, v in batch.items() if torch.is_tensor(v)}
+            pred = model(batch)
+            batch_selected, _ = _select_from_learned(batch, pred, witness_threshold=witness_threshold)
+            selected.extend(batch_selected)
+            B = len(batch_selected)
+            for i in range(B):
+                labels.append(_label_from_batch_item(batch, i))
+            cand_mask = batch["cowp/candidates/valid"].bool()
+            crit_mask = batch["cowp/critical/valid"].bool()
+            pair_mask = (cand_mask[:, :, None] & crit_mask[:, None, :]).detach().cpu().numpy()
+            pred_exists = (torch.sigmoid(pred["witness"]["exist_logits"]) >= witness_threshold).detach().cpu().numpy()
+            pred_token = pred["witness"]["token_logits"].argmax(dim=-1).detach().cpu().numpy()
+            pred_interval = pred["witness"]["conflict_interval"].round().detach().cpu().numpy()
+            gt_exists = batch["cowp/witness/exists"].bool().detach().cpu().numpy()
+            gt_token = batch["cowp/witness/token"].long().detach().cpu().numpy()
+            gt_interval = batch["cowp/witness/conflict_interval"].detach().cpu().numpy()
+            for i in range(B):
+                witness_rows.append(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
+            if hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(done=len(selected), last=batch_selected[-1] if batch_selected else -1, refresh=True)
+    metrics = metrics_from_labels(selected, labels)
+    if witness_rows:
+        keys = sorted(witness_rows[0])
+        metrics.update({f"WitnessQuality/{k}": float(np.mean([r[k] for r in witness_rows])) for k in keys})
+    metrics["num_scenes"] = len(selected)
+    metrics["mode"] = "learned_offline"
+    metrics["witness_threshold"] = float(witness_threshold)
+    return metrics
 
 
 def import_policy_fn(spec: str) -> Callable:

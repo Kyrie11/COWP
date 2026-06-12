@@ -63,6 +63,8 @@ def _build_one_label_from_raw(
     collect_scene_metadata: bool,
     skip_existing: bool,
     compress: bool,
+    allow_scenario_ids: set[str] | None = None,
+    exclude_scenario_ids: set[str] | None = None,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
     timings: dict[str, float] = {}
@@ -73,6 +75,11 @@ def _build_one_label_from_raw(
     scenario.ParseFromString(raw)
     sid = str(scenario.scenario_id)
     timings["parse_proto_s"] = time.perf_counter() - t
+
+    if allow_scenario_ids is not None and sid not in allow_scenario_ids:
+        return {"status": "filtered", "scenario_id": sid, "filter_reason": "not_in_allow_scenario_ids", "seconds": time.perf_counter() - t0, "timings": timings}
+    if exclude_scenario_ids is not None and sid in exclude_scenario_ids:
+        return {"status": "filtered", "scenario_id": sid, "filter_reason": "in_exclude_scenario_ids", "seconds": time.perf_counter() - t0, "timings": timings}
 
     label_path = Path(output_dir) / f"{sid}.npz"
     if skip_existing and label_path.exists():
@@ -187,6 +194,8 @@ def build_labels_from_proto(
     start_method: str | None = None,
     max_pending_multiplier: int = 4,
     fail_on_error: bool = True,
+    allow_scenario_ids: set[str] | None = None,
+    exclude_scenario_ids: set[str] | None = None,
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -250,6 +259,8 @@ def build_labels_from_proto(
                 collect_scene_metadata,
                 skip_existing,
                 compress,
+                allow_scenario_ids,
+                exclude_scenario_ids,
             )
             handle_result(res, iterator)
             if limit is not None and count >= limit:
@@ -289,6 +300,8 @@ def build_labels_from_proto(
             collect_scene_metadata,
             skip_existing,
             compress,
+            allow_scenario_ids,
+            exclude_scenario_ids,
         )
         futures.add(fut)
         return True
