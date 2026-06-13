@@ -7,10 +7,28 @@ from cowp.core.config import load_config
 from cowp.data.build_cache import build_tensor_cache
 
 
+def _glob_for_split(cfg: dict, split: str | None, explicit_glob: str | None) -> str:
+    """Resolve the WOMD tf.Example glob without silently mixing train/val splits."""
+    if explicit_glob:
+        return explicit_glob
+    split_key = (split or "train").lower()
+    womd = cfg.get("womd", {})
+    if split_key in ("train", "training"):
+        return womd["tfexample_glob"]
+    if split_key in ("val", "valid", "validation"):
+        return womd.get("validation_tfexample_glob") or womd["tfexample_glob"]
+    if split_key == "test":
+        if "test_tfexample_glob" not in womd:
+            raise KeyError("--split test was requested but womd.test_tfexample_glob is not configured")
+        return womd["test_tfexample_glob"]
+    raise ValueError(f"Unknown split {split!r}; use train, val/validation, or test")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Merge WOMD tf.Example tensors with COWP proto-derived labels into NPZ tensor cache.")
     ap.add_argument("--data-config", default="configs/data.yaml")
-    ap.add_argument("--tfexample-glob", default=None)
+    ap.add_argument("--split", choices=["train", "training", "val", "valid", "validation", "test"], default="train", help="Which WOMD tf.Example split to use when --tfexample-glob is omitted. Default: train.")
+    ap.add_argument("--tfexample-glob", default=None, help="Explicit WOMD tf.Example glob. Overrides --split and data config defaults.")
     ap.add_argument("--labels-dir", default=None)
     ap.add_argument("--output-dir", default=None)
     ap.add_argument("--limit", type=int, default=None)
@@ -29,10 +47,14 @@ def main() -> None:
     if args.cpu_only:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
     cfg = load_config(args.data_config)
+    tfexample_glob = _glob_for_split(cfg, args.split, args.tfexample_glob)
+    labels_dir = args.labels_dir or cfg["outputs"]["labels_dir"]
+    output_dir = args.output_dir or cfg["outputs"]["tensor_cache_dir"]
+    print(f"Tensor cache split={args.split}; tfexample_glob={tfexample_glob}; labels_dir={labels_dir}; output_dir={output_dir}")
     n = build_tensor_cache(
-        args.tfexample_glob or cfg["womd"]["tfexample_glob"],
-        args.labels_dir or cfg["outputs"]["labels_dir"],
-        args.output_dir or cfg["outputs"]["tensor_cache_dir"],
+        tfexample_glob,
+        labels_dir,
+        output_dir,
         limit=args.limit,
         progress=not args.no_progress,
         verify_cache=args.verify_cache,

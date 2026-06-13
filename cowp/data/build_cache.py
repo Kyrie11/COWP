@@ -381,9 +381,11 @@ def build_tfexample_id_index(
     return {"index": str(output_jsonl), "files": len(files), "scanned": scanned, "bad_records": bad_records}
 
 
-def _files_for_label_ids_from_tfexample_index(index_jsonl: str | Path, label_ids: set[str]) -> tuple[list[str], dict[str, int]]:
+def _files_for_label_ids_from_tfexample_index(index_jsonl: str | Path, label_ids: set[str]) -> tuple[list[str], dict[str, object]]:
     files: set[str] = set()
     matched_ids: set[str] = set()
+    sample_indexed_ids: list[str] = []
+    sample_indexed_files: list[str] = []
     total_rows = 0
     index_jsonl = Path(index_jsonl)
     with index_jsonl.open("r", encoding="utf-8") as f:
@@ -393,10 +395,21 @@ def _files_for_label_ids_from_tfexample_index(index_jsonl: str | Path, label_ids
             total_rows += 1
             row = json.loads(line)
             sid = row.get("scenario_id")
+            if sid is not None and len(sample_indexed_ids) < 5:
+                sample_indexed_ids.append(str(sid))
+            fpath = row.get("file")
+            if fpath is not None and len(sample_indexed_files) < 3 and str(fpath) not in sample_indexed_files:
+                sample_indexed_files.append(str(fpath))
             if sid in label_ids:
                 matched_ids.add(str(sid))
                 files.add(str(row.get("file")))
-    stats = {"indexed_rows": total_rows, "indexed_label_matches": len(matched_ids), "indexed_files": len(files)}
+    stats: dict[str, object] = {
+        "indexed_rows": total_rows,
+        "indexed_label_matches": len(matched_ids),
+        "indexed_files": len(files),
+        "sample_indexed_ids": sample_indexed_ids,
+        "sample_indexed_files": sample_indexed_files,
+    }
     return sorted(files), stats
 
 
@@ -441,9 +454,14 @@ def build_tensor_cache(
                 )
             else:
                 preview = ", ".join(sorted(label_paths)[:5])
+                indexed_preview = ", ".join(str(x) for x in index_stats.get("sample_indexed_ids", [])[:5])
+                indexed_files_preview = ", ".join(Path(str(x)).name for x in index_stats.get("sample_indexed_files", [])[:3])
                 raise RuntimeError(
                     "The tf.Example id index contains no rows matching the current label ids. "
-                    f"First label ids: {preview}. This usually means the labels and tf.Example glob use different WOMD split/version."
+                    f"First label ids: {preview}. First indexed tf.Example ids: {indexed_preview}. "
+                    f"Indexed files preview: {indexed_files_preview}. "
+                    "This usually means the labels and tf.Example glob use different WOMD split/version; "
+                    "for validation labels, run 02_build_tensor_cache.py with --split validation or an explicit validation --tfexample-glob."
                 )
     count = 0
     scanned = 0
