@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cowp.core.constants import MechanismToken, PriorityRelation
+from cowp.core.constants import MechanismToken, NaturalSource, PriorityRelation
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
@@ -56,6 +56,8 @@ def certify_witnesses(
     burden_components = np.zeros((K, A, 6), dtype=np.float32)
     min_safe_burden = np.full((K, A), np.inf, dtype=np.float32)
     natural_conflict_mass = np.zeros((K, A), dtype=np.float32)
+    natural_conflict_mass_by_source = np.zeros((K, A, 4), dtype=np.float32)
+    low_safe_mass_by_source = np.zeros((K, A, 4), dtype=np.float32)
     opr = np.ones((K, A), dtype=np.float32)
     c_i = np.zeros((K, A), dtype=np.float32)
     conflict_interval = np.full((K, A, 2), -1, dtype=np.int32)
@@ -100,11 +102,15 @@ def certify_witnesses(
                 low_neu = float(natural["burden_neutral"][a, m]) <= beta
                 unsafe = unsafe_between(ego, nat, cfg, agent_type=object_type)
                 b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat)
+                src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, m])
+                src = src if 0 <= src < 4 else int(NaturalSource.PAD)
                 if low_neu and unsafe.unsafe:
                     conflict_mass += w
+                    natural_conflict_mass_by_source[k, a, src] += w
                     interval_masks.append(unsafe.event_mask)
                 if low_neu and (not unsafe.unsafe) and b_under <= beta:
                     low_safe_mass += w
+                    low_safe_mass_by_source[k, a, src] += w
             natural_conflict_mass[k, a] = conflict_mass
             opr[k, a] = low_safe_mass if use_option else 1.0
             option_loss = max(0.0, 1.0 - float(opr[k, a])) if use_option else 0.0
@@ -158,6 +164,8 @@ def certify_witnesses(
         "burden_components": burden_components,
         "min_safe_burden": min_safe_burden,
         "natural_conflict_mass": natural_conflict_mass,
+        "natural_conflict_mass_by_source": natural_conflict_mass_by_source,
+        "low_safe_mass_by_source": low_safe_mass_by_source,
         "opr": opr,
         "c_i": c_i,
         "conflict_interval": conflict_interval,

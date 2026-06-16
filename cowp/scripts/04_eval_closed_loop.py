@@ -6,6 +6,7 @@ from pathlib import Path
 
 from cowp.core.config import load_config
 from cowp.waymax_eval.rollout import import_policy_fn, learned_offline_candidate_eval, offline_candidate_eval, waymax_closed_loop_rollout
+from cowp.waymax_eval.policy_wrapper import make_cowp_policy
 
 
 def _json_safe(obj):
@@ -33,7 +34,8 @@ def main() -> None:
     ap.add_argument("--witness-threshold", type=float, default=0.5)
     ap.add_argument("--method", default="cowp")
     ap.add_argument("--mode", choices=["offline", "learned_offline", "waymax"], default="offline")
-    ap.add_argument("--policy-fn", default=None, help="For --mode waymax: Python callable spec 'module:function' returning Waymax actions.")
+    ap.add_argument("--policy-fn", default=None, help="For --mode waymax: optional Python callable spec 'module:function' returning Waymax actions. If omitted with --checkpoint, a COWP checkpoint policy is used.")
+    ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="delta_xy_yaw")
     ap.add_argument("--num-scenarios", type=int, default=None)
     ap.add_argument("--rollout-horizon-steps", type=int, default=None)
     ap.add_argument("--waymax-standard-metrics", action="store_true")
@@ -59,9 +61,18 @@ def main() -> None:
         )
         payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint}
     else:
-        if not args.policy_fn:
-            raise ValueError("--mode waymax requires --policy-fn module:function so the rollout can produce Waymax actions.")
-        policy_fn = import_policy_fn(args.policy_fn)
+        if args.policy_fn:
+            policy_fn = import_policy_fn(args.policy_fn)
+        elif args.checkpoint:
+            policy_fn = make_cowp_policy(
+                args.checkpoint,
+                cfg,
+                device=args.device,
+                witness_threshold=args.witness_threshold,
+                action_mode=args.waymax_action_mode,
+            )
+        else:
+            raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")
         horizon = args.rollout_horizon_steps or int(cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
         rollouts = waymax_closed_loop_rollout(
             cfg,
@@ -74,6 +85,8 @@ def main() -> None:
         payload = {
             "mode": "waymax",
             "method": args.method,
+            "checkpoint": args.checkpoint,
+            "policy_fn": args.policy_fn,
             "num_rollouts": len(rollouts),
             "steps": [int(x.get("steps", 0)) for x in rollouts],
         }

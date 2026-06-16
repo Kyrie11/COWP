@@ -3,34 +3,121 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from cowp.core.constants import NaturalSource
+
 
 def masked_mean(value: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     mask_f = mask.float()
     return (value * mask_f).sum() / mask_f.sum().clamp_min(eps)
 
 
-def focal_bce_with_logits(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
+def _focal_bce_values(logits: torch.Tensor, target: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
     target = target.float()
     bce = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
     p = torch.sigmoid(logits)
     pt = torch.where(target > 0.5, p, 1 - p)
     w = torch.where(target > 0.5, alpha, 1 - alpha) * (1 - pt).pow(gamma)
-    return masked_mean(bce * w, mask)
+    return bce * w
+
+
+def focal_bce_with_logits(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
+    return masked_mean(_focal_bce_values(logits, target, gamma=gamma, alpha=alpha), mask)
+
+
+def pair_mined_focal_bce_with_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    gamma: float = 2.0,
+    alpha: float = 0.25,
+    max_pos_per_scene: int = 16,
+    max_neg_per_scene: int = 48,
+    neg_pos_ratio: int = 3,
+    min_neg_per_scene: int = 8,
+) -> torch.Tensor:
+    """Focal BCE with pair-level positive / hard-negative mining.
+
+    Scene-level oversampling helps put witness-positive scenes into a batch, but
+    most candidate-agent pairs inside those scenes are still easy negatives.  The
+    paper's witness objective is pair-level, so we keep positives and the hardest
+    negatives per scene according to the current focal loss.
+    """
+    values = _focal_bce_values(logits, target.float(), gamma=gamma, alpha=alpha)
+    keep = torch.zeros_like(mask, dtype=torch.bool)
+    B = values.shape[0]
+    flat_values = values.reshape(B, -1)
+    flat_mask = mask.reshape(B, -1).bool()
+    flat_target = target.reshape(B, -1).bool()
+    flat_keep = keep.reshape(B, -1)
+    for b in range(B):
+        pos = torch.where(flat_mask[b] & flat_target[b])[0]
+        neg = torch.where(flat_mask[b] & ~flat_target[b])[0]
+        if pos.numel() > 0:
+            if max_pos_per_scene > 0 and pos.numel() > max_pos_per_scene:
+                _, top = torch.topk(flat_values[b, pos], k=max_pos_per_scene)
+                pos = pos[top]
+            flat_keep[b, pos] = True
+        neg_budget = int(max(min_neg_per_scene, neg_pos_ratio * max(int(pos.numel()), 1)))
+        if max_neg_per_scene > 0:
+            neg_budget = min(neg_budget, max_neg_per_scene)
+        neg_budget = min(neg_budget, int(neg.numel()))
+        if neg_budget > 0:
+            _, top = torch.topk(flat_values[b, neg], k=neg_budget)
+            flat_keep[b, neg[top]] = True
+    if keep.any():
+        return values[keep].mean()
+    return masked_mean(values, mask)
+
+
+def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
+    for v in pred.values():
+        if torch.is_tensor(v):
+            return v.sum() * 0.0
+    raise ValueError("prediction dict contains no tensors")
+
+
+def _trajectory_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Tensor:
+    return torch.linalg.norm(pred_traj[..., :2] - gt_traj[..., :2], dim=-1).mean(dim=-1)
+
+
+def _branch_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int) -> torch.Tensor:
+    branch_gt = valid & (source == int(branch))
+    if not branch_gt.any():
+        return pred_traj.sum() * 0.0
+    # Pairwise ADE [B,A,M_pred,M_gt].  This is small for the configured K/A/M and
+    # avoids binding the decoder to a fixed arbitrary label ordering.
+    d = torch.linalg.norm(pred_traj[:, :, :, None, :, :2] - gt_traj[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
+    d_min = d.min(dim=2).values
+    return masked_mean(d_min, branch_gt)
+
+
+def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float = 4.0) -> torch.Tensor:
+    B, A, M = pred_traj.shape[:3]
+    if M <= 1 or not crit_mask.any():
+        return pred_traj.sum() * 0.0
+    xy = pred_traj[..., :2]
+    d = torch.linalg.norm(xy[:, :, :, None, :, :] - xy[:, :, None, :, :, :], dim=-1).mean(dim=-1)
+    eye = torch.eye(M, device=pred_traj.device, dtype=torch.bool)[None, None]
+    pair_mask = crit_mask[:, :, None, None] & ~eye
+    collapse = torch.exp(-d / max(float(tau), 1e-6))
+    return masked_mean(collapse, pair_mask)
 
 
 def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
-    """Supervise the learned natural-alternative branch.
+    """Supervise natural alternatives with branch-aware losses.
 
-    Label construction stores an ordered set of plausible uncoerced futures and a
-    normalized mixture weight for every critical agent.  We supervise both the
-    modal trajectories and the mixture logits.  This makes the branch trainable
-    instead of being an unused decoder during the witness/planner stages.
+    Terms implemented here mirror the paper appendix:
+    branch source classification, branch-specific minADE, priority preservation,
+    neutral-branch consistency, and diversity/coverage regularization.
     """
     valid = batch["cowp/natural/valid"].bool()
     crit = batch["cowp/critical/valid"].bool()
     mask = valid & crit[:, :, None]
     if mask.any():
-        traj_l1 = torch.abs(pred["traj"] - batch["cowp/natural/traj"].float()).mean(dim=(-1, -2))
+        gt_traj = batch["cowp/natural/traj"].float()
+        gt_source = batch["cowp/natural/source"].long().clamp_min(0)
+        traj_l1 = torch.abs(pred["traj"] - gt_traj).mean(dim=(-1, -2))
         traj = masked_mean(traj_l1, mask)
         logits = pred["logits"]
         target_w = batch["cowp/natural/weight"].float() * mask.float()
@@ -38,11 +125,67 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         logp = F.log_softmax(logits, dim=-1)
         kl = -(target_w * logp).sum(dim=-1)
         mode = masked_mean(kl, crit & mask.any(dim=-1))
+
+        if "source_logits" in pred:
+            source_ce = F.cross_entropy(pred["source_logits"][mask], gt_source[mask], reduction="mean")
+        else:
+            source_ce = pred["traj"].sum() * 0.0
+        if "priority_logits" in pred:
+            priority = F.binary_cross_entropy_with_logits(
+                pred["priority_logits"],
+                batch["cowp/natural/priority_preserved"].float(),
+                reduction="none",
+            )
+            priority_loss = masked_mean(priority, mask)
+        else:
+            priority_loss = pred["traj"].sum() * 0.0
+
+        obs_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.OBS))
+        neu_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.NEU))
+        prio_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.PRIO))
+        branch_minade = (obs_minade + neu_minade + prio_minade) / 3.0
+
+        # Neutral consistency compares source-probability weighted predicted neutral
+        # mean with the label neutral mean for each critical agent.
+        neu_gt_mask = mask & (gt_source == int(NaturalSource.NEU))
+        if neu_gt_mask.any() and "source_logits" in pred:
+            prob_neu = F.softmax(pred["source_logits"], dim=-1)[..., int(NaturalSource.NEU)] * crit[:, :, None].float()
+            pred_mu = (pred["traj"] * prob_neu[..., None, None]).sum(dim=2) / prob_neu.sum(dim=2).clamp_min(1e-6)[..., None, None]
+            gt_w = batch["cowp/natural/weight"].float() * neu_gt_mask.float()
+            gt_mu = (gt_traj * gt_w[..., None, None]).sum(dim=2) / gt_w.sum(dim=2).clamp_min(1e-6)[..., None, None]
+            agent_has_neu = neu_gt_mask.any(dim=-1)
+            neu_cons = masked_mean(_trajectory_ade(pred_mu, gt_mu), agent_has_neu)
+        else:
+            neu_cons = pred["traj"].sum() * 0.0
+        div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
     else:
         traj = pred["traj"].sum() * 0.0
-        mode = pred["logits"].sum() * 0.0
-    total = weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj + weights.get("natural_mode_ce", weights.get("neutral", 0.5)) * mode
-    return {"loss": total, "traj": traj, "mode": mode}
+        mode = pred.get("logits", pred["traj"]).sum() * 0.0
+        source_ce = priority_loss = branch_minade = neu_cons = div = pred["traj"].sum() * 0.0
+        obs_minade = neu_minade = prio_minade = pred["traj"].sum() * 0.0
+
+    total = (
+        weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj
+        + weights.get("natural_mode_ce", 0.5) * mode
+        + weights.get("branch_source_ce", 0.4) * source_ce
+        + weights.get("branch_minade", 0.7) * branch_minade
+        + weights.get("priority_preservation", 0.4) * priority_loss
+        + weights.get("neutral_consistency", 0.3) * neu_cons
+        + weights.get("diversity_loss", weights.get("diversity", 0.05)) * div
+    )
+    return {
+        "loss": total,
+        "traj": traj,
+        "mode": mode,
+        "source": source_ce,
+        "priority": priority_loss,
+        "branch_minade": branch_minade,
+        "obs_minade": obs_minade,
+        "neutral_minade": neu_minade,
+        "prio_minade": prio_minade,
+        "neutral_consistency": neu_cons,
+        "diversity": div,
+    }
 
 
 def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
@@ -50,7 +193,17 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     crit_mask = batch["cowp/critical/valid"].bool()
     pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
     y = batch["cowp/witness/exists"].bool()
-    exist = focal_bce_with_logits(pred["exist_logits"], y.float(), pair_mask)
+    exist = pair_mined_focal_bce_with_logits(
+        pred["exist_logits"],
+        y.float(),
+        pair_mask,
+        gamma=float(weights.get("witness_focal_gamma", 2.0)),
+        alpha=float(weights.get("witness_focal_alpha", 0.25)),
+        max_pos_per_scene=int(weights.get("witness_mining_max_pos_per_scene", 16)),
+        max_neg_per_scene=int(weights.get("witness_mining_max_neg_per_scene", 48)),
+        neg_pos_ratio=int(weights.get("witness_mining_neg_pos_ratio", 3)),
+        min_neg_per_scene=int(weights.get("witness_mining_min_neg_per_scene", 8)),
+    )
     pos_mask = pair_mask & y
     if pos_mask.any():
         token = F.cross_entropy(pred["token_logits"][pos_mask], batch["cowp/witness/token"].long()[pos_mask], reduction="mean")

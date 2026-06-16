@@ -9,6 +9,8 @@ eval:
     - idm_lattice
     - cowp
     - cowp_wo_counterfactual
+    - cowp_wo_neutral_branch
+    - cowp_wo_priority_branch
     - cowp_wo_option_preservation
     - cowp_wo_witness_rejection
     - soft_burden_cost_only

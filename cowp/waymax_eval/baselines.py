@@ -8,6 +8,8 @@ def ablation_for_method(method: str) -> dict:
         "cowp": {},
         "idm_lattice": {"use_hard_witness_rejection": False, "use_option_preservation": False, "soft_burden_cost_only": False},
         "cowp_wo_counterfactual": {"use_neutral_branch": False, "use_priority_branch": False},
+        "cowp_wo_neutral_branch": {"use_neutral_branch": False},
+        "cowp_wo_priority_branch": {"use_priority_branch": False},
         "cowp_wo_option_preservation": {"use_option_preservation": False},
         "cowp_wo_witness_rejection": {"use_hard_witness_rejection": False},
         "soft_burden_cost_only": {"use_hard_witness_rejection": False, "soft_burden_cost_only": True},

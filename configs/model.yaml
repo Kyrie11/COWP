@@ -12,6 +12,7 @@ model:
   max_safe_responses: 32
   future_steps: 80
   token_count: 7
+  edge_distance_scale_m: 12.0
 
 ablation:
   use_obs_branch: true
@@ -21,4 +22,6 @@ ablation:
   use_hard_witness_rejection: true
   use_dual_edge: true
   use_conflict_query: true
+  use_typed_edges: true
   use_adaptive_beta: true
+  soft_burden_cost_only: false

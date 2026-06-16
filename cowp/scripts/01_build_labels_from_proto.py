@@ -58,6 +58,10 @@ def main() -> None:
     ap.add_argument("--no-neutral-branch", action="store_true")
     ap.add_argument("--no-priority-branch", action="store_true")
     ap.add_argument("--no-option-preservation", action="store_true")
+    ap.add_argument("--no-dual-edge", action="store_true", help="Record model ablation switch; label geometry is unchanged.")
+    ap.add_argument("--no-conflict-query", action="store_true", help="Record model ablation switch; label geometry is unchanged.")
+    ap.add_argument("--no-hard-witness-rejection", action="store_true", help="Record planner ablation switch for downstream manifests.")
+    ap.add_argument("--soft-burden-cost-only", action="store_true", help="Record planner ablation switch for downstream manifests.")
     args = ap.parse_args()
     if args.cpu_only:
         os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
@@ -69,6 +73,10 @@ def main() -> None:
         "use_neutral_branch": not args.no_neutral_branch,
         "use_priority_branch": not args.no_priority_branch,
         "use_option_preservation": not args.no_option_preservation,
+        "use_dual_edge": not args.no_dual_edge,
+        "use_conflict_query": not args.no_conflict_query,
+        "use_hard_witness_rejection": not args.no_hard_witness_rejection,
+        "soft_burden_cost_only": bool(args.soft_burden_cost_only),
     }
     n = build_labels_from_proto(
         proto_glob,

@@ -30,6 +30,30 @@ class COWPPlanner:
         c_i = label["cowp/witness/c_i"].astype(float)
         utility = label["cowp/candidates/ego_utility_prior"].astype(float)
         pcfg = self.cfg.get("planning", {})
+        # True label-level branch ablations when source-resolved certificate
+        # masses are available in newly built labels.  This keeps the evaluation
+        # switch from being a no-op for w/o neutral or w/o priority variants.
+        source_mass = label.get("cowp/witness/natural_conflict_mass_by_source")
+        low_safe_source = label.get("cowp/witness/low_safe_mass_by_source")
+        branch_keys = ("use_obs_branch", "use_neutral_branch", "use_priority_branch")
+        if source_mass is not None and low_safe_source is not None and any(not bool(self.ablation.get(k, True)) for k in branch_keys):
+            enabled = np.asarray([
+                bool(self.ablation.get("use_obs_branch", True)),
+                bool(self.ablation.get("use_neutral_branch", True)),
+                bool(self.ablation.get("use_priority_branch", True)),
+                False,
+            ], dtype=bool)
+            source_mass = np.asarray(source_mass, dtype=float)
+            low_safe_source = np.asarray(low_safe_source, dtype=float)
+            conflict_mass = source_mass[..., enabled].sum(axis=-1)
+            low_safe_mass = low_safe_source[..., enabled].sum(axis=-1)
+            beta = label["cowp/natural/beta"].astype(float)[None, :]
+            alpha = float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
+            min_safe = label["cowp/witness/min_safe_burden"].astype(float)
+            use_option = bool(self.ablation.get("use_option_preservation", True))
+            opr = low_safe_mass if use_option else np.ones_like(low_safe_mass)
+            option_collapsed = use_option & (opr < alpha)
+            witness = ((conflict_mass >= float(self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))) & ((min_safe > beta) | option_collapsed)).astype(float)
         accepted = hard_first_filter(
             cand_valid,
             conventional,

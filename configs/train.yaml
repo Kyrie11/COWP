@@ -18,6 +18,12 @@ loss_weights:
   diversity: 0.05
   natural_traj_l1: 1.0
   natural_mode_ce: 0.5
+  branch_source_ce: 0.4
+  branch_minade: 0.7
+  priority_preservation: 0.4
+  neutral_consistency: 0.3
+  diversity_loss: 0.05
+  natural_diversity_tau: 4.0
   response_safe_bce: 1.0
   response_low_bce: 1.0
   response_burden_l1: 0.5
@@ -29,6 +35,12 @@ loss_weights:
   witness_burden_components: 0.25
   witness_conflict: 0.3
   witness_opr: 0.5
+  witness_focal_gamma: 2.0
+  witness_focal_alpha: 0.25
+  witness_mining_max_pos_per_scene: 16
+  witness_mining_max_neg_per_scene: 48
+  witness_mining_neg_pos_ratio: 3
+  witness_mining_min_neg_per_scene: 8
   imitation: 1.0
   ranking: 1.0
   candidate_ncf_cls: 1.0

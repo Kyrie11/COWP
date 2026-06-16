@@ -17,7 +17,18 @@ class COWPModel(nn.Module):
         super().__init__()
         m = cfg.get("model", cfg)
         d_model = int(m.get("d_model", 128))
-        self.graph = GraphEncoder(int(m.get("d_state", 11)), d_model, int(m.get("num_heads", 4)), int(m.get("num_layers", 3)), float(m.get("dropout", 0.1)))
+        ab = cfg.get("ablation", {})
+        self.graph = GraphEncoder(
+            int(m.get("d_state", 11)),
+            d_model,
+            int(m.get("num_heads", 4)),
+            int(m.get("num_layers", 3)),
+            float(m.get("dropout", 0.1)),
+            use_typed_edges=bool(ab.get("use_typed_edges", True)),
+            use_dual_edge=bool(ab.get("use_dual_edge", True)),
+            use_conflict_query=bool(ab.get("use_conflict_query", True)),
+            edge_distance_scale_m=float(m.get("edge_distance_scale_m", 12.0)),
+        )
         self.candidate_encoder = CandidateEncoder(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.natural_decoder = NaturalDecoder(d_model=d_model, modes=int(m.get("max_natural_alternatives", 24)), future_steps=int(m.get("future_steps", 80)))
         self.response_decoder = ResponseDecoder(d_model=d_model, responses=int(m.get("max_safe_responses", 32)), future_steps=int(m.get("future_steps", 80)))

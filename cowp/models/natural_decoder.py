@@ -5,17 +5,33 @@ from torch import nn
 
 
 class NaturalDecoder(nn.Module):
-    def __init__(self, d_model: int = 128, modes: int = 24, future_steps: int = 80):
+    """Multi-branch natural alternative decoder.
+
+    Besides mode trajectories and mixture logits, the decoder predicts a source
+    branch (observed / ego-neutral / priority-preserving) and whether the branch
+    preserves local priority.  These heads make the paper's natural-branch loss
+    terms directly trainable instead of treating all alternatives as an unordered
+    trajectory bank.
+    """
+
+    def __init__(self, d_model: int = 128, modes: int = 24, future_steps: int = 80, source_count: int = 4):
         super().__init__()
         self.modes = modes
         self.future_steps = future_steps
-        self.head = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, modes * future_steps * 7))
+        self.source_count = source_count
+        self.shared = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.LayerNorm(d_model))
+        self.head = nn.Linear(d_model, modes * future_steps * 7)
         self.logit = nn.Linear(d_model, modes)
+        self.source_logit = nn.Linear(d_model, modes * source_count)
+        self.priority_logit = nn.Linear(d_model, modes)
 
     def forward(self, z_agent: torch.Tensor, critical_indices: torch.Tensor) -> dict[str, torch.Tensor]:
         B, A = critical_indices.shape
         idx = critical_indices.clamp_min(0).long().unsqueeze(-1).expand(B, A, z_agent.shape[-1])
         z = torch.gather(z_agent, 1, idx)
-        traj = self.head(z).reshape(B, A, self.modes, self.future_steps, 7)
-        logits = self.logit(z)
-        return {"traj": traj, "logits": logits}
+        h = self.shared(z)
+        traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
+        logits = self.logit(h)
+        source_logits = self.source_logit(h).reshape(B, A, self.modes, self.source_count)
+        priority_logits = self.priority_logit(h)
+        return {"traj": traj, "logits": logits, "source_logits": source_logits, "priority_logits": priority_logits}

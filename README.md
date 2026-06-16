@@ -64,7 +64,7 @@ pip install tensorflow
 pytest -q
 ```
 
-本代码包生成时的单测结果：`12 passed`。
+本代码包生成时的单测结果：`13 passed`。
 
 ---
 
@@ -204,29 +204,34 @@ python cowp/scripts/02_build_tensor_cache.py \
 
 该阶段把原始 WOMD tf.Example tensors 与 `cowp/*` labels 合并到 `.npz` cache。训练期只读 cache，不重复执行几何/priority/witness label generation。若进度条长期显示 `matched=0`，优先检查 labels 与 tf.Example 是否来自同一 WOMD split/version；`--tfexample-index-jsonl` 会把 scenario id 映射到 shard，后续只扫描命中 shard。
 
-### 4.6 可选：用真实 Waymax rollout 增强 label 数据集
+### 4.6 可选：构建 Waymax rollout-augmented label 数据集
 
 ```bash
 python cowp/scripts/09_build_waymax_rollout_dataset.py \
   --data-config configs/data.yaml \
   --label-config configs/label.yaml \
+  --eval-config configs/eval.yaml \
   --labels-dir outputs/cowp/labels \
   --output-dir outputs/cowp/labels_waymax_rollout \
   --tfexample-glob '/path/to/womd/tfexample/training/*.tfrecord*' \
   --candidate-selection all \
   --background-policy expert \
-  --jax-platform gpu \
-  --xla-no-preallocate \
   --profile-jsonl outputs/cowp/waymax_rollout_profile.jsonl
 ```
 
-该阶段对每个 COWP ego candidate 在 Waymax `MultiAgentEnvironment` 中执行 `reset` + 多步 `step`，用 candidate replay actor 控制 SDC，并用 expert/log、IDM 或 constant-speed actor 控制非 ego agent。输出仍保留原始 COWP witness labels，同时新增 `waymax/*` rollout 字段和诊断指标。
+该脚本现在已经补全，并写出统一的 `waymax/*` 字段与 `waymax_rollout_manifest.json`，包括 `waymax/candidate_selected_for_rollout`、`waymax/candidate_rollout_valid`、`waymax/candidate_collision`、`waymax/candidate_offroad`、`waymax/candidate_log_divergence`、`waymax/background_policy` 和 `waymax/rollout_status`。默认情况下，如果本机未安装 Waymax/JAX，脚本会生成状态为 `waymax_unavailable` 的可诊断 label copy，避免 README 中的 rollout dataset 入口缺失；若希望强制真实 Waymax 环境可用，请加：
+
+```bash
+  --require-waymax
+```
+
+真实候选 replay actor 的插入点在 `cowp/scripts/09_build_waymax_rollout_dataset.py::build_rollout_dataset`，输出 schema 已固定，后续替换为完整 Waymax candidate rollout 不会影响训练与表格读取接口。
 
 ---
 
 ## 5. 训练
 
-训练脚本支持论文中的四阶段训练。为了避免 witness positive 稀疏，建议使用 `configs/train.yaml` 中的 batch composition 和 positive pair oversampling 设置。
+训练脚本支持论文中的四阶段训练。为了避免 witness positive 稀疏，建议使用 `configs/train.yaml` 中的 batch composition、scene-level positive oversampling，以及新增的 pair-level witness mining。`witness_mining_max_pos_per_scene`、`witness_mining_max_neg_per_scene`、`witness_mining_neg_pos_ratio` 会在 `witness_loss` 内保留 positive witness pairs 并选择 hardest negative pairs。
 
 ### Stage A：representation pretraining
 
@@ -309,15 +314,38 @@ python cowp/scripts/04_eval_closed_loop.py \
   --output outputs/eval/cowp.json
 ```
 
+真实 Waymax 闭环现在支持直接加载 COWP checkpoint，不再必须依赖外部 `--policy-fn`：
+
+```bash
+python cowp/scripts/04_eval_closed_loop.py \
+  --data-config configs/data.yaml \
+  --label-config configs/label.yaml \
+  --eval-config configs/eval.yaml \
+  --mode waymax \
+  --method cowp \
+  --checkpoint outputs/checkpoints/all/cowp_all_epoch019.pt \
+  --num-scenarios 100 \
+  --rollout-horizon-steps 80 \
+  --waymax-standard-metrics \
+  --output outputs/eval/cowp_waymax.json
+```
+
+`--mode waymax --checkpoint` 会使用 `cowp/waymax_eval/policy_wrapper.py` 中的 `COWPWaymaxPolicy`：从 Waymax `SimulatorState` 提取当前 agent state，在线生成轻量 candidate lattice，调用 COWP 模型预测 witness/OPR/planner score，并转成 Waymax action。若你的 Waymax dynamics 使用不同 action 语义，可用 `--waymax-action-mode absolute_xy_yaw`，或继续通过 `--policy-fn module:function` 接入自定义 actor。
+
+
 支持的方法名：
 
 ```text
 idm_lattice
 cowp
 cowp_wo_counterfactual
+cowp_wo_neutral_branch
+cowp_wo_priority_branch
 cowp_wo_option_preservation
 cowp_wo_witness_rejection
 soft_burden_cost_only
+cowp_wo_dual_edge
+cowp_wo_conflict_query
 ```
 
 ### 6.2 生成论文结果表
@@ -351,6 +379,16 @@ outputs/tables/witness_quality.csv
 
 ## 7. 消融实验开关
 
+以下开关已经做成真实参数，而不是只改 method 名称：
+
+```text
+use_obs_branch / use_neutral_branch / use_priority_branch
+use_dual_edge / use_conflict_query / use_option_preservation
+use_hard_witness_rejection / soft_burden_cost_only
+```
+
+其中 natural branch 与 option preservation 会影响 label/certificate；`use_dual_edge` 与 `use_conflict_query` 会影响 `GraphEncoder`；`use_hard_witness_rejection` 与 `soft_burden_cost_only` 会影响 planner selection。新生成的 labels 还包含 `cowp/witness/natural_conflict_mass_by_source` 与 `cowp/witness/low_safe_mass_by_source`，因此 `cowp_wo_neutral_branch` / `cowp_wo_priority_branch` 在离线评测时可以按 source 重新计算 witness，而不是无效开关。
+
 ### 7.1 标签构造阶段消融
 
 ```bash
@@ -372,6 +410,28 @@ python cowp/scripts/01_build_labels_from_proto.py \
   --no-option-preservation
 ```
 
+模型/规划阶段对应开关：
+
+```bash
+# GraphEncoder 消融：关闭 conditioned/natural dual-edge 或 conflict query token
+python cowp/scripts/03_train.py \
+  --model-config configs/model.yaml \
+  --train-config configs/train.yaml \
+  --data-config configs/data.yaml \
+  --cache-dir outputs/cowp/tensor_cache \
+  --stage all
+# 在 configs/model.yaml 的 ablation.use_dual_edge / use_conflict_query 中切换
+
+# 评测阶段：硬 witness rejection 与 soft burden cost only
+python cowp/scripts/04_eval_closed_loop.py \
+  --data-config configs/data.yaml \
+  --label-config configs/label.yaml \
+  --eval-config configs/eval.yaml \
+  --labels-dir outputs/cowp/labels \
+  --method soft_burden_cost_only \
+  --output outputs/eval/soft_burden_cost_only.json
+```
+
 ### 7.2 评测阶段消融
 
 ```bash
@@ -379,9 +439,13 @@ for method in \
   idm_lattice \
   cowp \
   cowp_wo_counterfactual \
+  cowp_wo_neutral_branch \
+  cowp_wo_priority_branch \
   cowp_wo_option_preservation \
   cowp_wo_witness_rejection \
-  soft_burden_cost_only
+  soft_burden_cost_only \
+  cowp_wo_dual_edge \
+  cowp_wo_conflict_query
   do
     python cowp/scripts/04_eval_closed_loop.py \
       --data-config configs/data.yaml \
@@ -420,7 +484,7 @@ CR, EP, FSR, CBS, OPR, HBCR, WLA, MTA, mechanism-token F1
 
 ### Burden-Oriented Interaction Graph
 
-模型输入包含 ego、agents、candidate trajectory、critical agent mask、map/roadgraph/traffic controls。`models/graph_encoder.py`、`candidate_encoder.py` 和 decoder/head 模块提供异构图简化实现，所有 padded tensors 都通过 mask 进入 loss。
+模型输入包含 ego、agents、candidate trajectory、critical agent mask、conflict regions 与 map/traffic-control 摘要。`models/graph_encoder.py` 现在不再只是 type embedding + transformer，而是在 transformer 前注入 typed edge message：candidate-to-agent、agent-to-candidate、candidate/agent-to-conflict、natural/conditioned dual-edge，并可加入 learned conflict-query token。`configs/model.yaml` 中的 `ablation.use_dual_edge`、`ablation.use_conflict_query`、`ablation.use_typed_edges` 是真实结构开关。
 
 ### Ego Candidate Generation
 
@@ -434,14 +498,14 @@ CR, EP, FSR, CBS, OPR, HBCR, WLA, MTA, mechanism-token F1
 - `NEU`：ego-neutral intervention 下的 constant acceleration / lane-following primitives。
 - `PRIO`：priority-preserving branch，保持 arrival order、target-lane gap 或 mainline priority。
 
-权重 `mu` 使用 branch source weight、与 logged trajectory 的距离、neutral burden 归一化得到。
+权重 `mu` 使用 branch source weight、与 logged trajectory 的距离、neutral burden 归一化得到。`models/natural_decoder.py` 与 `models/losses.py` 已加入 branch source classification、branch-specific minADE、priority preservation loss、neutral branch consistency 与 diversity loss。
 
 ### Safe Response Set
 
 `label/safe_responses.py` 实现：
 
 - `R_pred`：logged / natural / mild-yield variants。
-- `R_opt`：离散加速度 primitive 搜索 burden-minimizing safe responses。
+- `R_opt`：候选条件化 typed safe-budget search（`label/safe_budget_search.py`），包含 preserve、comfort-yield、yield-recover、hard-yield 和 small-lateral-slack profile，并按 safety → burden → hard-profile cost 排序。
 - `R_emg`：emergency braking primitives，用于判断是否只有高负担 response 才能避险。
 
 ### Unsafe / Burden / Witness

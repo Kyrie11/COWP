@@ -7,6 +7,7 @@ from cowp.core.types import ScenarioData
 from cowp.geometry.collision import unsafe_between
 from cowp.label.burden import compute_burden
 from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged
+from cowp.label.safe_budget_search import typed_safe_budget_search
 
 
 def _subsample_by_source(
@@ -122,7 +123,13 @@ def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarra
         ego = candidates["trajectory"][k]
         for a, (_, object_type, nat_ref, primitives) in primitive_bank.items():
             evaluated: list[tuple[float, float, np.ndarray, ResponseSource, bool, np.ndarray]] = []
-            for tr, src in primitives:
+            local_primitives = list(primitives)
+            if bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True)):
+                curr_idx = int(critical["track_index"][a])
+                curr = scene.states[curr_idx, scene.current_time_index]
+                for tr, _name, _budget in typed_safe_budget_search(curr, H, float(cfg.get("time", {}).get("dt", 0.1)), ego, object_type, cfg, natural_ref=nat_ref):
+                    local_primitives.append((tr, ResponseSource.OPT))
+            for tr, src in local_primitives:
                 if not np.all(np.isfinite(tr)):
                     continue
                 unsafe = unsafe_between(ego, tr, cfg, agent_type=object_type)
