@@ -24,7 +24,7 @@ def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
     return out
 
 
-def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5) -> tuple[list[int], list[np.ndarray]]:
+def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5, alpha_opr: float = 0.35) -> tuple[list[int], list[np.ndarray]]:
     import torch
 
     scores = pred["planner_score"].detach()
@@ -32,13 +32,17 @@ def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5) -> tupl
     opr = pred["witness"]["opr"].detach()
     cand_valid = batch["cowp/candidates/valid"].bool()
     conventional = batch.get("cowp/candidates/conventional_safe", cand_valid).bool()
+    crit_mask = batch.get("cowp/critical/valid")
+    if crit_mask is not None and witness_prob.ndim == 3:
+        cm = crit_mask.bool()[:, None, :]
+        witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
+        opr = torch.where(cm, opr, torch.ones_like(opr))
     # Learned COWP selection: conventional geometric safety remains a hard rule,
-    # but witness rejection and ranking use model predictions rather than label certificates.
+    # but witness rejection and option preservation use model predictions rather
+    # than label certificates.
     predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
     accepted = cand_valid & conventional & ~predicted_bad
-    # Option preservation is a soft predicted gate; do not discard all candidates solely
-    # due to a noisy OPR estimate in early checkpoints.
-    accepted = accepted & (opr.min(dim=-1).values >= 0.05)
+    accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
     selected: list[int] = []
     masks: list[np.ndarray] = []
     B = scores.shape[0]
@@ -111,7 +115,8 @@ def learned_offline_candidate_eval(
         for batch in iterator:
             batch = {k: v.to(dev) for k, v in batch.items() if torch.is_tensor(v)}
             pred = model(batch)
-            batch_selected, _ = _select_from_learned(batch, pred, witness_threshold=witness_threshold)
+            alpha = float(cfg.get("planning", {}).get("alpha_opr_infer", cfg.get("ncf", {}).get("alpha_opr", 0.35)))
+            batch_selected, _ = _select_from_learned(batch, pred, witness_threshold=witness_threshold, alpha_opr=alpha)
             selected.extend(batch_selected)
             B = len(batch_selected)
             for i in range(B):

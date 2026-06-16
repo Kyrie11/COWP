@@ -22,9 +22,19 @@ class GraphEncoder(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, agent_history: torch.Tensor, agent_mask: torch.Tensor, candidate_traj: torch.Tensor | None = None, candidate_mask: torch.Tensor | None = None, conflict_regions: torch.Tensor | None = None, conflict_mask: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
-        # agent_history: [B,N,Th,D]; use last valid/current-like state plus temporal mean.
+        # agent_history: [B,N,Th,D]. Use a validity-weighted temporal mean when
+        # the last channel carries WOMD validity. Averaging invalid zero-filled
+        # rows was silently biasing agent embeddings toward the origin.
         if agent_history.ndim == 4:
-            x_agent = agent_history.mean(dim=2)
+            if agent_history.shape[-1] >= 11:
+                hist_valid = agent_history[..., 10:11].clamp(0.0, 1.0)
+                denom = hist_valid.sum(dim=2).clamp_min(1.0)
+                x_agent = (agent_history * hist_valid).sum(dim=2) / denom
+                empty = hist_valid.sum(dim=2).squeeze(-1) <= 0
+                if empty.any():
+                    x_agent = torch.where(empty.unsqueeze(-1), agent_history.mean(dim=2), x_agent)
+            else:
+                x_agent = agent_history.mean(dim=2)
         else:
             x_agent = agent_history
         z_agent = self.agent_proj(x_agent) + self.type_embed(torch.zeros_like(agent_mask.long()))

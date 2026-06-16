@@ -75,9 +75,18 @@ class COWPModel(nn.Module):
         if "z_candidate_context" in enc:
             z_cand = z_cand + enc["z_candidate_context"]
         critical_idx = batch["cowp/critical/track_index"].long().clamp_min(0)
+        critical_mask = batch.get("cowp/critical/valid")
+        critical_mask = critical_mask.bool() if critical_mask is not None else torch.ones_like(critical_idx, dtype=torch.bool)
         natural = self.natural_decoder(enc["z_agent"], critical_idx)
         response = self.response_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
         witness = self.witness_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
         witness_prob = torch.sigmoid(witness["exist_logits"])
-        planner_score = self.planner(z_cand, batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(), witness_prob, witness["opr"], batch.get("cowp/candidates/conventional_safe"))
+        planner_score = self.planner(
+            z_cand,
+            batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(),
+            witness_prob,
+            witness["opr"],
+            batch.get("cowp/candidates/conventional_safe"),
+            critical_mask=critical_mask,
+        )
         return {"enc": enc, "natural": natural, "response": response, "witness": witness, "planner_score": planner_score}

@@ -25,12 +25,15 @@ class WitnessDecoder(nn.Module):
         zg = z_graph[:, None, None, :].expand(B, K, A, D)
         h = self.pair(torch.cat([zc, za, zg], dim=-1))
         b = self.burden(h)
+        raw_interval = self.interval(h).relu()
+        start = torch.minimum(raw_interval[..., 0], raw_interval[..., 1])
+        end = torch.maximum(raw_interval[..., 0], raw_interval[..., 1])
         return {
             "exist_logits": self.exist(h).squeeze(-1),
             "token_logits": self.token(h),
             "burden_total": b[..., 0].relu(),
             "burden_components": b[..., 1:].relu().clamp(max=2.0),
-            "conflict_interval": self.interval(h).relu(),
+            "conflict_interval": torch.stack([start, end], dim=-1),
             "opr": torch.sigmoid(self.opr(h).squeeze(-1)),
             "c_i": self.ci(h).squeeze(-1),
         }
