@@ -81,6 +81,22 @@ def _trajectory_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Ten
     return torch.linalg.norm(pred_traj[..., :2] - gt_traj[..., :2], dim=-1).mean(dim=-1)
 
 
+
+def _weighted_set_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Unordered set supervision for natural alternatives.
+
+    Natural alternatives are a weighted counterfactual set, not an ordered list.
+    Penalizing slot-by-slot L1 makes training depend on construction order; this
+    term asks every valid labelled alternative to be covered by some predicted
+    mode, weighted by its probability mass.
+    """
+    if not valid.any():
+        return pred_traj.sum() * 0.0
+    d = torch.linalg.norm(pred_traj[:, :, :, None, :, :2] - gt_traj[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
+    d_min = d.min(dim=2).values
+    w = weight.float() * valid.float()
+    return (d_min * w).sum() / w.sum().clamp_min(1e-6)
+
 def _branch_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
     if not branch_gt.any():
@@ -117,8 +133,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     if mask.any():
         gt_traj = batch["cowp/natural/traj"].float()
         gt_source = batch["cowp/natural/source"].long().clamp_min(0)
-        traj_l1 = torch.abs(pred["traj"] - gt_traj).mean(dim=(-1, -2))
-        traj = masked_mean(traj_l1, mask)
+        # Set-valued minADE rather than slotwise L1: natural alternatives are
+        # unordered observational / neutral / priority-preserving branches.
+        traj = _weighted_set_minade(pred["traj"], gt_traj, mask, batch["cowp/natural/weight"].float())
         logits = pred["logits"]
         target_w = batch["cowp/natural/weight"].float() * mask.float()
         target_w = target_w / target_w.sum(dim=-1, keepdim=True).clamp_min(1e-6)

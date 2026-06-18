@@ -202,6 +202,17 @@ def _make_waymax_environment(max_num_objects: int | None = None):
             return env_cls(dyn)
 
 
+
+def _consume_policy_diagnostics(policy_fn: Callable) -> dict | None:
+    consumer = getattr(policy_fn, "consume_diagnostics", None)
+    if callable(consumer):
+        try:
+            row = consumer()
+            return row if isinstance(row, dict) else None
+        except Exception:
+            return None
+    return None
+
 def _env_step(env, state, action):
     result = env.step(state, action)
     if isinstance(result, tuple):
@@ -249,13 +260,17 @@ def waymax_closed_loop_rollout(
         env = _make_waymax_environment(max_num_objects=getattr(init_state, "num_objects", None))
         state = env.reset(init_state)
         steps = 0
+        policy_diagnostics = []
         for step in range(horizon):
             action = _call_policy(policy_fn, state, step=step, scenario_index=scenario_index)
+            diag = _consume_policy_diagnostics(policy_fn)
+            if diag is not None:
+                policy_diagnostics.append(diag)
             state = _env_step(env, state, action)
             steps += 1
             if _state_done(state):
                 break
-        item = {"state": state, "steps": steps}
+        item = {"state": state, "steps": steps, "policy_diagnostics": policy_diagnostics}
         if compute_standard_metrics:
             item["standard_metrics"] = waymax_metric_dict(state)
         outputs.append(item)

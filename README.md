@@ -64,7 +64,7 @@ pip install tensorflow
 pytest -q
 ```
 
-本代码包生成时的单测结果：`13 passed`。
+本代码包第二轮生成时的单测结果：`15 passed`。
 
 ---
 
@@ -331,6 +331,12 @@ python cowp/scripts/04_eval_closed_loop.py \
 ```
 
 `--mode waymax --checkpoint` 会使用 `cowp/waymax_eval/policy_wrapper.py` 中的 `COWPWaymaxPolicy`：从 Waymax `SimulatorState` 提取当前 agent state，在线生成轻量 candidate lattice，调用 COWP 模型预测 witness/OPR/planner score，并转成 Waymax action。若你的 Waymax dynamics 使用不同 action 语义，可用 `--waymax-action-mode absolute_xy_yaw`，或继续通过 `--policy-fn module:function` 接入自定义 actor。
+
+
+闭环输出现在会包含两类 summary：
+
+- `standard_metric_summary`：在 `--waymax-standard-metrics` 开启时，对官方 Waymax metrics 做 JSON scalar 聚合。
+- `policy_diagnostic_summary`：COWP policy 在每个 closed-loop step 的在线诊断聚合，包括 `ClosedLoopPredFSR`、`ClosedLoopCBS_pred`、`ClosedLoopOPR_min`、`ClosedLoopFallbackStepRate`。这些是模型预测的 closed-loop certification 信号，用于 smoke/debug；最终论文仍应结合 proto/label counterfactual certification 和官方 Waymax metrics 汇报。
 
 
 支持的方法名：

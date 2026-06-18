@@ -212,6 +212,8 @@ class COWPWaymaxPolicy:
         self.model.eval()
         self.torch = torch
         self.dev = dev
+        self._last_diagnostics: dict[str, Any] | None = None
+        self._diagnostics_log: list[dict[str, Any]] = []
 
     def _trajectory_to_action(self, state: Any, agent_state: np.ndarray, sdc_index: int, traj: np.ndarray) -> Any:
         try:
@@ -248,6 +250,8 @@ class COWPWaymaxPolicy:
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             witness = self.torch.sigmoid(pred["witness"]["exist_logits"])[0]
             opr = pred["witness"]["opr"][0]
+            burden = pred["witness"].get("burden_total")
+            c_i = pred["witness"].get("c_i")
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
@@ -255,8 +259,40 @@ class COWPWaymaxPolicy:
             accepted = accepted & (opr.min(dim=-1).values >= float(self.cfg.get("planning", {}).get("alpha_opr_infer", 0.35)))
             mask = accepted if accepted.any() else cand_valid
             selected = int(self.torch.argmin(self.torch.where(mask, scores, self.torch.full_like(scores, float("inf")))).item())
+            selected_witness = witness[selected]
+            selected_opr = opr[selected]
+            diag = {
+                "scenario_index": int(scenario_index) if scenario_index is not None else -1,
+                "step": int(step) if step is not None else -1,
+                "selected_candidate": int(selected),
+                "accepted_candidates": int(accepted.sum().detach().cpu().item()),
+                "fallback_used": bool(not accepted.any().detach().cpu().item()),
+                "max_witness_prob": float(selected_witness.max().detach().cpu().item()) if selected_witness.numel() else 0.0,
+                "min_opr": float(selected_opr.min().detach().cpu().item()) if selected_opr.numel() else 1.0,
+                "mean_opr": float(selected_opr.mean().detach().cpu().item()) if selected_opr.numel() else 1.0,
+                "score": float(scores[selected].detach().cpu().item()),
+                "witness_threshold": float(self.witness_threshold),
+                "alpha_opr": float(self.cfg.get("planning", {}).get("alpha_opr_infer", 0.35)),
+            }
+            if burden is not None:
+                bsel = burden[0, selected]
+                diag["max_predicted_burden"] = float(bsel[crit_mask].max().detach().cpu().item()) if bool(crit_mask.any().detach().cpu().item()) else 0.0
+            if c_i is not None:
+                csel = c_i[0, selected]
+                diag["max_predicted_c_i"] = float(csel[crit_mask].max().detach().cpu().item()) if bool(crit_mask.any().detach().cpu().item()) else 0.0
+        self._last_diagnostics = diag
+        self._diagnostics_log.append(diag)
         traj = batch_np["cowp/candidates/trajectory"][0, selected]
         return self._trajectory_to_action(state, agent_state, sdc_index, traj)
+
+    def consume_diagnostics(self) -> dict[str, Any] | None:
+        """Return and clear the most recent online COWP policy diagnostic row."""
+        row = self._last_diagnostics
+        self._last_diagnostics = None
+        return row
+
+    def diagnostics_log(self) -> list[dict[str, Any]]:
+        return list(self._diagnostics_log)
 
 
 def make_cowp_policy(checkpoint: str, cfg: dict, *, device: str = "auto", witness_threshold: float = 0.5, action_mode: str = "delta_xy_yaw") -> COWPWaymaxPolicy:

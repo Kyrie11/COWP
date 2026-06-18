@@ -34,3 +34,40 @@ def waymax_metric_dict(rollout_state):
         result = m.compute(rollout_state)
         out[m.__class__.__name__] = result
     return out
+
+
+def _numeric_metric_value(x) -> float | None:
+    """Best-effort scalar extraction from Waymax metric outputs."""
+    try:
+        arr = np.asarray(x)
+        if arr.size == 0:
+            return None
+        arr = arr.astype(float)
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        return float(np.mean(finite))
+    except Exception:
+        pass
+    for attr in ("value", "result", "metric_value"):
+        if hasattr(x, attr):
+            val = _numeric_metric_value(getattr(x, attr))
+            if val is not None:
+                return val
+    if isinstance(x, dict):
+        vals = [_numeric_metric_value(v) for v in x.values()]
+        vals = [v for v in vals if v is not None]
+        return float(np.mean(vals)) if vals else None
+    return None
+
+
+def aggregate_waymax_standard_metrics(rollouts: list[dict]) -> dict[str, float]:
+    """Aggregate official Waymax metric objects into JSON-ready scalars."""
+    buckets: dict[str, list[float]] = {}
+    for item in rollouts:
+        metrics = item.get("standard_metrics", {}) or {}
+        for name, value in metrics.items():
+            scalar = _numeric_metric_value(value)
+            if scalar is not None:
+                buckets.setdefault(name, []).append(scalar)
+    return {name: float(np.mean(vals)) for name, vals in sorted(buckets.items()) if vals}

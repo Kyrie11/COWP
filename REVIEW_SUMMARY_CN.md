@@ -1,45 +1,35 @@
-# COWP 论文/数据/代码审查摘要
+# 第二轮 COWP 代码/数据审查摘要
 
-## 数据诊断结论
+## 数据是否足够训练
 
-当前 train/val labels 可以支撑 COWP 的核心监督信号和初步模型训练，但还不足以单独支撑最终论文级闭环结论。
+当前 train/val labels 足够进入模型训练。`mean_candidate_endpoint_spread_m≈5.46m` 低于 6.0m 是候选覆盖的软性 warning，不是标签错误，也不会直接破坏 COWP 的核心监督目标。更关键的信号均可用：
 
-### 支撑点
+- train/val validation error 均为 0；
+- train≈20k、val≈3k，规模可用于正式训练起步；
+- train/val 分布一致；
+- false-safe candidate ratio≈0.365/0.379，能支撑 false-safe 论证；
+- positive pair ratio≈0.287/0.294，witness 监督不稀疏；
+- ncf_candidate_ratio≈0.188/0.193，可支撑 candidate ranking；
+- response_safe_pair_ratio≈0.874/0.869，safe-response set 足够密。
 
-- train/val schema 均无 validation error。
-- train 共约 20k scenes，val 共约 3k scenes，规模适合先做模型训练和消融验证。
-- train/val 分布一致性较好：positive pair ratio、false-safe candidate ratio、NCF candidate ratio、OPR/CBS 等指标接近。
-- false-safe 与 witness 信号充足：train false_safe_candidate_ratio≈0.365，val≈0.379；positive_pair_ratio≈0.287/0.294。
-- response safe coverage 较高：train≈0.874，val≈0.869。
+endpoint spread 偏低主要影响 stress candidate 多样性和最终 ablation 说服力。考虑到全量重构成本高，建议先训练，再用 learned-offline 和 Waymax smoke rollout 判断是否需要局部扩充 validation/stress set。
 
-### 风险点
+## 闭环不足的原因
 
-- 候选终点多样性偏弱：train/val mean_candidate_endpoint_spread_m 约 5.46m，低于配置阈值 6.0m。
-- val 的 scenes_with_ncf_candidate_ratio≈0.3467，略低于 0.35 目标线。
-- mechanism token 只覆盖 HB/AY/SR/OR，缺 PA/GS，说明 priority/gap-space burden 没有被充分传递或触发。
-- waymax_enabled_scene_ratio=0，当前 diagnostics 不能证明闭环实验已经可运行或已完成。
+不是当前 labels 的性质不足，而是之前代码的 Waymax 闭环路径还没有把 rollout 诊断真正聚合为论文表格可用指标。labels diagnostics 只能说明监督标签质量；闭环实验必须运行 `--mode waymax` 并报告官方 Waymax standard metrics 与 COWP online policy diagnostics。
 
-## 代码复现判断
+## 第二轮代码修改
 
-代码已覆盖论文 pipeline 的工程骨架：WOMD index、label construction、critical agent、ego candidate、natural alternatives、safe response、witness certification、tensor cache、diagnostics、training/eval/Waymax 接口。但它不是完整论文级神经算法复现：graph decoder、natural alternative generator、learned burden/response prediction 等均为规则/搜索式近似或接口化实现。
+- natural alternatives 改为 weighted set-minADE 监督，避免把无序 counterfactual set 当作固定顺序 tensor。
+- Waymax COWP policy wrapper 增加在线诊断：selected candidate、accepted count、fallback、witness probability、OPR、predicted burden、C_i。
+- `04_eval_closed_loop.py --mode waymax` 现在输出 `policy_diagnostic_summary`，包含 closed-loop predicted FSR/CBS/OPR/fallback step rate。
+- 增加 official Waymax metric 的 scalar summary 聚合。
+- 新增两个单测，当前 `15 passed`。
 
-## 本次修改
+## 建议实验顺序
 
-- 将 critical-agent priority relation (`rho`) 传入 safe response burden 和 typed safe-budget search。
-- 在 burden 中根据 natural reference 推断 progress loss、delay loss 和 gap loss，使 PA/GS token 可被触发。
-- 修正 OPR：由 mass 改为低负担 natural alternatives 中被保留的比例。
-- 新增 `cowp/witness/natural_mass_by_source`，修复 natural branch ablation 中 OPR 没有 source-normalized 的问题。
-- 修正 offline planner fallback，避免在没有可接受 NCF candidate 时把 coercive conventional candidate 当成已选择 COWP 计划。
-- 修正 label-only EP：输出归一化 EP，同时保留 `EP_m` 和 `FallbackRate`。
-- 扩大 candidate lattice，并降低 endpoint dedup tolerance，以提升 endpoint diversity。
-
-## 验证
-
-- `python -m compileall -q cowp` 通过。
-- `python -m pytest -q` 通过：13 passed。
-
-## 下一步建议
-
-1. 重新构建 labels 和 diagnostics，重点检查：endpoint spread 是否超过 6m，PA/GS token 是否出现，val NCF scene ratio 是否稳定高于 0.35。
-2. 重新生成 tensor cache 并训练模型。
-3. 用 Waymax rollout dataset 与 closed-loop standard metrics 验证 CR/Offroad/EP 等闭环指标；label diagnostics 只能证明监督数据质量，不能替代闭环实验。
+1. 使用现有 labels 先构建 tensor cache 并训练。
+2. 先跑 offline label eval，确认 rule certificate 表格正常。
+3. 跑 learned-offline eval，确认模型是否学到 witness 与 candidate ranking。
+4. 用 Waymax 小规模 smoke test 跑 50–100 scenarios。
+5. 如果模型出现 candidate collapse 或 val/stress ablation 不明显，再考虑只重构 val/stress，而不是直接重构完整 train。

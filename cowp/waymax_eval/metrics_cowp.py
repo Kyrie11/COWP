@@ -140,3 +140,33 @@ def witness_quality(pred_exists: np.ndarray, pred_token: np.ndarray, pred_interv
     wla = loc_ok / max(int(gt_pos.sum()), 1)
     mta = float((pred_token[tp] == gt_token[tp]).sum() / max(int(tp.sum()), 1)) if np.any(tp) else 0.0
     return {"WitnessRecall": recall, "WitnessPrecision": precision, "WLA": wla, "MTA": mta}
+
+
+def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
+    """Aggregate online COWP policy diagnostics produced during Waymax rollout.
+
+    These are model-predicted closed-loop certification signals.  They do not
+    replace label/proto counterfactual certification, but they make the Waymax
+    path report FSR/CBS/OPR-style quantities instead of only returning raw final
+    simulator states.
+    """
+    rows: list[dict] = []
+    for item in rollouts:
+        rows.extend(item.get("policy_diagnostics", []) or [])
+    if not rows:
+        return {}
+    max_w = np.asarray([float(r.get("max_witness_prob", 0.0)) for r in rows], dtype=np.float32)
+    threshold = np.asarray([float(r.get("witness_threshold", 0.5)) for r in rows], dtype=np.float32)
+    min_opr = np.asarray([float(r.get("min_opr", 1.0)) for r in rows], dtype=np.float32)
+    mean_opr = np.asarray([float(r.get("mean_opr", 1.0)) for r in rows], dtype=np.float32)
+    burden = np.asarray([float(r.get("max_predicted_burden", 0.0)) for r in rows], dtype=np.float32)
+    fallback = np.asarray([bool(r.get("fallback_used", False)) for r in rows], dtype=bool)
+    return {
+        "ClosedLoopPredFSR": float(np.mean(max_w >= threshold)),
+        "ClosedLoopMeanWitnessProb": float(np.mean(max_w)),
+        "ClosedLoopCBS_pred": float(np.mean(burden)),
+        "ClosedLoopOPR_min": float(np.mean(min_opr)),
+        "ClosedLoopOPR_mean": float(np.mean(mean_opr)),
+        "ClosedLoopFallbackStepRate": float(np.mean(fallback)),
+        "ClosedLoopPolicySteps": float(len(rows)),
+    }
