@@ -57,6 +57,7 @@ def certify_witnesses(
     min_safe_burden = np.full((K, A), np.inf, dtype=np.float32)
     natural_conflict_mass = np.zeros((K, A), dtype=np.float32)
     natural_conflict_mass_by_source = np.zeros((K, A, 4), dtype=np.float32)
+    natural_mass_by_source = np.zeros((K, A, 4), dtype=np.float32)
     low_safe_mass_by_source = np.zeros((K, A, 4), dtype=np.float32)
     opr = np.ones((K, A), dtype=np.float32)
     c_i = np.zeros((K, A), dtype=np.float32)
@@ -93,6 +94,7 @@ def certify_witnesses(
             nat_valid_idx = np.where(natural["valid"][a])[0]
             conflict_mass = 0.0
             low_safe_mass = 0.0
+            low_natural_mass = 0.0
             interval_masks = []
             for m in nat_valid_idx:
                 nat = natural["traj"][a, m]
@@ -101,9 +103,12 @@ def certify_witnesses(
                     continue
                 low_neu = float(natural["burden_neutral"][a, m]) <= beta
                 unsafe = unsafe_between(ego, nat, cfg, agent_type=object_type)
-                b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat)
+                b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
                 src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, m])
                 src = src if 0 <= src < 4 else int(NaturalSource.PAD)
+                if low_neu:
+                    low_natural_mass += w
+                    natural_mass_by_source[k, a, src] += w
                 if low_neu and unsafe.unsafe:
                     conflict_mass += w
                     natural_conflict_mass_by_source[k, a, src] += w
@@ -112,7 +117,14 @@ def certify_witnesses(
                     low_safe_mass += w
                     low_safe_mass_by_source[k, a, src] += w
             natural_conflict_mass[k, a] = conflict_mass
-            opr[k, a] = low_safe_mass if use_option else 1.0
+            # Option-preservation ratio: fraction of low-burden natural options
+            # that remain safe/low-burden under the ego candidate.  The previous
+            # implementation stored a mass, which silently depended on how much
+            # probability was assigned to low-burden alternatives.
+            if use_option and low_natural_mass > 1e-6:
+                opr[k, a] = float(np.clip(low_safe_mass / low_natural_mass, 0.0, 1.0))
+            else:
+                opr[k, a] = 1.0
             option_loss = max(0.0, 1.0 - float(opr[k, a])) if use_option else 0.0
             resp_mask = response["valid"][k, a] & response["is_safe"][k, a]
             if np.any(resp_mask):
@@ -165,6 +177,7 @@ def certify_witnesses(
         "min_safe_burden": min_safe_burden,
         "natural_conflict_mass": natural_conflict_mass,
         "natural_conflict_mass_by_source": natural_conflict_mass_by_source,
+        "natural_mass_by_source": natural_mass_by_source,
         "low_safe_mass_by_source": low_safe_mass_by_source,
         "opr": opr,
         "c_i": c_i,

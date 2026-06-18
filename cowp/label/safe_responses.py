@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cowp.core.constants import ResponseSource
+from cowp.core.constants import PriorityRelation, ResponseSource
 from cowp.core.types import ScenarioData
 from cowp.geometry.collision import unsafe_between
 from cowp.label.burden import compute_burden
@@ -66,7 +66,7 @@ def _response_primitives_for_agent(
     critical: dict[str, np.ndarray],
     natural: dict[str, np.ndarray],
     cfg: dict,
-) -> tuple[int, int, np.ndarray, list[tuple[np.ndarray, ResponseSource]]]:
+) -> tuple[int, int, PriorityRelation, np.ndarray, list[tuple[np.ndarray, ResponseSource]]]:
     """Build response primitives once per critical agent.
 
     These trajectories do not depend on the ego candidate; only their safety and
@@ -81,6 +81,7 @@ def _response_primitives_for_agent(
     cur = scene.current_time_index
     idx = int(critical["track_index"][agent_slot])
     object_type = int(scene.object_type[idx])
+    rho = PriorityRelation(int(critical.get("base_priority", np.zeros(len(critical["valid"]), dtype=np.int32))[agent_slot]))
     curr = scene.states[idx, cur]
     nat_ref_candidates = natural["traj"][agent_slot, natural["valid"][agent_slot]]
     nat_ref = nat_ref_candidates[0] if len(nat_ref_candidates) else constant_accel_trajectory(curr, H, dt, accel=0.0)
@@ -95,7 +96,7 @@ def _response_primitives_for_agent(
         for delay in resp_cfg.get("emergency_reaction_delay_s", [0.0, 0.2, 0.5]):
             primitives.append((constant_accel_trajectory(curr, H, dt, accel=float(decel), start_delay_s=float(delay)), ResponseSource.EMG))
     primitives = _subsample_by_source(primitives, cfg)
-    return idx, object_type, nat_ref, primitives
+    return idx, object_type, rho, nat_ref, primitives
 
 
 def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarray], critical: dict[str, np.ndarray], natural: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
@@ -112,7 +113,7 @@ def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarra
     burden_total = np.zeros((K, A, R), dtype=np.float32)
     burden_components = np.zeros((K, A, R, 6), dtype=np.float32)
 
-    primitive_bank: dict[int, tuple[int, int, np.ndarray, list[tuple[np.ndarray, ResponseSource]]]] = {}
+    primitive_bank: dict[int, tuple[int, int, PriorityRelation, np.ndarray, list[tuple[np.ndarray, ResponseSource]]]] = {}
     for a in range(A):
         if critical["valid"][a]:
             primitive_bank[a] = _response_primitives_for_agent(scene, a, critical, natural, cfg)
@@ -121,19 +122,19 @@ def generate_safe_responses(scene: ScenarioData, candidates: dict[str, np.ndarra
         if not candidates["valid"][k]:
             continue
         ego = candidates["trajectory"][k]
-        for a, (_, object_type, nat_ref, primitives) in primitive_bank.items():
+        for a, (_, object_type, rho, nat_ref, primitives) in primitive_bank.items():
             evaluated: list[tuple[float, float, np.ndarray, ResponseSource, bool, np.ndarray]] = []
             local_primitives = list(primitives)
             if bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True)):
                 curr_idx = int(critical["track_index"][a])
                 curr = scene.states[curr_idx, scene.current_time_index]
-                for tr, _name, _budget in typed_safe_budget_search(curr, H, float(cfg.get("time", {}).get("dt", 0.1)), ego, object_type, cfg, natural_ref=nat_ref):
+                for tr, _name, _budget in typed_safe_budget_search(curr, H, float(cfg.get("time", {}).get("dt", 0.1)), ego, object_type, cfg, natural_ref=nat_ref, rho=rho):
                     local_primitives.append((tr, ResponseSource.OPT))
             for tr, src in local_primitives:
                 if not np.all(np.isfinite(tr)):
                     continue
                 unsafe = unsafe_between(ego, tr, cfg, agent_type=object_type)
-                b, comps = compute_burden(tr, ego, cfg, object_type, natural_ref=nat_ref)
+                b, comps = compute_burden(tr, ego, cfg, object_type, natural_ref=nat_ref, rho=rho)
                 sort_cost = (0.0 if not unsafe.unsafe else 10.0) + b
                 evaluated.append((sort_cost, b, tr, src, not unsafe.unsafe, comps))
             evaluated.sort(key=lambda x: x[0])

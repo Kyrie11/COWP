@@ -25,21 +25,21 @@ limits:
   max_roadgraph_points: 20000
 
 candidate:
-  terminal_speed_offsets_mps: [-4, -2, 0, 2, 4]
-  terminal_s_offsets_m: [-15, -8, 0, 8, 15, 25]
+  terminal_speed_offsets_mps: [-5, -3, -1, 0, 1, 3, 5]
+  terminal_s_offsets_m: [-25, -15, -8, 0, 8, 15, 25, 35]
   # Blend terminal speed and terminal progress targets into the acceleration
   # primitive; without this, terminal_s_offsets_m changes only the utility, not
   # the geometry, and the lattice collapses to many duplicates.
   terminal_lattice_speed_position_blend: 0.5
-  dedup_endpoint_tolerance_m: 0.35
+  dedup_endpoint_tolerance_m: 0.25
   dedup_speed_tolerance_mps: 0.25
   dedup_all_macro_types: false
   yield_decel_values_mps2: [-1.0, -2.0, -3.0]
   accelerate_values_mps2: [0.5, 1.0, 1.5]
   stop_margin_to_conflict_m: [2.0, 5.0, 8.0]
-  merge_time_offsets_s: [-1.5, -0.8, 0.0, 0.8, 1.5]
-  lane_change_duration_s: [3.0, 4.0, 5.0]
-  lane_change_start_delay_s: [0.0, 0.5, 1.0, 1.5]
+  merge_time_offsets_s: [-2.0, -1.2, -0.4, 0.0, 0.4, 1.2, 2.0]
+  lane_change_duration_s: [2.5, 3.5, 4.5, 5.5]
+  lane_change_start_delay_s: [0.0, 0.5, 1.0, 1.5, 2.0]
   max_accel_mps2: 4.0
   max_decel_mps2: 6.0
   max_jerk_mps3: 6.0
@@ -206,5 +206,5 @@ diagnostics:
   min_stress_eligible_scene_ratio: 0.01
   min_response_safe_pair_ratio: 0.60
   min_mean_natural_alternatives: 4.0
-  min_mechanism_token_types: 2
+  min_mechanism_token_types: 4
   min_waymax_rollout_candidate_ratio: 0.90

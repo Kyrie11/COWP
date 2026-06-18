@@ -3,6 +3,25 @@ from __future__ import annotations
 import numpy as np
 
 
+def _trajectory_progress_m(traj: np.ndarray) -> float:
+    if traj is None or len(traj) < 2:
+        return 0.0
+    return float(np.linalg.norm(traj[-1, :2] - traj[0, :2]))
+
+
+def _progress_reference_m(label: dict[str, np.ndarray]) -> float:
+    traj = np.asarray(label["cowp/candidates/trajectory"])
+    valid = label["cowp/candidates/valid"].astype(bool)
+    if "cowp/candidates/conventional_safe" in label:
+        mask = valid & label["cowp/candidates/conventional_safe"].astype(bool)
+    else:
+        mask = valid
+    if not np.any(mask):
+        mask = valid
+    vals = [_trajectory_progress_m(t) for t in traj[mask]]
+    return max(vals) if vals else 1.0
+
+
 def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str, np.ndarray]]) -> dict[str, float]:
     n = len(selected_indices)
     cf_count = 0
@@ -11,19 +30,30 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
     oprs = []
     hbcr = 0
     collision_or_offroad = 0
-    progress = []
+    fallback_count = 0
+    progress_m = []
+    progress_norm = []
     for k, label in zip(selected_indices, label_dicts):
+        ref_progress = max(_progress_reference_m(label), 1e-6)
         if k < 0:
-            collision_or_offroad += 1
+            # A negative index represents a conservative fallback that was not in
+            # the candidate lattice.  Count its progress as zero and expose a
+            # separate fallback rate instead of treating it as an automatic
+            # collision.  True closed-loop CR should come from simulator metrics.
+            fallback_count += 1
+            progress_m.append(0.0)
+            progress_norm.append(0.0)
             continue
         crit = label["cowp/critical/valid"].astype(bool)
         conv = bool(label["cowp/candidates/conventional_safe"][k])
         collision_or_offroad += int(not conv)
         traj = label["cowp/candidates/trajectory"][k]
-        # Ego progress in meters.  The previous expression divided the
-        # displacement by itself, making EP almost always equal to 1 and hiding
-        # progress regressions introduced by conservative fallback/ablations.
-        progress.append(float(np.linalg.norm(traj[-1, :2] - traj[0, :2])))
+        p_m = _trajectory_progress_m(traj)
+        progress_m.append(p_m)
+        # Paper EP is route/progress normalized.  In label-only evaluation we do
+        # not have the route integral, so normalize by the best valid/conventional
+        # lattice progress and keep EP_m for debugging.
+        progress_norm.append(float(np.clip(p_m / ref_progress, 0.0, 1.0)))
         wit = label["cowp/witness/exists"][k].astype(bool) & crit
         cf_count += int(conv)
         false_safe += int(conv and np.any(wit))
@@ -33,7 +63,9 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
             hbcr += int(np.any(label["cowp/witness/min_safe_burden"][k, crit] > label["cowp/natural/beta"][crit]))
     return {
         "CR": float(collision_or_offroad / max(n, 1)),
-        "EP": float(np.mean(progress)) if progress else 0.0,
+        "EP": float(np.mean(progress_norm)) if progress_norm else 0.0,
+        "EP_m": float(np.mean(progress_m)) if progress_m else 0.0,
+        "FallbackRate": float(fallback_count / max(n, 1)),
         "FSR": float(false_safe / max(cf_count, 1)),
         "CBS": float(np.mean(cbs)) if cbs else 0.0,
         "OPR": float(np.mean(oprs)) if oprs else 0.0,

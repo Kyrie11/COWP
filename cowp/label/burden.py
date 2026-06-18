@@ -49,6 +49,55 @@ def kinematics(traj: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray, np.
     return speed, acc, jerk
 
 
+
+def _projected_progress(traj: np.ndarray, ref: np.ndarray | None = None) -> float:
+    """Progress along the natural-reference direction, in meters.
+
+    Euclidean start/end displacement underestimates stop-and-go losses on curved or
+    perturbed alternatives and cannot be compared robustly across response
+    profiles.  For burden we care about how much of the agent's natural forward
+    option was consumed by the ego-conditioned response.
+    """
+    if traj is None or len(traj) < 2:
+        return 0.0
+    if ref is not None and len(ref) >= 2:
+        direction = np.asarray(ref[-1, :2] - ref[0, :2], dtype=np.float32)
+    else:
+        direction = np.asarray(traj[-1, :2] - traj[0, :2], dtype=np.float32)
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-3:
+        # Fall back to integrated displacement for nearly stationary references.
+        diffs = np.diff(traj[:, :2], axis=0)
+        return float(np.sum(np.linalg.norm(diffs, axis=-1))) if len(diffs) else 0.0
+    direction = direction / norm
+    return float(np.dot(np.asarray(traj[-1, :2] - traj[0, :2], dtype=np.float32), direction))
+
+
+def _mean_speed(traj: np.ndarray) -> float:
+    if traj is None or len(traj) == 0:
+        return 0.0
+    if traj.shape[1] >= 5:
+        return float(np.nanmean(np.linalg.norm(traj[:, 3:5], axis=-1)))
+    return 0.0
+
+
+def _infer_progress_losses(agent_traj: np.ndarray, natural_ref: np.ndarray | None) -> tuple[float, float]:
+    """Infer progress loss and equivalent delay from a natural reference.
+
+    The label engine often knows that an agent had priority, but the response
+    generator historically did not pass explicit arrival-order or gap-loss
+    scalars into the burden function.  This helper recovers those quantities from
+    the ego-conditioned response versus the natural trajectory, enabling PA/GS
+    mechanism tokens instead of collapsing all normative violations into AY/OR.
+    """
+    if natural_ref is None or len(natural_ref) < 2 or agent_traj is None or len(agent_traj) < 2:
+        return 0.0, 0.0
+    progress_nat = _projected_progress(natural_ref, natural_ref)
+    progress_tau = _projected_progress(agent_traj, natural_ref)
+    progress_loss_m = max(0.0, progress_nat - progress_tau)
+    delay_s = progress_loss_m / max(_mean_speed(natural_ref), 0.5)
+    return float(progress_loss_m), float(delay_s)
+
 def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: dict, object_type: int = 1, natural_ref: np.ndarray | None = None, option_loss: float = 0.0, rho: PriorityRelation = PriorityRelation.UNKNOWN, arrival_order_lost_s: float = 0.0, gap_loss_m: float = 0.0) -> np.ndarray:
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     prof = _profile_for_type(cfg, object_type)
@@ -67,13 +116,14 @@ def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: 
     j_hard = float(prof.get("j_hard", 8.0))
     jerk_excess = np.maximum(0.0, np.abs(jerk) - j_comf) / max(j_hard - j_comf, 1e-6)
     b_jerk = float(np.clip(np.mean(jerk_excess) if len(jerk_excess) else 0.0, 0.0, 2.0))
+    inferred_progress_loss_m, inferred_delay_s = _infer_progress_losses(agent_traj, natural_ref)
+    effective_delay_s = max(float(arrival_order_lost_s), inferred_delay_s)
+    effective_gap_loss_m = max(float(gap_loss_m), inferred_progress_loss_m)
+
     b_prog = 0.0
     if natural_ref is not None and len(natural_ref):
-        progress_nat = float(np.linalg.norm(natural_ref[-1, :2] - natural_ref[0, :2]))
-        progress_tau = float(np.linalg.norm(agent_traj[-1, :2] - agent_traj[0, :2])) if len(agent_traj) else 0.0
-        loss_m = max(0.0, progress_nat - progress_tau)
-        b_prog = 0.5 * loss_m / max(float(prof.get("progress_loss_norm_m", 20.0)), 1e-6)
-        b_prog += 0.5 * max(0.0, arrival_order_lost_s) / max(float(prof.get("delay_norm_s", 4.0)), 1e-6)
+        b_prog = 0.5 * inferred_progress_loss_m / max(float(prof.get("progress_loss_norm_m", 20.0)), 1e-6)
+        b_prog += 0.5 * max(0.0, effective_delay_s) / max(float(prof.get("delay_norm_s", 4.0)), 1e-6)
     b_prog = float(np.clip(b_prog, 0.0, 2.0))
     b_risk = 0.0
     if ego_traj is not None and len(ego_traj) and len(agent_traj):
@@ -88,9 +138,17 @@ def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: 
         b_risk = float(np.clip(np.mean(ttc_term + rss_term) if T else 0.0, 0.0, 2.0))
     b_option = float(np.clip(option_loss, 0.0, 2.0))
     b_norm = 0.0
-    if rho == PriorityRelation.AGENT_PRIORITY and arrival_order_lost_s > float(cfg.get("priority", {}).get("priority_delay_tolerance_s", 0.8)):
+    priority_cfg = cfg.get("priority", {})
+    delay_tol = float(priority_cfg.get("priority_delay_tolerance_s", 0.8))
+    progress_tol = float(priority_cfg.get("priority_progress_loss_tolerance_m", 5.0))
+    gap_tol = float(priority_cfg.get("gap_loss_threshold_m", 6.0))
+    # Priority-advantage loss: an agent with nominal priority is delayed or loses
+    # material progress because the ego candidate occupies the conflict/gap.
+    if rho == PriorityRelation.AGENT_PRIORITY and (effective_delay_s > delay_tol or inferred_progress_loss_m > progress_tol):
         b_norm += 1.0
-    if gap_loss_m > float(cfg.get("priority", {}).get("gap_loss_threshold_m", 6.0)):
+    # Gap-space loss: even without a strict right-of-way relation, ego may consume
+    # a merge/crossing option that would otherwise remain available.
+    if effective_gap_loss_m > gap_tol:
         b_norm += 1.0
     b_norm = float(np.clip(b_norm, 0.0, 2.0))
     return np.asarray([b_acc, b_jerk, b_prog, b_risk, b_option, b_norm], dtype=np.float32)

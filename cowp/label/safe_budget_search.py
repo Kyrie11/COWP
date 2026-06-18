@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from cowp.core.constants import PriorityRelation
 from cowp.geometry.collision import unsafe_between
 from cowp.label.burden import compute_burden
 
@@ -72,6 +73,7 @@ def typed_safe_budget_search(
     object_type: int,
     cfg: dict,
     natural_ref: np.ndarray | None = None,
+    rho: PriorityRelation = PriorityRelation.UNKNOWN,
 ) -> list[tuple[np.ndarray, str, float]]:
     """Candidate-conditioned typed safe-budget response search.
 
@@ -91,7 +93,7 @@ def typed_safe_budget_search(
     for prof in profiles:
         tr = rollout_accel_schedule(current, horizon, dt, prof.schedule, lateral_offset_m=prof.lateral_offset_m)
         unsafe = unsafe_between(ego_candidate, tr, cfg, agent_type=object_type)
-        burden, comps = compute_burden(tr, ego_candidate, cfg, object_type, natural_ref=natural_ref)
+        burden, comps = compute_burden(tr, ego_candidate, cfg, object_type, natural_ref=natural_ref, rho=rho)
         priority_cost = 0.05 * prof.priority + (beta_margin if prof.hard else 0.0)
         # Penalize option component for hard profiles even when collision-free, so
         # the search prefers natural/comfort-preserving responses when available.

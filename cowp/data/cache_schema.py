@@ -47,6 +47,7 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/witness/min_safe_burden": FieldSpec(("K", "A"), "f"),
     "cowp/witness/natural_conflict_mass": FieldSpec(("K", "A"), "f"),
     "cowp/witness/natural_conflict_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
+    "cowp/witness/natural_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
     "cowp/witness/low_safe_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
     "cowp/witness/opr": FieldSpec(("K", "A"), "f"),
     "cowp/witness/c_i": FieldSpec(("K", "A"), "f"),

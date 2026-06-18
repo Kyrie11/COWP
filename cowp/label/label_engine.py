@@ -84,6 +84,7 @@ def build_labels_for_scene(
         "cowp/witness/min_safe_burden": witness["min_safe_burden"],
         "cowp/witness/natural_conflict_mass": witness["natural_conflict_mass"],
         "cowp/witness/natural_conflict_mass_by_source": witness["natural_conflict_mass_by_source"],
+        "cowp/witness/natural_mass_by_source": witness["natural_mass_by_source"],
         "cowp/witness/low_safe_mass_by_source": witness["low_safe_mass_by_source"],
         "cowp/witness/opr": witness["opr"],
         "cowp/witness/c_i": witness["c_i"],
