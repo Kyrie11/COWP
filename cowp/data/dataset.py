@@ -9,23 +9,37 @@ def _restore_key(key: str) -> str:
     return key.replace("__", "/")
 
 
+def _first_array(data: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
+    for name in names:
+        arr = data.get(name)
+        if arr is not None:
+            return np.asarray(arr)
+    return None
+
+
 def _infer_agent_count(data: dict[str, np.ndarray]) -> int | None:
     """Infer the number of model-visible WOMD agents in one cache item.
 
-    Proto labels may contain original Scenario track indices, while WOMD
-    tf.Example tensors expose a fixed padded agent dimension.  Training must not
-    gather an agent embedding for a track index that is not present in those
-    tensors.
+    Tensor-cache files may store temporal WOMD fields flattened as [N*T].  Agent
+    count must therefore be inferred primarily from current/id fields ([N]), not
+    from past arrays ([N*T]).
     """
+    # Already-shaped model history: [N,H,D] for one sample, or rarely [N,D].
+    hist = _first_array(data, ("state/history", "womd/state/history"))
+    if hist is not None and hist.ndim >= 2:
+        return int(hist.shape[0])
+
     for key in (
-        "state/history",
-        "womd/state/history",
         "state/current/x",
         "womd/state/current/x",
+        "state/current/valid",
+        "womd/state/current/valid",
         "state/id",
         "womd/state/id",
-        "state/past/x",
-        "womd/state/past/x",
+        "state/agent_valid",
+        "womd/state/agent_valid",
+        "state/is_sdc",
+        "womd/state/is_sdc",
     ):
         arr = data.get(key)
         if arr is None:
@@ -33,11 +47,46 @@ def _infer_agent_count(data: dict[str, np.ndarray]) -> int | None:
         arr = np.asarray(arr)
         if arr.ndim == 0:
             continue
-        if key.endswith("history") and arr.ndim >= 2:
-            return int(arr.shape[0])
-        # Per-sample WOMD fields are normally [N], [N,1] or [N,T].
         return int(arr.shape[0])
+
+    # Last-resort temporal-only inference.  WOMD past has 10 steps; if the flat
+    # size is divisible by 10, recover N instead of returning N*T.
+    for key in ("state/past/x", "womd/state/past/x"):
+        arr = data.get(key)
+        if arr is None:
+            continue
+        arr = np.asarray(arr)
+        if arr.ndim >= 2:
+            return int(arr.shape[0])
+        if arr.ndim == 1 and arr.size % 10 == 0:
+            return int(arr.size // 10)
+        if arr.ndim == 1:
+            return int(arr.size)
     return None
+
+
+def _infer_agent_visible_mask(data: dict[str, np.ndarray], num_agents: int | None = None) -> np.ndarray | None:
+    """Infer which agent rows are visible to the model encoder.
+
+    This mirrors ``build_agent_history_from_womd`` as closely as possible without
+    importing torch: current-valid is preferred; otherwise any known agent row is
+    considered visible.
+    """
+    if num_agents is None:
+        num_agents = _infer_agent_count(data)
+    if num_agents is None or num_agents <= 0:
+        return None
+    visible = np.ones(int(num_agents), dtype=bool)
+    cur_valid = _first_array(data, ("state/current/valid", "womd/state/current/valid", "state/agent_valid", "womd/state/agent_valid"))
+    if cur_valid is not None and cur_valid.size >= num_agents:
+        visible = np.asarray(cur_valid).reshape(-1)[:num_agents].astype(float) > 0.5
+    # Keep the SDC visible, matching the model fallback.
+    is_sdc = _first_array(data, ("state/is_sdc", "womd/state/is_sdc"))
+    if is_sdc is not None and is_sdc.size >= num_agents:
+        visible = visible | (np.asarray(is_sdc).reshape(-1)[:num_agents].astype(float) > 0.5)
+    elif num_agents > 0:
+        visible[0] = True
+    return visible
 
 
 def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: int | None = None) -> dict[str, np.ndarray]:
@@ -57,7 +106,12 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
     idx = np.asarray(data["cowp/critical/track_index"]).astype(np.int64, copy=False)
     if idx.ndim != 1:
         return data
-    visible = (idx >= 0) & (idx < int(num_agents))
+    in_range = (idx >= 0) & (idx < int(num_agents))
+    agent_visible = _infer_agent_visible_mask(data, num_agents)
+    visible = in_range.copy()
+    if agent_visible is not None and len(agent_visible) > 0:
+        safe_idx = np.clip(idx, 0, len(agent_visible) - 1)
+        visible = visible & agent_visible[safe_idx]
     old_valid = np.asarray(data.get("cowp/critical/valid", np.ones_like(visible, dtype=bool))).astype(bool, copy=False)
     new_valid = old_valid & visible
     if np.array_equal(new_valid, old_valid):

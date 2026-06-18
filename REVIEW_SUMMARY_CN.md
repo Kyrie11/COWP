@@ -33,3 +33,9 @@ endpoint spread 偏低主要影响 stress candidate 多样性和最终 ablation 
 3. 跑 learned-offline eval，确认模型是否学到 witness 与 candidate ranking。
 4. 用 Waymax 小规模 smoke test 跑 50–100 scenarios。
 5. 如果模型出现 candidate collapse 或 val/stress ablation 不明显，再考虑只重构 val/stress，而不是直接重构完整 train。
+
+## 第二轮复查结论：AMP、CUDA加载与 critical-agent 监督
+
+1. 本轮报错 `AttributeError: module 'torch.amp' has no attribute 'GradScaler'` 不是 CUDA 驱动问题，而是 PyTorch AMP API 版本兼容问题。训练脚本此前即使没有开启 `--amp` 也会构造 `torch.amp.GradScaler`，在部分 PyTorch 版本中会直接崩溃。现在已改为只有在 `--amp` 且 CUDA 训练时才创建 scaler，并兼容 `torch.cuda.amp.GradScaler`。
+2. 训练启动慢的主要原因通常不是没有使用 CUDA，而是默认 `positive_pair_oversampling=true` 会在正式训练前扫描一次全部 `.npz` cache 来计算采样权重。现在这一步有进度条，并会缓存权重，第二次启动会明显变快；若只想快速验证训练链路，可加 `--no-positive-oversampling`。
+3. 对 critical agent index 与 model-visible agent tensor 不一致的问题，当前 runtime masking 是安全的：不会把不可见 agent 的监督错误施加给被 clamp 的其他 agent。但它会丢弃不可见 critical slot 的监督信号。是否需要重建 labels/cache 应由 `11_diagnose_tensor_cache_visibility` 的结果决定：如果不可见比例很低，可以继续使用现有 cache；如果比例较高，建议重建 labels 或至少重建 tensor cache。

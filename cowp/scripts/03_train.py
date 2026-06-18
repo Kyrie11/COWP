@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -22,37 +24,154 @@ def _device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _sample_weights(ds: TorchCOWPDataset, *, positive_weight: float = 3.0, stress_weight: float = 2.0) -> torch.DoubleTensor:
+def _set_runtime_defaults(seed: int, device: torch.device) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+        try:
+            torch.backends.cudnn.benchmark = True
+        except Exception:
+            pass
+        if hasattr(torch, "set_float32_matmul_precision"):
+            try:
+                torch.set_float32_matmul_precision("high")
+            except Exception:
+                pass
+
+
+def _make_grad_scaler(enabled: bool):
+    """Return a CUDA GradScaler that works across old and new PyTorch APIs.
+
+    Some PyTorch versions expose AMP as ``torch.cuda.amp`` only, while newer
+    versions prefer ``torch.amp``.  Importantly, when AMP is disabled we return
+    ``None`` instead of constructing a scaler; this avoids crashes like
+    ``AttributeError: module 'torch.amp' has no attribute 'GradScaler'`` even for
+    non-AMP runs.
+    """
+    if not enabled:
+        return None
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            return torch.amp.GradScaler("cuda", enabled=True)
+        except TypeError:  # older signature: GradScaler(enabled=True)
+            return torch.amp.GradScaler(enabled=True)
+    if hasattr(torch, "cuda") and hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "GradScaler"):
+        return torch.cuda.amp.GradScaler(enabled=True)
+    return None
+
+
+def _autocast_context(device: torch.device, enabled: bool):
+    if not enabled:
+        return nullcontext()
+    if device.type == "cuda":
+        if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+            try:
+                return torch.amp.autocast("cuda", enabled=True)
+            except TypeError:
+                return torch.amp.autocast(device_type="cuda", enabled=True)
+        if hasattr(torch, "cuda") and hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
+            return torch.cuda.amp.autocast(enabled=True)
+    return nullcontext()
+
+
+def _dataset_signature(paths: list[Path]) -> dict[str, object]:
+    if not paths:
+        return {"num_files": 0, "mtime_ns_sum": 0, "size_sum": 0}
+    mtime_ns_sum = 0
+    size_sum = 0
+    for p in paths:
+        try:
+            st = p.stat()
+            mtime_ns_sum += int(st.st_mtime_ns)
+            size_sum += int(st.st_size)
+        except OSError:
+            pass
+    return {"num_files": len(paths), "mtime_ns_sum": int(mtime_ns_sum), "size_sum": int(size_sum)}
+
+
+def _read_sample_weight_from_npz(path: Path, *, positive_weight: float, stress_weight: float) -> float:
+    with np.load(path, allow_pickle=True) as data:
+        keys = {k.replace("__", "/"): k for k in data.files}
+        w = 1.0
+        if "cowp/witness/exists" in keys and np.asarray(data[keys["cowp/witness/exists"]]).any():
+            w *= positive_weight
+        if "cowp/candidates/false_safe" in keys and np.asarray(data[keys["cowp/candidates/false_safe"]]).any():
+            w *= stress_weight
+        if "cowp/candidates/noncoercive_feasible" in keys and np.asarray(data[keys["cowp/candidates/noncoercive_feasible"]]).any():
+            w *= 1.25
+        return float(w)
+
+
+def _sample_weights(
+    ds: TorchCOWPDataset,
+    *,
+    positive_weight: float = 3.0,
+    stress_weight: float = 2.0,
+    progress: bool = True,
+    cache: bool = True,
+) -> torch.DoubleTensor:
+    paths = [Path(p) for p in ds.base.paths]
+    sig = _dataset_signature(paths)
+    meta = {**sig, "positive_weight": float(positive_weight), "stress_weight": float(stress_weight), "version": 2}
+    cache_path = Path(ds.base.cache_dir) / f".cowp_sampler_weights_pw{positive_weight:g}_sw{stress_weight:g}_v2.npz"
+    if cache and cache_path.exists():
+        try:
+            with np.load(cache_path, allow_pickle=True) as cached:
+                cached_meta = json.loads(str(cached["metadata"].item()))
+                weights = cached["weights"].astype(np.float64)
+            if cached_meta == meta and len(weights) == len(paths):
+                print(f"Loaded sampler weights from {cache_path}")
+                return torch.as_tensor(weights, dtype=torch.double)
+        except Exception:
+            pass
+
+    print("Building sampler weights once. This scans cache metadata; pass --no-positive-oversampling to skip it.")
     weights: list[float] = []
-    # Read only light label arrays.  This runs once and makes the existing
-    # positive_pair_oversampling config real instead of a no-op.
-    for p in ds.base.paths:
-        with np.load(p, allow_pickle=True) as data:
-            keys = {k.replace("__", "/"): k for k in data.files}
-            w = 1.0
-            if "cowp/witness/exists" in keys and np.asarray(data[keys["cowp/witness/exists"]]).any():
-                w *= positive_weight
-            if "cowp/candidates/false_safe" in keys and np.asarray(data[keys["cowp/candidates/false_safe"]]).any():
-                w *= stress_weight
-            if "cowp/candidates/noncoercive_feasible" in keys and np.asarray(data[keys["cowp/candidates/noncoercive_feasible"]]).any():
-                w *= 1.25
-            weights.append(w)
-    return torch.as_tensor(weights, dtype=torch.double)
+    iterator = tqdm_iter(paths, enabled=progress, total=len(paths), desc="Build sampler weights", unit="file")
+    for p in iterator:
+        weights.append(_read_sample_weight_from_npz(p, positive_weight=positive_weight, stress_weight=stress_weight))
+    arr = np.asarray(weights, dtype=np.float64)
+    if cache:
+        try:
+            np.savez(cache_path, weights=arr, metadata=json.dumps(meta, ensure_ascii=False))
+            print(f"Saved sampler weights to {cache_path}")
+        except Exception as exc:
+            print(f"Warning: failed to save sampler weights cache {cache_path}: {exc}")
+    return torch.as_tensor(arr, dtype=torch.double)
 
 
-def _make_loader(ds: TorchCOWPDataset, cfg: dict, batch_size: int, *, shuffle: bool, oversample: bool) -> DataLoader:
+def _make_loader(
+    ds: TorchCOWPDataset,
+    cfg: dict,
+    batch_size: int,
+    *,
+    shuffle: bool,
+    oversample: bool,
+    use_cuda: bool,
+    progress: bool,
+    num_workers: int | None = None,
+    sampler_cache: bool = True,
+) -> DataLoader:
     sampler = None
     if shuffle and oversample:
-        sampler = WeightedRandomSampler(_sample_weights(ds), num_samples=len(ds), replacement=True)
+        sampler = WeightedRandomSampler(_sample_weights(ds, progress=progress, cache=sampler_cache), num_samples=len(ds), replacement=True)
         shuffle = False
+    nw = int(cfg["train"].get("num_workers", 0) if num_workers is None else num_workers)
+    kwargs: dict[str, Any] = {}
+    if nw > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = int(cfg["train"].get("prefetch_factor", 2))
     return DataLoader(
         ds,
         batch_size=batch_size,
         shuffle=shuffle,
         sampler=sampler,
-        num_workers=int(cfg["train"].get("num_workers", 0)),
+        num_workers=nw,
         collate_fn=collate_torch,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=bool(use_cuda),
+        **kwargs,
     )
 
 
@@ -131,7 +250,7 @@ def _run_epoch(
     sums: dict[str, float] = {}
     count = 0
     scaler_enabled = bool(amp and is_train and device.type == "cuda")
-    scaler = torch.amp.GradScaler("cuda", enabled=scaler_enabled)
+    scaler = _make_grad_scaler(scaler_enabled)
     context = torch.enable_grad() if is_train else torch.no_grad()
     desc = f"{'train' if is_train else 'val'} {stage} epoch {epoch}"
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
@@ -141,13 +260,13 @@ def _run_epoch(
             if is_train:
                 opt.zero_grad(set_to_none=True)
             autocast_enabled = bool(amp and device.type == "cuda")
-            with torch.amp.autocast("cuda", enabled=autocast_enabled):
+            with _autocast_context(device, autocast_enabled):
                 pred = model(batch, stage=stage)
                 batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
                 losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
                 loss = losses["loss"]
             if is_train:
-                if scaler_enabled:
+                if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -179,7 +298,10 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--resume", default=None)
     ap.add_argument("--output-dir", default="outputs/checkpoints")
+    ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
+    ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
     ap.add_argument("--no-positive-oversampling", action="store_true")
+    ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision for lower memory and faster training.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
     args = ap.parse_args()
@@ -187,20 +309,34 @@ def main() -> None:
     cfg = load_config(args.model_config, args.train_config, args.data_config)
     tcfg = cfg["train"]
     stage = args.stage or tcfg.get("stage", "witness")
-    device = _device(tcfg.get("device", "auto"))
+    device = _device(args.device or tcfg.get("device", "auto"))
+    _set_runtime_defaults(int(tcfg.get("seed", 2026)), device)
     batch_size = args.batch_size or int(tcfg.get("batch_size", 8))
+
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, batch_size={batch_size}")
+    if device.type == "cuda":
+        try:
+            print(f"CUDA device: {torch.cuda.get_device_name(device)}")
+        except Exception:
+            pass
 
     train_ds = TorchCOWPDataset(args.cache_dir or cfg["outputs"]["tensor_cache_dir"])
     val_ds = TorchCOWPDataset(args.val_cache_dir) if args.val_cache_dir else None
+    print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
     train_dl = _make_loader(
         train_ds,
         cfg,
         batch_size,
         shuffle=True,
         oversample=bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling,
+        use_cuda=device.type == "cuda",
+        progress=not args.no_progress,
+        num_workers=args.num_workers,
+        sampler_cache=not args.no_sampler_cache,
     )
-    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False) if val_ds is not None else None
+    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers) if val_ds is not None else None
 
+    print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)

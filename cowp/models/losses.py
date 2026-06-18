@@ -313,6 +313,11 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 
 def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     mask = batch["cowp/response/valid"].bool()
+    # Response labels are candidate-critical-response tensors [B,K,A,R].  Critical
+    # slots that are not visible in the WOMD input must be removed here as well;
+    # natural_loss and witness_loss already consume cowp/critical/valid directly.
+    if "cowp/critical/valid" in batch:
+        mask = mask & batch["cowp/critical/valid"].bool()[:, None, :, None]
     safe = F.binary_cross_entropy_with_logits(pred["safe_logits"], batch["cowp/response/is_safe"].float(), reduction="none")
     low = F.binary_cross_entropy_with_logits(pred["low_logits"], batch["cowp/response/is_low_burden"].float(), reduction="none")
     b = torch.abs(pred["burden_total"] - batch["cowp/response/burden_total"].float())

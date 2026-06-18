@@ -33,3 +33,30 @@ This package was revised after reviewing the paper, label diagnostics, and imple
 ## Data recommendation from uploaded diagnostics
 
 The current train/val labels are adequate to start training. The endpoint-spread warning is distributional rather than a schema or supervision failure: 5.46 m is below the 6.0 m soft target, but candidate count, critical-agent coverage, witness positive rate, false-safe rate, NCF candidate rate, natural alternatives, response safety, and train/val consistency are all strong enough for model training. Rebuilding the full label set solely to move endpoint spread from 5.46 m to 6.0 m is not the most cost-effective next step unless the first trained model shows poor candidate selection diversity or weak stress-set ablations.
+
+## 2026-06-18 second pass fixes
+
+### Fixed AMP compatibility crash
+- `cowp/scripts/03_train.py` no longer instantiates `torch.amp.GradScaler` when AMP is disabled.
+- Added compatibility helpers that support both new `torch.amp` and older `torch.cuda.amp` APIs.
+- The previous command without `--amp` now runs on PyTorch builds where `torch.amp.GradScaler` is unavailable.
+
+### Improved CUDA startup and loading diagnostics
+- Added startup prints for stage, device, CUDA availability, AMP, batch size, dataset sizes, and DataLoader settings.
+- Added `--device` and `--num-workers` command-line overrides.
+- Enabled CUDA runtime defaults (`cudnn.benchmark`, high matmul precision when available).
+- Added persistent DataLoader workers and prefetching when `num_workers > 0`.
+- Added cached sampler weights for positive/stress oversampling. The first run still scans cache metadata once; later runs load `.cowp_sampler_weights_*.npz`. Use `--no-positive-oversampling` to skip this scan entirely.
+
+### Strengthened critical-agent visibility masking
+- `mask_out_of_range_critical_agents` now infers model-visible agent count from WOMD current/id fields before flattened past tensors.
+- It also masks critical slots whose current-valid row is not visible, not only out-of-range indices.
+- `response_loss` now explicitly applies `cowp/critical/valid`, so response supervision cannot leak through an invisible/clipped critical agent.
+
+### Added tensor-cache visibility diagnostic
+- New script: `python -m cowp.scripts.11_diagnose_tensor_cache_visibility --cache-dir <tensor_cache>`.
+- It reports the fraction of valid critical slots that are visible to the model, out of range, or current-invalid.
+
+### Validation
+- `python -m compileall -q cowp`
+- `pytest -q`: 18 passed.
