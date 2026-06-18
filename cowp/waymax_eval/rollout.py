@@ -114,7 +114,10 @@ def learned_offline_candidate_eval(
     with torch.no_grad():
         for batch in iterator:
             batch = {k: v.to(dev) for k, v in batch.items() if torch.is_tensor(v)}
-            pred = model(batch)
+            pred = model(batch, stage="planner")
+            if "critical_mask" in pred:
+                batch = dict(batch)
+                batch["cowp/critical/valid"] = pred["critical_mask"].bool()
             alpha = float(cfg.get("planning", {}).get("alpha_opr_infer", cfg.get("ncf", {}).get("alpha_opr", 0.35)))
             batch_selected, _ = _select_from_learned(batch, pred, witness_threshold=witness_threshold, alpha_opr=alpha)
             selected.extend(batch_selected)

@@ -236,52 +236,63 @@ python cowp/scripts/09_build_waymax_rollout_dataset.py \
 ### Stage A：representation pretraining
 
 ```bash
-python cowp/scripts/03_train.py \
+python -m cowp.scripts.03_train \
   --data-config configs/data.yaml \
   --model-config configs/model.yaml \
   --train-config configs/train.yaml \
-  --cache-dir outputs/cowp/tensor_cache \
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \
+  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
   --stage representation \
   --epochs 5 \
+  --batch-size 64 \
   --output-dir outputs/checkpoints/representation
 ```
 
 ### Stage B：natural / response supervised training
 
 ```bash
-python cowp/scripts/03_train.py \
+python -m cowp.scripts.03_train \
   --data-config configs/data.yaml \
   --model-config configs/model.yaml \
   --train-config configs/train.yaml \
-  --cache-dir outputs/cowp/tensor_cache \
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \
+  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
   --stage response \
   --epochs 10 \
+  --batch-size 64 \
+  --resume outputs/checkpoints/representation/cowp_representation_best.pt \
   --output-dir outputs/checkpoints/response
 ```
 
 ### Stage C：witness training
 
 ```bash
-python cowp/scripts/03_train.py \
+python -m cowp.scripts.03_train \
   --data-config configs/data.yaml \
   --model-config configs/model.yaml \
   --train-config configs/train.yaml \
-  --cache-dir outputs/cowp/tensor_cache \
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \
+  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
   --stage witness \
   --epochs 10 \
+  --batch-size 64 \
+  --resume outputs/checkpoints/response/cowp_response_best.pt \
   --output-dir outputs/checkpoints/witness
 ```
 
 ### Stage D：planner / ranking training
 
 ```bash
-python cowp/scripts/03_train.py \
+python -m cowp.scripts.03_train \
   --data-config configs/data.yaml \
   --model-config configs/model.yaml \
   --train-config configs/train.yaml \
-  --cache-dir outputs/cowp/tensor_cache \
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \
+  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
   --stage planner \
   --epochs 5 \
+  --batch-size 64 \
+  --resume outputs/checkpoints/witness/cowp_witness_best.pt \
   --output-dir outputs/checkpoints/planner
 ```
 
@@ -302,32 +313,50 @@ python cowp/scripts/03_train.py \
 
 ## 6. 评测与论文表格
 
-### 6.1 单方法评测
-
+### 6.1 Label-only offline eval
+确认 rule certificate 的上界/ sanity check
 ```bash
-python cowp/scripts/04_eval_closed_loop.py \
+python -m cowp.scripts.04_eval_closed_loop \
   --data-config configs/data.yaml \
   --label-config configs/label.yaml \
   --eval-config configs/eval.yaml \
-  --labels-dir outputs/cowp/labels \
+  --labels-dir outputs/cowp/formal/labels_val \
+  --mode offline \
   --method cowp \
-  --output outputs/eval/cowp.json
+  --output outputs/eval/offline_cowp_val.json
 ```
 
-真实 Waymax 闭环现在支持直接加载 COWP checkpoint，不再必须依赖外部 `--policy-fn`：
+### Learned offline eval
+看模型是否学到了 witness / ranking:
 
 ```bash
-python cowp/scripts/04_eval_closed_loop.py \
+python -m cowp.scripts.04_eval_closed_loop \
+  --data-config configs/data.yaml \
+  --label-config configs/label.yaml \
+  --eval-config configs/eval.yaml \
+  --cache-dir outputs/cowp/formal/tensor_cache_val \
+  --mode learned_offline \
+  --method cowp \
+  --checkpoint outputs/checkpoints/planner/cowp_planner_best.pt \
+  --batch-size 64 \
+  --witness-threshold 0.5 \
+  --output outputs/eval/learned_offline_cowp_val.json
+```
+
+### Waymax closed-loop smoke test
+```bash
+python -m cowp.scripts.04_eval_closed_loop \
   --data-config configs/data.yaml \
   --label-config configs/label.yaml \
   --eval-config configs/eval.yaml \
   --mode waymax \
   --method cowp \
-  --checkpoint outputs/checkpoints/all/cowp_all_epoch019.pt \
+  --checkpoint outputs/checkpoints/planner/cowp_planner_best.pt \
   --num-scenarios 100 \
   --rollout-horizon-steps 80 \
   --waymax-standard-metrics \
-  --output outputs/eval/cowp_waymax.json
+  --witness-threshold 0.5 \
+  --output outputs/eval/cowp_waymax_smoke_100.json
 ```
 
 `--mode waymax --checkpoint` 会使用 `cowp/waymax_eval/policy_wrapper.py` 中的 `COWPWaymaxPolicy`：从 Waymax `SimulatorState` 提取当前 agent state，在线生成轻量 candidate lattice，调用 COWP 模型预测 witness/OPR/planner score，并转成 Waymax action。若你的 Waymax dynamics 使用不同 action 语义，可用 `--waymax-action-mode absolute_xy_yaw`，或继续通过 `--policy-fn module:function` 接入自定义 actor。

@@ -38,7 +38,7 @@ class COWPModel(nn.Module):
         self.history_steps = int(m.get("history_steps", 11))
         self.d_state = int(m.get("d_state", 11))
 
-    def forward(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+    def _agent_history_from_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         # Prefer real WOMD tf.Example tensors from tensor_cache.  Earlier versions
         # only checked state/history and state/all, so merged tensor caches silently
         # fell back to label-only natural trajectories.
@@ -62,42 +62,102 @@ class COWPModel(nn.Module):
             # tensor_cache with WOMD state features.
             nat = batch["cowp/natural/traj"].float()
             B, A = nat.shape[:2]
-            N = max(int(batch["cowp/critical/track_index"].max().item() + 1) if batch["cowp/critical/track_index"].numel() else A, A, 1)
+            max_idx = int(batch["cowp/critical/track_index"].max().item() + 1) if batch["cowp/critical/track_index"].numel() else A
+            N = max(max_idx, A, 1)
             agent_history = torch.zeros(B, N, 1, self.d_state, device=nat.device)
             agent_mask = torch.zeros(B, N, device=nat.device, dtype=torch.bool)
             for a in range(A):
-                idx = batch["cowp/critical/track_index"][:, a].clamp_min(0).long()
-                vals = nat[:, a, 0, 0]
+                idx = batch["cowp/critical/track_index"][:, a].clamp(0, N - 1).long()
+                vals = nat[:, a, 0, 0]  # [x,y,heading,vx,vy,length,width]
                 for b in range(B):
                     agent_history[b, idx[b], 0, 0] = vals[b, 0]
                     agent_history[b, idx[b], 0, 1] = vals[b, 1]
+                    agent_history[b, idx[b], 0, 3] = vals[b, 5].clamp_min(0.1)
+                    agent_history[b, idx[b], 0, 4] = vals[b, 6].clamp_min(0.1)
+                    agent_history[b, idx[b], 0, 5] = 1.5
                     agent_history[b, idx[b], 0, 6] = vals[b, 2]
-                    agent_history[b, idx[b], 0, 3:5] = vals[b, 3:5]
-                    agent_history[b, idx[b], 0, 7:9] = vals[b, 5:7]
+                    agent_history[b, idx[b], 0, 7] = vals[b, 3]
+                    agent_history[b, idx[b], 0, 8] = vals[b, 4]
+                    agent_history[b, idx[b], 0, 9] = torch.linalg.norm(vals[b, 3:5])
                     agent_history[b, idx[b], 0, 10] = 1.0
                     agent_mask[b, idx[b]] = True
             agent_mask[:, 0] = True
+        return agent_history, agent_mask
+
+    @staticmethod
+    def _safe_critical_indices(
+        critical_idx: torch.Tensor,
+        critical_mask: torch.Tensor,
+        agent_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Clip gather indices and mask invisible critical-agent slots.
+
+        Scenario proto labels store original track indices.  WOMD tf.Example model
+        input is padded to a fixed agent dimension.  If a selected critical track
+        lies outside the model-visible tensor, the slot must be ignored by all
+        losses instead of being clamped and supervised as another agent.
+        """
+        n_agent = int(agent_mask.shape[1])
+        in_range = (critical_idx >= 0) & (critical_idx < n_agent)
+        safe_idx = critical_idx.clamp(0, max(n_agent - 1, 0)).long()
+        visible = torch.gather(agent_mask.bool(), 1, safe_idx) if n_agent > 0 else torch.zeros_like(safe_idx, dtype=torch.bool)
+        safe_mask = critical_mask.bool() & in_range & visible
+        return safe_idx, safe_mask
+
+    def forward(self, batch: dict[str, torch.Tensor], stage: str | None = None) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+        stage = stage or "all"
+        agent_history, agent_mask = self._agent_history_from_batch(batch)
         cand_traj = batch["cowp/candidates/trajectory"].float()
         cand_mask = batch["cowp/candidates/valid"].bool()
         conflict = batch.get("map/conflict_regions")
         conflict_mask = batch.get("map/conflict_region_valid")
         enc = self.graph(agent_history, agent_mask, cand_traj, cand_mask, conflict.float() if conflict is not None else None, conflict_mask.bool() if conflict_mask is not None else None)
-        z_cand = self.candidate_encoder(cand_traj, batch["cowp/candidates/macro_type"].long())
-        if "z_candidate_context" in enc:
-            z_cand = z_cand + enc["z_candidate_context"]
-        critical_idx = batch["cowp/critical/track_index"].long().clamp_min(0)
-        critical_mask = batch.get("cowp/critical/valid")
-        critical_mask = critical_mask.bool() if critical_mask is not None else torch.ones_like(critical_idx, dtype=torch.bool)
-        natural = self.natural_decoder(enc["z_agent"], critical_idx)
-        response = self.response_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
-        witness = self.witness_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
-        witness_prob = torch.sigmoid(witness["exist_logits"])
-        planner_score = self.planner(
-            z_cand,
-            batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(),
-            witness_prob,
-            witness["opr"],
-            batch.get("cowp/candidates/conventional_safe"),
-            critical_mask=critical_mask,
-        )
-        return {"enc": enc, "natural": natural, "response": response, "witness": witness, "planner_score": planner_score}
+
+        raw_critical_idx = batch["cowp/critical/track_index"].long()
+        raw_critical_mask = batch.get("cowp/critical/valid")
+        raw_critical_mask = raw_critical_mask.bool() if raw_critical_mask is not None else torch.ones_like(raw_critical_idx, dtype=torch.bool)
+        critical_idx, critical_mask = self._safe_critical_indices(raw_critical_idx, raw_critical_mask, agent_mask)
+
+        # Decode only the heads needed by the current stage.  The old code always
+        # materialized response trajectories [B,K,A,R,T,7], making stage-A natural
+        # pretraining unnecessarily expensive and easy to OOM at batch size 64.
+        need_natural = stage in ("natural", "representation", "all")
+        need_response = stage in ("response", "all")
+        need_witness = stage in ("witness", "planner", "all")
+        need_planner = stage in ("planner", "all")
+
+        z_cand = None
+        out: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
+            "enc": enc,
+            "critical_idx": critical_idx,
+            "critical_mask": critical_mask,
+        }
+        if need_response or need_witness or need_planner:
+            z_cand = self.candidate_encoder(cand_traj, batch["cowp/candidates/macro_type"].long())
+            if "z_candidate_context" in enc:
+                z_cand = z_cand + enc["z_candidate_context"]
+            out["z_candidate"] = z_cand
+
+        if need_natural:
+            out["natural"] = self.natural_decoder(enc["z_agent"], critical_idx)
+        if need_response:
+            assert z_cand is not None
+            out["response"] = self.response_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
+        if need_witness:
+            assert z_cand is not None
+            witness = self.witness_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
+            out["witness"] = witness
+        if need_planner:
+            assert z_cand is not None
+            witness = out.get("witness")
+            assert isinstance(witness, dict)
+            witness_prob = torch.sigmoid(witness["exist_logits"])
+            out["planner_score"] = self.planner(
+                z_cand,
+                batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(),
+                witness_prob,
+                witness["opr"],
+                batch.get("cowp/candidates/conventional_safe"),
+                critical_mask=critical_mask,
+            )
+        return out

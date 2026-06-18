@@ -97,6 +97,58 @@ def _weighted_set_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: 
     w = weight.float() * valid.float()
     return (d_min * w).sum() / w.sum().clamp_min(1e-6)
 
+
+
+def _natural_mixture_nll(pred_traj: torch.Tensor, logits: torch.Tensor, gt_traj: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor, tau: float = 2.0) -> torch.Tensor:
+    """Order-invariant mixture supervision for natural alternatives.
+
+    Each labelled alternative is explained by a soft log-sum over predicted modes,
+    weighted by its counterfactual probability mass.  This avoids treating the
+    construction order OBS/NEU/PRIO as a fixed decoder slot order.
+    """
+    if not valid.any():
+        return pred_traj.sum() * 0.0
+    d = torch.linalg.norm(pred_traj[:, :, :, None, :, :2] - gt_traj[:, :, None, :, :, :2], dim=-1).mean(dim=-1)  # [B,A,Mp,Mg]
+    logp = F.log_softmax(logits, dim=-1)[:, :, :, None]
+    log_cover = torch.logsumexp(logp - d / max(float(tau), 1e-6), dim=2)  # [B,A,Mg]
+    w = weight.float() * valid.float()
+    return -(log_cover * w).sum() / w.sum().clamp_min(1e-6)
+
+
+def _natural_source_distribution_loss(
+    logits: torch.Tensor,
+    source_logits: torch.Tensor,
+    gt_source: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor,
+    source_count: int,
+) -> torch.Tensor:
+    if not valid.any():
+        return logits.sum() * 0.0
+    mix = F.softmax(logits, dim=-1)
+    src_prob = F.softmax(source_logits, dim=-1)
+    pred_src = (mix.unsqueeze(-1) * src_prob).sum(dim=2).clamp_min(1e-8)  # [B,A,S]
+    pred_log = torch.log(pred_src)
+    target = torch.zeros(*gt_source.shape[:2], source_count, device=logits.device, dtype=logits.dtype)
+    src = gt_source.clamp(0, source_count - 1)
+    target.scatter_add_(-1, src, weight.float() * valid.float())
+    target = target / target.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+    agent_mask = valid.any(dim=-1)
+    ce = -(target * pred_log).sum(dim=-1)
+    return masked_mean(ce, agent_mask)
+
+
+def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: torch.Tensor, gt_priority: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    if not valid.any():
+        return logits.sum() * 0.0
+    mix = F.softmax(logits, dim=-1)
+    pred_p = (mix * torch.sigmoid(priority_logits)).sum(dim=-1).clamp(1e-6, 1 - 1e-6)
+    w = weight.float() * valid.float()
+    tgt = (gt_priority.float() * w).sum(dim=-1) / w.sum(dim=-1).clamp_min(1e-6)
+    agent_mask = valid.any(dim=-1)
+    bce = F.binary_cross_entropy(pred_p, tgt, reduction="none")
+    return masked_mean(bce, agent_mask)
+
 def _branch_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
     if not branch_gt.any():
@@ -137,23 +189,34 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         # unordered observational / neutral / priority-preserving branches.
         traj = _weighted_set_minade(pred["traj"], gt_traj, mask, batch["cowp/natural/weight"].float())
         logits = pred["logits"]
-        target_w = batch["cowp/natural/weight"].float() * mask.float()
-        target_w = target_w / target_w.sum(dim=-1, keepdim=True).clamp_min(1e-6)
-        logp = F.log_softmax(logits, dim=-1)
-        kl = -(target_w * logp).sum(dim=-1)
-        mode = masked_mean(kl, crit & mask.any(dim=-1))
+        mode = _natural_mixture_nll(
+            pred["traj"],
+            logits,
+            gt_traj,
+            mask,
+            batch["cowp/natural/weight"].float(),
+            tau=float(weights.get("natural_mode_tau_m", 2.0)),
+        )
 
         if "source_logits" in pred:
-            source_ce = F.cross_entropy(pred["source_logits"][mask], gt_source[mask], reduction="mean")
+            source_ce = _natural_source_distribution_loss(
+                logits,
+                pred["source_logits"],
+                gt_source,
+                mask,
+                batch["cowp/natural/weight"].float(),
+                int(pred["source_logits"].shape[-1]),
+            )
         else:
             source_ce = pred["traj"].sum() * 0.0
         if "priority_logits" in pred:
-            priority = F.binary_cross_entropy_with_logits(
+            priority_loss = _natural_priority_expectation_loss(
+                logits,
                 pred["priority_logits"],
                 batch["cowp/natural/priority_preserved"].float(),
-                reduction="none",
+                mask,
+                batch["cowp/natural/weight"].float(),
             )
-            priority_loss = masked_mean(priority, mask)
         else:
             priority_loss = pred["traj"].sum() * 0.0
 
@@ -289,6 +352,46 @@ def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, to
     total = weights.get("candidate_ncf_cls", 1.0) * loss_ncf + weights.get("candidate_false_safe_cls", 0.5) * loss_fs
     return {"loss": total, "ncf": loss_ncf, "false_safe": loss_fs}
 
+
+
+
+def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Imitation term using the logged ego candidate when available.
+
+    Scores are minimized at inference, so ``-scores`` are used as selection logits.
+    """
+    mask = batch["cowp/candidates/valid"].bool()
+    logged = batch.get("cowp/candidates/is_logged")
+    if logged is None:
+        return scores.sum() * 0.0
+    target_mask = logged.bool() & mask
+    losses = []
+    for b in range(scores.shape[0]):
+        tgt = torch.where(target_mask[b])[0]
+        if tgt.numel() == 0:
+            continue
+        logits = torch.where(mask[b], -scores[b], torch.full_like(scores[b], -1e9))
+        losses.append(F.cross_entropy(logits.unsqueeze(0), tgt[:1]))
+    return torch.stack(losses).mean() if losses else scores.sum() * 0.0
+
+
+def planner_outcome_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Optional rollout/outcome surrogate when Waymax candidate labels exist."""
+    mask = batch["cowp/candidates/valid"].bool()
+    collision = batch.get("waymax/candidate_collision")
+    offroad = batch.get("waymax/candidate_offroad")
+    logdiv = batch.get("waymax/candidate_log_divergence")
+    if collision is None and offroad is None and logdiv is None:
+        return scores.sum() * 0.0
+    cost = torch.zeros_like(scores, dtype=torch.float32)
+    if collision is not None:
+        cost = cost + collision.float()
+    if offroad is not None:
+        cost = cost + offroad.float()
+    if logdiv is not None:
+        cost = cost + logdiv.float().clamp_min(0.0) / 10.0
+    prob = F.softmax(torch.where(mask, -scores, torch.full_like(scores, -1e9)), dim=-1)
+    return (prob * cost).sum(dim=-1).mean()
 
 def planner_ranking_loss(scores: torch.Tensor, ncf: torch.Tensor, false_safe: torch.Tensor, cand_mask: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
     losses = []

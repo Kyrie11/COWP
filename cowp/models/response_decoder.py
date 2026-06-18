@@ -18,7 +18,7 @@ class ResponseDecoder(nn.Module):
     def forward(self, z_agent: torch.Tensor, z_candidate: torch.Tensor, z_graph: torch.Tensor, critical_indices: torch.Tensor) -> dict[str, torch.Tensor]:
         B, K, D = z_candidate.shape
         A = critical_indices.shape[1]
-        idx = critical_indices.clamp_min(0).long().unsqueeze(-1).expand(B, A, D)
+        idx = critical_indices.clamp(0, max(z_agent.shape[1] - 1, 0)).long().unsqueeze(-1).expand(B, A, D)
         zcrit = torch.gather(z_agent, 1, idx)
         zc = z_candidate[:, :, None, :].expand(B, K, A, D)
         za = zcrit[:, None, :, :].expand(B, K, A, D)

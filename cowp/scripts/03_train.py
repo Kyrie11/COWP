@@ -12,7 +12,8 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
-from cowp.models.losses import candidate_classification_loss, natural_loss, planner_ranking_loss, response_loss, witness_loss
+from cowp.utils.progress import tqdm_iter
+from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_ranking_loss, response_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -81,10 +82,19 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             batch["cowp/candidates/false_safe"].bool(),
             batch["cowp/candidates/valid"].bool(),
         )
+        imitation = planner_imitation_loss(pred["planner_score"], batch)
+        outcome = planner_outcome_loss(pred["planner_score"], batch)
         cls = candidate_classification_loss(pred["planner_score"], batch, loss_weights)
         out["planner/ranking"] = rank
+        out["planner/imitation"] = imitation
+        out["planner/outcome"] = outcome
         out.update({f"planner/{k}": v for k, v in cls.items() if k != "loss"})
-        losses.append(loss_weights.get("ranking", 1.0) * rank + cls["loss"])
+        losses.append(
+            loss_weights.get("ranking", 1.0) * rank
+            + loss_weights.get("imitation", 1.0) * imitation
+            + loss_weights.get("closed_loop", 0.0) * outcome
+            + cls["loss"]
+        )
     if not losses:
         # Representation fallback: keep graph/planner path differentiable.
         losses.append(pred["planner_score"].mean() * 0.0 + torch.relu(pred["witness"]["opr"].mean() - 0.5))
@@ -92,28 +102,67 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
     return out
 
 
-def _run_epoch(model: COWPModel, dl: DataLoader, device: torch.device, stage: str, loss_weights: dict[str, float], opt: torch.optim.Optimizer | None = None) -> dict[str, float]:
+def _masked_batch_with_pred_critical(batch: dict[str, torch.Tensor], pred: dict[str, Any]) -> dict[str, torch.Tensor]:
+    """Make loss masks agree with model-visible critical-agent slots."""
+    crit_mask = pred.get("critical_mask")
+    if not torch.is_tensor(crit_mask) or "cowp/critical/valid" not in batch:
+        return batch
+    if torch.equal(batch["cowp/critical/valid"].bool(), crit_mask.bool()):
+        return batch
+    out = dict(batch)
+    out["cowp/critical/valid"] = crit_mask.bool()
+    return out
+
+
+def _run_epoch(
+    model: COWPModel,
+    dl: DataLoader,
+    device: torch.device,
+    stage: str,
+    loss_weights: dict[str, float],
+    opt: torch.optim.Optimizer | None = None,
+    *,
+    epoch: int = 0,
+    progress: bool = True,
+    amp: bool = False,
+) -> dict[str, float]:
     is_train = opt is not None
     model.train(is_train)
     sums: dict[str, float] = {}
     count = 0
+    scaler_enabled = bool(amp and is_train and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=scaler_enabled)
     context = torch.enable_grad() if is_train else torch.no_grad()
+    desc = f"{'train' if is_train else 'val'} {stage} epoch {epoch}"
+    iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
     with context:
-        for batch in dl:
+        for step, batch in enumerate(iterator, start=1):
             batch = _to_device(batch, device)
             if is_train:
                 opt.zero_grad(set_to_none=True)
-            pred = model(batch)
-            losses = _compute_losses(pred, batch, stage, loss_weights)
-            loss = losses["loss"]
+            autocast_enabled = bool(amp and device.type == "cuda")
+            with torch.amp.autocast("cuda", enabled=autocast_enabled):
+                pred = model(batch, stage=stage)
+                batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
+                losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
+                loss = losses["loss"]
             if is_train:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                opt.step()
+                if scaler_enabled:
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    scaler.step(opt)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    opt.step()
             bs = int(next(iter(batch.values())).shape[0]) if batch else 1
             count += bs
             for k, v in losses.items():
                 sums[k] = sums.get(k, 0.0) + float(v.detach().cpu()) * bs
+            if hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(loss=f"{float(loss.detach().cpu()):.4f}", seen=count, refresh=(step == 1 or step % 10 == 0))
     return {k: v / max(count, 1) for k, v in sums.items()}
 
 
@@ -131,6 +180,8 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--output-dir", default="outputs/checkpoints")
     ap.add_argument("--no-positive-oversampling", action="store_true")
+    ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision for lower memory and faster training.")
+    ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
     args = ap.parse_args()
 
     cfg = load_config(args.model_config, args.train_config, args.data_config)
@@ -166,10 +217,10 @@ def main() -> None:
     history = []
     best_val = float("inf")
     for epoch in range(epochs):
-        train_metrics = _run_epoch(model, train_dl, device, stage, loss_weights, opt)
+        train_metrics = _run_epoch(model, train_dl, device, stage, loss_weights, opt, epoch=epoch, progress=not args.no_progress, amp=args.amp)
         row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
         if val_dl is not None:
-            val_metrics = _run_epoch(model, val_dl, device, stage, loss_weights, None)
+            val_metrics = _run_epoch(model, val_dl, device, stage, loss_weights, None, epoch=epoch, progress=not args.no_progress, amp=args.amp)
             row.update({f"val/{k}": v for k, v in val_metrics.items()})
             val_loss = float(val_metrics.get("loss", float("inf")))
             if val_loss < best_val:

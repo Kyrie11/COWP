@@ -27,7 +27,7 @@ class NaturalDecoder(nn.Module):
 
     def forward(self, z_agent: torch.Tensor, critical_indices: torch.Tensor) -> dict[str, torch.Tensor]:
         B, A = critical_indices.shape
-        idx = critical_indices.clamp_min(0).long().unsqueeze(-1).expand(B, A, z_agent.shape[-1])
+        idx = critical_indices.clamp(0, max(z_agent.shape[1] - 1, 0)).long().unsqueeze(-1).expand(B, A, z_agent.shape[-1])
         z = torch.gather(z_agent, 1, idx)
         h = self.shared(z)
         traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)

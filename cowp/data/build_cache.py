@@ -16,6 +16,7 @@ from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy, valid_scene_basic
 from cowp.utils.progress import tqdm_iter
+from cowp.data.dataset import mask_out_of_range_critical_agents
 
 
 def _npz_key(key: str) -> str:
@@ -532,8 +533,19 @@ def build_tensor_cache(
             safe = _npz_key(key)
             arrays[f"womd__{safe}"] = np.frombuffer(val, dtype=np.uint8) if isinstance(val, bytes) else np.asarray(val)
         with np.load(label_path, allow_pickle=True) as label:
+            restored_for_mask = {}
             for key in label.files:
                 arrays[_npz_key(key)] = label[key]
+                restored_for_mask[key] = label[key]
+        # Mask labels for critical agents that are not visible in WOMD tf.Example
+        # padded state tensors.  This keeps future caches trainable even when the
+        # Scenario proto contains > max_agents tracks and a selected critical index
+        # exceeds the model input dimension.
+        restored_for_mask.update({k.replace("__", "/"): v for k, v in arrays.items() if k.startswith("womd__") or k.startswith("state__")})
+        mask_out_of_range_critical_agents(restored_for_mask)
+        for key, val in restored_for_mask.items():
+            if key.startswith("cowp/") or key.startswith("map/"):
+                arrays[_npz_key(key)] = val
 
         t_write = time.perf_counter()
         _write_npz(out_path, arrays, compress=compress)
