@@ -15,5 +15,6 @@ class CandidateEncoder(nn.Module):
         B, K, T, D = traj.shape
         h, _ = self.temporal(traj.reshape(B * K, T, D))
         pooled = h.mean(dim=1).reshape(B, K, -1)
-        macro = self.macro_embed(macro_type.clamp_min(0).long())
+        macro_idx = macro_type.long().clamp(0, self.macro_embed.num_embeddings - 1)
+        macro = self.macro_embed(macro_idx)
         return self.proj(pooled + macro)

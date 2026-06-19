@@ -594,3 +594,21 @@ python cowp/scripts/06_diagnose_dataset.py \
   --labels-dir outputs/cowp/labels_smoke \
   --output-dir outputs/cowp/diagnostics_smoke
 ```
+
+## Notes for v3 critical-agent alignment
+
+After this version, labels should be regenerated before rebuilding tensor cache so that each critical agent carries `cowp/critical/track_id`. The tensor-cache builder then maps Scenario track ids to WOMD tf.Example input rows and writes `cowp/critical/input_index`, which is what the model uses for gathering agent embeddings.
+
+Recommended rebuild order:
+
+```bash
+python -m cowp.scripts.01_build_labels_from_proto ... --output-dir <labels_train_new> ...
+python -m cowp.scripts.01_build_labels_from_proto ... --output-dir <labels_val_new> ...
+python -m cowp.scripts.02_build_tensor_cache ... --labels-dir <labels_train_new> --output-dir <tensor_cache_train_new> ...
+python -m cowp.scripts.02_build_tensor_cache ... --labels-dir <labels_val_new> --output-dir <tensor_cache_val_new> ...
+python -m cowp.scripts.11_diagnose_tensor_cache_visibility --cache-dir <tensor_cache_val_new> --output <visibility_val_new.json>
+```
+
+If `files_with_id_mapping` is close to `num_files` and `visible_critical_slot_ratio` is still low, the remaining issue is true WOMD input exclusion/current invisibility rather than a Scenario-index/input-row mismatch.
+
+For PyTorch/CUDA environments where DataLoader pinning fails with `CUDA error: invalid argument`, `03_train.py` now disables pinning automatically. You can force it off explicitly with `--no-pin-memory`.

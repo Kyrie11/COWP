@@ -107,48 +107,78 @@ class COWPModel(nn.Module):
     def forward(self, batch: dict[str, torch.Tensor], stage: str | None = None) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         stage = stage or "all"
         agent_history, agent_mask = self._agent_history_from_batch(batch)
-        cand_traj = batch["cowp/candidates/trajectory"].float()
-        cand_mask = batch["cowp/candidates/valid"].bool()
         conflict = batch.get("map/conflict_regions")
         conflict_mask = batch.get("map/conflict_region_valid")
-        enc = self.graph(agent_history, agent_mask, cand_traj, cand_mask, conflict.float() if conflict is not None else None, conflict_mask.bool() if conflict_mask is not None else None)
 
-        raw_critical_idx = batch["cowp/critical/track_index"].long()
-        raw_critical_mask = batch.get("cowp/critical/valid")
-        raw_critical_mask = raw_critical_mask.bool() if raw_critical_mask is not None else torch.ones_like(raw_critical_idx, dtype=torch.bool)
-        critical_idx, critical_mask = self._safe_critical_indices(raw_critical_idx, raw_critical_mask, agent_mask)
-
-        # Decode only the heads needed by the current stage.  The old code always
-        # materialized response trajectories [B,K,A,R,T,7], making stage-A natural
-        # pretraining unnecessarily expensive and easy to OOM at batch size 64.
+        # Decode only the heads needed by the current stage.  Natural alternatives
+        # should be conditioned on the root scene, not on a particular ego
+        # candidate.  Response/witness/planner heads use the candidate-conditioned
+        # graph.  This also avoids loading/encoding candidate tensors in Stage A.
         need_natural = stage in ("natural", "representation", "all")
         need_response = stage in ("response", "all")
         need_witness = stage in ("witness", "planner", "all")
         need_planner = stage in ("planner", "all")
+        need_candidate_context = need_response or need_witness or need_planner
 
+        raw_critical_idx = batch.get("cowp/critical/input_index", batch["cowp/critical/track_index"]).long()
+        raw_critical_mask = batch.get("cowp/critical/valid")
+        raw_critical_mask = raw_critical_mask.bool() if raw_critical_mask is not None else torch.ones_like(raw_critical_idx, dtype=torch.bool)
+        critical_idx, critical_mask = self._safe_critical_indices(raw_critical_idx, raw_critical_mask, agent_mask)
+
+        enc_scene = None
+        enc_cond = None
+        cand_traj = None
+        cand_mask = None
         z_cand = None
+
+        if need_natural:
+            enc_scene = self.graph(
+                agent_history,
+                agent_mask,
+                None,
+                None,
+                conflict.float() if conflict is not None else None,
+                conflict_mask.bool() if conflict_mask is not None else None,
+            )
+
+        if need_candidate_context:
+            cand_traj = batch["cowp/candidates/trajectory"].float()
+            cand_mask = batch["cowp/candidates/valid"].bool()
+            enc_cond = self.graph(
+                agent_history,
+                agent_mask,
+                cand_traj,
+                cand_mask,
+                conflict.float() if conflict is not None else None,
+                conflict_mask.bool() if conflict_mask is not None else None,
+            )
+        enc = enc_cond if enc_cond is not None else enc_scene
+        assert enc is not None
+
         out: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
             "enc": enc,
             "critical_idx": critical_idx,
             "critical_mask": critical_mask,
         }
-        if need_response or need_witness or need_planner:
+        if need_candidate_context:
+            assert cand_traj is not None and cand_mask is not None and enc_cond is not None
             z_cand = self.candidate_encoder(cand_traj, batch["cowp/candidates/macro_type"].long())
-            if "z_candidate_context" in enc:
-                z_cand = z_cand + enc["z_candidate_context"]
+            if "z_candidate_context" in enc_cond:
+                z_cand = z_cand + enc_cond["z_candidate_context"]
             out["z_candidate"] = z_cand
 
         if need_natural:
-            out["natural"] = self.natural_decoder(enc["z_agent"], critical_idx)
+            assert enc_scene is not None
+            out["natural"] = self.natural_decoder(enc_scene["z_agent"], critical_idx)
         if need_response:
-            assert z_cand is not None
-            out["response"] = self.response_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
+            assert z_cand is not None and enc_cond is not None
+            out["response"] = self.response_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)
         if need_witness:
-            assert z_cand is not None
-            witness = self.witness_decoder(enc["z_agent"], z_cand, enc["z_graph"], critical_idx)
+            assert z_cand is not None and enc_cond is not None
+            witness = self.witness_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)
             out["witness"] = witness
         if need_planner:
-            assert z_cand is not None
+            assert z_cand is not None and cand_mask is not None
             witness = out.get("witness")
             assert isinstance(witness, dict)
             witness_prob = torch.sigmoid(witness["exist_logits"])

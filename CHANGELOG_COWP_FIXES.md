@@ -1,62 +1,27 @@
-# COWP optimization notes
+# COWP fixes v3
 
-This package was revised after reviewing the paper, label diagnostics, and implementation.
+## Critical-agent/input-row alignment
 
-## Algorithm/data fixes
+- Added `cowp/critical/track_id` to label generation from Scenario protos.
+- Added tensor-cache merge-time id remapping from Scenario critical agent id to WOMD tf.Example input row.
+- Added `cowp/critical/input_index` as the model gather index, while preserving `cowp/critical/track_index` and `cowp/critical/track_index_original` for diagnostics.
+- Dataset/model now prefer `input_index` and still mask invalid/invisible critical slots.
+- `11_diagnose_tensor_cache_visibility` now diagnoses `input_index` when present and reports id-mapping coverage.
 
-- Propagated critical-agent priority relation (`rho`) into ego-conditioned safe-response burden computation and typed safe-budget search.
-- Added progress-loss based inference of delay/gap loss inside `compute_burden`, enabling PA/GS mechanism tokens instead of collapsing normative violations into AY/OR.
-- Normalized OPR by the mass of low-burden natural alternatives, and stored `cowp/witness/natural_mass_by_source` for source-resolved branch ablations.
-- Made branch-ablation planning recompute OPR as a ratio under enabled natural branches.
-- Changed offline fallback selection to prefer neutral/stop-like conventional plans and to avoid reporting a coercive candidate as selected when only a conservative fallback is appropriate.
-- Changed label-only EP to a normalized progress metric, with `EP_m` retained for meter-scale debugging and `FallbackRate` exposed separately.
+## Training robustness and speed
 
-## Configuration updates
+- Fixed CUDA pin-memory thread failures by auto-testing pinning once and disabling `pin_memory` when the local PyTorch/CUDA build raises `CUDA error: invalid argument`.
+- Added `--pin-memory` and `--no-pin-memory` overrides to `03_train.py`.
+- Added stage-aware dataset loading so Stage A no longer loads huge response/witness/planner labels.
+- Natural/representation stage no longer conditions the graph on ego candidates, matching the paper's scene-conditioned natural-alternative design and reducing compute.
 
-- Expanded ego candidate terminal speed/progress lattice, merge timing offsets, and lane-change durations/delays.
-- Reduced endpoint dedup tolerance to increase endpoint diversity.
-- Raised the diagnostic expectation for mechanism-token diversity.
+## Model/loss safety
 
-## Remaining limitations
+- Model forward prefers `cowp/critical/input_index` over Scenario `track_index`.
+- Candidate macro ids are clamped to the embedding range.
+- Response/witness/planner loss masks remain tied to model-visible critical slots.
 
-- The current code remains a practical label/certification engine plus training/evaluation interface, not a full neural reproduction of the paper's graph decoder and diffusion-style natural alternative generator.
-- Closed-loop claims still require generating Waymax-compatible rollout datasets and running simulator metrics; label diagnostics alone cannot prove closed-loop performance.
+## Validation
 
-## Second-pass fixes in this package
-
-- Changed natural-alternative trajectory supervision from slotwise L1 to weighted set-minADE so OBS/NEU/PRIO alternatives are trained as an unordered counterfactual set, matching the paper formulation better and avoiding arbitrary construction-order overfitting.
-- Added online COWP policy diagnostics during Waymax rollout: selected candidate, accepted-candidate count, fallback flag, selected-candidate witness probability, OPR, predicted burden and C_i.
-- Added closed-loop diagnostic aggregation in `04_eval_closed_loop.py` through `policy_diagnostic_summary`, so Waymax mode now reports model-predicted FSR/CBS/OPR-style signals in addition to raw rollout steps and optional official Waymax metrics.
-- Added robust scalar aggregation for official Waymax metric outputs via `aggregate_waymax_standard_metrics`.
-- Added regression tests for natural set-order invariance and closed-loop policy diagnostic aggregation.
-
-## Data recommendation from uploaded diagnostics
-
-The current train/val labels are adequate to start training. The endpoint-spread warning is distributional rather than a schema or supervision failure: 5.46 m is below the 6.0 m soft target, but candidate count, critical-agent coverage, witness positive rate, false-safe rate, NCF candidate rate, natural alternatives, response safety, and train/val consistency are all strong enough for model training. Rebuilding the full label set solely to move endpoint spread from 5.46 m to 6.0 m is not the most cost-effective next step unless the first trained model shows poor candidate selection diversity or weak stress-set ablations.
-
-## 2026-06-18 second pass fixes
-
-### Fixed AMP compatibility crash
-- `cowp/scripts/03_train.py` no longer instantiates `torch.amp.GradScaler` when AMP is disabled.
-- Added compatibility helpers that support both new `torch.amp` and older `torch.cuda.amp` APIs.
-- The previous command without `--amp` now runs on PyTorch builds where `torch.amp.GradScaler` is unavailable.
-
-### Improved CUDA startup and loading diagnostics
-- Added startup prints for stage, device, CUDA availability, AMP, batch size, dataset sizes, and DataLoader settings.
-- Added `--device` and `--num-workers` command-line overrides.
-- Enabled CUDA runtime defaults (`cudnn.benchmark`, high matmul precision when available).
-- Added persistent DataLoader workers and prefetching when `num_workers > 0`.
-- Added cached sampler weights for positive/stress oversampling. The first run still scans cache metadata once; later runs load `.cowp_sampler_weights_*.npz`. Use `--no-positive-oversampling` to skip this scan entirely.
-
-### Strengthened critical-agent visibility masking
-- `mask_out_of_range_critical_agents` now infers model-visible agent count from WOMD current/id fields before flattened past tensors.
-- It also masks critical slots whose current-valid row is not visible, not only out-of-range indices.
-- `response_loss` now explicitly applies `cowp/critical/valid`, so response supervision cannot leak through an invisible/clipped critical agent.
-
-### Added tensor-cache visibility diagnostic
-- New script: `python -m cowp.scripts.11_diagnose_tensor_cache_visibility --cache-dir <tensor_cache>`.
-- It reports the fraction of valid critical slots that are visible to the model, out of range, or current-invalid.
-
-### Validation
 - `python -m compileall -q cowp`
-- `pytest -q`: 18 passed.
+- `pytest -q`: 20 passed

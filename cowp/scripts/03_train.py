@@ -41,6 +41,29 @@ def _set_runtime_defaults(seed: int, device: torch.device) -> None:
                 pass
 
 
+
+
+def _cuda_pin_memory_works(device: torch.device) -> bool:
+    """Best-effort guard for PyTorch/CUDA builds whose pin-memory path crashes.
+
+    Some environments report ``torch.cuda.is_available() == True`` but raise
+    ``CUDA error: invalid argument`` inside DataLoader's pin-memory thread.  That
+    error happens before the batch reaches the model, so it is safer to detect it
+    once and disable pinning than to fail mid-epoch.
+    """
+    if device.type != "cuda":
+        return False
+    try:
+        x = torch.empty(1)
+        try:
+            _ = x.pin_memory(device)
+        except TypeError:
+            _ = x.pin_memory()
+        return True
+    except Exception as exc:
+        print(f"Warning: disabling DataLoader pin_memory because a test pin failed: {exc}")
+        return False
+
 def _make_grad_scaler(enabled: bool):
     """Return a CUDA GradScaler that works across old and new PyTorch APIs.
 
@@ -153,6 +176,7 @@ def _make_loader(
     progress: bool,
     num_workers: int | None = None,
     sampler_cache: bool = True,
+    pin_memory: bool = False,
 ) -> DataLoader:
     sampler = None
     if shuffle and oversample:
@@ -170,7 +194,7 @@ def _make_loader(
         sampler=sampler,
         num_workers=nw,
         collate_fn=collate_torch,
-        pin_memory=bool(use_cuda),
+        pin_memory=bool(use_cuda and pin_memory),
         **kwargs,
     )
 
@@ -303,6 +327,8 @@ def main() -> None:
     ap.add_argument("--no-positive-oversampling", action="store_true")
     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision for lower memory and faster training.")
+    ap.add_argument("--pin-memory", action="store_true", help="Force DataLoader pin_memory on when using CUDA.")
+    ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
     args = ap.parse_args()
 
@@ -312,16 +338,22 @@ def main() -> None:
     device = _device(args.device or tcfg.get("device", "auto"))
     _set_runtime_defaults(int(tcfg.get("seed", 2026)), device)
     batch_size = args.batch_size or int(tcfg.get("batch_size", 8))
+    if args.no_pin_memory:
+        pin_memory = False
+    elif args.pin_memory:
+        pin_memory = True
+    else:
+        pin_memory = _cuda_pin_memory_works(device)
 
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, batch_size={batch_size}")
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, batch_size={batch_size}, pin_memory={pin_memory}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
         except Exception:
             pass
 
-    train_ds = TorchCOWPDataset(args.cache_dir or cfg["outputs"]["tensor_cache_dir"])
-    val_ds = TorchCOWPDataset(args.val_cache_dir) if args.val_cache_dir else None
+    train_ds = TorchCOWPDataset(args.cache_dir or cfg["outputs"]["tensor_cache_dir"], stage=stage)
+    val_ds = TorchCOWPDataset(args.val_cache_dir, stage=stage) if args.val_cache_dir else None
     print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
     train_dl = _make_loader(
         train_ds,
@@ -333,8 +365,9 @@ def main() -> None:
         progress=not args.no_progress,
         num_workers=args.num_workers,
         sampler_cache=not args.no_sampler_cache,
+        pin_memory=pin_memory,
     )
-    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers) if val_ds is not None else None
+    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory) if val_ds is not None else None
 
     print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)

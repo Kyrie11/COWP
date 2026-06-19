@@ -16,7 +16,7 @@ from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.label_engine import build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy, valid_scene_basic
 from cowp.utils.progress import tqdm_iter
-from cowp.data.dataset import mask_out_of_range_critical_agents
+from cowp.data.dataset import align_critical_agents_to_womd_input, mask_out_of_range_critical_agents
 
 
 def _npz_key(key: str) -> str:
@@ -542,6 +542,7 @@ def build_tensor_cache(
         # Scenario proto contains > max_agents tracks and a selected critical index
         # exceeds the model input dimension.
         restored_for_mask.update({k.replace("__", "/"): v for k, v in arrays.items() if k.startswith("womd__") or k.startswith("state__")})
+        align_critical_agents_to_womd_input(restored_for_mask)
         mask_out_of_range_critical_agents(restored_for_mask)
         for key, val in restored_for_mask.items():
             if key.startswith("cowp/") or key.startswith("map/"):

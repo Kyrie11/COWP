@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cowp.data.dataset import _infer_agent_count, _infer_agent_visible_mask, _restore_key
+from cowp.data.dataset import _infer_agent_count, _infer_agent_visible_mask, _restore_key, align_critical_agents_to_womd_input
 from cowp.utils.progress import tqdm_iter
 
 
@@ -35,14 +35,22 @@ def diagnose_cache(cache_dir: str | Path, pattern: str = "*.npz", *, progress: b
         "max_agent_count": 0,
         "min_agent_count": None,
         "max_critical_index": -1,
+        "files_with_input_index": 0,
+        "files_with_id_mapping": 0,
         "examples": [],
     }
 
     for path in tqdm_iter(paths, enabled=progress, total=len(paths), desc="Diagnose critical visibility", unit="file"):
         d = _load_npz(path)
-        idx = np.asarray(d.get("cowp/critical/track_index", []), dtype=np.int64).reshape(-1)
+        align_critical_agents_to_womd_input(d)
+        idx_key = "cowp/critical/input_index" if "cowp/critical/input_index" in d else "cowp/critical/track_index"
+        idx = np.asarray(d.get(idx_key, []), dtype=np.int64).reshape(-1)
         if idx.size == 0:
             continue
+        if "cowp/critical/input_index" in d:
+            stats["files_with_input_index"] += 1
+        if np.asarray(d.get("cowp/critical/mapped_by_id", np.zeros_like(idx, dtype=bool))).any():
+            stats["files_with_id_mapping"] += 1
         valid = np.asarray(d.get("cowp/critical/valid", np.ones_like(idx, dtype=bool))).reshape(-1).astype(bool)
         n = _infer_agent_count(d)
         if n is None:
@@ -81,7 +89,10 @@ def diagnose_cache(cache_dir: str | Path, pattern: str = "*.npz", *, progress: b
             stats["examples"].append({
                 "file": path.name,
                 "num_agents": int(n),
+                "index_key": idx_key,
                 "critical_index": idx.tolist(),
+                "scenario_track_index": np.asarray(d.get("cowp/critical/track_index", []), dtype=np.int64).reshape(-1).tolist(),
+                "critical_track_id": np.asarray(d.get("cowp/critical/track_id", []), dtype=np.int64).reshape(-1).tolist(),
                 "critical_valid": valid.tolist(),
                 "input_visible": visible.tolist(),
             })
