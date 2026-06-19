@@ -71,17 +71,26 @@ class GraphEncoder(nn.Module):
 
     @staticmethod
     def _history_mean(agent_history: torch.Tensor) -> torch.Tensor:
+        """Return one state vector per agent from temporal history.
+
+        This function deliberately avoids Python-side tensor control flow such as
+        ``if empty.any()``.  PyTorch 2.1/2.2 Inductor can miscompile bool reductions
+        in Triton (``int1`` vs ``int8`` loop-carried variables), which was the
+        source of the Stage-A ``--compile`` crash.  The always-on ``torch.where``
+        is semantically identical and works in eager, AMP and compiled execution.
+        """
         if agent_history.ndim == 4:
             if agent_history.shape[-1] >= 11:
-                hist_valid = agent_history[..., 10:11].clamp(0.0, 1.0)
-                denom = hist_valid.sum(dim=2).clamp_min(1.0)
-                x_agent = (agent_history * hist_valid).sum(dim=2) / denom
-                empty = hist_valid.sum(dim=2).squeeze(-1) <= 0
-                if empty.any():
-                    x_agent = torch.where(empty.unsqueeze(-1), agent_history.mean(dim=2), x_agent)
-                return x_agent
-            return agent_history.mean(dim=2)
-        return agent_history
+                hist_valid = torch.nan_to_num(agent_history[..., 10:11].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
+                clean_history = torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0)
+                valid_sum = hist_valid.sum(dim=2)
+                denom = valid_sum.clamp_min(1.0)
+                x_agent = (clean_history * hist_valid).sum(dim=2) / denom
+                fallback = clean_history.mean(dim=2)
+                empty = valid_sum.squeeze(-1) <= 0
+                return torch.where(empty.unsqueeze(-1), fallback, x_agent)
+            return torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0).mean(dim=2)
+        return torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
     def _candidate_agent_features(self, x_agent: torch.Tensor, candidate_traj: torch.Tensor) -> torch.Tensor:
         """Return [B,K,N,8] edge features for candidate-conditioned interactions."""

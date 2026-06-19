@@ -234,13 +234,16 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
     always_prefixes = (
         "womd/state/",
         "state/",
-        "map/",
         "cowp/critical/",
     )
     wanted: set[str] = set()
     # prefixes are represented by ending slash markers in this helper
     for p in always_prefixes:
         wanted.add(p)
+    # The model only consumes these two map tensors.  Loading a broad ``map/``
+    # prefix is safe for old tiny label caches, but merged WOMD caches may contain
+    # much larger auxiliary map arrays; keep stage-aware loading tight.
+    wanted.update({"map/conflict_regions", "map/conflict_region_valid"})
     if stage in ("representation", "natural"):
         wanted.add("cowp/natural/")
     elif stage == "response":

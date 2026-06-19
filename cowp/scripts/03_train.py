@@ -311,6 +311,35 @@ def _run_epoch(
 
 
 
+def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Return a checkpoint state_dict that can be loaded without torch.compile.
+
+    OptimizedModule.state_dict() may prefix all weights with ``_orig_mod.``.
+    Saving the wrapped module directly makes later ``--resume`` into a normal
+    COWPModel fail.  Always save the original module state dict instead.
+    """
+    inner = getattr(model, "_orig_mod", None)
+    if inner is not None and isinstance(inner, torch.nn.Module):
+        return inner.state_dict()
+    return model.state_dict()
+
+
+def _load_model_state_robust(model: torch.nn.Module, state: dict[str, torch.Tensor]) -> None:
+    """Load checkpoints saved from either eager or compiled models."""
+    first_error: RuntimeError | None = None
+    try:
+        model.load_state_dict(state)
+        return
+    except RuntimeError as exc:
+        first_error = exc
+    if state and all(k.startswith("_orig_mod.") for k in state.keys()):
+        stripped = {k[len("_orig_mod."):]: v for k, v in state.items()}
+        model.load_state_dict(stripped)
+        return
+    assert first_error is not None
+    raise first_error
+
+
 def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: float, fused: bool = False) -> torch.optim.Optimizer:
     """Create AdamW, using fused CUDA implementation when available/requested."""
     kwargs: dict[str, Any] = {"lr": float(lr), "weight_decay": float(weight_decay)}
@@ -325,16 +354,31 @@ def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: fl
 
 
 def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
+    """Compile the model in a failure-tolerant way.
+
+    ``torch.compile`` performs most of its real compilation on the first forward
+    pass, so wrapping the ``torch.compile(...)`` call in try/except is not enough.
+    PyTorch 2.1/2.2 Inductor may fail on valid bool reductions with errors like
+    ``Loop-carried variable ... int1 ... int8``.  Suppressing Dynamo backend
+    errors keeps the training job alive by falling back to eager for unsupported
+    subgraphs instead of aborting the run.
+    """
     if not enabled:
         return model
     if not hasattr(torch, "compile"):
         print("Warning: torch.compile is not available in this PyTorch version; continuing without compile.")
         return model
     try:
-        print("Compiling model with torch.compile(mode='max-autotune') ...")
-        return torch.compile(model, mode="max-autotune")
+        import torch._dynamo  # type: ignore[attr-defined]
+
+        torch._dynamo.config.suppress_errors = True
+    except Exception:
+        pass
+    try:
+        print("Compiling model with torch.compile(mode='reduce-overhead', suppress_errors=True) ...")
+        return torch.compile(model, mode="reduce-overhead")
     except Exception as exc:
-        print(f"Warning: torch.compile failed, continuing without compile: {exc}")
+        print(f"Warning: torch.compile setup failed, continuing without compile: {exc}")
         return model
 
 def main() -> None:
@@ -353,6 +397,7 @@ def main() -> None:
     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
     ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
     ap.add_argument("--no-positive-oversampling", action="store_true")
+    ap.add_argument("--force-positive-oversampling", action="store_true", help="Force witness/candidate positive oversampling even for representation/natural stages.")
     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision for lower memory and faster training.")
     ap.add_argument("--pin-memory", action="store_true", help="Force DataLoader pin_memory on when using CUDA.")
@@ -385,12 +430,22 @@ def main() -> None:
     train_ds = TorchCOWPDataset(args.cache_dir or cfg["outputs"]["tensor_cache_dir"], stage=stage)
     val_ds = TorchCOWPDataset(args.val_cache_dir, stage=stage) if args.val_cache_dir else None
     print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
+    oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
+    # Representation/natural stages do not consume witness/candidate labels in the
+    # loss.  Scanning every compressed npz for witness/candidate positives can add
+    # 10+ minutes before the first batch and does not change the Stage-A objective.
+    # Keep it available behind --force-positive-oversampling for ablations.
+    if stage in {"representation", "natural"} and not args.force_positive_oversampling:
+        if oversample_enabled:
+            print(f"Skipping positive oversampling for stage={stage}; use --force-positive-oversampling to enable it.")
+        oversample_enabled = False
+
     train_dl = _make_loader(
         train_ds,
         cfg,
         batch_size,
         shuffle=True,
-        oversample=bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling,
+        oversample=oversample_enabled,
         use_cuda=device.type == "cuda",
         progress=not args.no_progress,
         num_workers=args.num_workers,
@@ -403,7 +458,7 @@ def main() -> None:
     model = COWPModel(cfg).to(device)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
+        _load_model_state_robust(model, ckpt["model"])
     model = _maybe_compile_model(model, bool(args.compile or tcfg.get("compile", False)))
     opt = _make_adamw_optimizer(
         model,
@@ -426,10 +481,10 @@ def main() -> None:
             val_loss = float(val_metrics.get("loss", float("inf")))
             if val_loss < best_val:
                 best_val = val_loss
-                torch.save({"model": model.state_dict(), "cfg": cfg, "epoch": epoch, "stage": stage, "val_loss": val_loss}, output_dir / f"cowp_{stage}_best.pt")
+                torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, "val_loss": val_loss}, output_dir / f"cowp_{stage}_best.pt")
         history.append(row)
         print(json.dumps(row, ensure_ascii=False))
-        torch.save({"model": model.state_dict(), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
+        torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
     with (output_dir / f"history_{stage}.json").open("w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
