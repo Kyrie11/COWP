@@ -36,3 +36,28 @@ def test_natural_loss_is_set_order_robust_for_trajectory_term():
     permuted = natural_loss(pred, _batch_from_gt(gt_perm, weight_perm), {"natural_traj_l1": 1.0, "natural_mode_ce": 0.0, "branch_source_ce": 0.0, "branch_minade": 0.0, "priority_preservation": 0.0, "neutral_consistency": 0.0, "diversity_loss": 0.0})
     assert base["traj"].item() == 0.0
     assert permuted["traj"].item() == 0.0
+
+
+def test_natural_source_distribution_loss_is_amp_dtype_safe():
+    B, A, M, T, D = 1, 2, 3, 2, 7
+    gt = torch.zeros(B, A, M, T, D)
+    weight = torch.ones(B, A, M, dtype=torch.float32) / M
+    batch = _batch_from_gt(gt, weight)
+    batch["cowp/natural/source"] = torch.tensor([[[0, 1, 2], [1, 2, 0]]], dtype=torch.long)
+    pred = {
+        "traj": torch.zeros(B, A, M, T, D, dtype=torch.float16),
+        "logits": torch.zeros(B, A, M, dtype=torch.float16),
+        "source_logits": torch.zeros(B, A, M, 4, dtype=torch.float16),
+        "priority_logits": torch.zeros(B, A, M, dtype=torch.float16),
+    }
+    losses = natural_loss(pred, batch, {
+        "natural_traj_l1": 0.0,
+        "natural_mode_ce": 0.0,
+        "branch_source_ce": 1.0,
+        "branch_minade": 0.0,
+        "priority_preservation": 0.0,
+        "neutral_consistency": 0.0,
+        "diversity_loss": 0.0,
+    })
+    assert torch.isfinite(losses["source"])
+    assert torch.isfinite(losses["loss"])

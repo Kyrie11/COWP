@@ -39,3 +39,11 @@ endpoint spread 偏低主要影响 stress candidate 多样性和最终 ablation 
 1. 本轮报错 `AttributeError: module 'torch.amp' has no attribute 'GradScaler'` 不是 CUDA 驱动问题，而是 PyTorch AMP API 版本兼容问题。训练脚本此前即使没有开启 `--amp` 也会构造 `torch.amp.GradScaler`，在部分 PyTorch 版本中会直接崩溃。现在已改为只有在 `--amp` 且 CUDA 训练时才创建 scaler，并兼容 `torch.cuda.amp.GradScaler`。
 2. 训练启动慢的主要原因通常不是没有使用 CUDA，而是默认 `positive_pair_oversampling=true` 会在正式训练前扫描一次全部 `.npz` cache 来计算采样权重。现在这一步有进度条，并会缓存权重，第二次启动会明显变快；若只想快速验证训练链路，可加 `--no-positive-oversampling`。
 3. 对 critical agent index 与 model-visible agent tensor 不一致的问题，当前 runtime masking 是安全的：不会把不可见 agent 的监督错误施加给被 clamp 的其他 agent。但它会丢弃不可见 critical slot 的监督信号。是否需要重建 labels/cache 应由 `11_diagnose_tensor_cache_visibility` 的结果决定：如果不可见比例很低，可以继续使用现有 cache；如果比例较高，建议重建 labels 或至少重建 tensor cache。
+
+
+## v4 额外修复
+
+- 本轮 `scatter_add_` 报错不是原版 cache 的 critical-agent 不适配导致，而是 `--amp` 下 natural source distribution loss 的 dtype 处理错误。
+- 已将 source-distribution target accumulation、mixture NLL、set minADE、priority expectation 等 natural 分支关键损失切到 fp32 计算，保留梯度回传并兼容 AMP。
+- natural branch minADE 现在按论文中的 OBS / neutral / priority-preserving 相对权重配置计算，不再只是简单三分支平均。
+- 旧 cache 仍会 runtime mask 不可见 critical agent；新 cache 仍建议通过 track_id -> WOMD state/id 生成 input_index。

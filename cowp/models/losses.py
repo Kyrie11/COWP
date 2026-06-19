@@ -92,7 +92,9 @@ def _weighted_set_minade(pred_traj: torch.Tensor, gt_traj: torch.Tensor, valid: 
     """
     if not valid.any():
         return pred_traj.sum() * 0.0
-    d = torch.linalg.norm(pred_traj[:, :, :, None, :, :2] - gt_traj[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
+    pred_f = pred_traj.float()
+    gt_f = gt_traj.float()
+    d = torch.linalg.norm(pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
     d_min = d.min(dim=2).values
     w = weight.float() * valid.float()
     return (d_min * w).sum() / w.sum().clamp_min(1e-6)
@@ -108,8 +110,10 @@ def _natural_mixture_nll(pred_traj: torch.Tensor, logits: torch.Tensor, gt_traj:
     """
     if not valid.any():
         return pred_traj.sum() * 0.0
-    d = torch.linalg.norm(pred_traj[:, :, :, None, :, :2] - gt_traj[:, :, None, :, :, :2], dim=-1).mean(dim=-1)  # [B,A,Mp,Mg]
-    logp = F.log_softmax(logits, dim=-1)[:, :, :, None]
+    pred_f = pred_traj.float()
+    gt_f = gt_traj.float()
+    d = torch.linalg.norm(pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1).mean(dim=-1)  # [B,A,Mp,Mg]
+    logp = F.log_softmax(logits.float(), dim=-1)[:, :, :, None]
     log_cover = torch.logsumexp(logp - d / max(float(tau), 1e-6), dim=2)  # [B,A,Mg]
     w = weight.float() * valid.float()
     return -(log_cover * w).sum() / w.sum().clamp_min(1e-6)
@@ -125,13 +129,21 @@ def _natural_source_distribution_loss(
 ) -> torch.Tensor:
     if not valid.any():
         return logits.sum() * 0.0
-    mix = F.softmax(logits, dim=-1)
-    src_prob = F.softmax(source_logits, dim=-1)
+
+    # AMP can make decoder logits fp16/bf16 while labels and weights stay fp32.
+    # scatter_add_ requires the destination and source dtypes to match, and the
+    # source-distribution CE is numerically safer in fp32 anyway.
+    logits_f = logits.float()
+    source_logits_f = source_logits.float()
+    mix = F.softmax(logits_f, dim=-1)
+    src_prob = F.softmax(source_logits_f, dim=-1)
     pred_src = (mix.unsqueeze(-1) * src_prob).sum(dim=2).clamp_min(1e-8)  # [B,A,S]
     pred_log = torch.log(pred_src)
-    target = torch.zeros(*gt_source.shape[:2], source_count, device=logits.device, dtype=logits.dtype)
-    src = gt_source.clamp(0, source_count - 1)
-    target.scatter_add_(-1, src, weight.float() * valid.float())
+
+    target = torch.zeros(*gt_source.shape[:2], source_count, device=logits.device, dtype=pred_src.dtype)
+    src = gt_source.long().clamp(0, source_count - 1)
+    src_weight = (weight.to(dtype=target.dtype) * valid.to(dtype=target.dtype))
+    target.scatter_add_(-1, src, src_weight)
     target = target / target.sum(dim=-1, keepdim=True).clamp_min(1e-6)
     agent_mask = valid.any(dim=-1)
     ce = -(target * pred_log).sum(dim=-1)
@@ -141,8 +153,8 @@ def _natural_source_distribution_loss(
 def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: torch.Tensor, gt_priority: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     if not valid.any():
         return logits.sum() * 0.0
-    mix = F.softmax(logits, dim=-1)
-    pred_p = (mix * torch.sigmoid(priority_logits)).sum(dim=-1).clamp(1e-6, 1 - 1e-6)
+    mix = F.softmax(logits.float(), dim=-1)
+    pred_p = (mix * torch.sigmoid(priority_logits.float())).sum(dim=-1).clamp(1e-6, 1 - 1e-6)
     w = weight.float() * valid.float()
     tgt = (gt_priority.float() * w).sum(dim=-1) / w.sum(dim=-1).clamp_min(1e-6)
     agent_mask = valid.any(dim=-1)
@@ -223,7 +235,15 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         obs_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.OBS))
         neu_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.NEU))
         prio_minade = _branch_minade(pred["traj"], gt_traj, mask, gt_source, int(NaturalSource.PRIO))
-        branch_minade = (obs_minade + neu_minade + prio_minade) / 3.0
+        # Paper-aligned branch weighting: L_nat contains OBS, neutral and
+        # priority-preserving terms with separate coefficients.  Keep a single
+        # returned metric named branch_minade for logging, but compute it from the
+        # configured relative weights instead of an unweighted arithmetic mean.
+        w_obs = float(weights.get("obs_prediction", 1.0))
+        w_neu = float(weights.get("neutral", 0.5))
+        w_prio = float(weights.get("priority_rule", 0.5))
+        w_sum = max(w_obs + w_neu + w_prio, 1e-6)
+        branch_minade = (w_obs * obs_minade + w_neu * neu_minade + w_prio * prio_minade) / w_sum
 
         # Neutral consistency compares source-probability weighted predicted neutral
         # mean with the label neutral mean for each critical agent.
