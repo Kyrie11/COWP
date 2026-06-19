@@ -284,11 +284,15 @@ def _run_epoch(
             if is_train:
                 opt.zero_grad(set_to_none=True)
             autocast_enabled = bool(amp and device.type == "cuda")
+            # Only the model forward runs under AMP.  Losses are intentionally
+            # computed in fp32 outside autocast: this prevents CUDA AMP from
+            # rejecting unsafe probability-space BCE kernels and keeps scatter /
+            # masked reductions numerically stable.
             with _autocast_context(device, autocast_enabled):
                 pred = model(batch, stage=stage)
-                batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
-                losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
-                loss = losses["loss"]
+            batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
+            losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
+            loss = losses["loss"]
             if is_train:
                 if scaler is not None:
                     scaler.scale(loss).backward()
@@ -309,15 +313,8 @@ def _run_epoch(
     return {k: v / max(count, 1) for k, v in sums.items()}
 
 
-
-
 def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    """Return a checkpoint state_dict that can be loaded without torch.compile.
-
-    OptimizedModule.state_dict() may prefix all weights with ``_orig_mod.``.
-    Saving the wrapped module directly makes later ``--resume`` into a normal
-    COWPModel fail.  Always save the original module state dict instead.
-    """
+    """Return a checkpoint state_dict that can be loaded without torch.compile."""
     inner = getattr(model, "_orig_mod", None)
     if inner is not None and isinstance(inner, torch.nn.Module):
         return inner.state_dict()
@@ -356,22 +353,17 @@ def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: fl
 def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
     """Compile the model in a failure-tolerant way.
 
-    ``torch.compile`` performs most of its real compilation on the first forward
-    pass, so wrapping the ``torch.compile(...)`` call in try/except is not enough.
-    PyTorch 2.1/2.2 Inductor may fail on valid bool reductions with errors like
-    ``Loop-carried variable ... int1 ... int8``.  Suppressing Dynamo backend
-    errors keeps the training job alive by falling back to eager for unsupported
-    subgraphs instead of aborting the run.
+    torch.compile performs most real compilation at first forward.  Setting
+    Dynamo suppress_errors lets unsupported Inductor/Triton subgraphs fall back
+    to eager instead of aborting the training run.
     """
     if not enabled:
         return model
-    import torch
     if not hasattr(torch, "compile"):
         print("Warning: torch.compile is not available in this PyTorch version; continuing without compile.")
         return model
     try:
         import torch._dynamo  # type: ignore[attr-defined]
-
         torch._dynamo.config.suppress_errors = True
     except Exception:
         pass
@@ -381,6 +373,7 @@ def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
     except Exception as exc:
         print(f"Warning: torch.compile setup failed, continuing without compile: {exc}")
         return model
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train COWP model stages on COWP tensor cache.")
@@ -404,7 +397,7 @@ def main() -> None:
     ap.add_argument("--pin-memory", action="store_true", help="Force DataLoader pin_memory on when using CUDA.")
     ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
-    ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. First epoch may be slower.")
+    ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. Unsupported subgraphs fall back to eager.")
     ap.add_argument("--fused-adamw", action="store_true", help="Use fused CUDA AdamW when supported.")
     args = ap.parse_args()
 
@@ -421,7 +414,8 @@ def main() -> None:
     else:
         pin_memory = _cuda_pin_memory_works(device)
 
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={args.compile or bool(tcfg.get('compile', False))}, batch_size={batch_size}, pin_memory={pin_memory}")
+    compile_enabled = bool(args.compile or tcfg.get("compile", False))
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
@@ -432,10 +426,9 @@ def main() -> None:
     val_ds = TorchCOWPDataset(args.val_cache_dir, stage=stage) if args.val_cache_dir else None
     print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
     oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
-    # Representation/natural stages do not consume witness/candidate labels in the
-    # loss.  Scanning every compressed npz for witness/candidate positives can add
-    # 10+ minutes before the first batch and does not change the Stage-A objective.
-    # Keep it available behind --force-positive-oversampling for ablations.
+    # Representation/natural stages do not consume witness/candidate labels.
+    # Scanning every npz for those labels can add many minutes before the first
+    # batch and does not change the Stage-A objective.
     if stage in {"representation", "natural"} and not args.force_positive_oversampling:
         if oversample_enabled:
             print(f"Skipping positive oversampling for stage={stage}; use --force-positive-oversampling to enable it.")
@@ -460,7 +453,7 @@ def main() -> None:
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         _load_model_state_robust(model, ckpt["model"])
-    model = _maybe_compile_model(model, bool(args.compile or tcfg.get("compile", False)))
+    model = _maybe_compile_model(model, compile_enabled)
     opt = _make_adamw_optimizer(
         model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),

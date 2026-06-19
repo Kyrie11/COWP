@@ -240,9 +240,9 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
     # prefixes are represented by ending slash markers in this helper
     for p in always_prefixes:
         wanted.add(p)
-    # The model only consumes these two map tensors.  Loading a broad ``map/``
-    # prefix is safe for old tiny label caches, but merged WOMD caches may contain
-    # much larger auxiliary map arrays; keep stage-aware loading tight.
+    # The model only consumes these two map tensors.  Loading broad ``map/`` or
+    # ``waymax/`` prefixes in Stage A can read large arrays that the loss never
+    # uses, slowing every batch without changing the objective.
     wanted.update({"map/conflict_regions", "map/conflict_region_valid"})
     if stage in ("representation", "natural"):
         wanted.add("cowp/natural/")
@@ -261,6 +261,7 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/witness/",
         })
     elif stage == "planner":
+        wanted.add("waymax/")
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -271,7 +272,6 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
             "cowp/witness/",
-            "waymax/",
         })
     return wanted
 
@@ -304,45 +304,6 @@ class COWPNpzDataset:
         return mask_out_of_range_critical_agents(out)
 
 
-
-
-def _stage_load_key_allowed(key: str, wanted: set[str] | None) -> bool:
-    # Always load the minimal keys needed for critical-agent id mapping and
-    # visibility masking.  Other heavy tensors are controlled by stage prefixes.
-    mapping_keys = {
-        "cowp/critical/track_index",
-        "cowp/critical/track_id",
-        "cowp/critical/input_index",
-        "cowp/critical/valid",
-        "state/id",
-        "womd/state/id",
-        "state/current/valid",
-        "womd/state/current/valid",
-        "state/agent_valid",
-        "womd/state/agent_valid",
-        "state/is_sdc",
-        "womd/state/is_sdc",
-    }
-    return key in mapping_keys or _key_allowed(key, wanted)
-
-
-def _load_npz_for_stage(path: Path, wanted: set[str] | None) -> dict[str, np.ndarray]:
-    """Load only arrays required by the current training stage.
-
-    A merged WOMD+COWP cache can contain large candidate, response and witness
-    tensors.  Loading all arrays and filtering afterwards makes representation /
-    natural pretraining I/O-bound.  NumPy's ``NpzFile`` lazily decompresses arrays,
-    so selecting keys before ``data[key]`` substantially reduces per-batch latency.
-    """
-    out: dict[str, np.ndarray] = {}
-    with np.load(path, allow_pickle=True) as data:
-        for raw_key in data.files:
-            key = _restore_key(raw_key)
-            if _stage_load_key_allowed(key, wanted):
-                out[key] = data[raw_key]
-    align_critical_agents_to_womd_input(out)
-    return mask_out_of_range_critical_agents(out)
-
 class TorchCOWPDataset:
     def __init__(self, cache_dir: str | Path, pattern: str = "*.npz", stage: str | None = None):
         self.base = COWPNpzDataset(cache_dir, pattern)
@@ -355,7 +316,7 @@ class TorchCOWPDataset:
     def __getitem__(self, idx: int):
         import torch
 
-        d = _load_npz_for_stage(Path(self.base.paths[idx]), self._wanted)
+        d = self.base[idx]
         out = {}
         for k, v in d.items():
             if not _key_allowed(k, self._wanted):

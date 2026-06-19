@@ -73,19 +73,16 @@ class GraphEncoder(nn.Module):
     def _history_mean(agent_history: torch.Tensor) -> torch.Tensor:
         """Return one state vector per agent from temporal history.
 
-        This function deliberately avoids Python-side tensor control flow such as
-        ``if empty.any()``.  PyTorch 2.1/2.2 Inductor can miscompile bool reductions
-        in Triton (``int1`` vs ``int8`` loop-carried variables), which was the
-        source of the Stage-A ``--compile`` crash.  The always-on ``torch.where``
-        is semantically identical and works in eager, AMP and compiled execution.
+        Avoid Python-side tensor control flow such as ``if empty.any()``.  Some
+        PyTorch Inductor/Triton versions miscompile bool reductions under
+        ``torch.compile``; always-on ``torch.where`` is equivalent and stable.
         """
         if agent_history.ndim == 4:
             if agent_history.shape[-1] >= 11:
                 hist_valid = torch.nan_to_num(agent_history[..., 10:11].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
                 clean_history = torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0)
                 valid_sum = hist_valid.sum(dim=2)
-                denom = valid_sum.clamp_min(1.0)
-                x_agent = (clean_history * hist_valid).sum(dim=2) / denom
+                x_agent = (clean_history * hist_valid).sum(dim=2) / valid_sum.clamp_min(1.0)
                 fallback = clean_history.mean(dim=2)
                 empty = valid_sum.squeeze(-1) <= 0
                 return torch.where(empty.unsqueeze(-1), fallback, x_agent)
