@@ -359,6 +359,7 @@ def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
     """
     if not enabled:
         return model
+    import torch
     if not hasattr(torch, "compile"):
         print("Warning: torch.compile is not available in this PyTorch version; continuing without compile.")
         return model
