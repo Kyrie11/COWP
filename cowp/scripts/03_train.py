@@ -309,6 +309,34 @@ def _run_epoch(
     return {k: v / max(count, 1) for k, v in sums.items()}
 
 
+
+
+def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: float, fused: bool = False) -> torch.optim.Optimizer:
+    """Create AdamW, using fused CUDA implementation when available/requested."""
+    kwargs: dict[str, Any] = {"lr": float(lr), "weight_decay": float(weight_decay)}
+    if fused and torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(model.parameters(), fused=True, **kwargs)
+        except TypeError:
+            pass
+        except RuntimeError as exc:
+            print(f"Warning: fused AdamW unavailable, falling back to standard AdamW: {exc}")
+    return torch.optim.AdamW(model.parameters(), **kwargs)
+
+
+def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        print("Warning: torch.compile is not available in this PyTorch version; continuing without compile.")
+        return model
+    try:
+        print("Compiling model with torch.compile(mode='max-autotune') ...")
+        return torch.compile(model, mode="max-autotune")
+    except Exception as exc:
+        print(f"Warning: torch.compile failed, continuing without compile: {exc}")
+        return model
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Train COWP model stages on COWP tensor cache.")
     ap.add_argument("--data-config", default="configs/data.yaml")
@@ -330,6 +358,8 @@ def main() -> None:
     ap.add_argument("--pin-memory", action="store_true", help="Force DataLoader pin_memory on when using CUDA.")
     ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
+    ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. First epoch may be slower.")
+    ap.add_argument("--fused-adamw", action="store_true", help="Use fused CUDA AdamW when supported.")
     args = ap.parse_args()
 
     cfg = load_config(args.model_config, args.train_config, args.data_config)
@@ -345,7 +375,7 @@ def main() -> None:
     else:
         pin_memory = _cuda_pin_memory_works(device)
 
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, batch_size={batch_size}, pin_memory={pin_memory}")
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={args.compile or bool(tcfg.get('compile', False))}, batch_size={batch_size}, pin_memory={pin_memory}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
@@ -374,10 +404,12 @@ def main() -> None:
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model"])
-    opt = torch.optim.AdamW(
-        model.parameters(),
+    model = _maybe_compile_model(model, bool(args.compile or tcfg.get("compile", False)))
+    opt = _make_adamw_optimizer(
+        model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),
         weight_decay=float(tcfg.get("weight_decay", 1e-4)),
+        fused=bool(args.fused_adamw or tcfg.get("fused_adamw", False)),
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
