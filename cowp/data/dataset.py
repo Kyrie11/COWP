@@ -10,6 +10,88 @@ def _restore_key(key: str) -> str:
     return key.replace("__", "/")
 
 
+def _canonicalize_state_aliases(data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Normalize WOMD tf.Example state keys to the model-facing ``state/*`` namespace.
+
+    Tensor caches produced by this project store raw tf.Example tensors as
+    ``womd/state/...`` while some older/debug caches store already-shaped tensors
+    as ``state/...``. Mixing those files in one DataLoader batch is dangerous if
+    collation intersects keys: the effective state input can disappear. We
+    canonicalize to ``state/...`` immediately after NPZ loading so equivalent
+    caches expose the same keys without duplicating tensors.
+    """
+    for key in list(data.keys()):
+        if not key.startswith("womd/state/"):
+            continue
+        canon = "state/" + key[len("womd/state/") :]
+        if canon not in data:
+            data[canon] = data[key]
+        del data[key]
+    return data
+
+
+def _has_model_state(data: dict[str, np.ndarray]) -> bool:
+    """Whether a sample contains enough encoder input for the COWP graph."""
+    if "state/history" in data or "state/all" in data:
+        return True
+    return _first_array(data, ("state/past/x",)) is not None and _first_array(data, ("state/current/x",)) is not None
+
+
+def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) -> list[str]:
+    """Return human-readable missing fields for a training stage.
+
+    Invalid/partial cache files should be skipped before batching. Otherwise one
+    incomplete item can remove required tensors from the whole batch and cause a
+    late ``KeyError`` inside the compiled model.
+    """
+    stage = stage or "all"
+    missing: list[str] = []
+    if not _has_model_state(data):
+        missing.append("state/history or state/all or state/{past,current}/x")
+    for key in ("cowp/critical/track_index", "cowp/critical/valid"):
+        if key not in data:
+            missing.append(key)
+    if stage in ("representation", "natural", "all"):
+        for key in (
+            "cowp/natural/traj",
+            "cowp/natural/valid",
+            "cowp/natural/weight",
+            "cowp/natural/source",
+            "cowp/natural/priority_preserved",
+        ):
+            if key not in data:
+                missing.append(key)
+    if stage in ("response", "witness", "planner", "all"):
+        for key in ("cowp/candidates/trajectory", "cowp/candidates/macro_type", "cowp/candidates/valid"):
+            if key not in data:
+                missing.append(key)
+    if stage in ("response", "all"):
+        for key in (
+            "cowp/response/valid",
+            "cowp/response/is_safe",
+            "cowp/response/is_low_burden",
+            "cowp/response/burden_total",
+        ):
+            if key not in data:
+                missing.append(key)
+    if stage in ("witness", "planner", "all"):
+        for key in (
+            "cowp/witness/exists",
+            "cowp/witness/token",
+            "cowp/witness/burden_total",
+            "cowp/witness/conflict_interval",
+            "cowp/witness/opr",
+            "cowp/witness/c_i",
+        ):
+            if key not in data:
+                missing.append(key)
+    if stage in ("planner", "all"):
+        for key in ("cowp/candidates/noncoercive_feasible", "cowp/candidates/false_safe"):
+            if key not in data:
+                missing.append(key)
+    return missing
+
+
 def _first_array(data: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
     for name in names:
         arr = data.get(name)
@@ -228,45 +310,21 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
     return data
 
 
-def _model_state_input_keys() -> set[str]:
-    """Return the minimal WOMD/state tensors needed by the model encoder.
-
-    Do not load broad ``state/`` prefixes during training: WOMD tf.Example caches
-    often contain large future tensors that are not used by the COWP model or any
-    stage-specific loss.  Loading them from every small NPZ file is a major CPU/I/O
-    bottleneck and explains low GPU memory/utilization even with large batches.
-    """
-    base: set[str] = {
-        "state/history",
-        "state/all",
-        "state/agent_valid",
-        "state/id",
-        "state/is_sdc",
-        "womd/state/history",
-        "womd/state/all",
-        "womd/state/agent_valid",
-        "womd/state/id",
-        "womd/state/is_sdc",
-    }
-    past_names = ("x", "y", "z", "length", "width", "height", "bbox_yaw", "heading", "yaw", "velocity_x", "velocity_y", "vx", "vy", "valid")
-    current_names = past_names
-    for prefix in ("state", "womd/state"):
-        for name in past_names:
-            base.add(f"{prefix}/past/{name}")
-        for name in current_names:
-            base.add(f"{prefix}/current/{name}")
-    return base
-
-
 def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
     if stage is None or stage == "all":
         return None
+    always_prefixes = (
+        "womd/state/",
+        "state/",
+        "cowp/critical/",
+    )
     wanted: set[str] = set()
-    # Keep only the encoder-visible state features plus critical-agent labels.
-    # Broad state prefixes would also load unused future tensors from WOMD caches.
-    wanted.update(_model_state_input_keys())
-    wanted.add("cowp/critical/")
-    # The model only consumes these two map tensors.
+    # prefixes are represented by ending slash markers in this helper
+    for p in always_prefixes:
+        wanted.add(p)
+    # The model only consumes these two map tensors.  Loading broad ``map/`` or
+    # ``waymax/`` prefixes in Stage A can read large arrays that the loss never
+    # uses, slowing every batch without changing the objective.
     wanted.update({"map/conflict_regions", "map/conflict_region_valid"})
     if stage in ("representation", "natural"):
         wanted.add("cowp/natural/")
@@ -322,13 +380,13 @@ class COWPNpzDataset:
         return len(self.paths)
 
     def load(self, idx: int, wanted: set[str] | None = None) -> dict[str, np.ndarray]:
-        """Load one NPZ item, materializing only arrays needed by this stage."""
         with np.load(self.paths[idx], allow_pickle=True) as data:
             out: dict[str, np.ndarray] = {}
             for raw_key in data.files:
                 key = _restore_key(raw_key)
                 if _key_allowed(key, wanted):
                     out[key] = data[raw_key]
+        _canonicalize_state_aliases(out)
         align_critical_agents_to_womd_input(out)
         return mask_out_of_range_critical_agents(out)
 
@@ -337,18 +395,35 @@ class COWPNpzDataset:
 
 
 class TorchCOWPDataset:
-    def __init__(self, cache_dir: str | Path, pattern: str = "*.npz", stage: str | None = None):
+    def __init__(self, cache_dir: str | Path, pattern: str = "*.npz", stage: str | None = None, *, skip_invalid: bool = True):
         self.base = COWPNpzDataset(cache_dir, pattern)
         self.stage = stage
         self._wanted = _wanted_keys_for_stage(stage)
+        self.skip_invalid = bool(skip_invalid)
 
     def __len__(self) -> int:
         return len(self.base)
 
+    def _load_valid_np(self, idx: int) -> dict[str, np.ndarray]:
+        last_missing: list[str] = []
+        last_path: Path | None = None
+        n = len(self.base)
+        for off in range(n if self.skip_invalid else 1):
+            j = (int(idx) + off) % n
+            d = self.base.load(j, self._wanted)
+            missing = _missing_required_for_stage(d, self.stage)
+            if not missing:
+                return d
+            last_missing = missing
+            last_path = self.base.paths[j]
+            if not self.skip_invalid:
+                break
+        raise KeyError(f"No valid COWP sample found for stage={self.stage!r}; last_path={last_path}; missing={last_missing}")
+
     def __getitem__(self, idx: int):
         import torch
 
-        d = self.base.load(idx, self._wanted)
+        d = self._load_valid_np(idx)
         out = {}
         for k, v in d.items():
             if not _key_allowed(k, self._wanted):
@@ -368,7 +443,12 @@ class TorchCOWPDataset:
 def collate_torch(batch):
     import torch
 
+    batch = [x for x in batch if isinstance(x, dict) and x]
+    if not batch:
+        return {}
     out = {}
+    # Dataset-level validation makes stage-required tensors present for every
+    # item. Intersecting keys is therefore safe and avoids fabricating labels.
     keys = set.intersection(*(set(x.keys()) for x in batch))
     optional_prefixes = ("scenario/", "dataset/", "womd/scenario/", "womd/roadgraph/", "roadgraph/")
     for k in keys:

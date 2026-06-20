@@ -34,11 +34,6 @@ def _set_runtime_defaults(seed: int, device: torch.device) -> None:
             torch.backends.cudnn.benchmark = True
         except Exception:
             pass
-        try:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-        except Exception:
-            pass
         if hasattr(torch, "set_float32_matmul_precision"):
             try:
                 torch.set_float32_matmul_precision("high")
@@ -182,7 +177,6 @@ def _make_loader(
     num_workers: int | None = None,
     sampler_cache: bool = True,
     pin_memory: bool = False,
-    prefetch_factor: int | None = None,
 ) -> DataLoader:
     sampler = None
     if shuffle and oversample:
@@ -192,7 +186,7 @@ def _make_loader(
     kwargs: dict[str, Any] = {}
     if nw > 0:
         kwargs["persistent_workers"] = True
-        kwargs["prefetch_factor"] = int(cfg["train"].get("prefetch_factor", 2) if prefetch_factor is None else prefetch_factor)
+        kwargs["prefetch_factor"] = int(cfg["train"].get("prefetch_factor", 2))
     return DataLoader(
         ds,
         batch_size=batch_size,
@@ -356,12 +350,12 @@ def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: fl
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
-def _maybe_compile_model(model: COWPModel, enabled: bool, *, backend: str = "inductor", mode: str = "reduce-overhead") -> torch.nn.Module:
+def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
     """Compile the model in a failure-tolerant way.
 
-    The default backend remains Inductor for speed.  ``--compile-backend aot_eager``
-    is provided as a safe fallback for PyTorch/Triton builds that still hit backend
-    compiler bugs after graph breaks.
+    torch.compile performs most real compilation at first forward.  Setting
+    Dynamo suppress_errors lets unsupported Inductor/Triton subgraphs fall back
+    to eager instead of aborting the training run.
     """
     if not enabled:
         return model
@@ -374,14 +368,9 @@ def _maybe_compile_model(model: COWPModel, enabled: bool, *, backend: str = "ind
         torch._dynamo.config.suppress_errors = True
     except Exception:
         pass
-    backend = str(backend or "inductor")
-    mode = str(mode or "reduce-overhead")
     try:
-        kwargs: dict[str, Any] = {"mode": mode}
-        if backend:
-            kwargs["backend"] = backend
-        print(f"Compiling model with torch.compile(backend={backend!r}, mode={mode!r}, suppress_errors=True) ...")
-        return torch.compile(model, **kwargs)
+        print("Compiling model with torch.compile(mode='reduce-overhead', suppress_errors=True) ...")
+        return torch.compile(model, mode="reduce-overhead")
     except Exception as exc:
         print(f"Warning: torch.compile setup failed, continuing without compile: {exc}")
         return model
@@ -410,9 +399,6 @@ def main() -> None:
     ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
     ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. Unsupported subgraphs fall back to eager.")
-    ap.add_argument("--compile-backend", default=None, choices=["inductor", "aot_eager", "eager"], help="torch.compile backend. Use aot_eager/eager if the local Inductor/Triton build fails.")
-    ap.add_argument("--compile-mode", default=None, help="torch.compile mode, e.g. reduce-overhead or default.")
-    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override DataLoader prefetch_factor when num_workers > 0.")
     ap.add_argument("--fused-adamw", action="store_true", help="Use fused CUDA AdamW when supported.")
     args = ap.parse_args()
 
@@ -430,9 +416,7 @@ def main() -> None:
         pin_memory = _cuda_pin_memory_works(device)
 
     compile_enabled = bool(args.compile or tcfg.get("compile", False))
-    compile_backend = args.compile_backend or str(tcfg.get("compile_backend", "inductor"))
-    compile_mode = args.compile_mode or str(tcfg.get("compile_mode", "reduce-overhead"))
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, compile_backend={compile_backend}, batch_size={batch_size}, pin_memory={pin_memory}")
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
@@ -462,16 +446,15 @@ def main() -> None:
         num_workers=args.num_workers,
         sampler_cache=not args.no_sampler_cache,
         pin_memory=pin_memory,
-        prefetch_factor=args.prefetch_factor,
     )
-    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory, prefetch_factor=args.prefetch_factor) if val_ds is not None else None
+    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory) if val_ds is not None else None
 
     print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         _load_model_state_robust(model, ckpt["model"])
-    model = _maybe_compile_model(model, compile_enabled, backend=compile_backend, mode=compile_mode)
+    model = _maybe_compile_model(model, compile_enabled)
     opt = _make_adamw_optimizer(
         model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),

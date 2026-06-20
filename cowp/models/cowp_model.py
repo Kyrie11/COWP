@@ -38,50 +38,118 @@ class COWPModel(nn.Module):
         self.history_steps = int(m.get("history_steps", 11))
         self.d_state = int(m.get("d_state", 11))
 
+    @staticmethod
+    def _first_tensor(batch: dict[str, torch.Tensor], names: tuple[str, ...]) -> torch.Tensor | None:
+        for name in names:
+            value = batch.get(name)
+            if value is not None and torch.is_tensor(value):
+                return value
+        return None
+
+    def _critical_anchor7(self, agent_history: torch.Tensor, critical_idx: torch.Tensor) -> torch.Tensor:
+        """Return [B,A,7] current-state anchor for critical-agent trajectory heads.
+
+        Label generation stores absolute trajectories [x,y,heading,vx,vy,length,width].
+        Predicting those absolute coordinates directly from an unconstrained linear
+        head causes very large initial Stage-A losses in WOMD global coordinates.
+        The model instead learns residual futures around each critical agent's
+        current state, preserving the paper's absolute label/loss semantics.
+        """
+        if agent_history.ndim == 4:
+            cur = agent_history[:, :, -1, :].float()
+        elif agent_history.ndim == 3:
+            cur = agent_history.float()
+        else:
+            raise ValueError(f"Cannot build critical anchors from agent_history shape {tuple(agent_history.shape)}")
+        B, A = critical_idx.shape
+        n_agent = cur.shape[1]
+        idx = critical_idx.clamp(0, max(n_agent - 1, 0)).long().unsqueeze(-1).expand(B, A, cur.shape[-1])
+        c = torch.gather(cur, 1, idx)
+        anchor = torch.zeros(B, A, 7, device=cur.device, dtype=cur.dtype)
+        if c.shape[-1] >= 2:
+            anchor[..., 0:2] = c[..., 0:2]
+        if c.shape[-1] >= 7:
+            anchor[..., 2] = c[..., 6]
+        if c.shape[-1] >= 9:
+            anchor[..., 3:5] = c[..., 7:9]
+        if c.shape[-1] >= 5:
+            anchor[..., 5] = c[..., 3].clamp_min(0.1)
+            anchor[..., 6] = c[..., 4].clamp_min(0.1)
+        return anchor
+
+    @staticmethod
+    def _add_natural_anchor(pred: dict[str, torch.Tensor], anchor7: torch.Tensor) -> dict[str, torch.Tensor]:
+        out = dict(pred)
+        out["traj"] = pred["traj"] + anchor7[:, :, None, None, :]
+        return out
+
+    @staticmethod
+    def _add_response_anchor(pred: dict[str, torch.Tensor], anchor7: torch.Tensor) -> dict[str, torch.Tensor]:
+        out = dict(pred)
+        out["traj"] = pred["traj"] + anchor7[:, None, :, None, None, :]
+        return out
+
     def _agent_history_from_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        # Prefer real WOMD tf.Example tensors from tensor_cache.  Earlier versions
+        # Prefer real WOMD tf.Example tensors from tensor_cache. Earlier versions
         # only checked state/history and state/all, so merged tensor caches silently
         # fell back to label-only natural trajectories.
-        if "state/history" in batch:
-            agent_history = batch["state/history"].float()
-            agent_mask = batch.get("state/agent_valid", torch.ones(agent_history.shape[:2], device=agent_history.device, dtype=torch.bool)).bool()
-        elif has_womd_state(batch):
-            agent_history, agent_mask = build_agent_history_from_womd(
+        hist = self._first_tensor(batch, ("state/history", "womd/state/history"))
+        if hist is not None:
+            agent_history = hist.float()
+            agent_valid = self._first_tensor(batch, ("state/agent_valid", "womd/state/agent_valid", "state/current/valid", "womd/state/current/valid"))
+            agent_mask = agent_valid.bool() if agent_valid is not None and agent_valid.shape[:2] == agent_history.shape[:2] else torch.ones(agent_history.shape[:2], device=agent_history.device, dtype=torch.bool)
+            return agent_history, agent_mask
+
+        if has_womd_state(batch):
+            return build_agent_history_from_womd(
                 batch,
                 max_agents=self.max_agents,
                 history_steps=self.history_steps,
                 d_state=self.d_state,
             )
-        elif "state/all" in batch:
-            all_state = batch["state/all"].float()
+
+        all_state = self._first_tensor(batch, ("state/all", "womd/state/all"))
+        if all_state is not None:
+            all_state = all_state.float()
             agent_history = all_state[:, :, : min(11, all_state.shape[2]), :11] if all_state.ndim == 4 else all_state[:, :, None, :11]
-            agent_mask = batch.get("state/agent_valid", torch.ones(agent_history.shape[:2], device=agent_history.device, dtype=torch.bool)).bool()
-        else:
-            # Last-resort toy/label-only fallback.  This path is intentionally kept
-            # for unit tests and diagnostics, but production training should use
-            # tensor_cache with WOMD state features.
-            nat = batch["cowp/natural/traj"].float()
-            B, A = nat.shape[:2]
-            max_idx = int(batch["cowp/critical/track_index"].max().item() + 1) if batch["cowp/critical/track_index"].numel() else A
-            N = max(max_idx, A, 1)
-            agent_history = torch.zeros(B, N, 1, self.d_state, device=nat.device)
-            agent_mask = torch.zeros(B, N, device=nat.device, dtype=torch.bool)
-            for a in range(A):
-                idx = batch["cowp/critical/track_index"][:, a].clamp(0, N - 1).long()
-                vals = nat[:, a, 0, 0]  # [x,y,heading,vx,vy,length,width]
-                for b in range(B):
-                    agent_history[b, idx[b], 0, 0] = vals[b, 0]
-                    agent_history[b, idx[b], 0, 1] = vals[b, 1]
-                    agent_history[b, idx[b], 0, 3] = vals[b, 5].clamp_min(0.1)
-                    agent_history[b, idx[b], 0, 4] = vals[b, 6].clamp_min(0.1)
-                    agent_history[b, idx[b], 0, 5] = 1.5
-                    agent_history[b, idx[b], 0, 6] = vals[b, 2]
-                    agent_history[b, idx[b], 0, 7] = vals[b, 3]
-                    agent_history[b, idx[b], 0, 8] = vals[b, 4]
-                    agent_history[b, idx[b], 0, 9] = torch.linalg.norm(vals[b, 3:5])
-                    agent_history[b, idx[b], 0, 10] = 1.0
-                    agent_mask[b, idx[b]] = True
-            agent_mask[:, 0] = True
+            agent_valid = self._first_tensor(batch, ("state/agent_valid", "womd/state/agent_valid"))
+            agent_mask = agent_valid.bool() if agent_valid is not None and agent_valid.shape[:2] == agent_history.shape[:2] else torch.ones(agent_history.shape[:2], device=agent_history.device, dtype=torch.bool)
+            return agent_history, agent_mask
+
+        if "cowp/natural/traj" not in batch:
+            available = ", ".join(sorted(batch.keys())[:40])
+            raise KeyError(
+                "COWPModel requires encoder state tensors. Expected state/history, "
+                "womd/state/history, state/all, womd/state/all, or WOMD "
+                "state/{past,current}/x. The current batch also lacks "
+                f"cowp/natural/traj for the legacy toy fallback. Available keys: {available}"
+            )
+
+        # Last-resort toy/label-only fallback. Production training should use
+        # tensor_cache with WOMD state features; dataset validation normally
+        # prevents this path.
+        nat = batch["cowp/natural/traj"].float()
+        B, A = nat.shape[:2]
+        max_idx = int(batch["cowp/critical/track_index"].max().item() + 1) if batch["cowp/critical/track_index"].numel() else A
+        N = max(max_idx, A, 1)
+        agent_history = torch.zeros(B, N, 1, self.d_state, device=nat.device)
+        agent_mask = torch.zeros(B, N, device=nat.device, dtype=torch.bool)
+        for a in range(A):
+            idx = batch["cowp/critical/track_index"][:, a].clamp(0, N - 1).long()
+            vals = nat[:, a, 0, 0]  # [x,y,heading,vx,vy,length,width]
+            for b in range(B):
+                agent_history[b, idx[b], 0, 0] = vals[b, 0]
+                agent_history[b, idx[b], 0, 1] = vals[b, 1]
+                agent_history[b, idx[b], 0, 3] = vals[b, 5].clamp_min(0.1)
+                agent_history[b, idx[b], 0, 4] = vals[b, 6].clamp_min(0.1)
+                agent_history[b, idx[b], 0, 5] = 1.5
+                agent_history[b, idx[b], 0, 6] = vals[b, 2]
+                agent_history[b, idx[b], 0, 7] = vals[b, 3]
+                agent_history[b, idx[b], 0, 8] = vals[b, 4]
+                agent_history[b, idx[b], 0, 9] = torch.linalg.norm(vals[b, 3:5])
+                agent_history[b, idx[b], 0, 10] = 1.0
+                agent_mask[b, idx[b]] = True
+        agent_mask[:, 0] = True
         return agent_history, agent_mask
 
     @staticmethod
@@ -167,12 +235,15 @@ class COWPModel(nn.Module):
                 z_cand = z_cand + enc_cond["z_candidate_context"]
             out["z_candidate"] = z_cand
 
+        anchor7 = None
+        if need_natural or need_response:
+            anchor7 = self._critical_anchor7(agent_history, critical_idx)
         if need_natural:
-            assert enc_scene is not None
-            out["natural"] = self.natural_decoder(enc_scene["z_agent"], critical_idx)
+            assert enc_scene is not None and anchor7 is not None
+            out["natural"] = self._add_natural_anchor(self.natural_decoder(enc_scene["z_agent"], critical_idx), anchor7)
         if need_response:
-            assert z_cand is not None and enc_cond is not None
-            out["response"] = self.response_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)
+            assert z_cand is not None and enc_cond is not None and anchor7 is not None
+            out["response"] = self._add_response_anchor(self.response_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx), anchor7)
         if need_witness:
             assert z_cand is not None and enc_cond is not None
             witness = self.witness_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)
