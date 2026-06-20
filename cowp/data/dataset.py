@@ -228,21 +228,45 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
     return data
 
 
+def _model_state_input_keys() -> set[str]:
+    """Return the minimal WOMD/state tensors needed by the model encoder.
+
+    Do not load broad ``state/`` prefixes during training: WOMD tf.Example caches
+    often contain large future tensors that are not used by the COWP model or any
+    stage-specific loss.  Loading them from every small NPZ file is a major CPU/I/O
+    bottleneck and explains low GPU memory/utilization even with large batches.
+    """
+    base: set[str] = {
+        "state/history",
+        "state/all",
+        "state/agent_valid",
+        "state/id",
+        "state/is_sdc",
+        "womd/state/history",
+        "womd/state/all",
+        "womd/state/agent_valid",
+        "womd/state/id",
+        "womd/state/is_sdc",
+    }
+    past_names = ("x", "y", "z", "length", "width", "height", "bbox_yaw", "heading", "yaw", "velocity_x", "velocity_y", "vx", "vy", "valid")
+    current_names = past_names
+    for prefix in ("state", "womd/state"):
+        for name in past_names:
+            base.add(f"{prefix}/past/{name}")
+        for name in current_names:
+            base.add(f"{prefix}/current/{name}")
+    return base
+
+
 def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
     if stage is None or stage == "all":
         return None
-    always_prefixes = (
-        "womd/state/",
-        "state/",
-        "cowp/critical/",
-    )
     wanted: set[str] = set()
-    # prefixes are represented by ending slash markers in this helper
-    for p in always_prefixes:
-        wanted.add(p)
-    # The model only consumes these two map tensors.  Loading broad ``map/`` or
-    # ``waymax/`` prefixes in Stage A can read large arrays that the loss never
-    # uses, slowing every batch without changing the objective.
+    # Keep only the encoder-visible state features plus critical-agent labels.
+    # Broad state prefixes would also load unused future tensors from WOMD caches.
+    wanted.update(_model_state_input_keys())
+    wanted.add("cowp/critical/")
+    # The model only consumes these two map tensors.
     wanted.update({"map/conflict_regions", "map/conflict_region_valid"})
     if stage in ("representation", "natural"):
         wanted.add("cowp/natural/")
@@ -297,11 +321,19 @@ class COWPNpzDataset:
     def __len__(self) -> int:
         return len(self.paths)
 
-    def __getitem__(self, idx: int) -> dict[str, np.ndarray]:
+    def load(self, idx: int, wanted: set[str] | None = None) -> dict[str, np.ndarray]:
+        """Load one NPZ item, materializing only arrays needed by this stage."""
         with np.load(self.paths[idx], allow_pickle=True) as data:
-            out = {_restore_key(k): data[k] for k in data.files}
+            out: dict[str, np.ndarray] = {}
+            for raw_key in data.files:
+                key = _restore_key(raw_key)
+                if _key_allowed(key, wanted):
+                    out[key] = data[raw_key]
         align_critical_agents_to_womd_input(out)
         return mask_out_of_range_critical_agents(out)
+
+    def __getitem__(self, idx: int) -> dict[str, np.ndarray]:
+        return self.load(idx, None)
 
 
 class TorchCOWPDataset:
@@ -316,7 +348,7 @@ class TorchCOWPDataset:
     def __getitem__(self, idx: int):
         import torch
 
-        d = self.base[idx]
+        d = self.base.load(idx, self._wanted)
         out = {}
         for k, v in d.items():
             if not _key_allowed(k, self._wanted):

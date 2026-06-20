@@ -90,9 +90,11 @@ def pair_mined_focal_bce_with_logits(
         if neg_budget > 0:
             _, top = torch.topk(flat_values[b, neg], k=neg_budget)
             flat_keep[b, neg[top]] = True
-    if keep.any():
-        return values[keep].mean()
-    return masked_mean(values, mask)
+    keep_f = keep.float()
+    mined = (values * keep_f).sum() / keep_f.sum().clamp_min(1.0)
+    fallback = masked_mean(values, mask)
+    has_mined = (keep_f.sum() > 0).to(values.dtype)
+    return mined * has_mined + fallback * (1.0 - has_mined)
 
 
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -107,25 +109,18 @@ def _trajectory_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Ten
 
 
 def _weighted_set_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
-    """Unordered set supervision for natural alternatives."""
-    if not valid.any():
-        return ref.sum() * 0.0
+    """Unordered set supervision for natural alternatives without CUDA syncs."""
     d_min = pairwise_ade.min(dim=2).values
     w = _nonnegative_weight(weight) * valid.float()
-    if w.sum() <= 0:
-        return ref.sum() * 0.0
-    return torch.where(valid.bool(), d_min * w, torch.zeros_like(d_min)).sum() / w.sum().clamp_min(1e-6)
+    num = torch.where(valid.bool(), d_min * w, torch.zeros_like(d_min)).sum()
+    return num / w.sum().clamp_min(1e-6)
 
 
 def _natural_mixture_nll_from_pairwise(pairwise_ade: torch.Tensor, logits: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor, ref: torch.Tensor, tau: float = 2.0) -> torch.Tensor:
-    """Order-invariant mixture supervision for natural alternatives."""
-    if not valid.any():
-        return ref.sum() * 0.0
+    """Order-invariant mixture supervision for natural alternatives without CUDA syncs."""
     logp = F.log_softmax(_safe_float(logits), dim=-1)[:, :, :, None]
     log_cover = torch.logsumexp(logp - pairwise_ade / max(float(tau), 1e-6), dim=2)
     w = _nonnegative_weight(weight) * valid.float()
-    if w.sum() <= 0:
-        return ref.sum() * 0.0
     return -(log_cover * w).sum() / w.sum().clamp_min(1e-6)
 
 
@@ -137,8 +132,6 @@ def _natural_source_distribution_loss(
     weight: torch.Tensor,
     source_count: int,
 ) -> torch.Tensor:
-    if not valid.any():
-        return logits.sum() * 0.0
     logits_f = _safe_float(logits)
     source_logits_f = _safe_float(source_logits)
     mix = F.softmax(logits_f, dim=-1)
@@ -168,8 +161,6 @@ def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: to
     mixture modes.  We compute that expectation, convert it back to a finite logit,
     and use ``binary_cross_entropy_with_logits`` so the loss is AMP-safe.
     """
-    if not valid.any():
-        return logits.sum() * 0.0
     logits_f = _safe_float(logits)
     priority_logits_f = _safe_float(priority_logits)
     mix = F.softmax(logits_f, dim=-1)
@@ -187,15 +178,13 @@ def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: to
 
 def _branch_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int, ref: torch.Tensor) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
-    if not branch_gt.any():
-        return ref.sum() * 0.0
     d_min = pairwise_ade.min(dim=2).values
     return masked_mean(d_min, branch_gt)
 
 
 def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float = 4.0) -> torch.Tensor:
     B, A, M = pred_traj.shape[:3]
-    if M <= 1 or not crit_mask.any():
+    if M <= 1:
         return pred_traj.sum() * 0.0
     xy = _safe_float(pred_traj)[..., :2]
     d = torch.linalg.norm(xy[:, :, :, None, :, :] - xy[:, :, None, :, :, :], dim=-1).mean(dim=-1)
@@ -206,75 +195,75 @@ def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float
 
 
 def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
-    """Supervise natural alternatives with branch-aware losses."""
+    """Supervise natural alternatives with branch-aware losses.
+
+    The implementation avoids Python ``if tensor.any()`` checks.  Those checks
+    synchronize CUDA every batch and become visible as low GPU utilization for
+    Stage-A representation/natural pretraining.  Masked reductions already yield
+    stable zero losses when a batch has no valid labels.
+    """
     valid = batch["cowp/natural/valid"].bool()
     crit = batch["cowp/critical/valid"].bool()
     mask = valid & crit[:, :, None]
-    if mask.any():
-        gt_traj = _safe_float(batch["cowp/natural/traj"])
-        gt_source = torch.nan_to_num(batch["cowp/natural/source"].float(), nan=float(NaturalSource.PAD), posinf=float(NaturalSource.PAD), neginf=float(NaturalSource.PAD)).long()
-        gt_source = gt_source.clamp(0, int(NaturalSource.PAD))
-        nat_weight = _nonnegative_weight(batch["cowp/natural/weight"])
-        pairwise_ade = _pairwise_ade(pred["traj"], gt_traj)
+    gt_traj = _safe_float(batch["cowp/natural/traj"])
+    gt_source = torch.nan_to_num(batch["cowp/natural/source"].float(), nan=float(NaturalSource.PAD), posinf=float(NaturalSource.PAD), neginf=float(NaturalSource.PAD)).long()
+    gt_source = gt_source.clamp(0, int(NaturalSource.PAD))
+    nat_weight = _nonnegative_weight(batch["cowp/natural/weight"])
+    pairwise_ade = _pairwise_ade(pred["traj"], gt_traj)
 
-        traj = _weighted_set_minade_from_pairwise(pairwise_ade, mask, nat_weight, pred["traj"])
-        logits = pred["logits"]
-        mode = _natural_mixture_nll_from_pairwise(
-            pairwise_ade,
+    traj = _weighted_set_minade_from_pairwise(pairwise_ade, mask, nat_weight, pred["traj"])
+    logits = pred["logits"]
+    mode = _natural_mixture_nll_from_pairwise(
+        pairwise_ade,
+        logits,
+        mask,
+        nat_weight,
+        pred["traj"],
+        tau=float(weights.get("natural_mode_tau_m", 2.0)),
+    )
+
+    if "source_logits" in pred:
+        source_ce = _natural_source_distribution_loss(
             logits,
+            pred["source_logits"],
+            gt_source,
             mask,
             nat_weight,
-            pred["traj"],
-            tau=float(weights.get("natural_mode_tau_m", 2.0)),
+            int(pred["source_logits"].shape[-1]),
         )
-
-        if "source_logits" in pred:
-            source_ce = _natural_source_distribution_loss(
-                logits,
-                pred["source_logits"],
-                gt_source,
-                mask,
-                nat_weight,
-                int(pred["source_logits"].shape[-1]),
-            )
-        else:
-            source_ce = pred["traj"].sum() * 0.0
-        if "priority_logits" in pred:
-            priority_loss = _natural_priority_expectation_loss(
-                logits,
-                pred["priority_logits"],
-                batch["cowp/natural/priority_preserved"],
-                mask,
-                nat_weight,
-            )
-        else:
-            priority_loss = pred["traj"].sum() * 0.0
-
-        obs_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.OBS), pred["traj"])
-        neu_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.NEU), pred["traj"])
-        prio_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.PRIO), pred["traj"])
-        w_obs = float(weights.get("obs_prediction", 1.0))
-        w_neu = float(weights.get("neutral", 0.5))
-        w_prio = float(weights.get("priority_rule", 0.5))
-        w_sum = max(w_obs + w_neu + w_prio, 1e-6)
-        branch_minade = (w_obs * obs_minade + w_neu * neu_minade + w_prio * prio_minade) / w_sum
-
-        neu_gt_mask = mask & (gt_source == int(NaturalSource.NEU))
-        if neu_gt_mask.any() and "source_logits" in pred:
-            prob_neu = F.softmax(_safe_float(pred["source_logits"]), dim=-1)[..., int(NaturalSource.NEU)] * crit[:, :, None].float()
-            pred_mu = (_safe_float(pred["traj"]) * prob_neu[..., None, None]).sum(dim=2) / prob_neu.sum(dim=2).clamp_min(1e-6)[..., None, None]
-            gt_w = nat_weight * neu_gt_mask.float()
-            gt_mu = (gt_traj * gt_w[..., None, None]).sum(dim=2) / gt_w.sum(dim=2).clamp_min(1e-6)[..., None, None]
-            agent_has_neu = neu_gt_mask.any(dim=-1)
-            neu_cons = masked_mean(_trajectory_ade(pred_mu, gt_mu), agent_has_neu)
-        else:
-            neu_cons = pred["traj"].sum() * 0.0
-        div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
     else:
-        traj = pred["traj"].sum() * 0.0
-        mode = pred.get("logits", pred["traj"]).sum() * 0.0
-        source_ce = priority_loss = branch_minade = neu_cons = div = pred["traj"].sum() * 0.0
-        obs_minade = neu_minade = prio_minade = pred["traj"].sum() * 0.0
+        source_ce = pred["traj"].sum() * 0.0
+    if "priority_logits" in pred:
+        priority_loss = _natural_priority_expectation_loss(
+            logits,
+            pred["priority_logits"],
+            batch["cowp/natural/priority_preserved"],
+            mask,
+            nat_weight,
+        )
+    else:
+        priority_loss = pred["traj"].sum() * 0.0
+
+    obs_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.OBS), pred["traj"])
+    neu_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.NEU), pred["traj"])
+    prio_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.PRIO), pred["traj"])
+    w_obs = float(weights.get("obs_prediction", 1.0))
+    w_neu = float(weights.get("neutral", 0.5))
+    w_prio = float(weights.get("priority_rule", 0.5))
+    w_sum = max(w_obs + w_neu + w_prio, 1e-6)
+    branch_minade = (w_obs * obs_minade + w_neu * neu_minade + w_prio * prio_minade) / w_sum
+
+    neu_gt_mask = mask & (gt_source == int(NaturalSource.NEU))
+    if "source_logits" in pred:
+        prob_neu = F.softmax(_safe_float(pred["source_logits"]), dim=-1)[..., int(NaturalSource.NEU)] * crit[:, :, None].float()
+        pred_mu = (_safe_float(pred["traj"]) * prob_neu[..., None, None]).sum(dim=2) / prob_neu.sum(dim=2).clamp_min(1e-6)[..., None, None]
+        gt_w = nat_weight * neu_gt_mask.float()
+        gt_mu = (gt_traj * gt_w[..., None, None]).sum(dim=2) / gt_w.sum(dim=2).clamp_min(1e-6)[..., None, None]
+        agent_has_neu = neu_gt_mask.any(dim=-1)
+        neu_cons = masked_mean(_trajectory_ade(pred_mu, gt_mu), agent_has_neu)
+    else:
+        neu_cons = pred["traj"].sum() * 0.0
+    div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
 
     total = (
         weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj
@@ -317,19 +306,20 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         min_neg_per_scene=int(weights.get("witness_mining_min_neg_per_scene", 8)),
     )
     pos_mask = pair_mask & (y > 0.5)
-    if pos_mask.any():
-        token_target = batch["cowp/witness/token"].long().clamp(0, pred["token_logits"].shape[-1] - 1)
-        token = F.cross_entropy(_safe_float(pred["token_logits"])[pos_mask], token_target[pos_mask], reduction="mean")
-        burden = F.smooth_l1_loss(_safe_float(pred["burden_total"])[pos_mask], _safe_float(batch["cowp/witness/burden_total"])[pos_mask], reduction="mean")
-        interval = F.smooth_l1_loss(_safe_float(pred["conflict_interval"])[pos_mask], _safe_float(batch["cowp/witness/conflict_interval"])[pos_mask], reduction="mean")
-        if "cowp/witness/burden_components" in batch and "burden_components" in pred:
-            comps = F.smooth_l1_loss(_safe_float(pred["burden_components"])[pos_mask], _safe_float(batch["cowp/witness/burden_components"])[pos_mask], reduction="mean")
-        else:
-            comps = pred["exist_logits"].sum() * 0.0
+    token_target = batch["cowp/witness/token"].long().clamp(0, pred["token_logits"].shape[-1] - 1)
+    token_ce = F.cross_entropy(
+        _safe_float(pred["token_logits"]).reshape(-1, pred["token_logits"].shape[-1]),
+        token_target.reshape(-1),
+        reduction="none",
+    ).reshape_as(pos_mask.float())
+    token = masked_mean(token_ce, pos_mask)
+    burden = masked_mean(torch.abs(_safe_float(pred["burden_total"]) - _safe_float(batch["cowp/witness/burden_total"])), pos_mask)
+    interval_l1 = F.smooth_l1_loss(_safe_float(pred["conflict_interval"]), _safe_float(batch["cowp/witness/conflict_interval"]), reduction="none").mean(dim=-1)
+    interval = masked_mean(interval_l1, pos_mask)
+    if "cowp/witness/burden_components" in batch and "burden_components" in pred:
+        comps_l1 = F.smooth_l1_loss(_safe_float(pred["burden_components"]), _safe_float(batch["cowp/witness/burden_components"]), reduction="none").mean(dim=-1)
+        comps = masked_mean(comps_l1, pos_mask)
     else:
-        token = pred["exist_logits"].sum() * 0.0
-        burden = pred["exist_logits"].sum() * 0.0
-        interval = pred["exist_logits"].sum() * 0.0
         comps = pred["exist_logits"].sum() * 0.0
     opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair_mask)
     ci = masked_mean(torch.abs(_safe_float(pred["c_i"]) - _safe_float(batch["cowp/witness/c_i"])), pair_mask)

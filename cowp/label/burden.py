@@ -27,7 +27,17 @@ def adaptive_beta(scene_states: np.ndarray | None, agent_type: int, rho: Priorit
     if use_adaptive and scene_states is not None and scene_states.size:
         cur_valid = scene_states[:, 10] > 0.5 if scene_states.ndim == 2 and scene_states.shape[1] >= 11 else np.ones(len(scene_states), dtype=bool)
         if np.any(cur_valid):
-            speeds = scene_states[cur_valid, 5] if scene_states.shape[1] >= 6 else np.linalg.norm(scene_states[cur_valid, 3:5], axis=-1)
+            # d_state follows [x,y,z,length,width,height,heading,vx,vy,speed,valid].
+            # The previous implementation used column 5 (height) as speed, which
+            # made the adaptive beta almost always treat scenes as low-speed.
+            if scene_states.shape[1] >= 10:
+                speeds = scene_states[cur_valid, 9]
+            elif scene_states.shape[1] >= 9:
+                speeds = np.linalg.norm(scene_states[cur_valid, 7:9], axis=-1)
+            elif scene_states.shape[1] >= 5:
+                speeds = np.linalg.norm(scene_states[cur_valid, 3:5], axis=-1)
+            else:
+                speeds = np.zeros(int(np.sum(cur_valid)), dtype=np.float32)
             low_speed = float(np.nanmean(speeds)) < float(bcfg.get("low_speed_threshold_mps", 5.0))
             ego_index = int(np.clip(ego_index, 0, len(scene_states) - 1))
             ego_pos = scene_states[ego_index, :2]

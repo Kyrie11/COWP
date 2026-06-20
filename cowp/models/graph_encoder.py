@@ -4,6 +4,22 @@ import torch
 from torch import nn
 
 
+def _dynamo_disable_if_available(fn):
+    """Decorate tiny preprocessing helpers to avoid fragile Inductor bool kernels.
+
+    PyTorch 2.1/2.2 + Triton may miscompile reductions emitted by
+    ``nan_to_num`` / finite-mask logic under ``torch.compile``.  Keeping this
+    history summarization eager is cheap and prevents a hard training abort while
+    the rest of the model can still be compiled.
+    """
+    try:  # pragma: no cover - depends on the installed PyTorch build
+        import torch._dynamo  # type: ignore[attr-defined]
+
+        return torch._dynamo.disable(fn)
+    except Exception:  # pragma: no cover
+        return fn
+
+
 class GraphEncoder(nn.Module):
     """Burden-oriented heterogeneous graph encoder.
 
@@ -70,6 +86,7 @@ class GraphEncoder(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     @staticmethod
+    @_dynamo_disable_if_available
     def _history_mean(agent_history: torch.Tensor) -> torch.Tensor:
         """Return one state vector per agent from temporal history.
 
@@ -77,17 +94,23 @@ class GraphEncoder(nn.Module):
         PyTorch Inductor/Triton versions miscompile bool reductions under
         ``torch.compile``; always-on ``torch.where`` is equivalent and stable.
         """
-        if agent_history.ndim == 4:
-            if agent_history.shape[-1] >= 11:
-                hist_valid = torch.nan_to_num(agent_history[..., 10:11].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp_(0.0, 1.0)
-                clean_history = torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        history = agent_history.float()
+        # Avoid in-place clamp/nan_to_num inside compiled regions.  The decorator
+        # above executes this helper eagerly when torch.compile is active; the
+        # explicit finite guards keep corrupted cache values from poisoning losses.
+        finite = torch.isfinite(history)
+        clean_history = torch.where(finite, history, torch.zeros_like(history))
+        if history.ndim == 4:
+            if history.shape[-1] >= 11:
+                raw_valid = clean_history[..., 10:11]
+                hist_valid = raw_valid.clamp(0.0, 1.0)
                 valid_sum = hist_valid.sum(dim=2)
                 x_agent = (clean_history * hist_valid).sum(dim=2) / valid_sum.clamp_min(1.0)
                 fallback = clean_history.mean(dim=2)
                 empty = valid_sum.squeeze(-1) <= 0
                 return torch.where(empty.unsqueeze(-1), fallback, x_agent)
-            return torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0).mean(dim=2)
-        return torch.nan_to_num(agent_history.float(), nan=0.0, posinf=0.0, neginf=0.0)
+            return clean_history.mean(dim=2)
+        return clean_history
 
     def _candidate_agent_features(self, x_agent: torch.Tensor, candidate_traj: torch.Tensor) -> torch.Tensor:
         """Return [B,K,N,8] edge features for candidate-conditioned interactions."""
@@ -206,7 +229,9 @@ class GraphEncoder(nn.Module):
             agent_h = self.edge_feat_proj(agent_cf) + self.edge_type_embed(torch.full(agent_cf.shape[:-1], 4, device=agent_cf.device, dtype=torch.long))
             z_agent = z_agent + self.agent_update(self._aggregate(agent_h, agent_cf_mask, dim=2))
             z_conf = z_conf + self.conflict_update(self._aggregate(agent_h, agent_cf_mask, dim=1))
-            query_msg = self._aggregate(agent_h, agent_cf_mask, dim=(1, 2)) if False else None
+            # A candidate branch below overrides this with candidate-conflict evidence.
+            w_agent = agent_cf_mask.float().unsqueeze(-1)
+            query_msg = (agent_h * w_agent).sum(dim=(1, 2)) / w_agent.sum(dim=(1, 2)).clamp_min(1.0)
 
             if z_cand is not None and candidate_traj is not None:
                 cand_cf = self._conflict_features(candidate_traj[..., :2], conflict_regions)
