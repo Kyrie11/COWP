@@ -318,7 +318,12 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     )
     pos_mask = pair_mask & (y > 0.5)
     if pos_mask.any():
-        token_target = batch["cowp/witness/token"].long().clamp(0, pred["token_logits"].shape[-1] - 1)
+        token_target = torch.nan_to_num(
+            batch["cowp/witness/token"].float(),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        ).long().clamp(0, pred["token_logits"].shape[-1] - 1)
         token = F.cross_entropy(_safe_float(pred["token_logits"])[pos_mask], token_target[pos_mask], reduction="mean")
         burden = F.smooth_l1_loss(_safe_float(pred["burden_total"])[pos_mask], _safe_float(batch["cowp/witness/burden_total"])[pos_mask], reduction="mean")
         interval = F.smooth_l1_loss(_safe_float(pred["conflict_interval"])[pos_mask], _safe_float(batch["cowp/witness/conflict_interval"])[pos_mask], reduction="mean")
@@ -354,22 +359,33 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     loss_safe = masked_mean(safe, mask)
     loss_low = masked_mean(low, mask)
     loss_b = masked_mean(b, mask)
-    if "cowp/response/traj" in batch:
-        traj_l1 = torch.abs(_safe_float(pred["traj"]) - _safe_float(batch["cowp/response/traj"])).mean(dim=(-1, -2))
-        loss_traj = masked_mean(traj_l1, mask)
+
+    # ``cowp/response/traj`` is the largest Stage-B target.  The original code
+    # computed an L1 tensor for every padded candidate/agent/response slot and
+    # masked it afterwards.  That is mathematically equivalent but can allocate
+    # hundreds of MB per batch.  Indexing valid slots first preserves the exact
+    # supervised objective while avoiding work on padded labels.
+    traj_w = float(weights.get("response_traj_l1", 0.1))
+    if traj_w != 0.0 and "cowp/response/traj" in batch and mask.any():
+        pred_traj = _safe_float(pred["traj"])[mask]
+        gt_traj = _safe_float(batch["cowp/response/traj"])[mask]
+        loss_traj = torch.abs(pred_traj - gt_traj).mean(dim=(-1, -2)).mean()
     else:
         loss_traj = pred["safe_logits"].sum() * 0.0
-    if "cowp/response/burden_components" in batch and "burden_components" in pred:
-        comps_l1 = torch.abs(_safe_float(pred["burden_components"]) - _safe_float(batch["cowp/response/burden_components"])).mean(dim=-1)
-        loss_comps = masked_mean(comps_l1, mask)
+
+    comps_w = float(weights.get("response_components_l1", 0.25))
+    if comps_w != 0.0 and "cowp/response/burden_components" in batch and "burden_components" in pred and mask.any():
+        pred_comps = _safe_float(pred["burden_components"])[mask]
+        gt_comps = _safe_float(batch["cowp/response/burden_components"])[mask]
+        loss_comps = torch.abs(pred_comps - gt_comps).mean(dim=-1).mean()
     else:
         loss_comps = pred["safe_logits"].sum() * 0.0
     total = (
         weights.get("response_safe_bce", 1.0) * loss_safe
         + weights.get("response_low_bce", 1.0) * loss_low
         + weights.get("response_burden_l1", 0.5) * loss_b
-        + weights.get("response_components_l1", 0.25) * loss_comps
-        + weights.get("response_traj_l1", 0.1) * loss_traj
+        + comps_w * loss_comps
+        + traj_w * loss_traj
     )
     return {"loss": total, "safe": loss_safe, "low": loss_low, "burden": loss_b, "components": loss_comps, "traj": loss_traj}
 

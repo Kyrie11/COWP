@@ -260,6 +260,11 @@ python -m cowp.scripts.03_train \
   --stage response \
   --epochs 10 \
   --batch-size 64 \
+  --num-workers 8 \
+  --prefetch-factor 1 \
+  --amp \
+  --compile \
+  --fused-adamw \
   --resume outputs/checkpoints/representation/cowp_representation_best.pt \
   --output-dir outputs/checkpoints/response
 ```
@@ -276,6 +281,11 @@ python -m cowp.scripts.03_train \
   --stage witness \
   --epochs 10 \
   --batch-size 64 \
+  --num-workers 8 \
+  --prefetch-factor 2 \
+  --amp \
+  --compile \
+  --fused-adamw \
   --resume outputs/checkpoints/response/cowp_response_best.pt \
   --output-dir outputs/checkpoints/witness
 ```
@@ -292,6 +302,11 @@ python -m cowp.scripts.03_train \
   --stage planner \
   --epochs 5 \
   --batch-size 64 \
+  --num-workers 8 \
+  --prefetch-factor 1 \
+  --amp \
+  --compile \
+  --fused-adamw \
   --resume outputs/checkpoints/witness/cowp_witness_best.pt \
   --output-dir outputs/checkpoints/planner
 ```
@@ -611,4 +626,4 @@ python -m cowp.scripts.11_diagnose_tensor_cache_visibility --cache-dir <tensor_c
 
 If `files_with_id_mapping` is close to `num_files` and `visible_critical_slot_ratio` is still low, the remaining issue is true WOMD input exclusion/current invisibility rather than a Scenario-index/input-row mismatch.
 
-For PyTorch/CUDA environments where DataLoader pinning fails with `CUDA error: invalid argument`, `03_train.py` now disables pinning automatically. You can force it off explicitly with `--no-pin-memory`.
+For Stage-B response training, `cowp/response/traj` is a dense `[K,A,R,T,7]` target and can make each batch very large. `03_train.py` therefore keeps DataLoader `pin_memory=False` by default and uses `prefetch_factor=1` by default for response/planner/all stages. This does not change model learning or predictions; it only avoids CUDA pinned-memory failures. You may still force pinning with `--pin-memory` after confirming your host/CUDA setup is stable.

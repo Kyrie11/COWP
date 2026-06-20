@@ -44,12 +44,17 @@ def _set_runtime_defaults(seed: int, device: torch.device) -> None:
 
 
 def _cuda_pin_memory_works(device: torch.device) -> bool:
-    """Best-effort guard for PyTorch/CUDA builds whose pin-memory path crashes.
+    """Best-effort guard for explicit DataLoader pin_memory requests.
 
-    Some environments report ``torch.cuda.is_available() == True`` but raise
-    ``CUDA error: invalid argument`` inside DataLoader's pin-memory thread.  That
-    error happens before the batch reaches the model, so it is safer to detect it
-    once and disable pinning than to fail mid-epoch.
+    Pinning is deliberately *not* enabled by default in this project.  Stage-B
+    response training can load hundreds of MB per batch because
+    ``cowp/response/traj`` is a dense [K,A,R,T,7] target.  With multi-worker
+    prefetching, the pin-memory thread may try to page-lock several GB of CPU
+    tensors and fail with ``CUDA error: invalid argument`` before the next batch
+    reaches the model.  Pinning changes transfer mechanics only; it does not
+    change the model, labels, loss, or predictions.  Therefore the stable default
+    is no pinning, while ``--pin-memory`` remains available after this sanity
+    check.
     """
     if device.type != "cuda":
         return False
@@ -61,8 +66,13 @@ def _cuda_pin_memory_works(device: torch.device) -> bool:
             _ = x.pin_memory()
         return True
     except Exception as exc:
-        print(f"Warning: disabling DataLoader pin_memory because a test pin failed: {exc}")
+        print(f"Warning: requested DataLoader pin_memory is unavailable; disabling it: {exc}")
         return False
+
+
+def _heavy_label_stage(stage: str) -> bool:
+    """Stages whose batches may contain very large dense supervision tensors."""
+    return stage in {"response", "planner", "all"}
 
 def _make_grad_scaler(enabled: bool):
     """Return a CUDA GradScaler that works across old and new PyTorch APIs.
@@ -177,6 +187,7 @@ def _make_loader(
     num_workers: int | None = None,
     sampler_cache: bool = True,
     pin_memory: bool = False,
+    prefetch_factor: int | None = None,
 ) -> DataLoader:
     sampler = None
     if shuffle and oversample:
@@ -186,7 +197,8 @@ def _make_loader(
     kwargs: dict[str, Any] = {}
     if nw > 0:
         kwargs["persistent_workers"] = True
-        kwargs["prefetch_factor"] = int(cfg["train"].get("prefetch_factor", 2))
+        pf = int(cfg["train"].get("prefetch_factor", 2) if prefetch_factor is None else prefetch_factor)
+        kwargs["prefetch_factor"] = max(1, pf)
     return DataLoader(
         ds,
         batch_size=batch_size,
@@ -199,8 +211,8 @@ def _make_loader(
     )
 
 
-def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, torch.Tensor]:
-    return {k: v.to(device, non_blocking=True) for k, v in batch.items() if torch.is_tensor(v)}
+def _to_device(batch: dict[str, Any], device: torch.device, *, non_blocking: bool = False) -> dict[str, torch.Tensor]:
+    return {k: v.to(device, non_blocking=bool(non_blocking)) for k, v in batch.items() if torch.is_tensor(v)}
 
 
 def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage: str, loss_weights: dict[str, float]) -> dict[str, torch.Tensor]:
@@ -268,6 +280,7 @@ def _run_epoch(
     epoch: int = 0,
     progress: bool = True,
     amp: bool = False,
+    non_blocking_transfer: bool = False,
 ) -> dict[str, float]:
     is_train = opt is not None
     model.train(is_train)
@@ -280,7 +293,7 @@ def _run_epoch(
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
     with context:
         for step, batch in enumerate(iterator, start=1):
-            batch = _to_device(batch, device)
+            batch = _to_device(batch, device, non_blocking=non_blocking_transfer)
             if is_train:
                 opt.zero_grad(set_to_none=True)
             autocast_enabled = bool(amp and device.type == "cuda")
@@ -350,7 +363,7 @@ def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: fl
     return torch.optim.AdamW(model.parameters(), **kwargs)
 
 
-def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
+def _maybe_compile_model(model: COWPModel, enabled: bool, backend: str | None = None) -> torch.nn.Module:
     """Compile the model in a failure-tolerant way.
 
     torch.compile performs most real compilation at first forward.  Setting
@@ -369,8 +382,12 @@ def _maybe_compile_model(model: COWPModel, enabled: bool) -> torch.nn.Module:
     except Exception:
         pass
     try:
-        print("Compiling model with torch.compile(mode='reduce-overhead', suppress_errors=True) ...")
-        return torch.compile(model, mode="reduce-overhead")
+        backend_msg = f", backend={backend}" if backend else ""
+        print(f"Compiling model with torch.compile(mode='reduce-overhead'{backend_msg}, suppress_errors=True) ...")
+        kwargs: dict[str, Any] = {"mode": "reduce-overhead"}
+        if backend:
+            kwargs["backend"] = backend
+        return torch.compile(model, **kwargs)
     except Exception as exc:
         print(f"Warning: torch.compile setup failed, continuing without compile: {exc}")
         return model
@@ -391,6 +408,7 @@ def main() -> None:
     ap.add_argument("--output-dir", default="outputs/checkpoints")
     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
     ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
+    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override DataLoader prefetch_factor when num_workers > 0. For response/planner/all stages, default is capped to 1 to avoid huge queued batches.")
     ap.add_argument("--no-positive-oversampling", action="store_true")
     ap.add_argument("--force-positive-oversampling", action="store_true", help="Force witness/candidate positive oversampling even for representation/natural stages.")
     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
@@ -399,6 +417,7 @@ def main() -> None:
     ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
     ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. Unsupported subgraphs fall back to eager.")
+    ap.add_argument("--compile-backend", default=None, help="Optional torch.compile backend, e.g. aot_eager for safer fallback when Inductor/Triton is unstable.")
     ap.add_argument("--fused-adamw", action="store_true", help="Use fused CUDA AdamW when supported.")
     args = ap.parse_args()
 
@@ -411,12 +430,31 @@ def main() -> None:
     if args.no_pin_memory:
         pin_memory = False
     elif args.pin_memory:
-        pin_memory = True
-    else:
         pin_memory = _cuda_pin_memory_works(device)
+        if pin_memory and _heavy_label_stage(stage):
+            print(
+                f"Warning: pin_memory was forced on for heavy stage={stage}. "
+                "If CUDA invalid-argument errors recur, rerun with --no-pin-memory."
+            )
+    else:
+        # Stable default: keep pinning off.  This avoids Stage-B crashes caused by
+        # page-locking dense response supervision batches.  Use --pin-memory only
+        # after confirming the host/CUDA setup can sustain the memory pressure.
+        pin_memory = False
+
+    user_prefetch = args.prefetch_factor
+    effective_prefetch = user_prefetch
+    if effective_prefetch is None and _heavy_label_stage(stage):
+        effective_prefetch = 1
+    elif effective_prefetch is not None and effective_prefetch > 1 and _heavy_label_stage(stage):
+        print(
+            f"Warning: stage={stage} has large dense label tensors; "
+            f"prefetch_factor={effective_prefetch} can queue very large CPU batches. "
+            "Use --prefetch-factor 1 if host RAM or pinned-memory errors appear."
+        )
 
     compile_enabled = bool(args.compile or tcfg.get("compile", False))
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}")
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
@@ -446,15 +484,16 @@ def main() -> None:
         num_workers=args.num_workers,
         sampler_cache=not args.no_sampler_cache,
         pin_memory=pin_memory,
+        prefetch_factor=effective_prefetch,
     )
-    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory) if val_ds is not None else None
+    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory, prefetch_factor=effective_prefetch) if val_ds is not None else None
 
-    print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
+    print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         _load_model_state_robust(model, ckpt["model"])
-    model = _maybe_compile_model(model, compile_enabled)
+    model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     opt = _make_adamw_optimizer(
         model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),
@@ -468,10 +507,10 @@ def main() -> None:
     history = []
     best_val = float("inf")
     for epoch in range(epochs):
-        train_metrics = _run_epoch(model, train_dl, device, stage, loss_weights, opt, epoch=epoch, progress=not args.no_progress, amp=args.amp)
+        train_metrics = _run_epoch(model, train_dl, device, stage, loss_weights, opt, epoch=epoch, progress=not args.no_progress, amp=args.amp, non_blocking_transfer=pin_memory)
         row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
         if val_dl is not None:
-            val_metrics = _run_epoch(model, val_dl, device, stage, loss_weights, None, epoch=epoch, progress=not args.no_progress, amp=args.amp)
+            val_metrics = _run_epoch(model, val_dl, device, stage, loss_weights, None, epoch=epoch, progress=not args.no_progress, amp=args.amp, non_blocking_transfer=pin_memory)
             row.update({f"val/{k}": v for k, v in val_metrics.items()})
             val_loss = float(val_metrics.get("loss", float("inf")))
             if val_loss < best_val:

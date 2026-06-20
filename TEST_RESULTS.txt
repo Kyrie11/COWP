@@ -1,11 +1,2 @@
-Second-pass validation
-======================
-
-Commands run in the package root:
-
-  python -m compileall -q cowp
-  python -m pytest -q
-
-Result:
-
-  15 passed
+pytest -q
+32 passed in 15.91s
