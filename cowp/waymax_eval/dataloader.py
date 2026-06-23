@@ -1,9 +1,9 @@
-import dataclasses
 from __future__ import annotations
 
 from typing import Iterator
 
 from cowp.data.parse_tfexample import iter_tfexample_records, parse_tfexample, scenario_id_from_parsed_tfexample
+import dataclasses
 
 
 def require_waymax():
