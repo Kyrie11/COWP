@@ -83,6 +83,7 @@ def main() -> None:
             horizon_steps=horizon,
             progress=not args.no_progress,
             compute_standard_metrics=args.waymax_standard_metrics,
+            action_mode=args.waymax_action_mode,
         )
         payload = {
             "mode": "waymax",

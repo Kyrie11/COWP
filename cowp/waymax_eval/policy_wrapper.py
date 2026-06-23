@@ -222,15 +222,20 @@ class COWPWaymaxPolicy:
             raise ImportError("waymax.datatypes is required to convert a selected COWP trajectory to a Waymax action.") from exc
         N = agent_state.shape[0]
         data_dim = int(self.cfg.get("waymax", {}).get("action_dim", 3))
+        if self.action_mode == "absolute_xy_yaw":
+            data_dim = max(data_dim, 5)
         data = np.zeros((N, data_dim), dtype=np.float32)
-        valid = np.zeros((N,), dtype=bool)
-        valid[sdc_index] = True
+        # Waymax Action.valid is shaped (..., num_objects, 1), not (..., num_objects).
+        valid = np.zeros((N, 1), dtype=bool)
+        valid[sdc_index, 0] = True
         next_pose = traj[min(1, len(traj) - 1)]
         dx = float(next_pose[0] - agent_state[sdc_index, 0])
         dy = float(next_pose[1] - agent_state[sdc_index, 1])
         dyaw = float(next_pose[2] - agent_state[sdc_index, 6])
         if self.action_mode == "absolute_xy_yaw":
-            data[sdc_index, : min(data_dim, 3)] = np.asarray([next_pose[0], next_pose[1], next_pose[2]], dtype=np.float32)[:data_dim]
+            vx = float(next_pose[3]) if len(next_pose) > 3 else dx / float(self.cfg.get("time", {}).get("dt", 0.1))
+            vy = float(next_pose[4]) if len(next_pose) > 4 else dy / float(self.cfg.get("time", {}).get("dt", 0.1))
+            data[sdc_index, :5] = np.asarray([next_pose[0], next_pose[1], next_pose[2], vx, vy], dtype=np.float32)
         else:
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
         try:

@@ -171,7 +171,7 @@ def _call_policy(policy_fn: Callable, state, step: int, scenario_index: int):
         return policy_fn(state)
 
 
-def _make_waymax_environment(max_num_objects: int | None = None):
+def _make_waymax_environment(max_num_objects: int | None = None, action_mode: str = "delta_xy_yaw"):
     try:
         import dataclasses
         from waymax import config as _config  # type: ignore
@@ -180,29 +180,52 @@ def _make_waymax_environment(max_num_objects: int | None = None):
     except Exception as exc:  # pragma: no cover
         raise ImportError("waymax.env, waymax.config and waymax.dynamics are required for real closed-loop rollout.") from exc
 
-    dynamics_cls = getattr(dynamics, "StateDynamics", None) or getattr(dynamics, "DeltaGlobal", None)
-    env_cls = getattr(waymax_env, "MultiAgentEnvironment", None)
-    if dynamics_cls is None or env_cls is None:
-        raise RuntimeError("Unsupported Waymax API: expected waymax.dynamics.StateDynamics/DeltaGlobal and waymax.env.MultiAgentEnvironment.")
+    # Waymax has used both names in docs/examples.  Current public Waymax
+    # exposes env.BaseEnvironment; some older/local builds exposed the alias
+    # MultiAgentEnvironment.  Accept both.
+    env_cls = getattr(waymax_env, "MultiAgentEnvironment", None) or getattr(waymax_env, "BaseEnvironment", None)
+    if env_cls is None:
+        try:
+            from waymax.env.base_environment import BaseEnvironment as env_cls  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError("Unsupported Waymax API: expected waymax.env.BaseEnvironment or MultiAgentEnvironment.") from exc
+
+    # The built-in COWP policy emits a 3-D delta action by default.  Therefore
+    # DeltaGlobal is the correct dynamics for --waymax-action-mode delta_xy_yaw.
+    # StateDynamics expects a 5-D absolute [x, y, yaw, vel_x, vel_y] action.
+    if action_mode == "absolute_xy_yaw":
+        dynamics_names = ("StateDynamics", "DeltaGlobal")
+    else:
+        dynamics_names = ("DeltaGlobal", "StateDynamics")
+    dynamics_cls = next((getattr(dynamics, name, None) for name in dynamics_names if getattr(dynamics, name, None) is not None), None)
+    if dynamics_cls is None:
+        raise RuntimeError(f"Unsupported Waymax API: expected one of {dynamics_names} in waymax.dynamics.")
     dyn = dynamics_cls()
+
     env_config = getattr(_config, "EnvironmentConfig", lambda: None)()
     kwargs = {}
-    if hasattr(_config, "ObjectType") and hasattr(_config.ObjectType, "VALID"):
-        kwargs["controlled_object"] = _config.ObjectType.VALID
+    # The built-in policy controls only the SDC/ego.  Do not set VALID here;
+    # doing so freezes or overwrites every non-ego object with zero actions.
+    if hasattr(_config, "ObjectType") and hasattr(_config.ObjectType, "SDC"):
+        kwargs["controlled_object"] = _config.ObjectType.SDC
     if max_num_objects is not None:
         kwargs["max_num_objects"] = int(max_num_objects)
     if env_config is not None and kwargs:
         try:
-            env_config = dataclasses.replace(env_config, **kwargs)
+            valid_fields = {f.name for f in dataclasses.fields(env_config)} if dataclasses.is_dataclass(env_config) else set(kwargs)
+            env_config = dataclasses.replace(env_config, **{k: v for k, v in kwargs.items() if k in valid_fields})
         except Exception:
             pass
     try:
         return env_cls(dynamics_model=dyn, config=env_config)
     except TypeError:
         try:
-            return env_cls(dynamics_model=dyn)
+            return env_cls(dyn, env_config)
         except TypeError:
-            return env_cls(dyn)
+            try:
+                return env_cls(dynamics_model=dyn)
+            except TypeError:
+                return env_cls(dyn)
 
 
 
@@ -245,6 +268,7 @@ def waymax_closed_loop_rollout(
     horizon_steps: int | None = None,
     progress: bool = True,
     compute_standard_metrics: bool = False,
+    action_mode: str = "delta_xy_yaw",
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -260,7 +284,10 @@ def waymax_closed_loop_rollout(
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc="Waymax closed-loop rollout", unit="scenario")
     outputs = []
     for scenario_index, init_state in enumerate(iterator):
-        env = _make_waymax_environment(max_num_objects=getattr(init_state, "num_objects", None))
+        max_objects = getattr(init_state, "num_objects", None)
+        if max_objects is None and hasattr(init_state, "log_trajectory"):
+            max_objects = getattr(init_state.log_trajectory, "num_objects", None)
+        env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
         state = env.reset(init_state)
         steps = 0
         policy_diagnostics = []
