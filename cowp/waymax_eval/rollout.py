@@ -11,7 +11,7 @@ import numpy as np
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality
-from cowp.waymax_eval.metrics_standard import waymax_metric_dict
+from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator
 
 
 def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
@@ -318,6 +318,7 @@ def waymax_closed_loop_rollout(
         state = env.reset(init_state)
         steps = 0
         policy_diagnostics = []
+        metric_acc = WaymaxStandardMetricAccumulator() if compute_standard_metrics else None
         for step in range(horizon):
             action = _call_policy(policy_fn, state, step=step, scenario_index=scenario_index)
             diag = _consume_policy_diagnostics(policy_fn)
@@ -325,15 +326,22 @@ def waymax_closed_loop_rollout(
                 policy_diagnostics.append(diag)
             state = _env_step(env, state, action)
             steps += 1
+            if metric_acc is not None:
+                # Waymax's built-in metrics are per-current-timestep metrics.  Update
+                # after every simulator step so episode CR/offroad/wrong-way are
+                # any-over-rollout events, not just the final frame.
+                metric_acc.update(state)
             if _state_done(state):
                 break
+        if metric_acc is not None and steps == 0:
+            metric_acc.update(state)
         # Do not retain SimulatorState by default.  A Waymax SimulatorState can keep
         # JAX device buffers alive; storing one per scenario causes closed-loop eval
         # memory to grow with --num-scenarios.  Metrics are computed before dropping
         # the state, so the JSON payload still contains the required evaluation info.
         item = {"steps": steps, "policy_diagnostics": policy_diagnostics}
-        if compute_standard_metrics:
-            item["standard_metrics"] = waymax_metric_dict(state)
+        if compute_standard_metrics and metric_acc is not None:
+            item["standard_metrics"] = metric_acc.finalize()
         if keep_rollout_state:
             item["state"] = state
         outputs.append(item)

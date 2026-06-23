@@ -170,3 +170,59 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
         "ClosedLoopFallbackStepRate": float(np.mean(fallback)),
         "ClosedLoopPolicySteps": float(len(rows)),
     }
+
+
+def policy_diagnostic_episode_summary(rollouts: list[dict]) -> dict[str, float]:
+    """Episode-level COWP-style online diagnostic summary.
+
+    The paper's FSR/CBS/OPR/HBCR are counterfactual burden metrics.  During the
+    Waymax online path we do not have the full pseudo-label counterfactual bank
+    for every executed state, so this summary uses the policy's predicted witness
+    and burden heads as an online proxy.  Ground-truth COWP metrics remain the
+    label/offline path; this function makes the closed-loop output interpretable
+    at episode granularity.
+    """
+    if not rollouts:
+        return {}
+    episodes_with_rows = 0
+    collision_free = 0
+    pred_false_safe = 0
+    cbs_vals: list[float] = []
+    opr_min_vals: list[float] = []
+    opr_mean_vals: list[float] = []
+    hbcr = 0
+    fallback_episode = 0
+    for item in rollouts:
+        rows = item.get("policy_diagnostics", []) or []
+        if not rows:
+            continue
+        episodes_with_rows += 1
+        max_w = max(float(r.get("max_witness_prob", 0.0)) for r in rows)
+        threshold = max(float(r.get("witness_threshold", 0.5)) for r in rows)
+        max_burden = max(float(r.get("max_predicted_burden", 0.0)) for r in rows)
+        beta = max(float(r.get("beta_threshold", 0.65)) for r in rows)
+        min_opr = min(float(r.get("min_opr", 1.0)) for r in rows)
+        mean_opr = float(np.mean([float(r.get("mean_opr", 1.0)) for r in rows]))
+        fallback_episode += int(any(bool(r.get("fallback_used", False)) for r in rows))
+        cbs_vals.append(max_burden)
+        opr_min_vals.append(min_opr)
+        opr_mean_vals.append(mean_opr)
+        hbcr += int(max_burden > beta)
+        std = item.get("standard_metrics", {}) or {}
+        # If standard metrics are unavailable, treat the episode as eligible for
+        # predicted FSR rather than silently dropping all episodes.
+        is_collision_free = float(std.get("CR", 0.0)) <= 0.0
+        collision_free += int(is_collision_free)
+        pred_false_safe += int(is_collision_free and max_w >= threshold)
+    if episodes_with_rows == 0:
+        return {}
+    return {
+        "PredFSR_episode": float(pred_false_safe / max(collision_free, 1)),
+        "PredCBS_episode": float(np.mean(cbs_vals)) if cbs_vals else 0.0,
+        "PredOPR_min_episode": float(np.mean(opr_min_vals)) if opr_min_vals else 0.0,
+        "PredOPR_mean_episode": float(np.mean(opr_mean_vals)) if opr_mean_vals else 0.0,
+        "PredHBCR_episode": float(hbcr / max(episodes_with_rows, 1)),
+        "FallbackEpisodeRate": float(fallback_episode / max(episodes_with_rows, 1)),
+        "EpisodesWithDiagnostics": float(episodes_with_rows),
+    }
+

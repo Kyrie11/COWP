@@ -8,7 +8,7 @@ from pathlib import Path
 from cowp.core.config import load_config
 from cowp.waymax_eval.rollout import import_policy_fn, learned_offline_candidate_eval, offline_candidate_eval, waymax_closed_loop_rollout
 from cowp.waymax_eval.policy_wrapper import make_cowp_policy
-from cowp.waymax_eval.metrics_cowp import policy_diagnostic_summary
+from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 
 
@@ -121,6 +121,7 @@ def main() -> None:
             "num_rollouts": len(rollouts),
             "steps": [int(x.get("steps", 0)) for x in rollouts],
             "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
+            "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
         }
         if args.waymax_standard_metrics:
             payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]

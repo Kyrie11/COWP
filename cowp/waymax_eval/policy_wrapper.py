@@ -305,6 +305,7 @@ class COWPWaymaxPolicy:
                 "score": float(scores[selected].detach().cpu().item()),
                 "witness_threshold": float(self.witness_threshold),
                 "alpha_opr": float(self.cfg.get("planning", {}).get("alpha_opr_infer", 0.35)),
+                "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:
                 bsel = burden[0, selected]
