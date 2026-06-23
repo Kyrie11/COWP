@@ -53,6 +53,7 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--witness-threshold", type=float, default=0.5)
+    ap.add_argument("--witness-threshold-sweep", default=None, help="Comma-separated thresholds for learned_offline diagnostic sweep, e.g. 0.1,0.2,0.3,0.5,0.7.")
     ap.add_argument("--method", default="cowp")
     ap.add_argument("--mode", choices=["offline", "learned_offline", "waymax"], default="offline")
     ap.add_argument("--policy-fn", default=None, help="For --mode waymax: optional Python callable spec 'module:function' returning Waymax actions. If omitted with --checkpoint, a COWP checkpoint policy is used.")
@@ -88,6 +89,20 @@ def main() -> None:
             progress=not args.no_progress,
         )
         payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint}
+        if args.witness_threshold_sweep:
+            sweep = []
+            for th in [float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip()]:
+                m = learned_offline_candidate_eval(
+                    args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+                    args.checkpoint,
+                    cfg,
+                    batch_size=args.batch_size,
+                    device=args.device,
+                    witness_threshold=th,
+                    progress=not args.no_progress,
+                )
+                sweep.append({"witness_threshold": th, **m})
+            payload["witness_threshold_sweep"] = sweep
     else:
         if args.policy_fn:
             policy_fn = import_policy_fn(args.policy_fn)

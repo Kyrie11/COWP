@@ -189,6 +189,11 @@ planning:
   ncf_gamma_infer: 0.10
   fallback_decel_mps2: -2.0
   emergency_decel_mps2: -6.0
+  # Online Waymax proposal offsets around the nearest lane heading. These make
+  # closed-loop candidates closer to the offline label lattice: keep/yield/stop,
+  # merge timing, and lane-change/cut-in proposals instead of pure kinematic
+  # constant-acceleration rollouts.
+  online_lane_change_offsets_m: [-3.5, 3.5]
 
 
 diagnostics:

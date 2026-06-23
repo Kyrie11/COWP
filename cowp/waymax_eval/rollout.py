@@ -66,6 +66,34 @@ def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5, alpha_o
     return selected, masks
 
 
+
+def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
+    score = np.asarray(score, dtype=np.float64).reshape(-1)
+    target = np.asarray(target, dtype=bool).reshape(-1)
+    finite = np.isfinite(score)
+    score, target = score[finite], target[finite]
+    if score.size == 0 or int(target.sum()) == 0:
+        return 0.0
+    order = np.argsort(-score)
+    y = target[order].astype(np.float64)
+    tp = np.cumsum(y)
+    precision = tp / np.maximum(np.arange(1, len(y) + 1, dtype=np.float64), 1.0)
+    return float((precision * y).sum() / max(float(y.sum()), 1.0))
+
+
+def _ranking_pair_accuracy(scores: np.ndarray, ncf: np.ndarray, false_safe: np.ndarray, valid: np.ndarray) -> tuple[int, int]:
+    good = 0
+    total = 0
+    for b in range(scores.shape[0]):
+        pos = np.where(valid[b] & ncf[b])[0]
+        neg = np.where(valid[b] & false_safe[b])[0]
+        if len(pos) == 0 or len(neg) == 0:
+            continue
+        total += int(len(pos) * len(neg))
+        good += int((scores[b, pos[:, None]] < scores[b, neg[None, :]]).sum())
+    return good, total
+
+
 def offline_candidate_eval(labels_dir: str | Path, cfg: dict, method: str = "cowp", progress: bool = True) -> dict[str, float]:
     labels = []
     selected = []
@@ -111,6 +139,19 @@ def learned_offline_candidate_eval(
     labels: list[dict[str, np.ndarray]] = []
     selected: list[int] = []
     witness_rows: list[dict[str, float]] = []
+    selected_ncf = 0
+    selected_false_safe = 0
+    selected_conventional = 0
+    accepted_total = 0
+    valid_total = 0
+    accepted_ncf = 0
+    total_ncf = 0
+    accepted_false_safe = 0
+    total_false_safe = 0
+    pair_scores: list[np.ndarray] = []
+    pair_targets: list[np.ndarray] = []
+    rank_good = 0
+    rank_total = 0
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc="Learned offline COWP eval", unit="batch")
     with torch.no_grad():
         for batch in iterator:
@@ -120,11 +161,29 @@ def learned_offline_candidate_eval(
                 batch = dict(batch)
                 batch["cowp/critical/valid"] = pred["critical_mask"].bool()
             alpha = float(cfg.get("planning", {}).get("alpha_opr_infer", cfg.get("ncf", {}).get("alpha_opr", 0.35)))
-            batch_selected, _ = _select_from_learned(batch, pred, witness_threshold=witness_threshold, alpha_opr=alpha)
+            batch_selected, batch_accepted_masks = _select_from_learned(batch, pred, witness_threshold=witness_threshold, alpha_opr=alpha)
             selected.extend(batch_selected)
             B = len(batch_selected)
+            batch_labels = []
             for i in range(B):
-                labels.append(_label_from_batch_item(batch, i))
+                item = _label_from_batch_item(batch, i)
+                batch_labels.append(item)
+                labels.append(item)
+                sel = int(batch_selected[i])
+                if sel >= 0:
+                    selected_ncf += int(bool(item.get("cowp/candidates/noncoercive_feasible", np.zeros(1, dtype=bool))[sel]))
+                    selected_false_safe += int(bool(item.get("cowp/candidates/false_safe", np.zeros(1, dtype=bool))[sel]))
+                    selected_conventional += int(bool(item.get("cowp/candidates/conventional_safe", np.zeros(1, dtype=bool))[sel]))
+                    accepted_mask_np = np.asarray(batch_accepted_masks[i], dtype=bool)
+                    valid_np = np.asarray(item["cowp/candidates/valid"], dtype=bool)
+                    ncf_np = np.asarray(item.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid_np)), dtype=bool) & valid_np
+                    fs_np = np.asarray(item.get("cowp/candidates/false_safe", np.zeros_like(valid_np)), dtype=bool) & valid_np
+                    accepted_total += int((accepted_mask_np & valid_np).sum())
+                    valid_total += int(valid_np.sum())
+                    accepted_ncf += int((accepted_mask_np & ncf_np).sum())
+                    total_ncf += int(ncf_np.sum())
+                    accepted_false_safe += int((accepted_mask_np & fs_np).sum())
+                    total_false_safe += int(fs_np.sum())
             cand_mask = batch["cowp/candidates/valid"].bool()
             crit_mask = batch["cowp/critical/valid"].bool()
             pair_mask = (cand_mask[:, :, None] & crit_mask[:, None, :]).detach().cpu().numpy()
@@ -134,6 +193,16 @@ def learned_offline_candidate_eval(
             gt_exists = batch["cowp/witness/exists"].bool().detach().cpu().numpy()
             gt_token = batch["cowp/witness/token"].long().detach().cpu().numpy()
             gt_interval = batch["cowp/witness/conflict_interval"].detach().cpu().numpy()
+            pair_score_np = torch.sigmoid(pred["witness"]["exist_logits"]).detach().cpu().numpy()
+            pair_scores.append(pair_score_np[pair_mask])
+            pair_targets.append(gt_exists[pair_mask])
+            score_np = pred["planner_score"].detach().cpu().numpy()
+            ncf_np = batch["cowp/candidates/noncoercive_feasible"].bool().detach().cpu().numpy()
+            fs_np = batch["cowp/candidates/false_safe"].bool().detach().cpu().numpy()
+            valid_np = cand_mask.detach().cpu().numpy()
+            g, t = _ranking_pair_accuracy(score_np, ncf_np, fs_np, valid_np)
+            rank_good += g
+            rank_total += t
             for i in range(B):
                 witness_rows.append(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
@@ -142,6 +211,15 @@ def learned_offline_candidate_eval(
     if witness_rows:
         keys = sorted(witness_rows[0])
         metrics.update({f"WitnessQuality/{k}": float(np.mean([r[k] for r in witness_rows])) for k in keys})
+    metrics["SelectedNCFRate"] = float(selected_ncf / max(len(selected), 1))
+    metrics["SelectedFalseSafeRate"] = float(selected_false_safe / max(len(selected), 1))
+    metrics["SelectedConventionalSafeRate"] = float(selected_conventional / max(len(selected), 1))
+    metrics["LearnedAcceptedCandidateRate"] = float(accepted_total / max(valid_total, 1))
+    metrics["LearnedAcceptNCFRecall"] = float(accepted_ncf / max(total_ncf, 1))
+    metrics["LearnedAcceptFalseSafeRate"] = float(accepted_false_safe / max(total_false_safe, 1))
+    if pair_scores:
+        metrics["WitnessQuality/AUPRC"] = _average_precision_binary(np.concatenate(pair_scores), np.concatenate(pair_targets))
+    metrics["PlannerRankingPairAccuracy"] = float(rank_good / max(rank_total, 1)) if rank_total else 0.0
     metrics["num_scenes"] = len(selected)
     metrics["mode"] = "learned_offline"
     metrics["witness_threshold"] = float(witness_threshold)

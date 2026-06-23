@@ -9,7 +9,7 @@ from cowp.core.config import load_config
 from cowp.waymax_eval.rollout import offline_candidate_eval
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
-from cowp.waymax_eval.metrics_cowp import stress_acceptance_metrics, witness_table_from_labels
+from cowp.waymax_eval.metrics_cowp import module_effect_metrics, stress_acceptance_metrics, witness_table_from_labels
 import numpy as np
 
 
@@ -48,7 +48,10 @@ def main() -> None:
     pd.DataFrame(stress_rows).to_csv(out / "stress_test.csv", index=False)
     witness_rows = [{"Method": "COWP rule certificate", **witness_table_from_labels(label_dicts)}]
     pd.DataFrame(witness_rows).to_csv(out / "witness_quality.csv", index=False)
+    module_metrics = module_effect_metrics(label_dicts, cfg, methods=list(methods))
+    pd.DataFrame([{"Method": k, **v} for k, v in module_metrics.items()]).to_csv(out / "module_effects.csv", index=False)
     print(df.to_string(index=False))
+    print(f"Wrote module-effect diagnostics to {out / 'module_effects.csv'}")
 
 
 if __name__ == "__main__":

@@ -155,11 +155,11 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
         rows.extend(item.get("policy_diagnostics", []) or [])
     if not rows:
         return {}
-    max_w = np.asarray([float(r.get("max_witness_prob", 0.0)) for r in rows], dtype=np.float32)
-    threshold = np.asarray([float(r.get("witness_threshold", 0.5)) for r in rows], dtype=np.float32)
-    min_opr = np.asarray([float(r.get("min_opr", 1.0)) for r in rows], dtype=np.float32)
-    mean_opr = np.asarray([float(r.get("mean_opr", 1.0)) for r in rows], dtype=np.float32)
-    burden = np.asarray([float(r.get("max_predicted_burden", 0.0)) for r in rows], dtype=np.float32)
+    max_w = np.nan_to_num(np.asarray([float(r.get("max_witness_prob", 0.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+    threshold = np.nan_to_num(np.asarray([float(r.get("witness_threshold", 0.5)) for r in rows], dtype=np.float32), nan=0.5, posinf=0.5, neginf=0.5)
+    min_opr = np.nan_to_num(np.asarray([float(r.get("min_opr", 1.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+    mean_opr = np.nan_to_num(np.asarray([float(r.get("mean_opr", 1.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+    burden = np.nan_to_num(np.asarray([float(r.get("max_predicted_burden", 0.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=2.0, neginf=0.0)
     fallback = np.asarray([bool(r.get("fallback_used", False)) for r in rows], dtype=bool)
     return {
         "ClosedLoopPredFSR": float(np.mean(max_w >= threshold)),
@@ -197,12 +197,17 @@ def policy_diagnostic_episode_summary(rollouts: list[dict]) -> dict[str, float]:
         if not rows:
             continue
         episodes_with_rows += 1
-        max_w = max(float(r.get("max_witness_prob", 0.0)) for r in rows)
-        threshold = max(float(r.get("witness_threshold", 0.5)) for r in rows)
-        max_burden = max(float(r.get("max_predicted_burden", 0.0)) for r in rows)
+        row_max_w = np.nan_to_num(np.asarray([float(r.get("max_witness_prob", 0.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+        row_thr = np.nan_to_num(np.asarray([float(r.get("witness_threshold", 0.5)) for r in rows], dtype=np.float32), nan=0.5, posinf=0.5, neginf=0.5)
+        row_burden = np.nan_to_num(np.asarray([float(r.get("max_predicted_burden", 0.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=2.0, neginf=0.0)
+        row_opr_min = np.nan_to_num(np.asarray([float(r.get("min_opr", 1.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+        row_opr_mean = np.nan_to_num(np.asarray([float(r.get("mean_opr", 1.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
+        max_w = float(row_max_w.max())
+        threshold = float(row_thr.max())
+        max_burden = float(row_burden.max())
         beta = max(float(r.get("beta_threshold", 0.65)) for r in rows)
-        min_opr = min(float(r.get("min_opr", 1.0)) for r in rows)
-        mean_opr = float(np.mean([float(r.get("mean_opr", 1.0)) for r in rows]))
+        min_opr = float(row_opr_min.min())
+        mean_opr = float(row_opr_mean.mean())
         fallback_episode += int(any(bool(r.get("fallback_used", False)) for r in rows))
         cbs_vals.append(max_burden)
         opr_min_vals.append(min_opr)
@@ -226,3 +231,56 @@ def policy_diagnostic_episode_summary(rollouts: list[dict]) -> dict[str, float]:
         "EpisodesWithDiagnostics": float(episodes_with_rows),
     }
 
+
+
+
+def module_effect_metrics(label_dicts: list[dict[str, np.ndarray]], cfg: dict, methods: list[str] | None = None) -> dict[str, dict[str, float]]:
+    """Quantify whether the paper modules change decisions in label space.
+
+    This is intentionally label/certificate based.  It answers: if we disable a
+    module, do accepted masks and selected candidates change, and do false-safe /
+    option metrics degrade?  These numbers are useful before running expensive
+    Waymax closed-loop experiments.
+    """
+    from cowp.waymax_eval.baselines import planner_for_method
+
+    methods = methods or [
+        "cowp",
+        "cowp_wo_counterfactual",
+        "cowp_wo_neutral_branch",
+        "cowp_wo_priority_branch",
+        "cowp_wo_option_preservation",
+        "cowp_wo_witness_rejection",
+        "soft_burden_cost_only",
+    ]
+    decisions: dict[str, list[tuple[int, np.ndarray]]] = {}
+    selected: dict[str, list[int]] = {}
+    metrics: dict[str, dict[str, float]] = {}
+    for method in methods:
+        planner = planner_for_method(method, cfg)
+        rows: list[tuple[int, np.ndarray]] = []
+        idxs: list[int] = []
+        for label in label_dicts:
+            dec = planner.select_from_labels(label)
+            rows.append((dec.candidate_index, dec.accepted_mask.astype(bool)))
+            idxs.append(int(dec.candidate_index))
+        decisions[method] = rows
+        selected[method] = idxs
+        metrics[method] = metrics_from_labels(idxs, label_dicts)
+    full = decisions.get("cowp")
+    if full is not None:
+        for method, rows in decisions.items():
+            if method == "cowp":
+                metrics[method]["DecisionChangeVsFull"] = 0.0
+                metrics[method]["AcceptedJaccardVsFull"] = 1.0
+                continue
+            changes = 0
+            jaccards = []
+            for (k_full, mask_full), (k_m, mask_m) in zip(full, rows):
+                changes += int(k_full != k_m)
+                union = np.logical_or(mask_full, mask_m).sum()
+                inter = np.logical_and(mask_full, mask_m).sum()
+                jaccards.append(float(inter / max(union, 1)))
+            metrics[method]["DecisionChangeVsFull"] = float(changes / max(len(rows), 1))
+            metrics[method]["AcceptedJaccardVsFull"] = float(np.mean(jaccards)) if jaccards else 1.0
+    return metrics

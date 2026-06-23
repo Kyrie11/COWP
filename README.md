@@ -238,14 +238,18 @@ python cowp/scripts/09_build_waymax_rollout_dataset.py \
 ```bash
 python -m cowp.scripts.03_train \
   --data-config configs/data.yaml \
-  --model-config configs/model.yaml \
-  --train-config configs/train.yaml \
-  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \
-  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
-  --stage representation \
-  --epochs 5 \
-  --batch-size 64 \
-  --output-dir outputs/checkpoints/representation
+  --model-config configs/model.yaml \  
+  --train-config configs/train.yaml \  
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_train \  
+  --val-cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \  
+  --stage response \  
+  --epochs 10 \  
+  --batch-size 64 \  
+  --num-workers 8 \  
+  --prefetch-factor 1 \  
+  --amp   --compile   --fused-adamw  \ 
+  --resume outputs/checkpoints/representation/cowp_representation_best.pt \  
+  --output-dir outputs/checkpoints/response
 ```
 
 ### Stage B：natural / response supervised training
@@ -627,3 +631,25 @@ python -m cowp.scripts.11_diagnose_tensor_cache_visibility --cache-dir <tensor_c
 If `files_with_id_mapping` is close to `num_files` and `visible_critical_slot_ratio` is still low, the remaining issue is true WOMD input exclusion/current invisibility rather than a Scenario-index/input-row mismatch.
 
 For Stage-B response training, `cowp/response/traj` is a dense `[K,A,R,T,7]` target and can make each batch very large. `03_train.py` therefore keeps DataLoader `pin_memory=False` by default and uses `prefetch_factor=1` by default for response/planner/all stages. This does not change model learning or predictions; it only avoids CUDA pinned-memory failures. You may still force pinning with `--pin-memory` after confirming your host/CUDA setup is stable.
+
+---
+
+## 10. 本轮闭环与消融修复说明
+
+本代码包已加入针对 Waymax online policy、learned offline witness/ranking 诊断、module-effect ablation 表的补丁。详细修改点、快速训练指令、完整训练指令、learned offline threshold sweep、Waymax smoke test 指令见：
+
+```text
+COWP_PATCH_GUIDE_CN.md
+```
+
+核心新增输出：
+
+```text
+outputs/tables/module_effects.csv
+```
+
+核心新增 eval 参数：
+
+```bash
+--witness-threshold-sweep 0.1,0.2,0.3,0.5,0.7
+```
