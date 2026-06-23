@@ -3,9 +3,14 @@ womd:
   tfexample_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/training/*.tfrecord*
   validation_proto_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/scenario/validation/*.tfrecord*
   validation_tfexample_glob: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/*.tfrecord*
-  include_sdc_paths: true
-  waymax_config_name: WOD_1_1_0_TRAINING
 
+  # 给 COWP 普通 TFRecord parser 用，保留 glob 没问题；
+  # 但 Waymax dataloader 更适合使用 @shards 格式。
+  waymax_path: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/training/training_tfexample.tfrecord@1000
+  validation_waymax_path: /data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150
+
+  include_sdc_paths: true
+  waymax_config_name: WOD_1_3_1_TRAINING
 outputs:
   root: outputs/cowp
   index_jsonl: outputs/cowp/cowp_index.jsonl

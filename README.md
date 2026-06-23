@@ -349,7 +349,7 @@ python -m cowp.scripts.04_eval_closed_loop \
   --data-config configs/data.yaml \
   --label-config configs/label.yaml \
   --eval-config configs/eval.yaml \
-  --cache-dir outputs/cowp/formal/tensor_cache_val \
+  --cache-dir /data0/senzeyu2/dataset/COWP/formal/tensor_cache_val \
   --mode learned_offline \
   --method cowp \
   --checkpoint outputs/checkpoints/planner/cowp_planner_best.pt \

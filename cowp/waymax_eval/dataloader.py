@@ -1,3 +1,4 @@
+import dataclasses
 from __future__ import annotations
 
 from typing import Iterator
@@ -24,14 +25,23 @@ def _maybe_copy_and_update(cfg, **kwargs):
     clean = {k: v for k, v in kwargs.items() if v is not None}
     if not clean:
         return cfg
+
+    if dataclasses.is_dataclass(cfg):
+        try:
+            return dataclasses.replace(cfg, **clean)
+        except TypeError as exc:
+            valid = {f.name for f in dataclasses.fields(cfg)}
+            bad = sorted(set(clean) - valid)
+            raise TypeError(
+                f"Invalid Waymax DatasetConfig fields: {bad}. "
+                f"Available fields include: {sorted(valid)}"
+            ) from exc
+
     try:
         return cfg.copy_and_update(**clean)
     except Exception:
         for k, v in clean.items():
-            try:
-                setattr(cfg, k, v)
-            except Exception:
-                pass
+            setattr(cfg, k, v)
         return cfg
 
 
@@ -53,9 +63,18 @@ def _womd_subconfig(data_config: dict) -> dict:
 def _tfexample_path_from_cowp_config(data_config: dict, split: str | None = None) -> str | None:
     womd_cfg = _womd_subconfig(data_config)
     if split == "validation":
-        return womd_cfg.get("validation_tfexample_glob") or womd_cfg.get("waymax_path") or womd_cfg.get("tfexample_glob")
-    return womd_cfg.get("waymax_path") or womd_cfg.get("tfexample_glob") or womd_cfg.get("validation_tfexample_glob")
-
+        return (
+            womd_cfg.get("validation_waymax_path")
+            or womd_cfg.get("validation_tfexample_glob")
+            or womd_cfg.get("waymax_path")
+            or womd_cfg.get("tfexample_glob")
+        )
+    return (
+        womd_cfg.get("waymax_path")
+        or womd_cfg.get("tfexample_glob")
+        or womd_cfg.get("validation_waymax_path")
+        or womd_cfg.get("validation_tfexample_glob")
+    )
 
 def make_config_from_cowp_config(data_config, split: str | None = None):
     """Return a real Waymax dataloader config from a COWP yaml dict or a Waymax config.
