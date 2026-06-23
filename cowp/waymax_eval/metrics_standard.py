@@ -23,6 +23,16 @@ def closed_loop_standard_metrics(ego_trajs: list[np.ndarray], other_trajs: list[
     return {"CR": collisions / max(n, 1), "Offroad": offroad / max(n, 1), "EP": float(np.mean(progress)) if progress else 0.0}
 
 
+def _device_get(x):
+    """Move JAX/PyTorch metric outputs to host when possible."""
+    try:
+        import jax  # type: ignore
+
+        return jax.device_get(x)
+    except Exception:
+        return x
+
+
 def waymax_metric_dict(rollout_state):
     try:
         from waymax import metrics  # type: ignore
@@ -32,7 +42,7 @@ def waymax_metric_dict(rollout_state):
     out = {}
     for m in metric_objects:
         result = m.compute(rollout_state)
-        out[m.__class__.__name__] = result
+        out[m.__class__.__name__] = _device_get(result)
     return out
 
 

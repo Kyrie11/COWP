@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import gc
 from pathlib import Path
 from typing import Callable
 
@@ -229,6 +230,30 @@ def _make_waymax_environment(max_num_objects: int | None = None, action_mode: st
 
 
 
+def _clear_accelerator_caches() -> None:
+    """Best-effort cleanup between scenarios for mixed JAX + PyTorch rollout.
+
+    The important memory fix is not retaining SimulatorState objects in the
+    rollout output.  This helper only releases Python references/caches sooner.
+    """
+    gc.collect()
+    try:
+        import jax  # type: ignore
+
+        clear = getattr(jax, "clear_caches", None)
+        if callable(clear):
+            clear()
+    except Exception:
+        pass
+    try:
+        import torch  # type: ignore
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _consume_policy_diagnostics(policy_fn: Callable) -> dict | None:
     consumer = getattr(policy_fn, "consume_diagnostics", None)
     if callable(consumer):
@@ -269,6 +294,8 @@ def waymax_closed_loop_rollout(
     progress: bool = True,
     compute_standard_metrics: bool = False,
     action_mode: str = "delta_xy_yaw",
+    keep_rollout_state: bool = False,
+    clear_accelerator_cache: bool = False,
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -300,10 +327,18 @@ def waymax_closed_loop_rollout(
             steps += 1
             if _state_done(state):
                 break
-        item = {"state": state, "steps": steps, "policy_diagnostics": policy_diagnostics}
+        # Do not retain SimulatorState by default.  A Waymax SimulatorState can keep
+        # JAX device buffers alive; storing one per scenario causes closed-loop eval
+        # memory to grow with --num-scenarios.  Metrics are computed before dropping
+        # the state, so the JSON payload still contains the required evaluation info.
+        item = {"steps": steps, "policy_diagnostics": policy_diagnostics}
         if compute_standard_metrics:
             item["standard_metrics"] = waymax_metric_dict(state)
+        if keep_rollout_state:
+            item["state"] = state
         outputs.append(item)
+        if clear_accelerator_cache:
+            _clear_accelerator_caches()
         if hasattr(iterator, "set_postfix"):
             iterator.set_postfix(done=len(outputs), steps=steps, refresh=True)
         if num_scenarios is not None and len(outputs) >= num_scenarios:

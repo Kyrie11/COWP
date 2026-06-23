@@ -205,13 +205,23 @@ class COWPWaymaxPolicy:
         from cowp.models.cowp_model import COWPModel
 
         dev = torch.device("cuda" if self.device == "auto" and torch.cuda.is_available() else ("cpu" if self.device == "auto" else self.device))
-        ckpt = torch.load(self.checkpoint, map_location=dev)
+        # Load the checkpoint on CPU first, then move only the model weights to the
+        # requested device.  Loading checkpoint tensors directly onto CUDA creates
+        # an avoidable peak-memory spike and can collide with JAX/Waymax allocation.
+        ckpt = torch.load(self.checkpoint, map_location="cpu")
         model_cfg = ckpt.get("cfg", self.cfg)
-        self.model = COWPModel(model_cfg).to(dev)
+        self.model = COWPModel(model_cfg)
         self.model.load_state_dict(ckpt["model"])
+        del ckpt
+        self.model.to(dev)
         self.model.eval()
         self.torch = torch
         self.dev = dev
+        if dev.type == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
         self._last_diagnostics: dict[str, Any] | None = None
         self._diagnostics_log: list[dict[str, Any]] = []
 
@@ -248,9 +258,26 @@ class COWPWaymaxPolicy:
     def __call__(self, state: Any, *, step: int | None = None, scenario_index: int | None = None) -> Any:
         agent_state, sdc_index = extract_current_agent_state(state)
         batch_np = build_online_batch(agent_state, sdc_index, self.cfg)
-        batch = {k: self.torch.as_tensor(v, device=self.dev) for k, v in batch_np.items()}
-        with self.torch.no_grad():
-            pred = self.model(batch)
+        # Closed-loop online inference only needs encoder state, candidate tensors,
+        # critical-agent indices and optional map tokens.  Do not copy the large
+        # label-only supervision tensors (natural/response/witness targets) to GPU.
+        online_keys = (
+            "state/history",
+            "state/agent_valid",
+            "cowp/candidates/trajectory",
+            "cowp/candidates/valid",
+            "cowp/candidates/macro_type",
+            "cowp/candidates/ego_utility_prior",
+            "cowp/candidates/conventional_safe",
+            "cowp/critical/track_index",
+            "cowp/critical/input_index",
+            "cowp/critical/valid",
+            "map/conflict_regions",
+            "map/conflict_region_valid",
+        )
+        batch = {k: self.torch.as_tensor(batch_np[k], device=self.dev) for k in online_keys if k in batch_np}
+        with self.torch.inference_mode():
+            pred = self.model(batch, stage="planner")
             scores = pred["planner_score"][0]
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             witness = self.torch.sigmoid(pred["witness"]["exist_logits"])[0]
