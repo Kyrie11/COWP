@@ -58,9 +58,15 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
         cf_count += int(conv)
         false_safe += int(conv and np.any(wit))
         if np.any(crit):
-            cbs.append(float(np.max(label["cowp/witness/burden_total"][k, crit])))
-            oprs.append(float(np.mean(label["cowp/witness/opr"][k, crit])))
-            hbcr += int(np.any(label["cowp/witness/min_safe_burden"][k, crit] > label["cowp/natural/beta"][crit]))
+            burden = np.asarray(label.get("cowp/witness/burden_total", np.zeros((len(valid), len(crit)), dtype=np.float32)), dtype=np.float32)
+            opr = np.asarray(label.get("cowp/witness/opr", np.ones((len(valid), len(crit)), dtype=np.float32)), dtype=np.float32)
+            cbs.append(float(np.nanmax(np.nan_to_num(burden[k, crit], nan=0.0, posinf=0.0, neginf=0.0))))
+            oprs.append(float(np.nanmean(np.nan_to_num(opr[k, crit], nan=0.0, posinf=1.0, neginf=0.0))))
+            min_safe = np.asarray(label.get("cowp/witness/min_safe_burden", burden), dtype=np.float32)
+            beta = np.asarray(label.get("cowp/natural/beta", np.full(len(crit), 0.65, dtype=np.float32)), dtype=np.float32)
+            if beta.shape[0] < crit.shape[0]:
+                beta = np.pad(beta, (0, crit.shape[0] - beta.shape[0]), constant_values=0.65)
+            hbcr += int(np.any(min_safe[k, crit] > beta[: crit.shape[0]][crit]))
     return {
         "CR": float(collision_or_offroad / max(n, 1)),
         "EP": float(np.mean(progress_norm)) if progress_norm else 0.0,
@@ -161,7 +167,7 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
     mean_opr = np.nan_to_num(np.asarray([float(r.get("mean_opr", 1.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=1.0, neginf=0.0)
     burden = np.nan_to_num(np.asarray([float(r.get("max_predicted_burden", 0.0)) for r in rows], dtype=np.float32), nan=0.0, posinf=2.0, neginf=0.0)
     fallback = np.asarray([bool(r.get("fallback_used", False)) for r in rows], dtype=bool)
-    return {
+    out = {
         "ClosedLoopPredFSR": float(np.mean(max_w >= threshold)),
         "ClosedLoopMeanWitnessProb": float(np.mean(max_w)),
         "ClosedLoopCBS_pred": float(np.mean(burden)),
@@ -170,6 +176,16 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
         "ClosedLoopFallbackStepRate": float(np.mean(fallback)),
         "ClosedLoopPolicySteps": float(len(rows)),
     }
+    # Extra online-health diagnostics.  They make it obvious whether failures are
+    # caused by candidate starvation, witness over-rejection, missing critical
+    # agents, or missing conflict/map tokens.
+    for key in ("accepted_candidates", "valid_candidates", "conventional_candidates", "critical_agents", "conflict_tokens"):
+        vals = np.asarray([float(r.get(key, 0.0)) for r in rows], dtype=np.float32)
+        out[f"ClosedLoopMean/{key}"] = float(np.mean(vals)) if vals.size else 0.0
+    reasons = [str(r.get("fallback_reason", "none")) for r in rows]
+    for reason in sorted(set(reasons)):
+        out[f"ClosedLoopFallbackReason/{reason}"] = float(sum(x == reason for x in reasons) / max(len(reasons), 1))
+    return out
 
 
 def policy_diagnostic_episode_summary(rollouts: list[dict]) -> dict[str, float]:

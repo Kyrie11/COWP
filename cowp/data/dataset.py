@@ -61,7 +61,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("response", "witness", "planner", "all"):
+    if stage in ("response", "witness", "planner", "planner_eval", "all"):
         for key in ("cowp/candidates/trajectory", "cowp/candidates/macro_type", "cowp/candidates/valid"):
             if key not in data:
                 missing.append(key)
@@ -74,7 +74,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("witness", "planner", "all"):
+    if stage in ("witness", "planner", "planner_eval", "all"):
         for key in (
             "cowp/witness/exists",
             "cowp/witness/token",
@@ -85,7 +85,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("planner", "all"):
+    if stage in ("planner", "planner_eval", "all"):
         for key in ("cowp/candidates/noncoercive_feasible", "cowp/candidates/false_safe"):
             if key not in data:
                 missing.append(key)
@@ -342,8 +342,12 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/valid",
             "cowp/witness/",
         })
-    elif stage == "planner":
-        wanted.add("waymax/")
+    elif stage in ("planner", "planner_eval"):
+        # Training may use optional Waymax candidate-outcome labels.  Learned
+        # offline evaluation must not load broad waymax/* tensors because they
+        # are unnecessary and can make evaluation die from host RAM pressure.
+        if stage == "planner":
+            wanted.add("waymax/")
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -353,6 +357,7 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/noncoercive_feasible",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
+            "cowp/natural/beta",
             "cowp/witness/",
         })
     return wanted

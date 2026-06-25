@@ -357,6 +357,7 @@ python -m cowp.scripts.04_eval_closed_loop \
   --mode learned_offline \
   --method cowp \
   --checkpoint outputs/checkpoints/planner/cowp_planner_best.pt \
+  --device cuda:1   --jax-visible-devices 0   --jax-preallocate false \
   --batch-size 64 \
   --witness-threshold 0.5 \
   --output outputs/eval/learned_offline_cowp_val.json
@@ -371,6 +372,7 @@ python -m cowp.scripts.04_eval_closed_loop \
   --mode waymax \
   --method cowp \
   --checkpoint outputs/checkpoints/planner/cowp_planner_best.pt \
+  --device cuda:1   --jax-visible-devices 0   --jax-preallocate false \
   --num-scenarios 100 \
   --rollout-horizon-steps 80 \
   --waymax-standard-metrics \

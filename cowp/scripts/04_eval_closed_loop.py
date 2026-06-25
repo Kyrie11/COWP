@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from cowp.core.config import load_config
-from cowp.waymax_eval.rollout import import_policy_fn, learned_offline_candidate_eval, offline_candidate_eval, waymax_closed_loop_rollout
+from cowp.waymax_eval.rollout import import_policy_fn, learned_offline_candidate_eval, learned_offline_candidate_eval_sweep, offline_candidate_eval, waymax_closed_loop_rollout
 from cowp.waymax_eval.policy_wrapper import make_cowp_policy
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
@@ -79,30 +79,31 @@ def main() -> None:
     elif args.mode == "learned_offline":
         if not args.checkpoint:
             raise ValueError("--mode learned_offline requires --checkpoint")
-        metrics = learned_offline_candidate_eval(
-            args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
-            args.checkpoint,
-            cfg,
-            batch_size=args.batch_size,
-            device=args.device,
-            witness_threshold=args.witness_threshold,
-            progress=not args.no_progress,
-        )
-        payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint}
         if args.witness_threshold_sweep:
-            sweep = []
-            for th in [float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip()]:
-                m = learned_offline_candidate_eval(
-                    args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
-                    args.checkpoint,
-                    cfg,
-                    batch_size=args.batch_size,
-                    device=args.device,
-                    witness_threshold=th,
-                    progress=not args.no_progress,
-                )
-                sweep.append({"witness_threshold": th, **m})
-            payload["witness_threshold_sweep"] = sweep
+            thresholds = [float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip()]
+            thresholds.append(float(args.witness_threshold))
+            sweep = learned_offline_candidate_eval_sweep(
+                args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+                args.checkpoint,
+                cfg,
+                batch_size=args.batch_size,
+                device=args.device,
+                witness_thresholds=thresholds,
+                progress=not args.no_progress,
+            )
+            metrics = min(sweep, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "witness_threshold_sweep": sweep}
+        else:
+            metrics = learned_offline_candidate_eval(
+                args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+                args.checkpoint,
+                cfg,
+                batch_size=args.batch_size,
+                device=args.device,
+                witness_threshold=args.witness_threshold,
+                progress=not args.no_progress,
+            )
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint}
     else:
         if args.policy_fn:
             policy_fn = import_policy_fn(args.policy_fn)
