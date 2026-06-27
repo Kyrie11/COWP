@@ -51,6 +51,7 @@ def main() -> None:
     ap.add_argument("--continue-on-error", action="store_true", help="Log worker exceptions to profile JSONL and continue instead of failing immediately.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; label construction is CPU-bound.")
     ap.add_argument("--skip-existing", action="store_true", help="Skip label files that already exist in the output directory.")
+    ap.add_argument("--skip-diagnostics", action="store_true", help="Only build labels; do not run dataset diagnostics at the end. Use cowp/scripts/06_diagnose_dataset.py separately.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     ap.add_argument("--diagnostic-visualizations", action="store_true", help="Write a small gallery of high-signal witness diagnostic plots.")
     ap.add_argument("--max-visualizations", type=int, default=16)
@@ -98,6 +99,9 @@ def main() -> None:
         exclude_scenario_ids=_read_id_file(args.exclude_scenario_ids),
     )
     print(f"Built {n} label files in {output_dir}")
+    if args.skip_diagnostics:
+        print("Skipped diagnostics (--skip-diagnostics). Run 06_diagnose_dataset.py after label generation when needed.")
+        return
     diag = args.diagnostics_dir or cfg["outputs"]["diagnostics_dir"]
     diagnose_dataset(
         output_dir,

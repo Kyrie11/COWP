@@ -83,11 +83,33 @@ def typed_safe_budget_search(
     then prefer lower priority/hardness cost.  Returned profiles can be merged
     into the response bank as OPT responses.
     """
+    rows = typed_safe_budget_search_evaluated(current, horizon, dt, ego_candidate, object_type, cfg, natural_ref=natural_ref, rho=rho)
+    return [(tr, name, burden) for tr, name, burden, _safe, _comps in rows]
+
+
+def typed_safe_budget_search_evaluated(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    ego_candidate: np.ndarray,
+    object_type: int,
+    cfg: dict,
+    natural_ref: np.ndarray | None = None,
+    rho: PriorityRelation = PriorityRelation.UNKNOWN,
+) -> list[tuple[np.ndarray, str, float, bool, np.ndarray]]:
+    """Like typed_safe_budget_search, but returns safety/burden results too.
+
+    Safe-response generation needs the selected budget trajectories and their
+    final ``is_safe`` / burden fields.  Returning the already computed values
+    avoids re-running unsafe_between + compute_burden for the same trajectory.
+    The ranking and returned trajectory set are identical to
+    typed_safe_budget_search.
+    """
     s_cfg = cfg.get("response", {}).get("safe_budget_search", {})
     beam_width = int(s_cfg.get("beam_width", 16))
     max_return = int(s_cfg.get("max_return", 16))
     profiles = default_budget_profiles(cfg)
-    rows: list[tuple[float, np.ndarray, str, float]] = []
+    rows: list[tuple[float, np.ndarray, str, float, bool, np.ndarray]] = []
     beta_margin = float(s_cfg.get("hard_profile_penalty", 0.25))
     unsafe_penalty = float(s_cfg.get("unsafe_penalty", 100.0))
     for prof in profiles:
@@ -99,6 +121,6 @@ def typed_safe_budget_search(
         # the search prefers natural/comfort-preserving responses when available.
         option_cost = 0.25 * float(comps[4])
         score = (unsafe_penalty if unsafe.unsafe else 0.0) + float(burden) + priority_cost + option_cost
-        rows.append((score, tr, prof.name, float(burden)))
+        rows.append((score, tr, prof.name, float(burden), not unsafe.unsafe, comps))
     rows.sort(key=lambda x: x[0])
-    return [(tr, name, burden) for _, tr, name, burden in rows[: max(1, min(max_return, beam_width, len(rows)))]]
+    return [(tr, name, burden, safe, comps) for _, tr, name, burden, safe, comps in rows[: max(1, min(max_return, beam_width, len(rows)))]]

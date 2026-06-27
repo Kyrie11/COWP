@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from cowp.core.types import ScenarioData
@@ -27,14 +29,22 @@ def build_labels_for_scene(
     ablation: dict | None = None,
     scene_meta: dict[str, object] | None = None,
     conflict_regions: list | None = None,
+    profile_timings: dict[str, float] | None = None,
 ) -> dict[str, np.ndarray | str]:
-    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
-    candidates = generate_ego_candidates(scene, cfg, conflict_regions=regions)
-    critical = select_critical_agents(scene, cfg, candidates, conflict_regions=regions)
+    def _timeit(name: str, fn):
+        t = time.perf_counter()
+        out = fn()
+        if profile_timings is not None:
+            profile_timings[name] = time.perf_counter() - t
+        return out
+
+    regions = conflict_regions if conflict_regions is not None else _timeit("engine_conflict_regions_s", lambda: build_conflict_regions(scene.map_data, cfg))
+    candidates = _timeit("engine_candidates_s", lambda: generate_ego_candidates(scene, cfg, conflict_regions=regions))
+    critical = _timeit("engine_critical_agents_s", lambda: select_critical_agents(scene, cfg, candidates, conflict_regions=regions))
     ego_neutral = _make_ego_neutral(candidates)
-    natural = generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation)
-    response = generate_safe_responses(scene, candidates, critical, natural, cfg)
-    witness = certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions)
+    natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
+    response = _timeit("engine_safe_responses_s", lambda: generate_safe_responses(scene, candidates, critical, natural, cfg))
+    witness = _timeit("engine_witness_s", lambda: certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions))
     max_c = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
     conflict_tensor = np.zeros((max_c, 8), dtype=np.float32)
     conflict_valid = np.zeros(max_c, dtype=bool)

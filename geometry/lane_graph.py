@@ -49,6 +49,19 @@ def _bbox_xy(xy: np.ndarray) -> tuple[float, float, float, float]:
 def _bbox_might_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float], margin: float) -> bool:
     return not (a[2] + margin < b[0] or b[2] + margin < a[0] or a[3] + margin < b[1] or b[3] + margin < a[1])
 
+
+def _segment_bboxes(xy: np.ndarray) -> list[tuple[float, float, float, float]]:
+    return [
+        (
+            float(min(xy[i, 0], xy[i + 1, 0])),
+            float(min(xy[i, 1], xy[i + 1, 1])),
+            float(max(xy[i, 0], xy[i + 1, 0])),
+            float(max(xy[i, 1], xy[i + 1, 1])),
+        )
+        for i in range(max(0, len(xy) - 1))
+    ]
+
+
 def lane_heading_at(lane: Lane, s_query: float | None = None) -> float:
     xy = lane.xy
     if len(xy) < 2:
@@ -70,6 +83,7 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
     regions: list[ConflictRegion] = []
     lanes = list(map_data.lanes.values())
     lane_bboxes = {lane.lane_id: _bbox_xy(lane.xy) for lane in lanes if len(lane.xy) >= 2}
+    lane_segment_bboxes = {lane.lane_id: _segment_bboxes(lane.xy) for lane in lanes if len(lane.xy) >= 2}
     seen: set[tuple[int, int, int, int]] = set()
     max_regions = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
     bbox_margin = max(intersection_radius, merge_radius) + 2.0
@@ -103,8 +117,16 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
                 if len(regions) >= max_regions:
                     return regions[:max_regions]
                 continue
+            seg_boxes_a = lane_segment_bboxes.get(lane_a.lane_id, [])
+            seg_boxes_b = lane_segment_bboxes.get(lane_b.lane_id, [])
             for ia in range(len(xy_a) - 1):
                 for ib in range(len(xy_b) - 1):
+                    # Exact negative test: if segment bounding boxes do not
+                    # overlap, two straight segments cannot intersect. This
+                    # preserves the original conflict-region set while avoiding
+                    # most segment_intersection calls on dense HD maps.
+                    if seg_boxes_a and seg_boxes_b and not _bbox_might_overlap(seg_boxes_a[ia], seg_boxes_b[ib], 0.0):
+                        continue
                     key = (lane_a.lane_id, lane_b.lane_id, ia, ib)
                     if key in seen:
                         continue

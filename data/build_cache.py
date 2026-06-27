@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+import os
 import time
 import traceback
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 from typing import Mapping
@@ -19,6 +21,9 @@ from cowp.utils.progress import tqdm_iter
 from cowp.data.dataset import align_critical_agents_to_womd_input, mask_out_of_range_critical_agents
 
 
+_LABEL_WORKER_STATE: dict[str, object] = {}
+
+
 def _npz_key(key: str) -> str:
     return key.replace("/", "__")
 
@@ -26,7 +31,7 @@ def _npz_key(key: str) -> str:
 def _write_npz(path: str | Path, arrays: Mapping[str, object], *, compress: bool = True) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with tmp.open("wb") as f:
             if compress:
@@ -37,6 +42,93 @@ def _write_npz(path: str | Path, arrays: Mapping[str, object], *, compress: bool
     finally:
         if tmp.exists():
             tmp.unlink()
+
+
+def _label_npz_looks_complete(path: str | Path, expected_sid: str) -> tuple[bool, str]:
+    """Cheap integrity check used by --skip-existing.
+
+    A previous interrupted run can leave a zero-byte/partial/corrupt file, and a
+    stale file can also have the wrong scenario id.  Skipping on path existence
+    alone can silently poison resume runs, so we verify a few mandatory keys and
+    load their headers before declaring the file reusable.
+    """
+    path = Path(path)
+    if not path.exists():
+        return False, "missing"
+    required = (
+        "scenario/id",
+        "cowp/candidates/trajectory",
+        "cowp/candidates/valid",
+        "cowp/critical/track_index",
+        "cowp/natural/traj",
+        "cowp/response/traj",
+        "cowp/witness/exists",
+    )
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            files = set(data.files)
+            missing = [k for k in required if k not in files]
+            if missing:
+                return False, "missing_keys:" + ",".join(missing[:3])
+            sid_arr = data["scenario/id"]
+            sid = str(sid_arr.item() if getattr(sid_arr, "shape", ()) == () else sid_arr)
+            if sid != expected_sid:
+                return False, f"scenario_id_mismatch:{sid}"
+            # Force header/data access on small mandatory arrays.  np.load is lazy,
+            # so this catches corrupt central-directory or truncated members while
+            # avoiding a full read of all large tensors.
+            _ = data["cowp/candidates/valid"].shape
+            _ = data["cowp/witness/exists"].shape
+    except Exception as exc:
+        return False, f"load_error:{type(exc).__name__}"
+    return True, "ok"
+
+
+def _init_label_worker(
+    output_dir: str,
+    cfg: dict,
+    ablation: dict | None,
+    require_interaction_heavy: bool,
+    collect_scene_metadata: bool,
+    skip_existing: bool,
+    compress: bool,
+    allow_scenario_ids: set[str] | None,
+    exclude_scenario_ids: set[str] | None,
+    profile_label_engine: bool,
+) -> None:
+    _LABEL_WORKER_STATE.clear()
+    _LABEL_WORKER_STATE.update(
+        {
+            "output_dir": output_dir,
+            "cfg": cfg,
+            "ablation": ablation,
+            "require_interaction_heavy": require_interaction_heavy,
+            "collect_scene_metadata": collect_scene_metadata,
+            "skip_existing": skip_existing,
+            "compress": compress,
+            "allow_scenario_ids": allow_scenario_ids,
+            "exclude_scenario_ids": exclude_scenario_ids,
+            "profile_label_engine": profile_label_engine,
+        }
+    )
+
+
+def _build_one_label_worker_task(raw: bytes) -> dict[str, object]:
+    if not _LABEL_WORKER_STATE:
+        raise RuntimeError("Label worker state was not initialized.")
+    return _build_one_label_from_raw(
+        raw,
+        str(_LABEL_WORKER_STATE["output_dir"]),
+        _LABEL_WORKER_STATE["cfg"],
+        _LABEL_WORKER_STATE["ablation"],
+        bool(_LABEL_WORKER_STATE["require_interaction_heavy"]),
+        bool(_LABEL_WORKER_STATE["collect_scene_metadata"]),
+        bool(_LABEL_WORKER_STATE["skip_existing"]),
+        bool(_LABEL_WORKER_STATE["compress"]),
+        _LABEL_WORKER_STATE["allow_scenario_ids"],
+        _LABEL_WORKER_STATE["exclude_scenario_ids"],
+        bool(_LABEL_WORKER_STATE.get("profile_label_engine", False)),
+    )
 
 
 def save_label_npz(label: Mapping[str, object], path: str | Path, *, compress: bool = True) -> None:
@@ -66,6 +158,7 @@ def _build_one_label_from_raw(
     compress: bool,
     allow_scenario_ids: set[str] | None = None,
     exclude_scenario_ids: set[str] | None = None,
+    profile_label_engine: bool = False,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
     timings: dict[str, float] = {}
@@ -84,7 +177,12 @@ def _build_one_label_from_raw(
 
     label_path = Path(output_dir) / f"{sid}.npz"
     if skip_existing and label_path.exists():
-        return {"status": "existing", "scenario_id": sid, "seconds": time.perf_counter() - t0, "timings": timings}
+        t = time.perf_counter()
+        ok, reason = _label_npz_looks_complete(label_path, sid)
+        timings["skip_existing_check_s"] = time.perf_counter() - t
+        if ok:
+            return {"status": "existing", "scenario_id": sid, "seconds": time.perf_counter() - t0, "timings": timings}
+        timings["skip_existing_rebuild_reason"] = reason
 
     t = time.perf_counter()
     scene = scenario_to_scene(scenario, keep_raw=False)
@@ -130,7 +228,10 @@ def _build_one_label_from_raw(
             }
 
     t = time.perf_counter()
-    label = build_labels_for_scene(scene, cfg, ablation=ablation, scene_meta=heavy_meta, conflict_regions=regions)
+    engine_timings: dict[str, float] | None = {} if profile_label_engine else None
+    label = build_labels_for_scene(scene, cfg, ablation=ablation, scene_meta=heavy_meta, conflict_regions=regions, profile_timings=engine_timings)
+    if engine_timings:
+        timings.update(engine_timings)
     timings["label_engine_s"] = time.perf_counter() - t
 
     t = time.perf_counter()
@@ -213,6 +314,7 @@ def build_labels_from_proto(
     filter_cfg = cfg.get("dataset", {})
     require_interaction_heavy = bool(filter_cfg.get("require_interaction_heavy", False))
     collect_scene_metadata = bool(filter_cfg.get("collect_scene_metadata", True))
+    profile_label_engine = bool(profile_jsonl)
     total = max_scenarios_scanned
     if total is None:
         total = _count_jsonl_rows(index_jsonl)
@@ -262,6 +364,7 @@ def build_labels_from_proto(
                 compress,
                 allow_scenario_ids,
                 exclude_scenario_ids,
+                profile_label_engine,
             )
             handle_result(res, iterator)
             if limit is not None and count >= limit:
@@ -292,8 +395,18 @@ def build_labels_from_proto(
             return False
         scanned += 1
         fut = pool.submit(
-            _build_one_label_from_raw,
+            _build_one_label_worker_task,
             raw,
+        )
+        futures.add(fut)
+        return True
+
+    mp_context = mp.get_context(start_method) if start_method else None
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=mp_context,
+        initializer=_init_label_worker,
+        initargs=(
             str(output_dir),
             cfg,
             ablation,
@@ -303,12 +416,9 @@ def build_labels_from_proto(
             compress,
             allow_scenario_ids,
             exclude_scenario_ids,
-        )
-        futures.add(fut)
-        return True
-
-    mp_context = mp.get_context(start_method) if start_method else None
-    with ProcessPoolExecutor(max_workers=workers, mp_context=mp_context) as pool:
+            profile_label_engine,
+        ),
+    ) as pool:
         while len(futures) < max_pending and submit_one(pool):
             pass
         while futures:

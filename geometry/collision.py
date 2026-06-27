@@ -129,9 +129,15 @@ def unsafe_between(ego_traj: np.ndarray, agent_traj: np.ndarray, cfg: dict, agen
 
 
 def conventional_candidate_safe(ego_traj: np.ndarray, other_trajs: list[np.ndarray], cfg: dict) -> bool:
+    inflation = float(cfg.get("unsafe", cfg).get("collision_inflation_m", 0.1))
     for tr in other_trajs:
-        result = unsafe_between(ego_traj, tr, cfg)
-        if result.collision or result.offroad_severe:
+        # Conventional safety in this project only rejects true collisions
+        # (offroad cannot be assessed here because no lane-distance signal is
+        # supplied).  Calling unsafe_between also computes near-miss, TTC and
+        # RSS masks that are ignored by this function, which is expensive when
+        # every candidate is compared with every logged actor in a scene.
+        collision, _ = trajectory_collision(ego_traj, tr, inflation)
+        if collision:
             return False
     if not np.all(np.isfinite(ego_traj)):
         return False
