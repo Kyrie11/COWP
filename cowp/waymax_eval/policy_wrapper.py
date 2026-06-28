@@ -475,6 +475,81 @@ def _online_conflict_tokens(agent_state: np.ndarray, sdc_index: int, candidates:
     return tokens, valid
 
 
+
+def _priority_claim_weights(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    candidates: np.ndarray,
+    cand_valid: np.ndarray,
+    critical_idx: np.ndarray,
+    critical_valid: np.ndarray,
+    macro: np.ndarray,
+    cfg: dict,
+) -> np.ndarray:
+    """Heuristic right-of-way / priority proxy for online P-NCF gating.
+
+    It is intentionally conservative: nearby same-direction lead/adjacent agents
+    and agents whose constant-velocity path is close to an ego candidate receive
+    higher priority.  The witness gate is hard only for high-priority claims;
+    lower-priority conflicts become a soft ranking penalty.
+    """
+    K = int(candidates.shape[0])
+    A = int(critical_idx.shape[0])
+    out = np.zeros((K, A), dtype=np.float32)
+    if not (0 <= sdc_index < agent_state.shape[0]):
+        return out
+    ego = agent_state[sdc_index]
+    ego_xy = ego[:2].astype(np.float32)
+    ego_yaw = float(ego[6])
+    ego_dir = np.asarray([np.cos(ego_yaw), np.sin(ego_yaw)], dtype=np.float32)
+    ego_lat = np.asarray([-np.sin(ego_yaw), np.cos(ego_yaw)], dtype=np.float32)
+    ego_speed = float(max(ego[5], np.linalg.norm(ego[3:5])))
+    H = candidates.shape[1] if candidates.ndim >= 3 else int(cfg.get("time", {}).get("future_steps", 80))
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    ts = (np.arange(H, dtype=np.float32) + 1.0)[:, None] * dt
+    lane_change_macros = {
+        int(MacroType.LANE_CHANGE_LEFT),
+        int(MacroType.LANE_CHANGE_RIGHT),
+        int(MacroType.MERGE_AHEAD),
+        int(MacroType.ACCELERATE_CROSS),
+    }
+    macro_is_interactive = np.isin(macro.astype(np.int64, copy=False), list(lane_change_macros))
+    for a, raw_j in enumerate(critical_idx):
+        if not bool(critical_valid[a]):
+            continue
+        j = int(raw_j)
+        if j < 0 or j >= agent_state.shape[0] or j == sdc_index:
+            continue
+        aj = agent_state[j]
+        if aj.shape[0] < 11 or aj[10] <= 0.5:
+            continue
+        rel = aj[:2].astype(np.float32) - ego_xy
+        longitudinal = float(np.dot(rel, ego_dir))
+        lateral = abs(float(np.dot(rel, ego_lat)))
+        dist = float(np.linalg.norm(rel))
+        same_dir = float(np.cos(float(aj[6]) - ego_yaw)) > 0.4
+        rel_speed_long = ego_speed - float(np.dot(aj[3:5], ego_dir))
+        ttc = 99.0
+        if longitudinal > 0.0 and rel_speed_long > 0.25:
+            ttc = longitudinal / rel_speed_long
+        base = 0.10
+        base += 0.35 if (-6.0 <= longitudinal <= 45.0 and lateral <= 5.0 and same_dir) else 0.0
+        base += 0.20 if dist <= 25.0 else 0.0
+        base += 0.20 if ttc <= 5.0 else 0.0
+        agent_pred = aj[:2][None, :] + aj[3:5][None, :] * ts
+        for k in range(K):
+            if not bool(cand_valid[k]):
+                continue
+            cand_xy = candidates[k, :, :2]
+            finite = np.isfinite(cand_xy).all(axis=-1)
+            if not finite.any():
+                continue
+            min_d = float(np.min(np.linalg.norm(cand_xy[finite] - agent_pred[finite], axis=-1)))
+            risk = float(np.exp(-max(min_d, 0.0) / 9.0))
+            w = base + 0.35 * risk + (0.10 if bool(macro_is_interactive[k]) else 0.0)
+            out[k, a] = np.float32(np.clip(w, 0.0, 1.0))
+    return out
+
 def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, history_model_state: np.ndarray | None = None, roadgraph: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
     A = int(cfg.get("limits", {}).get("max_critical_agents", 8))
@@ -548,6 +623,11 @@ class COWPWaymaxPolicy:
     device: str = "auto"
     witness_threshold: float = 0.5
     action_mode: str = "delta_xy_yaw"
+    ncf_gate_mode: str = "hard"
+    priority_hard_threshold: float = 0.55
+    secondary_witness_threshold: float = 0.85
+    secondary_opr_alpha: float = 0.10
+    soft_ncf_penalty: float = 1.5
 
     def __post_init__(self) -> None:
         import torch
@@ -637,14 +717,44 @@ class COWPWaymaxPolicy:
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
             alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
-            accepted = cand_valid & conventional & ~(witness >= float(self.witness_threshold)).any(dim=-1)
-            accepted = accepted & (opr.min(dim=-1).values >= alpha)
-            # Conservative fallback hierarchy: first accepted NCF; then conventional
+            gate_mode = str(self.ncf_gate_mode or "hard").lower()
+            adjusted_scores = scores
+            priority = self.torch.zeros_like(witness)
+            primary_bad = self.torch.zeros_like(cand_valid)
+            severe_bad = self.torch.zeros_like(cand_valid)
+            if gate_mode == "hard":
+                predicted_bad = (witness >= float(self.witness_threshold)).any(dim=-1)
+                accepted = cand_valid & conventional & ~predicted_bad
+                accepted = accepted & (opr.min(dim=-1).values >= alpha)
+            else:
+                priority_np = _priority_claim_weights(
+                    agent_state,
+                    sdc_index,
+                    batch_np["cowp/candidates/trajectory"][0],
+                    batch_np["cowp/candidates/valid"][0].astype(bool),
+                    batch_np["cowp/critical/track_index"][0],
+                    batch_np["cowp/critical/valid"][0].astype(bool),
+                    batch_np["cowp/candidates/macro_type"][0],
+                    self.cfg,
+                )
+                priority = self.torch.as_tensor(priority_np, device=self.dev, dtype=witness.dtype)
+                primary_claim = priority >= float(self.priority_hard_threshold)
+                primary_bad = ((witness >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
+                option_bad = ((opr < alpha) & primary_claim).any(dim=-1)
+                severe_bad = ((witness >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha))).any(dim=-1)
+                burden_penalty = (witness * priority).amax(dim=-1)
+                option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
+                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
+                if gate_mode == "soft":
+                    accepted = cand_valid & conventional
+                else:
+                    accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad
+            # Conservative fallback hierarchy: first accepted P-NCF/NCF; then conventional
             # valid; finally any valid candidate.  Diagnostics distinguish these cases.
             if accepted.any():
                 select_mask = accepted
                 fallback_used = False
-                fallback_reason = "accepted_ncf"
+                fallback_reason = "accepted_ncf" if gate_mode == "hard" else "accepted_priority_ncf"
             elif (cand_valid & conventional).any():
                 select_mask = cand_valid & conventional
                 fallback_used = True
@@ -653,7 +763,7 @@ class COWPWaymaxPolicy:
                 select_mask = cand_valid
                 fallback_used = True
                 fallback_reason = "no_conventional_use_valid"
-            selected = int(self.torch.argmin(self.torch.where(select_mask, scores, self.torch.full_like(scores, float("inf")))).item()) if bool(select_mask.any().detach().cpu().item()) else 0
+            selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if bool(select_mask.any().detach().cpu().item()) else 0
             selected_witness = witness[selected]
             selected_opr = opr[selected]
             diag = {
@@ -674,6 +784,12 @@ class COWPWaymaxPolicy:
                 "score": float(scores[selected].detach().cpu().item()),
                 "witness_threshold": float(self.witness_threshold),
                 "alpha_opr": float(alpha),
+                "gate_mode": str(gate_mode),
+                "priority_hard_threshold": float(self.priority_hard_threshold),
+                "accepted_primary_bad_candidates": int(primary_bad.sum().detach().cpu().item()) if primary_bad.numel() else 0,
+                "severe_bad_candidates": int(severe_bad.sum().detach().cpu().item()) if severe_bad.numel() else 0,
+                "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
+                "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:
@@ -696,5 +812,28 @@ class COWPWaymaxPolicy:
         return list(self._diagnostics_log)
 
 
-def make_cowp_policy(checkpoint: str, cfg: dict, *, device: str = "auto", witness_threshold: float = 0.5, action_mode: str = "delta_xy_yaw") -> COWPWaymaxPolicy:
-    return COWPWaymaxPolicy(checkpoint=checkpoint, cfg=cfg, device=device, witness_threshold=witness_threshold, action_mode=action_mode)
+def make_cowp_policy(
+    checkpoint: str,
+    cfg: dict,
+    *,
+    device: str = "auto",
+    witness_threshold: float = 0.5,
+    action_mode: str = "delta_xy_yaw",
+    ncf_gate_mode: str = "hard",
+    priority_hard_threshold: float = 0.55,
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    soft_ncf_penalty: float = 1.5,
+) -> COWPWaymaxPolicy:
+    return COWPWaymaxPolicy(
+        checkpoint=checkpoint,
+        cfg=cfg,
+        device=device,
+        witness_threshold=witness_threshold,
+        action_mode=action_mode,
+        ncf_gate_mode=ncf_gate_mode,
+        priority_hard_threshold=priority_hard_threshold,
+        secondary_witness_threshold=secondary_witness_threshold,
+        secondary_opr_alpha=secondary_opr_alpha,
+        soft_ncf_penalty=soft_ncf_penalty,
+    )

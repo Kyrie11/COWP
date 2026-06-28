@@ -34,6 +34,24 @@ def _safe_float(x: torch.Tensor) -> torch.Tensor:
     return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _zero_like_loss(ref: torch.Tensor | dict | None = None, *, device=None) -> torch.Tensor:
+    """Finite scalar zero for optional/disabled loss branches.
+
+    Avoid expressions like ``tensor.sum() * 0``: if ``tensor`` contains NaN,
+    the placeholder becomes NaN and poisons the total loss even when the
+    corresponding loss weight is zero.
+    """
+    if isinstance(ref, torch.Tensor):
+        return torch.zeros((), dtype=torch.float32, device=ref.device)
+    if isinstance(ref, dict):
+        for v in ref.values():
+            if torch.is_tensor(v):
+                return torch.zeros((), dtype=torch.float32, device=v.device)
+    if device is not None:
+        return torch.zeros((), dtype=torch.float32, device=device)
+    return torch.zeros((), dtype=torch.float32)
+
+
 def _pairwise_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Tensor:
     """Pairwise ADE [B,A,M_pred,M_gt], computed once and reused."""
     pred_f = _safe_float(pred_traj)
@@ -98,7 +116,7 @@ def pair_mined_focal_bce_with_logits(
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
     for v in pred.values():
         if torch.is_tensor(v):
-            return v.sum() * 0.0
+            return _zero_like_loss(v)
     raise ValueError("prediction dict contains no tensors")
 
 
@@ -109,23 +127,23 @@ def _trajectory_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Ten
 def _weighted_set_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
     """Unordered set supervision for natural alternatives."""
     if not valid.any():
-        return ref.sum() * 0.0
+        return _zero_like_loss(ref)
     d_min = pairwise_ade.min(dim=2).values
     w = _nonnegative_weight(weight) * valid.float()
     if w.sum() <= 0:
-        return ref.sum() * 0.0
+        return _zero_like_loss(ref)
     return torch.where(valid.bool(), d_min * w, torch.zeros_like(d_min)).sum() / w.sum().clamp_min(1e-6)
 
 
 def _natural_mixture_nll_from_pairwise(pairwise_ade: torch.Tensor, logits: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor, ref: torch.Tensor, tau: float = 2.0) -> torch.Tensor:
     """Order-invariant mixture supervision for natural alternatives."""
     if not valid.any():
-        return ref.sum() * 0.0
+        return _zero_like_loss(ref)
     logp = F.log_softmax(_safe_float(logits), dim=-1)[:, :, :, None]
     log_cover = torch.logsumexp(logp - pairwise_ade / max(float(tau), 1e-6), dim=2)
     w = _nonnegative_weight(weight) * valid.float()
     if w.sum() <= 0:
-        return ref.sum() * 0.0
+        return _zero_like_loss(ref)
     return -(log_cover * w).sum() / w.sum().clamp_min(1e-6)
 
 
@@ -138,7 +156,7 @@ def _natural_source_distribution_loss(
     source_count: int,
 ) -> torch.Tensor:
     if not valid.any():
-        return logits.sum() * 0.0
+        return _zero_like_loss(logits)
     logits_f = _safe_float(logits)
     source_logits_f = _safe_float(source_logits)
     mix = F.softmax(logits_f, dim=-1)
@@ -169,7 +187,7 @@ def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: to
     and use ``binary_cross_entropy_with_logits`` so the loss is AMP-safe.
     """
     if not valid.any():
-        return logits.sum() * 0.0
+        return _zero_like_loss(logits)
     logits_f = _safe_float(logits)
     priority_logits_f = _safe_float(priority_logits)
     mix = F.softmax(logits_f, dim=-1)
@@ -188,7 +206,7 @@ def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: to
 def _branch_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int, ref: torch.Tensor) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
     if not branch_gt.any():
-        return ref.sum() * 0.0
+        return _zero_like_loss(ref)
     d_min = pairwise_ade.min(dim=2).values
     return masked_mean(d_min, branch_gt)
 
@@ -196,7 +214,7 @@ def _branch_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor
 def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float = 4.0) -> torch.Tensor:
     B, A, M = pred_traj.shape[:3]
     if M <= 1 or not crit_mask.any():
-        return pred_traj.sum() * 0.0
+        return _zero_like_loss(pred_traj)
     xy = _safe_float(pred_traj)[..., :2]
     d = torch.linalg.norm(xy[:, :, :, None, :, :] - xy[:, :, None, :, :, :], dim=-1).mean(dim=-1)
     eye = torch.eye(M, device=pred_traj.device, dtype=torch.bool)[None, None]
@@ -238,7 +256,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
                 int(pred["source_logits"].shape[-1]),
             )
         else:
-            source_ce = pred["traj"].sum() * 0.0
+            source_ce = _zero_like_loss(pred["traj"])
         if "priority_logits" in pred:
             priority_loss = _natural_priority_expectation_loss(
                 logits,
@@ -248,7 +266,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
                 nat_weight,
             )
         else:
-            priority_loss = pred["traj"].sum() * 0.0
+            priority_loss = _zero_like_loss(pred["traj"])
 
         obs_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.OBS), pred["traj"])
         neu_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.NEU), pred["traj"])
@@ -268,13 +286,13 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
             agent_has_neu = neu_gt_mask.any(dim=-1)
             neu_cons = masked_mean(_trajectory_ade(pred_mu, gt_mu), agent_has_neu)
         else:
-            neu_cons = pred["traj"].sum() * 0.0
+            neu_cons = _zero_like_loss(pred["traj"])
         div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
     else:
-        traj = pred["traj"].sum() * 0.0
-        mode = pred.get("logits", pred["traj"]).sum() * 0.0
-        source_ce = priority_loss = branch_minade = neu_cons = div = pred["traj"].sum() * 0.0
-        obs_minade = neu_minade = prio_minade = pred["traj"].sum() * 0.0
+        traj = _zero_like_loss(pred["traj"])
+        mode = _zero_like_loss(pred.get("logits", pred["traj"]))
+        source_ce = priority_loss = branch_minade = neu_cons = div = _zero_like_loss(pred["traj"])
+        obs_minade = neu_minade = prio_minade = _zero_like_loss(pred["traj"])
 
     total = (
         weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj
@@ -330,12 +348,12 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         if "cowp/witness/burden_components" in batch and "burden_components" in pred:
             comps = F.smooth_l1_loss(_safe_float(pred["burden_components"])[pos_mask], _safe_float(batch["cowp/witness/burden_components"])[pos_mask], reduction="mean")
         else:
-            comps = pred["exist_logits"].sum() * 0.0
+            comps = _zero_like_loss(pred["exist_logits"])
     else:
-        token = pred["exist_logits"].sum() * 0.0
-        burden = pred["exist_logits"].sum() * 0.0
-        interval = pred["exist_logits"].sum() * 0.0
-        comps = pred["exist_logits"].sum() * 0.0
+        token = _zero_like_loss(pred["exist_logits"])
+        burden = _zero_like_loss(pred["exist_logits"])
+        interval = _zero_like_loss(pred["exist_logits"])
+        comps = _zero_like_loss(pred["exist_logits"])
     opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair_mask)
     ci = masked_mean(torch.abs(_safe_float(pred["c_i"]) - _safe_float(batch["cowp/witness/c_i"])), pair_mask)
     total = (
@@ -371,7 +389,7 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
         gt_traj = _safe_float(batch["cowp/response/traj"])[mask]
         loss_traj = torch.abs(pred_traj - gt_traj).mean(dim=(-1, -2)).mean()
     else:
-        loss_traj = pred["safe_logits"].sum() * 0.0
+        loss_traj = _zero_like_loss(pred["safe_logits"])
 
     comps_w = float(weights.get("response_components_l1", 0.25))
     if comps_w != 0.0 and "cowp/response/burden_components" in batch and "burden_components" in pred and mask.any():
@@ -379,7 +397,7 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
         gt_comps = _safe_float(batch["cowp/response/burden_components"])[mask]
         loss_comps = torch.abs(pred_comps - gt_comps).mean(dim=-1).mean()
     else:
-        loss_comps = pred["safe_logits"].sum() * 0.0
+        loss_comps = _zero_like_loss(pred["safe_logits"])
     total = (
         weights.get("response_safe_bce", 1.0) * loss_safe
         + weights.get("response_low_bce", 1.0) * loss_low
@@ -411,7 +429,7 @@ def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor])
     mask = batch["cowp/candidates/valid"].bool()
     logged = batch.get("cowp/candidates/is_logged")
     if logged is None:
-        return scores.sum() * 0.0
+        return _zero_like_loss(scores)
     target_mask = logged.bool() & mask
     losses = []
     for b in range(scores.shape[0]):
@@ -420,18 +438,23 @@ def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor])
             continue
         logits = torch.where(mask[b], -scores[b], torch.full_like(scores[b], -1e9))
         losses.append(F.cross_entropy(logits.unsqueeze(0), tgt[:1]))
-    return torch.stack(losses).mean() if losses else scores.sum() * 0.0
+    return torch.stack(losses).mean() if losses else _zero_like_loss(scores)
 
 
 def planner_outcome_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     """Optional rollout/outcome surrogate when Waymax candidate labels exist."""
     scores = _safe_float(scores)
     mask = batch["cowp/candidates/valid"].bool()
+    rollout_valid = batch.get("waymax/candidate_rollout_valid")
+    if rollout_valid is not None:
+        mask = mask & rollout_valid.bool()
     collision = batch.get("waymax/candidate_collision")
     offroad = batch.get("waymax/candidate_offroad")
     logdiv = batch.get("waymax/candidate_log_divergence")
     if collision is None and offroad is None and logdiv is None:
-        return scores.sum() * 0.0
+        return _zero_like_loss(scores)
+    if not mask.any():
+        return _zero_like_loss(scores)
     cost = torch.zeros_like(scores, dtype=torch.float32)
     if collision is not None:
         cost = cost + _safe_float(collision)
@@ -456,4 +479,4 @@ def planner_ranking_loss(scores: torch.Tensor, ncf: torch.Tensor, false_safe: to
         if len(pos) and len(neg):
             # Lower score is better.
             losses.append(torch.relu(margin + scores[b, pos[:, None]] - scores[b, neg[None, :]]).mean())
-    return torch.stack(losses).mean() if losses else scores.sum() * 0.0
+    return torch.stack(losses).mean() if losses else _zero_like_loss(scores)

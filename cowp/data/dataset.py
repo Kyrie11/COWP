@@ -362,6 +362,7 @@ def _wanted_keys_for_stage(
         # and only when explicitly requested.
         if stage == "planner" and include_waymax_outcomes:
             wanted.update({
+                "waymax/candidate_rollout_valid",
                 "waymax/candidate_collision",
                 "waymax/candidate_offroad",
                 "waymax/candidate_log_divergence",

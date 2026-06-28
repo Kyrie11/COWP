@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 from contextlib import nullcontext
@@ -270,6 +271,13 @@ def _masked_batch_with_pred_critical(batch: dict[str, torch.Tensor], pred: dict[
     return out
 
 
+
+def _finite_scalar(x: torch.Tensor) -> bool:
+    try:
+        return bool(torch.isfinite(x.detach()).all().item())
+    except Exception:
+        return False
+
 def _run_epoch(
     model: COWPModel,
     dl: DataLoader,
@@ -308,6 +316,15 @@ def _run_epoch(
             batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
             losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
             loss = losses["loss"]
+            if not _finite_scalar(loss):
+                bad = []
+                for k, v in losses.items():
+                    if torch.is_tensor(v) and not _finite_scalar(v):
+                        bad.append(k)
+                print(f"Warning: non-finite loss at stage={stage} epoch={epoch} step={step}; skipped batch; bad_terms={bad[:8]}")
+                if is_train:
+                    opt.zero_grad(set_to_none=True)
+                continue
             if is_train:
                 if scaler is not None:
                     scaler.scale(loss).backward()
@@ -589,7 +606,7 @@ def main() -> None:
             # produce cowp_<stage>_best.pt so downstream stage commands can resume.
             score_loss = float(train_metrics.get("loss", float("inf"))) if (val_dl is None or int(args.val_every) == 0) else float("inf")
             score_name = "train_loss"
-        if score_loss < best_val:
+        if math.isfinite(score_loss) and score_loss < best_val:
             best_val = score_loss
             torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, score_name: score_loss}, output_dir / f"cowp_{stage}_best.pt")
         history.append(row)

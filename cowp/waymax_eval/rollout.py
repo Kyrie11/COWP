@@ -25,12 +25,22 @@ def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
     return out
 
 
-def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5, alpha_opr: float = 0.35) -> tuple[list[int], list[np.ndarray]]:
+def _select_from_learned(
+    batch,
+    pred,
+    *,
+    witness_threshold: float = 0.5,
+    alpha_opr: float = 0.35,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    soft_ncf_penalty: float = 1.5,
+) -> tuple[list[int], list[np.ndarray]]:
     import torch
 
-    scores = pred["planner_score"].detach()
-    witness_prob = torch.sigmoid(pred["witness"]["exist_logits"]).detach()
-    opr = pred["witness"]["opr"].detach()
+    scores = torch.nan_to_num(pred["planner_score"].detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
+    witness_prob = torch.nan_to_num(torch.sigmoid(pred["witness"]["exist_logits"]).detach().float(), nan=1.0, posinf=1.0, neginf=0.0)
+    opr = torch.nan_to_num(pred["witness"]["opr"].detach().float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     cand_valid = batch["cowp/candidates/valid"].bool()
     conventional = batch.get("cowp/candidates/conventional_safe", cand_valid).bool()
     crit_mask = batch.get("cowp/critical/valid")
@@ -38,27 +48,40 @@ def _select_from_learned(batch, pred, *, witness_threshold: float = 0.5, alpha_o
         cm = crit_mask.bool()[:, None, :]
         witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
         opr = torch.where(cm, opr, torch.ones_like(opr))
-    # Learned COWP selection: conventional geometric safety remains a hard rule,
-    # but witness rejection and option preservation use model predictions rather
-    # than label certificates.
-    predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
-    accepted = cand_valid & conventional & ~predicted_bad
-    accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
+    gate_mode = str(gate_mode or "hard").lower()
+    adjusted_scores = scores
+    if gate_mode == "hard":
+        predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
+        accepted = cand_valid & conventional & ~predicted_bad
+        accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
+    else:
+        # Offline proxy for priority-aware rejection: only hard-veto candidates
+        # where a predicted witness coincides with poor option preservation.
+        # Other witness signals are used as a soft ranking penalty.
+        priority_proxy = (opr < float(alpha_opr)).float()
+        primary_bad = ((witness_prob >= witness_threshold) & (priority_proxy > 0.0)).any(dim=-1)
+        severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha))).any(dim=-1)
+        penalty = (witness_prob * priority_proxy).amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+        adjusted_scores = scores + float(soft_ncf_penalty) * penalty
+        if gate_mode == "soft":
+            accepted = cand_valid & conventional
+        else:
+            accepted = cand_valid & conventional & ~primary_bad & ~severe_bad
     selected: list[int] = []
     masks: list[np.ndarray] = []
     B = scores.shape[0]
     for b in range(B):
         mask = accepted[b]
         if mask.any():
-            masked = torch.where(mask, scores[b], torch.full_like(scores[b], float("inf")))
+            masked = torch.where(mask, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
             selected.append(int(torch.argmin(masked).item()))
         else:
             fallback = cand_valid[b] & conventional[b]
             if fallback.any():
-                masked = torch.where(fallback, scores[b], torch.full_like(scores[b], float("inf")))
+                masked = torch.where(fallback, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
                 selected.append(int(torch.argmin(masked).item()))
             elif cand_valid[b].any():
-                masked = torch.where(cand_valid[b], scores[b], torch.full_like(scores[b], float("inf")))
+                masked = torch.where(cand_valid[b], adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
                 selected.append(int(torch.argmin(masked).item()))
             else:
                 selected.append(-1)
@@ -285,6 +308,10 @@ def _learned_offline_candidate_eval_many(
     device: str = "auto",
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
     progress: bool = True,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    soft_ncf_penalty: float = 1.5,
 ) -> dict[float, dict[str, object]]:
     import torch
     from torch.utils.data import DataLoader
@@ -350,7 +377,16 @@ def _learned_offline_candidate_eval_many(
             rank_total += t
 
             for th in thresholds:
-                batch_selected, batch_accepted_masks = _select_from_learned(batch, pred, witness_threshold=th, alpha_opr=alpha)
+                batch_selected, batch_accepted_masks = _select_from_learned(
+                    batch,
+                    pred,
+                    witness_threshold=th,
+                    alpha_opr=alpha,
+                    gate_mode=gate_mode,
+                    secondary_witness_threshold=secondary_witness_threshold,
+                    secondary_opr_alpha=secondary_opr_alpha,
+                    soft_ncf_penalty=soft_ncf_penalty,
+                )
                 pred_exists = (pair_score_np >= float(th))
                 acc = accs[th]
                 for i, item in enumerate(batch_labels):
@@ -372,6 +408,10 @@ def learned_offline_candidate_eval(
     device: str = "auto",
     witness_threshold: float = 0.5,
     progress: bool = True,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    soft_ncf_penalty: float = 1.5,
 ) -> dict[str, object]:
     return _learned_offline_candidate_eval_many(
         cache_dir,
@@ -381,6 +421,10 @@ def learned_offline_candidate_eval(
         device=device,
         witness_thresholds=[float(witness_threshold)],
         progress=progress,
+        gate_mode=gate_mode,
+        secondary_witness_threshold=secondary_witness_threshold,
+        secondary_opr_alpha=secondary_opr_alpha,
+        soft_ncf_penalty=soft_ncf_penalty,
     )[float(witness_threshold)]
 
 
@@ -393,6 +437,10 @@ def learned_offline_candidate_eval_sweep(
     device: str = "auto",
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
     progress: bool = True,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    soft_ncf_penalty: float = 1.5,
 ) -> list[dict[str, object]]:
     out = _learned_offline_candidate_eval_many(
         cache_dir,
@@ -402,6 +450,10 @@ def learned_offline_candidate_eval_sweep(
         device=device,
         witness_thresholds=list(witness_thresholds),
         progress=progress,
+        gate_mode=gate_mode,
+        secondary_witness_threshold=secondary_witness_threshold,
+        secondary_opr_alpha=secondary_opr_alpha,
+        soft_ncf_penalty=soft_ncf_penalty,
     )
     return [out[th] for th in sorted(out)]
 
