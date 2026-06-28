@@ -38,7 +38,12 @@ def _read_outcomes(path: str | None) -> dict[str, list[dict[str, Any]]]:
         return rows
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(p)
+        raise FileNotFoundError(
+            f"Outcome file not found: {p}. This script only attaches existing replay results. "
+            "First run: python -m cowp.scripts.13_replay_waymax_candidates "
+            "--cache-dir <cache> --tfexample-glob <WOMD tf_example glob> "
+            "--outcomes-jsonl <this path>"
+        )
     if p.suffix.lower() == ".csv":
         with p.open("r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -124,16 +129,22 @@ def main() -> None:
             if k < 0 or k >= K:
                 continue
             selected[k] = True
-            rollout_valid[k] = True
-            collision[k] = _bool_value(row, "collision", "candidate_collision", "overlap")
-            offroad[k] = _bool_value(row, "offroad", "candidate_offroad")
-            logdiv[k] = _float_value(row, "log_divergence", "candidate_log_divergence", "logdiv")
+            rv = _bool_value(row, "rollout_valid", "candidate_rollout_valid", "valid")
+            # Backward-compatible: older outcome rows did not include rollout_valid;
+            # if they contain no explicit error/status failure, treat the row as valid.
+            if not any(name in row for name in ("rollout_valid", "candidate_rollout_valid", "valid")):
+                rv = not bool(row.get("error"))
+            rollout_valid[k] = bool(rv)
+            if rollout_valid[k]:
+                collision[k] = _bool_value(row, "collision", "candidate_collision", "overlap", "CollisionRate")
+                offroad[k] = _bool_value(row, "offroad", "candidate_offroad", "OffroadRate")
+                logdiv[k] = _float_value(row, "log_divergence", "candidate_log_divergence", "logdiv", "LogDivergence")
         arrays["waymax/candidate_selected_for_rollout"] = selected
         arrays["waymax/candidate_rollout_valid"] = rollout_valid
         arrays["waymax/candidate_collision"] = collision
         arrays["waymax/candidate_offroad"] = offroad
         arrays["waymax/candidate_log_divergence"] = logdiv
-        arrays["waymax/rollout_status"] = np.asarray("attached_outcomes" if rollout_valid.any() else "initialized_no_outcomes")
+        arrays["waymax/rollout_status"] = np.asarray("attached_real_waymax_outcomes" if rollout_valid.any() else "initialized_no_valid_outcomes")
         stored = {_store_key(k): v for k, v in arrays.items()}
         if args.compress:
             np.savez_compressed(dst, **stored)
