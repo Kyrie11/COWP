@@ -86,7 +86,8 @@ class COWPModel(nn.Module):
     @staticmethod
     def _add_response_anchor(pred: dict[str, torch.Tensor], anchor7: torch.Tensor) -> dict[str, torch.Tensor]:
         out = dict(pred)
-        out["traj"] = pred["traj"] + anchor7[:, None, :, None, None, :]
+        if "traj" in pred:
+            out["traj"] = pred["traj"] + anchor7[:, None, :, None, None, :]
         return out
 
     def _agent_history_from_batch(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -172,7 +173,13 @@ class COWPModel(nn.Module):
         safe_mask = critical_mask.bool() & in_range & visible
         return safe_idx, safe_mask
 
-    def forward(self, batch: dict[str, torch.Tensor], stage: str | None = None) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+    def forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        stage: str | None = None,
+        *,
+        decode_response_traj: bool = True,
+    ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         stage = stage or "all"
         agent_history, agent_mask = self._agent_history_from_batch(batch)
         conflict = batch.get("map/conflict_regions")
@@ -243,7 +250,16 @@ class COWPModel(nn.Module):
             out["natural"] = self._add_natural_anchor(self.natural_decoder(enc_scene["z_agent"], critical_idx), anchor7)
         if need_response:
             assert z_cand is not None and enc_cond is not None and anchor7 is not None
-            out["response"] = self._add_response_anchor(self.response_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx), anchor7)
+            out["response"] = self._add_response_anchor(
+                self.response_decoder(
+                    enc_cond["z_agent"],
+                    z_cand,
+                    enc_cond["z_graph"],
+                    critical_idx,
+                    decode_traj=decode_response_traj,
+                ),
+                anchor7,
+            )
         if need_witness:
             assert z_cand is not None and enc_cond is not None
             witness = self.witness_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)

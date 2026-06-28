@@ -61,7 +61,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("response", "witness", "planner", "all"):
+    if stage in ("response", "witness", "planner", "planner_eval", "all"):
         for key in ("cowp/candidates/trajectory", "cowp/candidates/macro_type", "cowp/candidates/valid"):
             if key not in data:
                 missing.append(key)
@@ -74,7 +74,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("witness", "planner", "all"):
+    if stage in ("witness", "planner", "planner_eval", "all"):
         for key in (
             "cowp/witness/exists",
             "cowp/witness/token",
@@ -85,7 +85,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         ):
             if key not in data:
                 missing.append(key)
-    if stage in ("planner", "all"):
+    if stage in ("planner", "planner_eval", "all"):
         for key in ("cowp/candidates/noncoercive_feasible", "cowp/candidates/false_safe"):
             if key not in data:
                 missing.append(key)
@@ -310,7 +310,13 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
     return data
 
 
-def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
+def _wanted_keys_for_stage(
+    stage: str | None,
+    *,
+    include_response_traj: bool = True,
+    include_response_components: bool = True,
+    include_waymax_outcomes: bool = False,
+) -> set[str] | None:
     if stage is None or stage == "all":
         return None
     always_prefixes = (
@@ -333,8 +339,15 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
             "cowp/candidates/valid",
-            "cowp/response/",
+            "cowp/response/valid",
+            "cowp/response/is_safe",
+            "cowp/response/is_low_burden",
+            "cowp/response/burden_total",
         })
+        if include_response_components:
+            wanted.add("cowp/response/burden_components")
+        if include_response_traj:
+            wanted.add("cowp/response/traj")
     elif stage == "witness":
         wanted.update({
             "cowp/candidates/trajectory",
@@ -342,8 +355,17 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/valid",
             "cowp/witness/",
         })
-    elif stage == "planner":
-        wanted.add("waymax/")
+    elif stage in ("planner", "planner_eval"):
+        # Training may use optional Waymax candidate-outcome labels, but broad
+        # waymax/* loading can pull large tensors into every batch.  Load only
+        # the three scalar candidate outcome arrays used by planner_outcome_loss,
+        # and only when explicitly requested.
+        if stage == "planner" and include_waymax_outcomes:
+            wanted.update({
+                "waymax/candidate_collision",
+                "waymax/candidate_offroad",
+                "waymax/candidate_log_divergence",
+            })
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -353,6 +375,7 @@ def _wanted_keys_for_stage(stage: str | None) -> set[str] | None:
             "cowp/candidates/noncoercive_feasible",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
+            "cowp/natural/beta",
             "cowp/witness/",
         })
     return wanted
@@ -395,10 +418,25 @@ class COWPNpzDataset:
 
 
 class TorchCOWPDataset:
-    def __init__(self, cache_dir: str | Path, pattern: str = "*.npz", stage: str | None = None, *, skip_invalid: bool = True):
+    def __init__(
+        self,
+        cache_dir: str | Path,
+        pattern: str = "*.npz",
+        stage: str | None = None,
+        *,
+        skip_invalid: bool = True,
+        include_response_traj: bool = True,
+        include_response_components: bool = True,
+        include_waymax_outcomes: bool = False,
+    ):
         self.base = COWPNpzDataset(cache_dir, pattern)
         self.stage = stage
-        self._wanted = _wanted_keys_for_stage(stage)
+        self._wanted = _wanted_keys_for_stage(
+            stage,
+            include_response_traj=include_response_traj,
+            include_response_components=include_response_components,
+            include_waymax_outcomes=include_waymax_outcomes,
+        )
         self.skip_invalid = bool(skip_invalid)
 
     def __len__(self) -> int:

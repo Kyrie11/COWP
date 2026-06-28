@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 from contextlib import nullcontext
 from pathlib import Path
@@ -281,6 +282,7 @@ def _run_epoch(
     progress: bool = True,
     amp: bool = False,
     non_blocking_transfer: bool = False,
+    decode_response_traj: bool = True,
 ) -> dict[str, float]:
     is_train = opt is not None
     model.train(is_train)
@@ -302,7 +304,7 @@ def _run_epoch(
             # rejecting unsafe probability-space BCE kernels and keeps scatter /
             # masked reductions numerically stable.
             with _autocast_context(device, autocast_enabled):
-                pred = model(batch, stage=stage)
+                pred = model(batch, stage=stage, decode_response_traj=decode_response_traj)
             batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
             losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
             loss = losses["loss"]
@@ -419,12 +421,38 @@ def main() -> None:
     ap.add_argument("--compile", action="store_true", help="Use torch.compile for faster repeated training on PyTorch 2.x. Unsupported subgraphs fall back to eager.")
     ap.add_argument("--compile-backend", default=None, help="Optional torch.compile backend, e.g. aot_eager for safer fallback when Inductor/Triton is unstable.")
     ap.add_argument("--fused-adamw", action="store_true", help="Use fused CUDA AdamW when supported.")
+    ap.add_argument("--response-traj-weight", type=float, default=None, help="Override loss_weights.response_traj_l1. Set to 0 for fast response/witness/planner smoke training without dense response trajectory labels.")
+    ap.add_argument("--no-response-traj", action="store_true", help="Shortcut for --response-traj-weight 0. Avoids loading cowp/response/traj and skips the response trajectory head.")
+    ap.add_argument("--no-response-components", action="store_true", help="Do not load/supervise cowp/response/burden_components during response training.")
+    ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
+    ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     args = ap.parse_args()
 
     cfg = load_config(args.model_config, args.train_config, args.data_config)
     tcfg = cfg["train"]
     stage = args.stage or tcfg.get("stage", "witness")
-    device = _device(args.device or tcfg.get("device", "auto"))
+    loss_weights = dict(cfg.get("loss_weights", {}))
+    if args.no_response_traj:
+        loss_weights["response_traj_l1"] = 0.0
+    if args.response_traj_weight is not None:
+        loss_weights["response_traj_l1"] = float(args.response_traj_weight)
+    if args.no_response_components:
+        loss_weights["response_components_l1"] = 0.0
+
+    device_arg = args.device or tcfg.get("device", "auto")
+    device = _device(device_arg)
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if device.type == "cpu" and str(device_arg) == "auto" and visible_devices in {"-1", "none", "None", ""}:
+        print(
+            "Warning: CUDA is hidden by CUDA_VISIBLE_DEVICES="
+            f"{visible_devices!r}; training will run on CPU. "
+            "Run `unset CUDA_VISIBLE_DEVICES` or `export CUDA_VISIBLE_DEVICES=0` before training if a GPU is available."
+        )
+    if str(device_arg).startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA device was requested, but torch.cuda.is_available() is False. "
+            "Check CUDA_VISIBLE_DEVICES and the PyTorch CUDA build."
+        )
     _set_runtime_defaults(int(tcfg.get("seed", 2026)), device)
     batch_size = args.batch_size or int(tcfg.get("batch_size", 8))
     if args.no_pin_memory:
@@ -454,15 +482,33 @@ def main() -> None:
         )
 
     compile_enabled = bool(args.compile or tcfg.get("compile", False))
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}")
+    include_response_traj = not (stage == "response" and float(loss_weights.get("response_traj_l1", 0.1)) == 0.0)
+    include_response_components = not (stage == "response" and float(loss_weights.get("response_components_l1", 0.25)) == 0.0)
+    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}")
     if device.type == "cuda":
         try:
             print(f"CUDA device: {torch.cuda.get_device_name(device)}")
         except Exception:
             pass
 
-    train_ds = TorchCOWPDataset(args.cache_dir or cfg["outputs"]["tensor_cache_dir"], stage=stage)
-    val_ds = TorchCOWPDataset(args.val_cache_dir, stage=stage) if args.val_cache_dir else None
+    train_ds = TorchCOWPDataset(
+        args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+        stage=stage,
+        include_response_traj=include_response_traj,
+        include_response_components=include_response_components,
+        include_waymax_outcomes=bool(args.with_waymax_outcome_labels),
+    )
+    val_ds = (
+        TorchCOWPDataset(
+            args.val_cache_dir,
+            stage=stage,
+            include_response_traj=include_response_traj,
+            include_response_components=include_response_components,
+            include_waymax_outcomes=bool(args.with_waymax_outcome_labels),
+        )
+        if args.val_cache_dir
+        else None
+    )
     print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
     oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
     # Representation/natural stages do not consume witness/candidate labels.
@@ -503,19 +549,49 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = args.epochs or int(tcfg.get("epochs", 10))
-    loss_weights = cfg.get("loss_weights", {})
     history = []
     best_val = float("inf")
     for epoch in range(epochs):
-        train_metrics = _run_epoch(model, train_dl, device, stage, loss_weights, opt, epoch=epoch, progress=not args.no_progress, amp=args.amp, non_blocking_transfer=pin_memory)
+        train_metrics = _run_epoch(
+            model,
+            train_dl,
+            device,
+            stage,
+            loss_weights,
+            opt,
+            epoch=epoch,
+            progress=not args.no_progress,
+            amp=args.amp,
+            non_blocking_transfer=pin_memory,
+            decode_response_traj=include_response_traj,
+        )
         row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
-        if val_dl is not None:
-            val_metrics = _run_epoch(model, val_dl, device, stage, loss_weights, None, epoch=epoch, progress=not args.no_progress, amp=args.amp, non_blocking_transfer=pin_memory)
+        do_val = val_dl is not None and int(args.val_every) > 0 and ((epoch + 1) % int(args.val_every) == 0 or epoch == epochs - 1)
+        if do_val:
+            val_metrics = _run_epoch(
+                model,
+                val_dl,
+                device,
+                stage,
+                loss_weights,
+                None,
+                epoch=epoch,
+                progress=not args.no_progress,
+                amp=args.amp,
+                non_blocking_transfer=pin_memory,
+                decode_response_traj=include_response_traj,
+            )
             row.update({f"val/{k}": v for k, v in val_metrics.items()})
-            val_loss = float(val_metrics.get("loss", float("inf")))
-            if val_loss < best_val:
-                best_val = val_loss
-                torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, "val_loss": val_loss}, output_dir / f"cowp_{stage}_best.pt")
+            score_loss = float(val_metrics.get("loss", float("inf")))
+            score_name = "val_loss"
+        else:
+            # If validation is intentionally disabled for smoke training, still
+            # produce cowp_<stage>_best.pt so downstream stage commands can resume.
+            score_loss = float(train_metrics.get("loss", float("inf"))) if (val_dl is None or int(args.val_every) == 0) else float("inf")
+            score_name = "train_loss"
+        if score_loss < best_val:
+            best_val = score_loss
+            torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, score_name: score_loss}, output_dir / f"cowp_{stage}_best.pt")
         history.append(row)
         print(json.dumps(row, ensure_ascii=False))
         torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
