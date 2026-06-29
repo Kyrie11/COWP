@@ -130,9 +130,20 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
     interaction_heavy = bool(np.asarray(data.get("dataset/interaction_heavy", np.asarray(True))).item())
 
     waymax_enabled = bool(np.asarray(data.get("waymax/enabled", np.asarray(False))).item())
-    waymax_rollout_valid = np.asarray(data.get("waymax/candidate/rollout_valid", np.zeros_like(cand_valid)), dtype=bool) & cand_valid
-    waymax_selected = np.asarray(data.get("waymax/candidate/selected_for_rollout", waymax_rollout_valid), dtype=bool) & cand_valid
-    waymax_seconds = np.asarray(data.get("waymax/candidate/rollout_seconds", np.zeros_like(cand_valid, dtype=np.float32)), dtype=np.float32)
+    # Current cache schema uses flat candidate names.  Keep backward-compatible
+    # fallbacks for older experimental caches that used waymax/candidate/*.
+    waymax_rollout_valid = np.asarray(
+        data.get("waymax/candidate_rollout_valid", data.get("waymax/candidate/rollout_valid", np.zeros_like(cand_valid))),
+        dtype=bool,
+    ) & cand_valid
+    waymax_selected = np.asarray(
+        data.get("waymax/candidate_selected_for_rollout", data.get("waymax/candidate/selected_for_rollout", waymax_rollout_valid)),
+        dtype=bool,
+    ) & cand_valid
+    waymax_seconds = np.asarray(
+        data.get("waymax/candidate_rollout_seconds", data.get("waymax/candidate/rollout_seconds", np.zeros_like(cand_valid, dtype=np.float32))),
+        dtype=np.float32,
+    )
     waymax_metric_summary: dict[str, float] = {}
     for key, value in data.items():
         if not str(key).startswith("waymax/metrics/"):

@@ -78,10 +78,13 @@ def _resolve_class(candidates: tuple[tuple[str, str], ...]) -> type | None:
     return None
 
 
-def _available_waymax_metric_classes() -> tuple[list[tuple[str, type]], dict[str, str]]:
+def _available_waymax_metric_classes(metric_names: set[str] | None = None) -> tuple[list[tuple[str, type]], dict[str, str]]:
     available: list[tuple[str, type]] = []
     missing: dict[str, str] = {}
+    wanted = set(metric_names) if metric_names is not None else None
     for canonical_name, candidates in _WAYMAX_METRIC_SPECS:
+        if wanted is not None and canonical_name not in wanted:
+            continue
         cls = _resolve_class(candidates)
         if cls is None:
             aliases = ", ".join(f"{m}.{c}" for m, c in candidates)
@@ -91,7 +94,7 @@ def _available_waymax_metric_classes() -> tuple[list[tuple[str, type]], dict[str
     return available, missing
 
 
-def build_waymax_metric_objects() -> tuple[list[tuple[str, Any]], dict[str, str]]:
+def build_waymax_metric_objects(metric_names: set[str] | list[str] | tuple[str, ...] | None = None) -> tuple[list[tuple[str, Any]], dict[str, str]]:
     """Instantiate all Waymax metrics available in the installed API.
 
     The function is deliberately tolerant: unavailable or renamed metrics are
@@ -99,7 +102,7 @@ def build_waymax_metric_objects() -> tuple[list[tuple[str, Any]], dict[str, str]
     entire closed-loop rollout.  This keeps --waymax-standard-metrics usable
     across Waymax releases.
     """
-    available, missing = _available_waymax_metric_classes()
+    available, missing = _available_waymax_metric_classes(set(metric_names) if metric_names is not None else None)
     objects: list[tuple[str, Any]] = []
     errors = dict(missing)
     for canonical_name, cls in available:

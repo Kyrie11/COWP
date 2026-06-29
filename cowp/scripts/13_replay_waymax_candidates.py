@@ -40,8 +40,13 @@ def main() -> None:
     ap.add_argument("--max-candidates-per-scene", type=int, default=8, help="0 or negative means all selected candidates for the selection mode.")
     ap.add_argument("--rollout-horizon-steps", type=int, default=None)
     ap.add_argument("--limit-scenes", type=int, default=None)
-    ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="delta_xy_yaw")
-    ap.add_argument("--waymax-device", choices=["auto", "cpu", "gpu"], default="cpu")
+    ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="absolute_xy_yaw", help="absolute_xy_yaw is much faster because it avoids per-step host/device state extraction; delta_xy_yaw remains available for compatibility.")
+    ap.add_argument("--waymax-device", choices=["auto", "cpu", "gpu"], default="gpu")
+    ap.add_argument("--metric-set", choices=["safety", "safety_logdiv", "standard", "none"], default="safety", help="safety computes only overlap/offroad labels. safety_logdiv also computes log divergence. standard computes all available Waymax metrics.")
+    ap.add_argument("--full-waymax-scan", action="store_true", help="Use the old full Waymax state generator. Default scans tf.Example ids cheaply and builds Waymax states only for cache scene ids.")
+    ap.add_argument("--verify-cache-sid", action="store_true", help="Read scenario/id from each npz instead of trusting filename stem as scenario id.")
+    ap.add_argument("--num-shards", type=int, default=1, help="Split cache files into this many deterministic shards for multiple parallel runs.")
+    ap.add_argument("--shard-index", type=int, default=0, help="Shard index in [0, num_shards). Use a separate outcomes-jsonl per shard.")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
     ap.add_argument("--no-progress", action="store_true")
     args = ap.parse_args()
@@ -61,9 +66,14 @@ def main() -> None:
         max_candidates_per_scene=args.max_candidates_per_scene,
         horizon_steps=horizon,
         action_mode=args.waymax_action_mode,
+        metric_set=args.metric_set,
         limit_scenes=args.limit_scenes,
         resume=not args.overwrite,
         progress=not args.no_progress,
+        matched_only=not args.full_waymax_scan,
+        verify_cache_sid=args.verify_cache_sid,
+        shard_index=args.shard_index,
+        num_shards=args.num_shards,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

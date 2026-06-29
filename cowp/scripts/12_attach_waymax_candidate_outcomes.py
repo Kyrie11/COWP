@@ -124,6 +124,7 @@ def main() -> None:
         collision = np.zeros(K, dtype=bool)
         offroad = np.zeros(K, dtype=bool)
         logdiv = np.full(K, np.nan, dtype=np.float32)
+        seconds = np.full(K, np.nan, dtype=np.float32)
         for row in outcomes.get(sid, []):
             k = _candidate_index(row)
             if k < 0 or k >= K:
@@ -139,11 +140,14 @@ def main() -> None:
                 collision[k] = _bool_value(row, "collision", "candidate_collision", "overlap", "CollisionRate")
                 offroad[k] = _bool_value(row, "offroad", "candidate_offroad", "OffroadRate")
                 logdiv[k] = _float_value(row, "log_divergence", "candidate_log_divergence", "logdiv", "LogDivergence")
+                seconds[k] = _float_value(row, "rollout_seconds", "seconds", "candidate_rollout_seconds")
         arrays["waymax/candidate_selected_for_rollout"] = selected
         arrays["waymax/candidate_rollout_valid"] = rollout_valid
         arrays["waymax/candidate_collision"] = collision
         arrays["waymax/candidate_offroad"] = offroad
         arrays["waymax/candidate_log_divergence"] = logdiv
+        arrays["waymax/candidate_rollout_seconds"] = seconds
+        arrays["waymax/enabled"] = np.asarray(bool(rollout_valid.any()))
         arrays["waymax/rollout_status"] = np.asarray("attached_real_waymax_outcomes" if rollout_valid.any() else "initialized_no_valid_outcomes")
         stored = {_store_key(k): v for k, v in arrays.items()}
         if args.compress:
