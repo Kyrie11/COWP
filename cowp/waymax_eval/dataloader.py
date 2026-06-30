@@ -55,10 +55,45 @@ def _maybe_aggregate_time_tensors(example: dict, *, time_key: str = "all") -> di
         return example
 
 
+def _has_nonempty_key(example: dict, key: str) -> bool:
+    if key not in example:
+        return False
+    try:
+        import numpy as _np
+
+        return _np.asarray(example[key]).size > 0
+    except Exception:
+        return True
+
+
+def _has_required_sdc_path_samples(example: dict) -> bool:
+    """Return whether the dict contains usable route-path features for Waymax.
+
+    ``include_sdc_paths=True`` asks Waymax to construct ``datatypes.Paths`` from
+    ``path_samples/*``.  Some WOMD tf.Example releases/splits do not carry these
+    route-path features.  In that case Waymax's factory may fall back to scalar
+    placeholders and fail during ``Paths.validate()`` before safety replay even
+    starts.  Collision/offroad candidate labels do not require routes, so the
+    lightweight cache-matched replay path should only request SDC paths when the
+    required route tensors are actually present.
+    """
+    # Waymax's Paths datatype needs coordinates for path points and an on-route
+    # flag.  Other fields such as ids/valid/arc_length are handled by Waymax when
+    # present, but these keys are the minimum that prevents scalar placeholders.
+    required = (
+        "path_samples/x",
+        "path_samples/y",
+        "path_samples/z",
+        "path_samples/on_route",
+    )
+    return all(_has_nonempty_key(example, key) for key in required)
+
+
 def simulator_state_from_womd_dict(example: dict, include_sdc_paths: bool = True, time_key: str = "all"):
     _, _, womd_factories = require_waymax()
     example_for_waymax = _maybe_aggregate_time_tensors(example, time_key=time_key)
-    return womd_factories.simulator_state_from_womd_dict(example_for_waymax, include_sdc_paths=include_sdc_paths, time_key=time_key)
+    include_paths = bool(include_sdc_paths) and _has_required_sdc_path_samples(example_for_waymax)
+    return womd_factories.simulator_state_from_womd_dict(example_for_waymax, include_sdc_paths=include_paths, time_key=time_key)
 
 
 def _maybe_copy_and_update(cfg, **kwargs):
