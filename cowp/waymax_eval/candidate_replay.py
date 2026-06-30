@@ -429,6 +429,8 @@ def replay_cache_candidates_to_jsonl(
     verify_cache_sid: bool = False,
     shard_index: int = 0,
     num_shards: int = 1,
+    tfexample_index_jsonl: str | Path | None = None,
+    gc_every_scenes: int = 16,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -466,7 +468,7 @@ def replay_cache_candidates_to_jsonl(
             it.set_postfix(stage="scan_tfexample", scanned=kw.get("scanned"), matched=kw.get("matched"), remaining=kw.get("remaining"), last=str(kw.get("last", ""))[:10], refresh=True)
 
     if matched_only:
-        gen = waymax_state_generator_for_sids(data_config, set(sid_to_path.keys()), tfexample_glob=tfexample_glob, split=split, progress_callback=scan_progress)
+        gen = waymax_state_generator_for_sids(data_config, set(sid_to_path.keys()), tfexample_glob=tfexample_glob, split=split, tfexample_index_jsonl=tfexample_index_jsonl, progress_callback=scan_progress)
     else:
         gen = waymax_state_generator_with_ids(data_config, tfexample_glob=tfexample_glob, split=split)
     iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay", unit="scene")
@@ -512,47 +514,50 @@ def replay_cache_candidates_to_jsonl(
             remaining.discard(sid)
             continue
 
-        with out_path.open("a", encoding="utf-8") as f:
-            for k in indices:
-                if (sid, int(k)) in done:
-                    continue
-                row: dict[str, Any] = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False}
-                t0 = time.perf_counter()
-                try:
-                    if trajs.ndim != 3 or not (0 <= int(k) < trajs.shape[0]):
-                        raise ValueError(f"missing candidate trajectory for k={k}")
-                    outcome = replay_candidate_on_env(
-                        env,
-                        init_state,
-                        trajs[int(k)],
-                        cfg,
-                        horizon_steps=int(horizon_steps),
-                        action_mode=action_mode,
-                        metric_objects=metric_objects,
-                        metric_init_errors=metric_errors,
-                        num_objects=max_objects,
-                        sdc_index=sdc_index,
-                        initial_pose=initial_pose,
-                    )
-                    row.update(outcome)
-                    total_written += 1
-                except Exception as exc:
-                    row.update({"rollout_valid": False, "error": str(exc)})
-                    total_failed += 1
-                sec = time.perf_counter() - t0
-                candidate_seconds += sec
-                row["rollout_seconds"] = float(sec)
-                row["action_mode"] = str(action_mode)
-                row["metric_set"] = str(metric_set)
-                f.write(json.dumps(row, ensure_ascii=False, allow_nan=True) + "\n")
-                f.flush()
-                done.add((sid, int(k)))
+        rows_to_write: list[str] = []
+        for k in indices:
+            if (sid, int(k)) in done:
+                continue
+            row: dict[str, Any] = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False}
+            t0 = time.perf_counter()
+            try:
+                if trajs.ndim != 3 or not (0 <= int(k) < trajs.shape[0]):
+                    raise ValueError(f"missing candidate trajectory for k={k}")
+                outcome = replay_candidate_on_env(
+                    env,
+                    init_state,
+                    trajs[int(k)],
+                    cfg,
+                    horizon_steps=int(horizon_steps),
+                    action_mode=action_mode,
+                    metric_objects=metric_objects,
+                    metric_init_errors=metric_errors,
+                    num_objects=max_objects,
+                    sdc_index=sdc_index,
+                    initial_pose=initial_pose,
+                )
+                row.update(outcome)
+                total_written += 1
+            except Exception as exc:
+                row.update({"rollout_valid": False, "error": str(exc)})
+                total_failed += 1
+            sec = time.perf_counter() - t0
+            candidate_seconds += sec
+            row["rollout_seconds"] = float(sec)
+            row["action_mode"] = str(action_mode)
+            row["metric_set"] = str(metric_set)
+            rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
+            done.add((sid, int(k)))
+        if rows_to_write:
+            with out_path.open("a", encoding="utf-8") as f:
+                f.write("\n".join(rows_to_write) + "\n")
         remaining.discard(sid)
         if hasattr(iterator, "set_postfix"):
             mean_s = candidate_seconds / max(total_written + total_failed, 1)
             iterator.set_postfix(matched=scenes_matched, rows=total_written, failed=total_failed, remaining=len(remaining), cand_s=f"{mean_s:.3f}", refresh=True)
         del arrays
-        gc.collect()
+        if int(gc_every_scenes) > 0 and scenes_matched % int(gc_every_scenes) == 0:
+            gc.collect()
         if not remaining:
             break
     return {
@@ -572,4 +577,6 @@ def replay_cache_candidates_to_jsonl(
         "matched_only_generator": bool(matched_only),
         "shard_index": int(shard_index),
         "num_shards": int(num_shards),
+        "tfexample_index_jsonl": str(tfexample_index_jsonl) if tfexample_index_jsonl else None,
+        "gc_every_scenes": int(gc_every_scenes),
     }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Iterator
+import json
+from pathlib import Path
 
 from cowp.data.parse_tfexample import (
     decode_parsed_tfexample,
@@ -411,12 +413,52 @@ def waymax_state_generator_with_ids(data_config: dict, tfexample_glob: str | Non
         yield sid, state
 
 
+
+def _files_for_sids_from_tfexample_index(index_jsonl: str | Path, scenario_ids: set[str]) -> tuple[list[str], dict[str, object]]:
+    """Return TFRecord shard files containing requested scenario ids.
+
+    The tensor-cache build stage can already create a lightweight JSONL index with
+    {scenario_id, file, record_index}.  Candidate replay cannot random-seek into
+    compressed TFRecords portably, but it can avoid scanning shards that do not
+    contain any cache scene.  This is a safe I/O optimization: it changes only
+    which TFRecord files are streamed, not how SimulatorState objects are built.
+    """
+    p = Path(index_jsonl)
+    files: set[str] = set()
+    matched: set[str] = set()
+    rows = 0
+    if not p.exists():
+        return [], {"index": str(p), "exists": False, "indexed_rows": 0, "matched_sids": 0, "indexed_files": 0}
+    targets = set(str(x) for x in scenario_ids)
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rows += 1
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            sid = row.get("scenario_id")
+            fpath = row.get("file")
+            if sid in targets and fpath:
+                matched.add(str(sid))
+                files.add(str(fpath))
+    return sorted(files), {
+        "index": str(p),
+        "exists": True,
+        "indexed_rows": rows,
+        "matched_sids": len(matched),
+        "indexed_files": len(files),
+    }
+
 def waymax_state_generator_for_sids(
     data_config: dict,
     scenario_ids: set[str],
     *,
     tfexample_glob: str | None = None,
     split: str | None = None,
+    tfexample_index_jsonl: str | Path | None = None,
     progress_callback=None,
 ) -> Iterator[tuple[str, object]]:
     """Yield Waymax states only for requested scenario ids.
@@ -431,11 +473,18 @@ def waymax_state_generator_for_sids(
     path = tfexample_glob or _raw_tfexample_path_from_cowp_config(data_config, split=split)
     if path is None:
         raise ValueError("A WOMD tf.Example glob/path is required for cache-matched Waymax replay.")
+    index_stats = None
+    if tfexample_index_jsonl is not None:
+        indexed_files, index_stats = _files_for_sids_from_tfexample_index(tfexample_index_jsonl, set(str(x) for x in scenario_ids))
+        if indexed_files:
+            path = indexed_files
     womd_cfg = _womd_subconfig(data_config)
     include_sdc_paths = bool(womd_cfg.get("include_sdc_paths", True))
     remaining = set(str(x) for x in scenario_ids)
     scanned = 0
     matched = 0
+    if progress_callback is not None and index_stats is not None:
+        progress_callback(scanned=0, matched=0, remaining=len(remaining), last=f"index_files={index_stats.get('indexed_files', 0)}")
     for raw in iter_tfexample_records(path):
         scanned += 1
         parsed = parse_tfexample(raw)

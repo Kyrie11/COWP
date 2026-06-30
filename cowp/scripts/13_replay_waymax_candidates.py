@@ -40,6 +40,7 @@ def main() -> None:
     ap.add_argument("--eval-config", default="configs/eval.yaml")
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--tfexample-glob", default=None, help="WOMD tf.Example glob/path for the same split as --cache-dir.")
+    ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional scenario-id index from 02_build_tensor_cache. When provided, replay scans only TFRecord shards containing cache scene ids.")
     ap.add_argument("--split", choices=["training", "validation", "testing"], default=None)
     ap.add_argument("--outcomes-jsonl", required=True)
     ap.add_argument("--candidate-selection", choices=["balanced", "selected", "all", "noncoercive", "false_safe", "conventional"], default="balanced")
@@ -54,6 +55,7 @@ def main() -> None:
     ap.add_argument("--num-shards", type=int, default=1, help="Split cache files into this many deterministic shards for multiple parallel runs.")
     ap.add_argument("--shard-index", type=int, default=0, help="Shard index in [0, num_shards). Use a separate outcomes-jsonl per shard.")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
+    ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--no-progress", action="store_true")
     args = ap.parse_args()
 
@@ -80,6 +82,8 @@ def main() -> None:
         verify_cache_sid=args.verify_cache_sid,
         shard_index=args.shard_index,
         num_shards=args.num_shards,
+        tfexample_index_jsonl=args.tfexample_index_jsonl,
+        gc_every_scenes=args.gc_every_scenes,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

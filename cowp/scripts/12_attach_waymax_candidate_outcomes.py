@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import glob
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -32,34 +33,63 @@ def _scenario_id(arrays: dict[str, np.ndarray], path: Path) -> str:
     return path.stem
 
 
-def _read_outcomes(path: str | None) -> dict[str, list[dict[str, Any]]]:
+def _expand_outcome_paths(paths: str | list[str] | tuple[str, ...] | None) -> list[Path]:
+    if not paths:
+        return []
+    if isinstance(paths, (list, tuple)):
+        raw_items = [str(x) for x in paths]
+    else:
+        raw_items = [str(paths)]
+    expanded: list[Path] = []
+    for item in raw_items:
+        for part in item.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            matches = sorted(glob.glob(part)) if any(ch in part for ch in "*?[") else []
+            if matches:
+                expanded.extend(Path(m) for m in matches)
+            else:
+                expanded.append(Path(part))
+    # Preserve order while removing duplicates.
+    seen: set[str] = set()
+    out: list[Path] = []
+    for p in expanded:
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _read_outcomes(paths: str | list[str] | tuple[str, ...] | None) -> dict[str, list[dict[str, Any]]]:
     rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    if not path:
+    expanded = _expand_outcome_paths(paths)
+    if not expanded:
         return rows
-    p = Path(path)
-    if not p.exists():
+    missing = [str(p) for p in expanded if not p.exists()]
+    if missing:
         raise FileNotFoundError(
-            f"Outcome file not found: {p}. This script only attaches existing replay results. "
-            "First run: python -m cowp.scripts.13_replay_waymax_candidates "
-            "--cache-dir <cache> --tfexample-glob <WOMD tf_example glob> "
-            "--outcomes-jsonl <this path>"
+            f"Outcome file(s) not found: {missing[:5]}. This script only attaches existing replay results. "
+            "First run scripts/13_replay_waymax_candidates with --outcomes-jsonl."
         )
-    if p.suffix.lower() == ".csv":
+    for p in expanded:
+        if p.suffix.lower() == ".csv":
+            with p.open("r", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    sid = str(row.get("scenario_id") or row.get("scenario/id") or "")
+                    if sid:
+                        rows[sid].append(row)
+            continue
         with p.open("r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
                 sid = str(row.get("scenario_id") or row.get("scenario/id") or "")
                 if sid:
                     rows[sid].append(row)
-        return rows
-    with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            sid = str(row.get("scenario_id") or row.get("scenario/id") or "")
-            if sid:
-                rows[sid].append(row)
     return rows
 
 
@@ -94,7 +124,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Attach Waymax candidate rollout outcomes to an existing COWP tensor cache without rebuilding WOMD labels.")
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--output-dir", required=True)
-    ap.add_argument("--outcomes-jsonl", default=None, help="JSONL rows with scenario_id,candidate_index,collision,offroad,log_divergence. CSV is also accepted by extension.")
+    ap.add_argument("--outcomes-jsonl", nargs="+", default=None, help="One or more JSONL/CSV outcome files, comma-separated paths, or shell globs with scenario_id,candidate_index,collision,offroad,log_divergence.")
     ap.add_argument("--compress", action="store_true", help="Use np.savez_compressed. Default keeps --no-compress style for speed.")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
