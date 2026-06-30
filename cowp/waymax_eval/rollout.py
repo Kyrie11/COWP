@@ -518,6 +518,10 @@ def _make_waymax_environment(max_num_objects: int | None = None, action_mode: st
     # doing so freezes or overwrites every non-ego object with zero actions.
     if hasattr(_config, "ObjectType") and hasattr(_config.ObjectType, "SDC"):
         kwargs["controlled_object"] = _config.ObjectType.SDC
+    # Replay scripts compute their own metric accumulator and never use rewards.
+    # Keeping Waymax rewards on adds avoidable metric/reward work at every step
+    # and can fail on releases where reward metrics require route observations.
+    kwargs["compute_reward"] = False
     if max_num_objects is not None:
         kwargs["max_num_objects"] = int(max_num_objects)
     if env_config is not None and kwargs:

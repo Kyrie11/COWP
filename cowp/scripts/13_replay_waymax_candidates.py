@@ -11,14 +11,20 @@ from cowp.waymax_eval.candidate_replay import replay_cache_candidates_to_jsonl
 
 def _configure_waymax_runtime(device: str) -> None:
     device = str(device or "auto").lower()
+    # Candidate replay can instantiate many JAX buffers.  Disable XLA's greedy GPU
+    # preallocation regardless of CPU/GPU mode; this is safe when the variable was
+    # unset and prevents smoke tests from reserving nearly all GPU memory.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     if device == "cpu":
-        os.environ.setdefault("JAX_PLATFORM_NAME", "cpu")
+        # CPU mode must override stale shell state such as CUDA_VISIBLE_DEVICES=0
+        # from earlier training commands.
+        os.environ["JAX_PLATFORM_NAME"] = "cpu"
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
-        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     elif device == "gpu":
-        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-    else:
-        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+        # A previous dataset-building shell often exports JAX_PLATFORM_NAME=cpu.
+        # The explicit --waymax-device gpu flag should not inherit that CPU lock.
+        if os.environ.get("JAX_PLATFORM_NAME", "").lower() == "cpu":
+            os.environ.pop("JAX_PLATFORM_NAME", None)
 
 
 def main() -> None:

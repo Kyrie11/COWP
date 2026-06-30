@@ -22,9 +22,43 @@ def require_waymax():
     return _config, dataloader, womd_factories
 
 
+def _has_womd_time_prefix(example: dict, prefix: str) -> bool:
+    return any(str(k).startswith(prefix) for k in example.keys())
+
+
+def _maybe_aggregate_time_tensors(example: dict, *, time_key: str = "all") -> dict:
+    """Return a WOMD dict accepted by Waymax's simulator-state factory.
+
+    The lightweight TFExample path decodes raw WOMD features, which usually keep
+    temporal tensors split under ``past/current/future``.  Waymax's
+    ``simulator_state_from_womd_dict(..., time_key="all")`` expects those
+    tensors to have already been merged under ``all``.  The normal Waymax
+    dataloader performs this step through DatasetConfig.aggregate_timesteps; the
+    cache-matched replay path must do it explicitly because it bypasses the
+    dataloader after cheaply filtering scenario ids.
+    """
+    if str(time_key) != "all" or _has_womd_time_prefix(example, "state/all/"):
+        return example
+    try:
+        from waymax.dataloader import womd_utils  # type: ignore
+    except Exception:
+        return example
+    aggregate = getattr(womd_utils, "aggregate_time_tensors", None)
+    if aggregate is None:
+        return example
+    try:
+        return aggregate(dict(example))
+    except Exception:
+        # Keep the original exception context for the downstream factory, which
+        # will report the exact missing/ill-shaped field.  This makes the helper
+        # tolerant of older Waymax builds without hiding real data errors.
+        return example
+
+
 def simulator_state_from_womd_dict(example: dict, include_sdc_paths: bool = True, time_key: str = "all"):
     _, _, womd_factories = require_waymax()
-    return womd_factories.simulator_state_from_womd_dict(example, include_sdc_paths=include_sdc_paths, time_key=time_key)
+    example_for_waymax = _maybe_aggregate_time_tensors(example, time_key=time_key)
+    return womd_factories.simulator_state_from_womd_dict(example_for_waymax, include_sdc_paths=include_sdc_paths, time_key=time_key)
 
 
 def _maybe_copy_and_update(cfg, **kwargs):

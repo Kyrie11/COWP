@@ -211,7 +211,10 @@ class WaymaxStandardMetricAccumulator:
     divergence is averaged over simulated steps.
     """
 
-    metric_objects: list[tuple[str, Any]] = field(default_factory=list)
+    # None means "use every installed Waymax standard metric".  An empty list
+    # intentionally means "compute no Waymax metrics"; this distinction is
+    # needed by candidate replay when --metric-set none/off is requested.
+    metric_objects: list[tuple[str, Any]] | None = None
     init_errors: dict[str, str] = field(default_factory=dict)
     max_values: dict[str, float] = field(default_factory=dict)
     final_values: dict[str, float] = field(default_factory=dict)
@@ -220,7 +223,7 @@ class WaymaxStandardMetricAccumulator:
     errors: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.metric_objects:
+        if self.metric_objects is None:
             self.metric_objects, self.init_errors = build_waymax_metric_objects()
 
     def update(self, state: Any) -> None:
