@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 
 from cowp.core.config import load_config
-from cowp.waymax_eval.candidate_replay import replay_cache_candidates_to_jsonl
 
 
 def _configure_waymax_runtime(device: str) -> None:
@@ -22,16 +21,25 @@ def _configure_waymax_runtime(device: str) -> None:
         os.environ["JAX_PLATFORMS"] = "cpu"
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     elif device == "gpu":
-        # Dataset-building/eval shells often leave JAX_PLATFORM_NAME=cpu or
-        # JAX_PLATFORMS=cpu in the environment. Either one forces JAX/Waymax onto
-        # CPU even when --waymax-device gpu and CUDA_VISIBLE_DEVICES are set.
-        if os.environ.get("JAX_PLATFORM_NAME", "").lower() == "cpu":
+        # Do NOT set JAX_PLATFORMS=gpu here.  In some JAX 0.4.x plugin setups,
+        # the generic value "gpu" can initialize both CUDA and ROCm backends; on
+        # CUDA-only machines this may fail with:
+        #   Unable to initialize backend 'rocm' ... GpuAllocatorConfig
+        # Let JAX auto-select the visible accelerator, then verify that a GPU is
+        # actually available in _print_jax_runtime.
+        if os.environ.get("JAX_PLATFORM_NAME", "").strip().lower() in {"cpu", "gpu", "cuda"}:
             os.environ.pop("JAX_PLATFORM_NAME", None)
-        if os.environ.get("JAX_PLATFORMS", "").lower() == "cpu":
-            os.environ.pop("JAX_PLATFORMS", None)
-        # Fail fast if the CUDA backend cannot initialize instead of silently
-        # falling back to CPU for a multi-day replay job.
-        os.environ.setdefault("JAX_PLATFORMS", "gpu")
+        platforms = os.environ.get("JAX_PLATFORMS")
+        if platforms is not None:
+            normalized = platforms.strip().lower()
+            # Clear the stale CPU lock and the stale generic-gpu lock from older
+            # commands.  A user-provided explicit platform list such as
+            # "cuda,cpu" is preserved.
+            if normalized in {"", "cpu", "gpu"}:
+                os.environ.pop("JAX_PLATFORMS", None)
+        # Restrict each worker process to one card with CUDA_VISIBLE_DEVICES in
+        # the launch command.  If CUDA cannot initialize, the runtime check below
+        # raises before any labels are written.
 
 
 def _print_jax_runtime(device: str, *, require_gpu: bool = False) -> None:
@@ -100,6 +108,12 @@ def main() -> None:
     _configure_waymax_runtime(args.waymax_device)
     if not args.no_jax_runtime_print:
         _print_jax_runtime(args.waymax_device, require_gpu=(str(args.waymax_device).lower() == "gpu"))
+
+    # Import the replay implementation only after JAX-related environment
+    # variables are cleaned.  This prevents future transitive imports of Waymax
+    # or JAX from initializing the wrong backend before configuration.
+    from cowp.waymax_eval.candidate_replay import replay_cache_candidates_to_jsonl
+
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
     horizon = int(args.rollout_horizon_steps if args.rollout_horizon_steps is not None else cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
     data_cfg = load_config(args.data_config)
