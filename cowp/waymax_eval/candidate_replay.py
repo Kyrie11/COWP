@@ -206,6 +206,53 @@ class FixedCandidateReplayPolicy:
             raise ValueError(f"candidate trajectory must have shape [T,>=3], got {self.trajectory.shape}")
         if self.initial_pose is not None:
             self.initial_pose = np.asarray(self.initial_pose, dtype=np.float32).reshape(3)
+        self._fast_action_data_seq = None
+        self._fast_action_valid = None
+        # Precompute the fixed candidate actions once per candidate.  The previous
+        # implementation rebuilt an [N,D] NumPy array and copied it to JAX at every
+        # rollout step, which hides GPU benefit behind Python/host-to-device work.
+        # This keeps the exact same action values and only changes where they are
+        # allocated.
+        if self.sdc_index is not None and self.num_objects is not None:
+            try:
+                self._precompute_fast_actions()
+            except Exception:
+                self._fast_action_data_seq = None
+                self._fast_action_valid = None
+
+    def _precompute_fast_actions(self) -> None:
+        import jax.numpy as jnp  # type: ignore
+
+        N = int(self.num_objects or 128)
+        sdc = int(0 if self.sdc_index is None else self.sdc_index)
+        if self.action_mode == "absolute_xy_yaw":
+            data_dim = max(int(self.cfg.get("waymax", {}).get("action_dim", 5)), 5)
+        else:
+            data_dim = int(self.cfg.get("waymax", {}).get("action_dim", 3))
+        T = int(max(self.trajectory.shape[0], 1))
+        data = np.zeros((T, N, data_dim), dtype=np.float32)
+        valid = np.zeros((N, 1), dtype=bool)
+        if 0 <= sdc < N:
+            valid[sdc, 0] = True
+            if self.action_mode == "absolute_xy_yaw":
+                xy_yaw = self.trajectory[:, :3]
+                vel = np.zeros((T, 2), dtype=np.float32)
+                if self.trajectory.shape[1] > 3:
+                    vel[:, 0] = self.trajectory[:, 3]
+                if self.trajectory.shape[1] > 4:
+                    vel[:, 1] = self.trajectory[:, 4]
+                data[:, sdc, :5] = np.concatenate([xy_yaw, vel], axis=-1).astype(np.float32)
+            else:
+                refs = np.zeros((T, 3), dtype=np.float32)
+                refs[0] = self.initial_pose if self.initial_pose is not None else np.zeros(3, dtype=np.float32)
+                if T > 1:
+                    refs[1:] = self.trajectory[:-1, :3]
+                delta = self.trajectory[:, :3] - refs
+                delta[:, 2] = np.asarray([_wrap_angle(float(x)) for x in delta[:, 2]], dtype=np.float32)
+                data[:, sdc, : min(data_dim, 3)] = delta[:, : min(data_dim, 3)]
+        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        self._fast_action_data_seq = jnp.asarray(data)
+        self._fast_action_valid = jnp.asarray(valid)
 
     def _trajectory_to_action_fast(self, step: int) -> Any:
         try:
@@ -213,6 +260,9 @@ class FixedCandidateReplayPolicy:
             import jax.numpy as jnp  # type: ignore
         except Exception as exc:  # pragma: no cover
             raise ImportError("waymax.datatypes and jax are required for candidate replay") from exc
+        if self._fast_action_data_seq is not None and self._fast_action_valid is not None:
+            t = min(max(int(step), 0), int(self._fast_action_data_seq.shape[0]) - 1)
+            return datatypes.Action(data=self._fast_action_data_seq[t], valid=self._fast_action_valid)
         N = int(self.num_objects or 128)
         sdc = int(0 if self.sdc_index is None else self.sdc_index)
         if self.action_mode == "absolute_xy_yaw":
@@ -457,6 +507,7 @@ def replay_cache_candidates_to_jsonl(
     remaining = set(sid_to_path.keys())
 
     metric_objects, metric_errors = build_waymax_metric_objects(metric_names_for_set(metric_set))
+    env_cache: dict[tuple[int, str], Any] = {}
 
     # Prefer the cache-matched generator: it scans tf.Examples cheaply and only
     # materializes Waymax SimulatorState for sids in the tensor cache.
@@ -499,7 +550,11 @@ def replay_cache_candidates_to_jsonl(
         try:
             max_objects = _state_num_objects(init_state)
             sdc_index, initial_pose = _initial_sdc_pose(init_state)
-            env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
+            env_key = (int(max_objects), str(action_mode))
+            env = env_cache.get(env_key)
+            if env is None:
+                env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
+                env_cache[env_key] = env
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
             # as invalid rather than silently leaving them unattached.

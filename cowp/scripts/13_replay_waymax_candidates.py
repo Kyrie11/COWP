@@ -11,20 +11,57 @@ from cowp.waymax_eval.candidate_replay import replay_cache_candidates_to_jsonl
 
 def _configure_waymax_runtime(device: str) -> None:
     device = str(device or "auto").lower()
-    # Candidate replay can instantiate many JAX buffers.  Disable XLA's greedy GPU
-    # preallocation regardless of CPU/GPU mode; this is safe when the variable was
-    # unset and prevents smoke tests from reserving nearly all GPU memory.
+    # Candidate replay can instantiate many JAX buffers. Disable XLA's greedy GPU
+    # preallocation by default. With this set, nvidia-smi may show only a small
+    # memory increase even when kernels are really running on the GPU.
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     if device == "cpu":
         # CPU mode must override stale shell state such as CUDA_VISIBLE_DEVICES=0
         # from earlier training commands.
         os.environ["JAX_PLATFORM_NAME"] = "cpu"
+        os.environ["JAX_PLATFORMS"] = "cpu"
         os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
     elif device == "gpu":
-        # A previous dataset-building shell often exports JAX_PLATFORM_NAME=cpu.
-        # The explicit --waymax-device gpu flag should not inherit that CPU lock.
+        # Dataset-building/eval shells often leave JAX_PLATFORM_NAME=cpu or
+        # JAX_PLATFORMS=cpu in the environment. Either one forces JAX/Waymax onto
+        # CPU even when --waymax-device gpu and CUDA_VISIBLE_DEVICES are set.
         if os.environ.get("JAX_PLATFORM_NAME", "").lower() == "cpu":
             os.environ.pop("JAX_PLATFORM_NAME", None)
+        if os.environ.get("JAX_PLATFORMS", "").lower() == "cpu":
+            os.environ.pop("JAX_PLATFORMS", None)
+        # Fail fast if the CUDA backend cannot initialize instead of silently
+        # falling back to CPU for a multi-day replay job.
+        os.environ.setdefault("JAX_PLATFORMS", "gpu")
+
+
+def _print_jax_runtime(device: str, *, require_gpu: bool = False) -> None:
+    try:
+        import jax  # type: ignore
+    except Exception as exc:
+        if require_gpu:
+            raise
+        print(f"[waymax-runtime] JAX unavailable: {exc}")
+        return
+    backend = jax.default_backend()
+    devices = jax.devices()
+    try:
+        gpu_devices = jax.devices("gpu")
+    except Exception:
+        gpu_devices = []
+    print(
+        "[waymax-runtime] "
+        f"JAX {getattr(jax, '__version__', '?')} default_backend={backend} "
+        f"devices={devices} gpu_devices={gpu_devices} "
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} "
+        f"JAX_PLATFORM_NAME={os.environ.get('JAX_PLATFORM_NAME', '<unset>')} "
+        f"JAX_PLATFORMS={os.environ.get('JAX_PLATFORMS', '<unset>')}"
+    )
+    if require_gpu and not gpu_devices:
+        raise RuntimeError(
+            "--waymax-device gpu was requested, but JAX did not initialize any GPU device. "
+            "Check CUDA_VISIBLE_DEVICES, JAX_PLATFORMS/JAX_PLATFORM_NAME, NVIDIA driver, "
+            "and jax/jaxlib/jax-cuda12-plugin installation."
+        )
 
 
 def main() -> None:
@@ -57,9 +94,12 @@ def main() -> None:
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--no-progress", action="store_true")
+    ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
     args = ap.parse_args()
 
     _configure_waymax_runtime(args.waymax_device)
+    if not args.no_jax_runtime_print:
+        _print_jax_runtime(args.waymax_device, require_gpu=(str(args.waymax_device).lower() == "gpu"))
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
     horizon = int(args.rollout_horizon_steps if args.rollout_horizon_steps is not None else cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
     data_cfg = load_config(args.data_config)
