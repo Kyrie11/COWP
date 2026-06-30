@@ -26,33 +26,236 @@ def _has_womd_time_prefix(example: dict, prefix: str) -> bool:
     return any(str(k).startswith(prefix) for k in example.keys())
 
 
+_WOMD_STATE_TIME_STEPS = {"past": 10, "current": 1, "future": 80}
+_WOMD_TL_TIME_STEPS = {"past": 10, "current": 1, "future": 80}
+
+
+def _as_numpy_array(x):
+    try:
+        import numpy as _np
+
+        return _np.asarray(x)
+    except Exception:
+        return x
+
+
+def _reshape_if_flat(x, shape: tuple[int, ...]):
+    """Reshape raw tf.Example list values only when the element count matches."""
+    try:
+        import numpy as _np
+
+        arr = _np.asarray(x)
+        if tuple(arr.shape) == tuple(shape):
+            return arr
+        if arr.size == int(_np.prod(shape)):
+            return arr.reshape(shape)
+        return arr
+    except Exception:
+        return x
+
+
+def _infer_num_objects(example: dict, default: int = 128) -> int:
+    for key in ("state/id", "state/type", "state/is_sdc", "state/tracks_to_predict", "state/objects_of_interest"):
+        if key in example:
+            try:
+                arr = _as_numpy_array(example[key])
+                if getattr(arr, "ndim", 0) >= 1 and int(arr.shape[0]) > 0:
+                    return int(arr.shape[0])
+            except Exception:
+                pass
+    for prefix, steps in _WOMD_STATE_TIME_STEPS.items():
+        for field in ("x", "valid", "bbox_yaw"):
+            key = f"state/{prefix}/{field}"
+            if key not in example:
+                continue
+            try:
+                arr = _as_numpy_array(example[key])
+                if getattr(arr, "ndim", 0) >= 2:
+                    return int(arr.shape[0])
+                if getattr(arr, "size", 0) and int(arr.size) % int(steps) == 0:
+                    return int(arr.size) // int(steps)
+            except Exception:
+                pass
+    return int(default)
+
+
+def _infer_num_tls(example: dict, default: int = 16) -> int:
+    for prefix, steps in _WOMD_TL_TIME_STEPS.items():
+        for field in ("x", "valid", "state", "id"):
+            key = f"traffic_light_state/{prefix}/{field}"
+            if key not in example:
+                continue
+            try:
+                arr = _as_numpy_array(example[key])
+                if getattr(arr, "ndim", 0) >= 2:
+                    # WOMD traffic-light tensors are [T, num_tls].
+                    return int(arr.shape[-1])
+                if getattr(arr, "size", 0) and int(arr.size) % int(steps) == 0:
+                    return int(arr.size) // int(steps)
+            except Exception:
+                pass
+    return int(default)
+
+
+def _reshape_womd_arrays_for_waymax(example: dict) -> dict:
+    """Restore raw WOMD tf.Example feature-list arrays to Waymax tensor shapes.
+
+    ``decode_parsed_tfexample`` intentionally reads tf.train.Example features
+    without TensorFlow's FixedLenFeature schema, so values arrive as flat 1-D
+    arrays.  Waymax factories expect shaped tensors, e.g. state [N,T],
+    traffic lights [T,L], roadgraph xyz [P,3], and route paths [R,Q,3].
+    """
+    ex = dict(example)
+    n_obj = _infer_num_objects(ex)
+
+    # Agent temporal tensors: [num_objects, num_steps].
+    for prefix, steps in _WOMD_STATE_TIME_STEPS.items():
+        base = f"state/{prefix}/"
+        for key in list(ex.keys()):
+            if key.startswith(base):
+                ex[key] = _reshape_if_flat(ex[key], (n_obj, int(steps)))
+
+    # Roadgraph tensors.  Waymax indexes type/id/valid with [..., 0].
+    for key in ("roadgraph_samples/xyz", "roadgraph_samples/dir"):
+        if key in ex:
+            try:
+                arr = _as_numpy_array(ex[key])
+                if getattr(arr, "ndim", 0) == 1 and int(arr.size) % 3 == 0:
+                    ex[key] = arr.reshape(-1, 3)
+            except Exception:
+                pass
+    for key in ("roadgraph_samples/id", "roadgraph_samples/type", "roadgraph_samples/valid"):
+        if key in ex:
+            try:
+                arr = _as_numpy_array(ex[key])
+                if getattr(arr, "ndim", 0) == 1:
+                    ex[key] = arr.reshape(-1, 1)
+            except Exception:
+                pass
+
+    # SDC route paths introduced in WOMD 1.3.1.
+    if "path_samples/xyz" not in ex and all(k in ex for k in ("path_samples/x", "path_samples/y", "path_samples/z")):
+        try:
+            import numpy as _np
+
+            ex["path_samples/xyz"] = _np.stack(
+                [_as_numpy_array(ex["path_samples/x"]), _as_numpy_array(ex["path_samples/y"]), _as_numpy_array(ex["path_samples/z"])],
+                axis=-1,
+            )
+        except Exception:
+            pass
+    if "path_samples/xyz" in ex:
+        try:
+            arr = _as_numpy_array(ex["path_samples/xyz"])
+            if getattr(arr, "ndim", 0) == 1 and int(arr.size) % 3 == 0:
+                num_paths = 45
+                on_route = _as_numpy_array(ex.get("path_samples/on_route", []))
+                if getattr(on_route, "size", 0) > 0:
+                    num_paths = int(on_route.size)
+                num_points = max(int(arr.size) // (int(num_paths) * 3), 1)
+                if int(arr.size) == int(num_paths) * int(num_points) * 3:
+                    ex["path_samples/xyz"] = arr.reshape(int(num_paths), int(num_points), 3)
+        except Exception:
+            pass
+    if "path_samples/xyz" in ex:
+        try:
+            xyz = _as_numpy_array(ex["path_samples/xyz"])
+            if getattr(xyz, "ndim", 0) >= 3:
+                num_paths, num_points = int(xyz.shape[0]), int(xyz.shape[1])
+                for key in ("path_samples/id", "path_samples/valid", "path_samples/arc_length"):
+                    if key in ex:
+                        ex[key] = _reshape_if_flat(ex[key], (num_paths, num_points))
+                if "path_samples/on_route" in ex:
+                    ex["path_samples/on_route"] = _reshape_if_flat(ex["path_samples/on_route"], (num_paths, 1))
+        except Exception:
+            pass
+
+    # Traffic-light tensors: non-timestamp fields are [num_steps, num_tls],
+    # timestamp_micros is [num_steps].
+    n_tls = _infer_num_tls(ex)
+    for prefix, steps in _WOMD_TL_TIME_STEPS.items():
+        base = f"traffic_light_state/{prefix}/"
+        for key in list(ex.keys()):
+            if not key.startswith(base):
+                continue
+            field = key[len(base) :]
+            if field == "timestamp_micros":
+                ex[key] = _reshape_if_flat(ex[key], (int(steps),))
+            else:
+                ex[key] = _reshape_if_flat(ex[key], (int(steps), int(n_tls)))
+    return ex
+
+
+def _aggregate_womd_time_tensors_numpy(example: dict) -> dict:
+    """Add state/all/* and traffic_light_state/all/* using NumPy arrays."""
+    ex = dict(example)
+    try:
+        import numpy as _np
+    except Exception:
+        return ex
+
+    state_features = set()
+    for key in ex:
+        if key.startswith("state/current/"):
+            state_features.add(key[len("state/current/") :])
+    for feat in state_features:
+        out_key = f"state/all/{feat}"
+        if out_key in ex:
+            continue
+        parts = [f"state/{part}/{feat}" for part in ("past", "current", "future")]
+        if all(k in ex for k in parts):
+            try:
+                ex[out_key] = _np.concatenate([_as_numpy_array(ex[k]) for k in parts], axis=-1)
+            except Exception:
+                pass
+
+    tl_features = set()
+    for key in ex:
+        if key.startswith("traffic_light_state/current/"):
+            tl_features.add(key[len("traffic_light_state/current/") :])
+    for feat in tl_features:
+        out_key = f"traffic_light_state/all/{feat}"
+        if out_key in ex:
+            continue
+        parts = [f"traffic_light_state/{part}/{feat}" for part in ("past", "current", "future")]
+        if all(k in ex for k in parts):
+            try:
+                # After reshaping, both timestamp [T] and signal fields [T,L]
+                # concatenate over the timestep axis 0.
+                ex[out_key] = _np.concatenate([_as_numpy_array(ex[k]) for k in parts], axis=0)
+            except Exception:
+                pass
+
+    if "state/which_time" not in ex:
+        try:
+            past_len = int(_as_numpy_array(ex["state/past/valid"]).shape[-1])
+            future_len = int(_as_numpy_array(ex["state/future/valid"]).shape[-1])
+            ex["state/which_time"] = _np.concatenate(
+                [-_np.ones((past_len,), dtype=_np.float32), _np.zeros((1,), dtype=_np.float32), _np.ones((future_len,), dtype=_np.float32)],
+                axis=0,
+            )
+        except Exception:
+            pass
+    return ex
+
+
 def _maybe_aggregate_time_tensors(example: dict, *, time_key: str = "all") -> dict:
     """Return a WOMD dict accepted by Waymax's simulator-state factory.
 
-    The lightweight TFExample path decodes raw WOMD features, which usually keep
-    temporal tensors split under ``past/current/future``.  Waymax's
-    ``simulator_state_from_womd_dict(..., time_key="all")`` expects those
-    tensors to have already been merged under ``all``.  The normal Waymax
-    dataloader performs this step through DatasetConfig.aggregate_timesteps; the
-    cache-matched replay path must do it explicitly because it bypasses the
-    dataloader after cheaply filtering scenario ids.
+    The cache-matched replay path first filters scenario ids cheaply from raw
+    serialized tf.Examples and therefore bypasses Waymax's TensorFlow parser.
+    Raw feature lists must be reshaped and ``past/current/future`` tensors must
+    be merged under ``all`` before calling Waymax factories.
     """
-    if str(time_key) != "all" or _has_womd_time_prefix(example, "state/all/"):
-        return example
-    try:
-        from waymax.dataloader import womd_utils  # type: ignore
-    except Exception:
-        return example
-    aggregate = getattr(womd_utils, "aggregate_time_tensors", None)
-    if aggregate is None:
-        return example
-    try:
-        return aggregate(dict(example))
-    except Exception:
-        # Keep the original exception context for the downstream factory, which
-        # will report the exact missing/ill-shaped field.  This makes the helper
-        # tolerant of older Waymax builds without hiding real data errors.
-        return example
+    ex = _reshape_womd_arrays_for_waymax(dict(example))
+    if str(time_key) != "all":
+        return ex
+    has_state_all = _has_womd_time_prefix(ex, "state/all/")
+    has_tl_split = _has_womd_time_prefix(ex, "traffic_light_state/current/")
+    has_tl_all = _has_womd_time_prefix(ex, "traffic_light_state/all/")
+    if has_state_all and (not has_tl_split or has_tl_all):
+        return ex
+    return _aggregate_womd_time_tensors_numpy(ex)
 
 
 def _has_nonempty_key(example: dict, key: str) -> bool:
@@ -77,16 +280,14 @@ def _has_required_sdc_path_samples(example: dict) -> bool:
     lightweight cache-matched replay path should only request SDC paths when the
     required route tensors are actually present.
     """
-    # Waymax's Paths datatype needs coordinates for path points and an on-route
-    # flag.  Other fields such as ids/valid/arc_length are handled by Waymax when
-    # present, but these keys are the minimum that prevents scalar placeholders.
-    required = (
-        "path_samples/x",
-        "path_samples/y",
-        "path_samples/z",
-        "path_samples/on_route",
+    # Public Waymax/WOMD 1.3.1 route-path features are stored as path_samples/xyz
+    # plus id/valid/arc_length/on_route.  Some older local caches used x/y/z, so
+    # accept either coordinate layout and synthesize xyz in the reshaping helper.
+    has_xyz = _has_nonempty_key(example, "path_samples/xyz") or all(
+        _has_nonempty_key(example, key) for key in ("path_samples/x", "path_samples/y", "path_samples/z")
     )
-    return all(_has_nonempty_key(example, key) for key in required)
+    required = ("path_samples/id", "path_samples/valid", "path_samples/arc_length", "path_samples/on_route")
+    return bool(has_xyz) and all(_has_nonempty_key(example, key) for key in required)
 
 
 def simulator_state_from_womd_dict(example: dict, include_sdc_paths: bool = True, time_key: str = "all"):
