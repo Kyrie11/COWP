@@ -41,6 +41,10 @@ def main() -> None:
     ap.add_argument("--profile-jsonl", default=None, help="Optional per-written-cache timing JSONL.")
     ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional scenario-id index for tf.Example shards. If present, scan only shards containing label ids.")
     ap.add_argument("--build-tfexample-index", action="store_true", help="Build or rebuild --tfexample-index-jsonl before merging. Useful when matched stays at zero.")
+    ap.add_argument("--num-workers", type=int, default=1, help="Parallel TFRecord-shard workers for from-scratch tensor-cache construction. Use 4-12 depending on disk/CPU.")
+    ap.add_argument("--start-method", default=None, choices=["fork", "forkserver", "spawn"], help="Multiprocessing start method for --num-workers > 1. forkserver is often stable; fork is fastest on Linux.")
+    ap.add_argument("--parallel-scan", action="store_true", help="Force the parallel one-pass scan even if --tfexample-index-jsonl is provided. Recommended for first-time cache construction.")
+    ap.add_argument("--require-waymax-ready", action="store_true", help="Fail matched examples that are missing core WOMD keys required by cache-source Waymax replay.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; tensor-cache construction is CPU/I/O-bound.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = ap.parse_args()
@@ -64,6 +68,10 @@ def main() -> None:
         profile_jsonl=args.profile_jsonl,
         tfexample_index_jsonl=args.tfexample_index_jsonl,
         build_index_if_missing=args.build_tfexample_index,
+        num_workers=args.num_workers,
+        start_method=args.start_method,
+        require_waymax_ready=args.require_waymax_ready,
+        prefer_parallel_scan=args.parallel_scan,
     )
     mode = "compressed" if args.compress else "uncompressed"
     print(f"Built {n} merged tensor cache files ({mode})")

@@ -299,6 +299,46 @@ def simulator_state_from_womd_dict(example: dict, include_sdc_paths: bool = True
     return womd_factories.simulator_state_from_womd_dict(example_for_waymax, include_sdc_paths=include_paths, time_key=time_key)
 
 
+
+
+def womd_example_from_tensor_cache_arrays(arrays: dict) -> dict:
+    """Recover a WOMD tf.Example-style dict from a COWP tensor-cache item.
+
+    ``02_build_tensor_cache`` stores raw WOMD tf.Example features under the
+    ``womd/`` namespace with slash-safe NPZ keys. Candidate replay can build
+    Waymax SimulatorState directly from these cached features instead of
+    scanning the original TFRecords again. This is a safe optimization: it uses
+    the exact WOMD features that were merged into the cache for the same scene.
+    """
+    import numpy as _np
+
+    ex: dict = {}
+    for key, value in dict(arrays).items():
+        k = str(key).replace("__", "/")
+        if not k.startswith("womd/"):
+            continue
+        out_key = k[len("womd/") :]
+        arr = _np.asarray(value)
+        if arr.dtype == _np.uint8 and out_key in {"scenario/id", "scenario/id_bytes"}:
+            try:
+                ex[out_key] = bytes(arr.tolist())
+                continue
+            except Exception:
+                pass
+        ex[out_key] = arr
+    if not ex:
+        raise KeyError("tensor cache item does not contain womd/* features; rebuild tensor cache with 02_build_tensor_cache before cache-source Waymax replay")
+    return ex
+
+
+def simulator_state_from_tensor_cache_arrays(arrays: dict, data_config: dict | None = None, *, include_sdc_paths: bool | None = None, time_key: str = "all"):
+    """Build a Waymax SimulatorState from cached WOMD arrays."""
+    if include_sdc_paths is None:
+        womd_cfg = _womd_subconfig(data_config or {}) if isinstance(data_config, dict) else {}
+        include_sdc_paths = bool(womd_cfg.get("include_sdc_paths", True))
+    example = womd_example_from_tensor_cache_arrays(arrays)
+    return simulator_state_from_womd_dict(example, include_sdc_paths=bool(include_sdc_paths), time_key=time_key)
+
 def _maybe_copy_and_update(cfg, **kwargs):
     clean = {k: v for k, v in kwargs.items() if v is not None}
     if not clean:

@@ -459,6 +459,15 @@ def _sid_to_cache_paths(cache_dir: Path, *, verify_cache_sid: bool = False, shar
     return sid_to_path
 
 
+
+
+def _cache_path_has_womd_features(path: Path) -> bool:
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            return any(str(k).startswith("womd__") or str(k).startswith("womd/") for k in data.files)
+    except Exception:
+        return False
+
 def replay_cache_candidates_to_jsonl(
     *,
     cache_dir: str | Path,
@@ -481,8 +490,9 @@ def replay_cache_candidates_to_jsonl(
     num_shards: int = 1,
     tfexample_index_jsonl: str | Path | None = None,
     gc_every_scenes: int = 16,
+    state_source: str = "auto",
 ) -> dict[str, Any]:
-    from cowp.waymax_eval.dataloader import waymax_state_generator_for_sids, waymax_state_generator_with_ids
+    from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
     cache_dir = Path(cache_dir)
     out_path = Path(outcomes_jsonl)
@@ -509,39 +519,91 @@ def replay_cache_candidates_to_jsonl(
     metric_objects, metric_errors = build_waymax_metric_objects(metric_names_for_set(metric_set))
     env_cache: dict[tuple[int, str], Any] = {}
 
-    # Prefer the cache-matched generator: it scans tf.Examples cheaply and only
-    # materializes Waymax SimulatorState for sids in the tensor cache.
-    iterator_ref = {"iterator": None}
+    state_source = str(state_source or "auto").lower()
+    if state_source not in {"auto", "cache", "tfexample"}:
+        raise ValueError(f"state_source must be one of auto/cache/tfexample, got {state_source!r}")
+    use_cache_state = False
+    if state_source == "cache":
+        use_cache_state = True
+    elif state_source == "auto":
+        sample_path = next(iter(sid_to_path.values()), None)
+        use_cache_state = bool(sample_path is not None and _cache_path_has_womd_features(Path(sample_path)))
 
-    def scan_progress(**kw):
-        it = iterator_ref.get("iterator")
-        if hasattr(it, "set_postfix"):
-            it.set_postfix(stage="scan_tfexample", scanned=kw.get("scanned"), matched=kw.get("matched"), remaining=kw.get("remaining"), last=str(kw.get("last", ""))[:10], refresh=True)
-
-    if matched_only:
-        gen = waymax_state_generator_for_sids(data_config, set(sid_to_path.keys()), tfexample_glob=tfexample_glob, split=split, tfexample_index_jsonl=tfexample_index_jsonl, progress_callback=scan_progress)
+    # Fast path: build Waymax SimulatorState directly from the WOMD features
+    # already stored inside tensor cache.  This avoids a second TFRecord scan and
+    # prevents split/index mismatches from leaving matched=0 for hours.
+    if use_cache_state:
+        gen = ((sid, path) for sid, path in sid_to_path.items())
+        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay from tensor cache", unit="scene")
     else:
-        gen = waymax_state_generator_with_ids(data_config, tfexample_glob=tfexample_glob, split=split)
-    iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay", unit="scene")
-    iterator_ref["iterator"] = iterator
+        iterator_ref = {"iterator": None}
 
-    for sid, init_state in iterator:
+        def scan_progress(**kw):
+            it = iterator_ref.get("iterator")
+            if hasattr(it, "set_postfix"):
+                it.set_postfix(stage="scan_tfexample", scanned=kw.get("scanned"), matched=kw.get("matched"), remaining=kw.get("remaining"), last=str(kw.get("last", ""))[:10], refresh=True)
+
+        if matched_only:
+            gen = waymax_state_generator_for_sids(data_config, set(sid_to_path.keys()), tfexample_glob=tfexample_glob, split=split, tfexample_index_jsonl=tfexample_index_jsonl, progress_callback=scan_progress)
+        else:
+            gen = waymax_state_generator_with_ids(data_config, tfexample_glob=tfexample_glob, split=split)
+        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay", unit="scene")
+        iterator_ref["iterator"] = iterator
+
+    for item in iterator:
         scenes_seen += 1
-        sid = str(sid)
-        if sid not in sid_to_path:
-            continue
+        arrays = None
+        if use_cache_state:
+            sid, cache_path = item
+            sid = str(sid)
+            arrays = load_npz_canonical(cache_path)
+            try:
+                init_state = simulator_state_from_tensor_cache_arrays(arrays, data_config, time_key="all")
+            except Exception as exc:
+                if hasattr(iterator, "set_postfix"):
+                    iterator.set_postfix(stage="cache_state_failed", matched=scenes_matched, failed=total_failed, last=sid[:10], refresh=True)
+                selected_arrays = {
+                    k: arrays[k]
+                    for k in (
+                        "cowp/candidates/trajectory",
+                        "cowp/candidates/valid",
+                        "cowp/candidates/conventional_safe",
+                        "cowp/candidates/false_safe",
+                        "cowp/candidates/noncoercive_feasible",
+                        "cowp/candidates/ego_utility_prior",
+                    )
+                    if k in arrays
+                }
+                seed = _stable_seed(sid)
+                indices = select_candidate_indices(selected_arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
+                with out_path.open("a", encoding="utf-8") as f:
+                    for k in indices:
+                        if (sid, int(k)) in done:
+                            continue
+                        row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"cache_state_failed: {exc}"}
+                        f.write(json.dumps(row, ensure_ascii=False, allow_nan=True) + "\n")
+                        done.add((sid, int(k)))
+                        total_failed += 1
+                remaining.discard(sid)
+                continue
+        else:
+            sid, init_state = item
+            sid = str(sid)
+            if sid not in sid_to_path:
+                continue
         scenes_matched += 1
-        arrays = load_npz_canonical(
-            sid_to_path[sid],
-            keys={
-                "cowp/candidates/trajectory",
-                "cowp/candidates/valid",
-                "cowp/candidates/conventional_safe",
-                "cowp/candidates/false_safe",
-                "cowp/candidates/noncoercive_feasible",
-                "cowp/candidates/ego_utility_prior",
-            },
-        )
+        if arrays is None:
+            arrays = load_npz_canonical(
+                sid_to_path[sid],
+                keys={
+                    "cowp/candidates/trajectory",
+                    "cowp/candidates/valid",
+                    "cowp/candidates/conventional_safe",
+                    "cowp/candidates/false_safe",
+                    "cowp/candidates/noncoercive_feasible",
+                    "cowp/candidates/ego_utility_prior",
+                },
+            )
         seed = _stable_seed(sid)
         indices = select_candidate_indices(arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
         candidate_targets += len(indices)
@@ -634,4 +696,5 @@ def replay_cache_candidates_to_jsonl(
         "num_shards": int(num_shards),
         "tfexample_index_jsonl": str(tfexample_index_jsonl) if tfexample_index_jsonl else None,
         "gc_every_scenes": int(gc_every_scenes),
+        "state_source": "cache" if use_cache_state else "tfexample",
     }
