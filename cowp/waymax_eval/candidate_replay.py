@@ -83,6 +83,37 @@ def load_cache_replay_arrays(path: str | Path, *, candidate_keys: set[str] | Non
         return out
 
 
+
+
+_CANDIDATE_TIMING_KEYS = (
+    "timing/env_reset_s",
+    "timing/policy_build_s",
+    "timing/action_s",
+    "timing/env_step_s",
+    "timing/metric_update_s",
+    "timing/done_check_s",
+    "timing/metric_finalize_s",
+)
+
+
+def _make_jitted_env_step(env: Any):
+    """Best-effort JIT wrapper for one Waymax env.step call.
+
+    This is an optimization only: the replay loop still applies the same fixed
+    action sequence, computes the same metrics, and performs the same done checks
+    by default.  If JAX/Waymax cannot trace the local env.step API, callers keep
+    using the original eager Python step path.
+    """
+    try:
+        import jax  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"jax unavailable for --jit-env-step: {exc}") from exc
+
+    def _step(state, action):
+        return _env_step(env, state, action)
+
+    return jax.jit(_step)
+
 def scenario_id_from_arrays(arrays: dict[str, np.ndarray], path: str | Path | None = None) -> str:
     for key in ("scenario/id", "scenario__id", "womd/scenario/id", "womd__scenario__id"):
         if key in arrays:
@@ -513,6 +544,8 @@ def replay_candidate_on_env(
     initial_pose: np.ndarray | None = None,
     metric_set: str = "safety",
     collect_timing: bool = False,
+    step_fn: Any | None = None,
+    done_check_interval: int = 1,
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
     t = time.perf_counter()
@@ -550,7 +583,7 @@ def replay_candidate_on_env(
         if collect_timing:
             action_s += time.perf_counter() - t
             t = time.perf_counter()
-        state = _env_step(env, state, action)
+        state = step_fn(state, action) if step_fn is not None else _env_step(env, state, action)
         if collect_timing:
             env_step_s += time.perf_counter() - t
             t = time.perf_counter()
@@ -559,7 +592,10 @@ def replay_candidate_on_env(
         if collect_timing:
             metric_s += time.perf_counter() - t
             t = time.perf_counter()
-        done = _state_done(state)
+        done = False
+        dci = int(done_check_interval)
+        if dci > 0 and (((step + 1) % dci == 0) or ((step + 1) >= int(horizon_steps))):
+            done = _state_done(state)
         if collect_timing:
             done_s += time.perf_counter() - t
         if done:
@@ -682,6 +718,8 @@ def replay_cache_candidates_to_jsonl(
     gc_every_scenes: int = 16,
     state_source: str = "auto",
     profile_replay_jsonl: str | Path | None = None,
+    jit_env_step: bool = False,
+    done_check_interval: int = 1,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -715,6 +753,7 @@ def replay_cache_candidates_to_jsonl(
 
     metric_objects, metric_errors = build_waymax_metric_objects(metric_names_for_set(metric_set))
     env_cache: dict[tuple[int, str], Any] = {}
+    env_step_fn_cache: dict[tuple[int, str], Any | None] = {}
 
     state_source = str(state_source or "auto").lower()
     if state_source not in {"auto", "cache", "tfexample"}:
@@ -906,6 +945,17 @@ def replay_cache_candidates_to_jsonl(
             if env is None:
                 env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
                 env_cache[env_key] = env
+            step_fn = None
+            if bool(jit_env_step):
+                if env_key not in env_step_fn_cache:
+                    try:
+                        env_step_fn_cache[env_key] = _make_jitted_env_step(env)
+                    except Exception as jit_exc:
+                        env_step_fn_cache[env_key] = None
+                        scene_profile["jit_env_step_error"] = str(jit_exc)
+                step_fn = env_step_fn_cache.get(env_key)
+            scene_profile["jit_env_step"] = bool(step_fn is not None)
+            scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["env_init_s"] = time.perf_counter() - t
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
@@ -930,6 +980,8 @@ def replay_cache_candidates_to_jsonl(
         failed_rows_scene = 0
         skipped_rows_scene = 0
         rollout_s_scene = 0.0
+        timing_sums = {k: 0.0 for k in _CANDIDATE_TIMING_KEYS}
+        timing_count = 0
         for k in indices:
             if (sid, int(k)) in done:
                 skipped_rows_scene += 1
@@ -953,8 +1005,18 @@ def replay_cache_candidates_to_jsonl(
                     initial_pose=initial_pose,
                     metric_set=metric_set,
                     collect_timing=collect_timing,
+                    step_fn=step_fn,
+                    done_check_interval=int(done_check_interval),
                 )
                 row.update(outcome)
+                if collect_timing:
+                    timing_count += 1
+                    for _tk in _CANDIDATE_TIMING_KEYS:
+                        if _tk in row:
+                            try:
+                                timing_sums[_tk] += float(row[_tk])
+                            except Exception:
+                                pass
                 total_written += 1
                 new_rows_scene += 1
             except Exception as exc:
@@ -984,10 +1046,16 @@ def replay_cache_candidates_to_jsonl(
                     "failed_rows": int(failed_rows_scene),
                     "resumed_rows": int(skipped_rows_scene),
                     "rollout_candidates_s": float(rollout_s_scene),
+                    "mean_rollout_candidate_s": float(rollout_s_scene / max(new_rows_scene + failed_rows_scene, 1)),
                     "write_outcomes_s": float(write_outcomes_s),
                     "seconds": time.perf_counter() - scene_t0,
                 }
             )
+            if collect_timing and timing_count > 0:
+                for _tk, _val in timing_sums.items():
+                    suffix = _tk.split("/", 1)[1] if "/" in _tk else _tk
+                    scene_profile[f"timing_sum/{suffix}"] = float(_val)
+                    scene_profile[f"timing_mean/{suffix}"] = float(_val / max(timing_count, 1))
             with profile_path.open("a", encoding="utf-8") as pf:
                 pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
         if hasattr(iterator, "set_postfix"):
@@ -1019,4 +1087,6 @@ def replay_cache_candidates_to_jsonl(
         "gc_every_scenes": int(gc_every_scenes),
         "state_source": "cache" if use_cache_state else "tfexample",
         "profile_replay_jsonl": str(profile_path) if profile_path is not None else None,
+        "jit_env_step": bool(jit_env_step),
+        "done_check_interval": int(done_check_interval),
     }
