@@ -32,6 +32,36 @@ def load_npz_canonical(path: str | Path, *, keys: set[str] | None = None) -> dic
         return {restore_key(k): data[k] for k in data.files if k in wanted_stored or restore_key(k) in keys}
 
 
+_REPLAY_CANDIDATE_KEYS = {
+    "cowp/candidates/trajectory",
+    "cowp/candidates/valid",
+    "cowp/candidates/conventional_safe",
+    "cowp/candidates/false_safe",
+    "cowp/candidates/noncoercive_feasible",
+    "cowp/candidates/ego_utility_prior",
+}
+
+
+def load_cache_replay_arrays(path: str | Path, *, candidate_keys: set[str] | None = None) -> dict[str, np.ndarray]:
+    """Load only tensors needed by candidate replay from a tensor-cache NPZ.
+
+    A full tensor-cache item can contain large natural-response, map, and
+    supervision tensors that are irrelevant to Waymax candidate replay.  Reading
+    the whole archive for every scene wastes disk bandwidth and host memory.
+    This helper keeps the exact replay semantics by loading all cached WOMD
+    features needed to rebuild ``SimulatorState`` plus the candidate-selection
+    tensors, while avoiding unrelated label arrays.
+    """
+    wanted = set(_REPLAY_CANDIDATE_KEYS if candidate_keys is None else candidate_keys)
+    with np.load(path, allow_pickle=True) as data:
+        out: dict[str, np.ndarray] = {}
+        for stored_key in data.files:
+            key = restore_key(stored_key)
+            if key.startswith("womd/") or key in wanted:
+                out[key] = data[stored_key]
+        return out
+
+
 def scenario_id_from_arrays(arrays: dict[str, np.ndarray], path: str | Path | None = None) -> str:
     for key in ("scenario/id", "scenario__id", "womd/scenario/id", "womd__scenario__id"):
         if key in arrays:
@@ -330,6 +360,100 @@ class FixedCandidateReplayPolicy:
         return self._trajectory_to_action_slow(state, step_i)
 
 
+def _metric_set_is_fast_safety(metric_set: str | None, metric_objects: list[tuple[str, Any]] | None) -> bool:
+    if str(metric_set or "").lower() not in {"safety", "fast"}:
+        return False
+    names = {str(name) for name, _ in (metric_objects or [])}
+    return names.issubset({"OverlapMetric", "OffroadMetric"})
+
+
+class _FastSafetyMetricAccumulator:
+    """Safety-only Waymax metric accumulator with one host sync at finalize.
+
+    The standard accumulator converts every metric result to NumPy at every
+    simulator step.  For 80-step × 12-candidate replay this creates hundreds of
+    device/host synchronizations per scene and can dominate runtime on GPU.
+    Safety labels only need any-over-rollout OverlapMetric and OffroadMetric, so
+    we accumulate their SDC values as JAX arrays and transfer them to host once.
+    """
+
+    def __init__(self, *, metric_objects: list[tuple[str, Any]], init_errors: dict[str, str] | None = None, sdc_index: int | None = None) -> None:
+        self.metric_objects = [(str(n), m) for n, m in (metric_objects or []) if str(n) in {"OverlapMetric", "OffroadMetric"}]
+        self.init_errors = dict(init_errors or {})
+        self.sdc_index = None if sdc_index is None else int(sdc_index)
+        self.max_values: dict[str, Any] = {}
+        self.errors: dict[str, str] = {}
+        self.step_count = 0
+
+    def _sdc_scalar(self, result: Any):
+        import jax.numpy as jnp  # type: ignore
+
+        if hasattr(result, "value"):
+            value = getattr(result, "value")
+            valid = getattr(result, "valid", None)
+        elif isinstance(result, dict) and "value" in result:
+            value = result["value"]
+            valid = result.get("valid")
+        else:
+            value = result
+            valid = None
+        v = jnp.asarray(value, dtype=jnp.float32)
+        m = None if valid is None else jnp.asarray(valid, dtype=bool)
+        while getattr(v, "ndim", 0) > 1:
+            v = v[0]
+            if m is not None and getattr(m, "ndim", 0) > 1:
+                m = m[0]
+        if getattr(v, "ndim", 0) == 1 and self.sdc_index is not None and 0 <= int(self.sdc_index) < int(v.shape[0]):
+            s = v[int(self.sdc_index)]
+            if m is not None and getattr(m, "ndim", 0) == 1 and int(self.sdc_index) < int(m.shape[0]):
+                s = jnp.where(m[int(self.sdc_index)], s, 0.0)
+            return jnp.nan_to_num(s, nan=0.0, posinf=1.0, neginf=0.0)
+        if m is not None and getattr(m, "shape", None) == getattr(v, "shape", None):
+            v = jnp.where(m, v, 0.0)
+        return jnp.nan_to_num(jnp.max(v), nan=0.0, posinf=1.0, neginf=0.0)
+
+    def update(self, state: Any) -> None:
+        import jax.numpy as jnp  # type: ignore
+
+        self.step_count += 1
+        for name, metric in self.metric_objects:
+            try:
+                scalar = self._sdc_scalar(metric.compute(state))
+            except Exception as exc:
+                self.errors.setdefault(name, str(exc))
+                continue
+            prev = self.max_values.get(name)
+            self.max_values[name] = scalar if prev is None else jnp.maximum(prev, scalar)
+
+    def finalize(self, *, include_errors: bool = True) -> dict[str, float | int | dict[str, str]]:
+        try:
+            import jax  # type: ignore
+        except Exception:  # pragma: no cover
+            jax = None
+        host: dict[str, float] = {}
+        for name, value in self.max_values.items():
+            try:
+                x = jax.device_get(value) if jax is not None else value
+                host[name] = float(np.asarray(x).reshape(-1)[0])
+            except Exception as exc:
+                self.errors.setdefault(name, str(exc))
+        out: dict[str, float | int | dict[str, str]] = {"MetricSteps": int(self.step_count)}
+        collision = float(host.get("OverlapMetric", 0.0)) > 0.0
+        offroad = float(host.get("OffroadMetric", 0.0)) > 0.0
+        if "OverlapMetric" in host:
+            out["CollisionRate"] = float(collision)
+            out["WaymaxAny/OverlapMetric"] = float(collision)
+        if "OffroadMetric" in host:
+            out["OffroadRate"] = float(offroad)
+            out["WaymaxAny/OffroadMetric"] = float(offroad)
+        if "OverlapMetric" in host or "OffroadMetric" in host:
+            out["CR"] = float(collision or offroad)
+        all_errors = {**self.init_errors, **self.errors}
+        if include_errors and all_errors:
+            out["metric_errors"] = all_errors
+        return out
+
+
 def _candidate_result_from_metrics(metrics: dict[str, Any], steps: int) -> dict[str, Any]:
     collision = bool(float(metrics.get("CollisionRate", 0.0)) > 0.0 or float(metrics.get("WaymaxAny/OverlapMetric", 0.0)) > 0.0)
     offroad = bool(float(metrics.get("OffroadRate", 0.0)) > 0.0 or float(metrics.get("WaymaxAny/OffroadMetric", 0.0)) > 0.0)
@@ -366,8 +490,16 @@ def replay_candidate_on_env(
     num_objects: int | None = None,
     sdc_index: int | None = None,
     initial_pose: np.ndarray | None = None,
+    metric_set: str = "safety",
+    collect_timing: bool = False,
 ) -> dict[str, Any]:
+    timings: dict[str, float] = {}
+    t = time.perf_counter()
     state = env.reset(init_state)
+    if collect_timing:
+        timings["timing/env_reset_s"] = time.perf_counter() - t
+
+    t = time.perf_counter()
     policy = FixedCandidateReplayPolicy(
         trajectory=np.asarray(trajectory, dtype=np.float32),
         cfg=cfg,
@@ -376,17 +508,53 @@ def replay_candidate_on_env(
         num_objects=num_objects,
         initial_pose=initial_pose,
     )
-    metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_objects or [], init_errors=metric_init_errors or {})
+    if collect_timing:
+        timings["timing/policy_build_s"] = time.perf_counter() - t
+
+    metric_list = metric_objects or []
+    if _metric_set_is_fast_safety(metric_set, metric_list):
+        metric_acc: Any = _FastSafetyMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {}, sdc_index=sdc_index)
+    else:
+        metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {})
+
     steps = 0
+    action_s = 0.0
+    env_step_s = 0.0
+    metric_s = 0.0
+    done_s = 0.0
     for step in range(int(horizon_steps)):
+        if collect_timing:
+            t = time.perf_counter()
         action = policy(state, step=step)
+        if collect_timing:
+            action_s += time.perf_counter() - t
+            t = time.perf_counter()
         state = _env_step(env, state, action)
+        if collect_timing:
+            env_step_s += time.perf_counter() - t
+            t = time.perf_counter()
         steps += 1
         metric_acc.update(state)
-        if _state_done(state):
+        if collect_timing:
+            metric_s += time.perf_counter() - t
+            t = time.perf_counter()
+        done = _state_done(state)
+        if collect_timing:
+            done_s += time.perf_counter() - t
+        if done:
             break
+    if collect_timing:
+        timings["timing/action_s"] = float(action_s)
+        timings["timing/env_step_s"] = float(env_step_s)
+        timings["timing/metric_update_s"] = float(metric_s)
+        timings["timing/done_check_s"] = float(done_s)
+    t = time.perf_counter()
     metrics = metric_acc.finalize()
-    return _candidate_result_from_metrics(metrics, steps)
+    out = _candidate_result_from_metrics(metrics, steps)
+    if collect_timing:
+        timings["timing/metric_finalize_s"] = time.perf_counter() - t
+        out.update(timings)
+    return out
 
 
 def replay_candidate_on_state(
@@ -414,6 +582,7 @@ def replay_candidate_on_state(
         num_objects=max_objects,
         sdc_index=sdc_index,
         initial_pose=initial_pose,
+        metric_set=metric_set,
     )
 
 
@@ -491,6 +660,7 @@ def replay_cache_candidates_to_jsonl(
     tfexample_index_jsonl: str | Path | None = None,
     gc_every_scenes: int = 16,
     state_source: str = "auto",
+    profile_replay_jsonl: str | Path | None = None,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -507,6 +677,12 @@ def replay_cache_candidates_to_jsonl(
         out_path.write_text("", encoding="utf-8")
     elif not out_path.exists():
         out_path.write_text("", encoding="utf-8")
+
+    profile_path = Path(profile_replay_jsonl) if profile_replay_jsonl else None
+    if profile_path is not None:
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text("", encoding="utf-8")
+    collect_timing = profile_path is not None
 
     total_written = 0
     total_failed = 0
@@ -553,12 +729,19 @@ def replay_cache_candidates_to_jsonl(
     for item in iterator:
         scenes_seen += 1
         arrays = None
+        scene_t0 = time.perf_counter()
+        scene_profile: dict[str, Any] = {"scenario_id": None, "source": "cache" if use_cache_state else "tfexample"}
         if use_cache_state:
             sid, cache_path = item
             sid = str(sid)
-            arrays = load_npz_canonical(cache_path)
+            scene_profile["scenario_id"] = sid
+            t = time.perf_counter()
+            arrays = load_cache_replay_arrays(cache_path)
+            scene_profile["load_npz_s"] = time.perf_counter() - t
             try:
+                t = time.perf_counter()
                 init_state = simulator_state_from_tensor_cache_arrays(arrays, data_config, time_key="all")
+                scene_profile["build_state_s"] = time.perf_counter() - t
             except Exception as exc:
                 if hasattr(iterator, "set_postfix"):
                     iterator.set_postfix(stage="cache_state_failed", matched=scenes_matched, failed=total_failed, last=sid[:10], refresh=True)
@@ -585,14 +768,20 @@ def replay_cache_candidates_to_jsonl(
                         done.add((sid, int(k)))
                         total_failed += 1
                 remaining.discard(sid)
+                if profile_path is not None:
+                    scene_profile.update({"status": "cache_state_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
+                    with profile_path.open("a", encoding="utf-8") as pf:
+                        pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
                 continue
         else:
             sid, init_state = item
             sid = str(sid)
             if sid not in sid_to_path:
                 continue
+            scene_profile["scenario_id"] = sid
         scenes_matched += 1
         if arrays is None:
+            t = time.perf_counter()
             arrays = load_npz_canonical(
                 sid_to_path[sid],
                 keys={
@@ -604,12 +793,16 @@ def replay_cache_candidates_to_jsonl(
                     "cowp/candidates/ego_utility_prior",
                 },
             )
+            scene_profile["load_npz_s"] = time.perf_counter() - t
         seed = _stable_seed(sid)
+        t = time.perf_counter()
         indices = select_candidate_indices(arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
+        scene_profile["select_candidates_s"] = time.perf_counter() - t
         candidate_targets += len(indices)
         trajs = np.asarray(arrays.get("cowp/candidates/trajectory", []), dtype=np.float32)
 
         try:
+            t = time.perf_counter()
             max_objects = _state_num_objects(init_state)
             sdc_index, initial_pose = _initial_sdc_pose(init_state)
             env_key = (int(max_objects), str(action_mode))
@@ -617,6 +810,7 @@ def replay_cache_candidates_to_jsonl(
             if env is None:
                 env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
                 env_cache[env_key] = env
+            scene_profile["env_init_s"] = time.perf_counter() - t
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
             # as invalid rather than silently leaving them unattached.
@@ -629,11 +823,20 @@ def replay_cache_candidates_to_jsonl(
                     done.add((sid, int(k)))
                     total_failed += 1
             remaining.discard(sid)
+            if profile_path is not None:
+                scene_profile.update({"status": "scene_init_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
+                with profile_path.open("a", encoding="utf-8") as pf:
+                    pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
             continue
 
         rows_to_write: list[str] = []
+        new_rows_scene = 0
+        failed_rows_scene = 0
+        skipped_rows_scene = 0
+        rollout_s_scene = 0.0
         for k in indices:
             if (sid, int(k)) in done:
+                skipped_rows_scene += 1
                 continue
             row: dict[str, Any] = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False}
             t0 = time.perf_counter()
@@ -652,23 +855,45 @@ def replay_cache_candidates_to_jsonl(
                     num_objects=max_objects,
                     sdc_index=sdc_index,
                     initial_pose=initial_pose,
+                    metric_set=metric_set,
+                    collect_timing=collect_timing,
                 )
                 row.update(outcome)
                 total_written += 1
+                new_rows_scene += 1
             except Exception as exc:
                 row.update({"rollout_valid": False, "error": str(exc)})
                 total_failed += 1
+                failed_rows_scene += 1
             sec = time.perf_counter() - t0
+            rollout_s_scene += sec
             candidate_seconds += sec
             row["rollout_seconds"] = float(sec)
             row["action_mode"] = str(action_mode)
             row["metric_set"] = str(metric_set)
             rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
             done.add((sid, int(k)))
+        t = time.perf_counter()
         if rows_to_write:
             with out_path.open("a", encoding="utf-8") as f:
                 f.write("\n".join(rows_to_write) + "\n")
+        write_outcomes_s = time.perf_counter() - t
         remaining.discard(sid)
+        if profile_path is not None:
+            scene_profile.update(
+                {
+                    "status": "ok",
+                    "candidates_selected": len(indices),
+                    "new_rows": int(new_rows_scene),
+                    "failed_rows": int(failed_rows_scene),
+                    "resumed_rows": int(skipped_rows_scene),
+                    "rollout_candidates_s": float(rollout_s_scene),
+                    "write_outcomes_s": float(write_outcomes_s),
+                    "seconds": time.perf_counter() - scene_t0,
+                }
+            )
+            with profile_path.open("a", encoding="utf-8") as pf:
+                pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
         if hasattr(iterator, "set_postfix"):
             mean_s = candidate_seconds / max(total_written + total_failed, 1)
             iterator.set_postfix(matched=scenes_matched, rows=total_written, failed=total_failed, remaining=len(remaining), cand_s=f"{mean_s:.3f}", refresh=True)
@@ -697,4 +922,5 @@ def replay_cache_candidates_to_jsonl(
         "tfexample_index_jsonl": str(tfexample_index_jsonl) if tfexample_index_jsonl else None,
         "gc_every_scenes": int(gc_every_scenes),
         "state_source": "cache" if use_cache_state else "tfexample",
+        "profile_replay_jsonl": str(profile_path) if profile_path is not None else None,
     }

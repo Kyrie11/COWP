@@ -102,6 +102,7 @@ def main() -> None:
     ap.add_argument("--shard-index", type=int, default=0, help="Shard index in [0, num_shards). Use a separate outcomes-jsonl per shard.")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
+    ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL.")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
     args = ap.parse_args()
@@ -140,6 +141,7 @@ def main() -> None:
         tfexample_index_jsonl=args.tfexample_index_jsonl,
         gc_every_scenes=args.gc_every_scenes,
         state_source=args.state_source,
+        profile_replay_jsonl=args.profile_replay_jsonl,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

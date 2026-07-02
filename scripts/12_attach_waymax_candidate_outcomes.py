@@ -4,6 +4,8 @@ import argparse
 import csv
 import json
 import glob
+import os
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -120,6 +122,33 @@ def _candidate_index(row: dict[str, Any]) -> int:
     raise KeyError("outcome row missing candidate_index/candidate/k")
 
 
+
+
+def _write_npz_atomic(path: Path, arrays: dict[str, np.ndarray], *, compress: bool = False) -> None:
+    """Write NPZ via temp file + atomic replace so readers never see partial output."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("wb") as f:
+            if compress:
+                np.savez_compressed(f, **arrays)
+            else:
+                np.savez(f, **arrays)
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _npz_readable(path: Path) -> bool:
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            _ = data.files
+        return True
+    except Exception:
+        return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Attach Waymax candidate rollout outcomes to an existing COWP tensor cache without rebuilding WOMD labels.")
     ap.add_argument("--cache-dir", required=True)
@@ -141,7 +170,7 @@ def main() -> None:
     copied = 0
     for src in paths:
         dst = out_dir / src.name
-        if args.skip_existing and dst.exists():
+        if args.skip_existing and dst.exists() and _npz_readable(dst):
             continue
         with np.load(src, allow_pickle=True) as data:
             arrays_raw = {k: data[k] for k in data.files}
@@ -180,10 +209,7 @@ def main() -> None:
         arrays["waymax/enabled"] = np.asarray(bool(rollout_valid.any()))
         arrays["waymax/rollout_status"] = np.asarray("attached_real_waymax_outcomes" if rollout_valid.any() else "initialized_no_valid_outcomes")
         stored = {_store_key(k): v for k, v in arrays.items()}
-        if args.compress:
-            np.savez_compressed(dst, **stored)
-        else:
-            np.savez(dst, **stored)
+        _write_npz_atomic(dst, stored, compress=bool(args.compress))
         attached += int(rollout_valid.any())
         copied += 1
     print(json.dumps({"processed": copied, "scenes_with_attached_outcomes": attached, "output_dir": str(out_dir)}, indent=2))
