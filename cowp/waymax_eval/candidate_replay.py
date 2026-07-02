@@ -42,6 +42,27 @@ _REPLAY_CANDIDATE_KEYS = {
 }
 
 
+# Candidate-selection tensors that are sufficient to reproduce the current
+# ``select_candidate_indices`` behavior.  In resume mode this lets us decide
+# whether a scene is already fully covered by the existing outcome JSONL before
+# paying the expensive cost of loading all cached WOMD tensors and constructing
+# a Waymax ``SimulatorState``.  This does not change labels: if any selected
+# candidate is missing, the code falls back to the exact same full load + replay
+# path as before.
+_REPLAY_SELECTION_KEYS = {
+    "cowp/candidates/valid",
+    "cowp/candidates/conventional_safe",
+    "cowp/candidates/false_safe",
+    "cowp/candidates/noncoercive_feasible",
+    "cowp/candidates/ego_utility_prior",
+}
+
+
+def load_cache_selection_arrays(path: str | Path) -> dict[str, np.ndarray]:
+    """Load only candidate-selection tensors from a tensor-cache NPZ."""
+    return load_npz_canonical(path, keys=set(_REPLAY_SELECTION_KEYS))
+
+
 def load_cache_replay_arrays(path: str | Path, *, candidate_keys: set[str] | None = None) -> dict[str, np.ndarray]:
     """Load only tensors needed by candidate replay from a tensor-cache NPZ.
 
@@ -729,12 +750,83 @@ def replay_cache_candidates_to_jsonl(
     for item in iterator:
         scenes_seen += 1
         arrays = None
+        preselected_indices: list[int] | None = None
         scene_t0 = time.perf_counter()
         scene_profile: dict[str, Any] = {"scenario_id": None, "source": "cache" if use_cache_state else "tfexample"}
         if use_cache_state:
             sid, cache_path = item
             sid = str(sid)
             scene_profile["scenario_id"] = sid
+
+            # Resume fast-path.  The old code loaded all cached WOMD arrays and
+            # rebuilt the Waymax state before discovering that every selected
+            # candidate had already been written.  On large tensor-cache NPZs
+            # this makes smoke/rerun passes appear extremely slow even when no
+            # actual replay is done.  Here we first load only the tiny candidate
+            # masks, reproduce the same selected candidate ids, and skip the
+            # scene immediately if all selected rows are present in the outcome
+            # JSONL.  If any row is missing, execution deliberately falls back
+            # to the original full replay path, preserving closed-loop labels.
+            if resume and done:
+                try:
+                    t = time.perf_counter()
+                    select_arrays = load_cache_selection_arrays(cache_path)
+                    scene_profile["load_select_s"] = time.perf_counter() - t
+                    seed = _stable_seed(sid)
+                    t = time.perf_counter()
+                    preselected_indices = select_candidate_indices(
+                        select_arrays,
+                        cfg,
+                        selection=candidate_selection,
+                        max_candidates=max_candidates_per_scene,
+                        seed=seed,
+                    )
+                    scene_profile["select_candidates_s"] = time.perf_counter() - t
+                    pending_indices = [int(k) for k in preselected_indices if (sid, int(k)) not in done]
+                    if not pending_indices:
+                        scenes_matched += 1
+                        candidate_targets += len(preselected_indices)
+                        remaining.discard(sid)
+                        if profile_path is not None:
+                            scene_profile.update(
+                                {
+                                    "status": "ok",
+                                    "resume_fast_skip": True,
+                                    "candidates_selected": len(preselected_indices),
+                                    "new_rows": 0,
+                                    "failed_rows": 0,
+                                    "resumed_rows": int(len(preselected_indices)),
+                                    "load_npz_s": 0.0,
+                                    "build_state_s": 0.0,
+                                    "env_init_s": 0.0,
+                                    "rollout_candidates_s": 0.0,
+                                    "write_outcomes_s": 0.0,
+                                    "seconds": time.perf_counter() - scene_t0,
+                                }
+                            )
+                            with profile_path.open("a", encoding="utf-8") as pf:
+                                pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
+                        if hasattr(iterator, "set_postfix"):
+                            mean_s = candidate_seconds / max(total_written + total_failed, 1)
+                            iterator.set_postfix(
+                                matched=scenes_matched,
+                                rows=total_written,
+                                failed=total_failed,
+                                remaining=len(remaining),
+                                cand_s=f"{mean_s:.3f}",
+                                refresh=True,
+                            )
+                        if int(gc_every_scenes) > 0 and scenes_matched % int(gc_every_scenes) == 0:
+                            gc.collect()
+                        if not remaining:
+                            break
+                        continue
+                except Exception as exc:
+                    # The fast path is an optimization only.  If an old cache is
+                    # missing one of the small selection keys, keep the old full
+                    # load behavior rather than changing replay coverage.
+                    scene_profile["resume_fast_skip_error"] = str(exc)
+
             t = time.perf_counter()
             arrays = load_cache_replay_arrays(cache_path)
             scene_profile["load_npz_s"] = time.perf_counter() - t
@@ -758,7 +850,7 @@ def replay_cache_candidates_to_jsonl(
                     if k in arrays
                 }
                 seed = _stable_seed(sid)
-                indices = select_candidate_indices(selected_arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
+                indices = preselected_indices if preselected_indices is not None else select_candidate_indices(selected_arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
                 with out_path.open("a", encoding="utf-8") as f:
                     for k in indices:
                         if (sid, int(k)) in done:
@@ -795,9 +887,13 @@ def replay_cache_candidates_to_jsonl(
             )
             scene_profile["load_npz_s"] = time.perf_counter() - t
         seed = _stable_seed(sid)
-        t = time.perf_counter()
-        indices = select_candidate_indices(arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
-        scene_profile["select_candidates_s"] = time.perf_counter() - t
+        if preselected_indices is not None:
+            indices = preselected_indices
+            scene_profile.setdefault("select_candidates_s", 0.0)
+        else:
+            t = time.perf_counter()
+            indices = select_candidate_indices(arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
+            scene_profile["select_candidates_s"] = time.perf_counter() - t
         candidate_targets += len(indices)
         trajs = np.asarray(arrays.get("cowp/candidates/trajectory", []), dtype=np.float32)
 
