@@ -80,6 +80,7 @@ def main() -> None:
             "to attach the JSONL fields into the cache."
         )
     )
+    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--eval-config", default="configs/eval.yaml")
@@ -103,7 +104,6 @@ def main() -> None:
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
-    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
