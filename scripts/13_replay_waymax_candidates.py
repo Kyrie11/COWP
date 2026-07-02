@@ -80,7 +80,7 @@ def main() -> None:
             "to attach the JSONL fields into the cache."
         )
     )
-    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
+    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.", default=True)
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--eval-config", default="configs/eval.yaml")
