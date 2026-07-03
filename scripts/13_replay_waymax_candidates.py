@@ -144,7 +144,7 @@ def main() -> None:
         gc_every_scenes=args.gc_every_scenes,
         state_source=args.state_source,
         profile_replay_jsonl=args.profile_replay_jsonl,
-        jit_env_step=bool(args.jit_env_step),
+        jit_env_step=True,
         done_check_interval=int(args.done_check_interval),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
