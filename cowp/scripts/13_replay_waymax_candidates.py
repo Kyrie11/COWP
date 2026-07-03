@@ -105,7 +105,8 @@ def main() -> None:
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
-    ap.add_argument("--metric-eval-mode", choices=["final", "step"], default="step", help="step preserves the current per-step Waymax metric path. final computes Waymax safety metrics once on the final SimulatorState after the full rollout; use it after equivalence checking on smoke scenes.")
+    ap.add_argument("--metric-eval-mode", choices=["final", "step", "sampled", "interval"], default="step", help="step preserves the exact per-step Waymax metric path. final computes safety metrics once at the final state and is fastest but can miss transient collisions. sampled/interval computes metrics at step 1, every --metric-eval-interval steps, and the final step as a quality/speed compromise.")
+    ap.add_argument("--metric-eval-interval", type=int, default=5, help="Only used with --metric-eval-mode sampled/interval. Compute Waymax safety metrics at step 1, every N rollout steps, and the final step. Lower is more accurate but slower; 1 is equivalent to step mode.")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
     args = ap.parse_args()
@@ -148,6 +149,7 @@ def main() -> None:
         jit_env_step=bool(args.jit_env_step),
         done_check_interval=int(args.done_check_interval),
         metric_eval_mode=str(args.metric_eval_mode),
+        metric_eval_interval=int(args.metric_eval_interval),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

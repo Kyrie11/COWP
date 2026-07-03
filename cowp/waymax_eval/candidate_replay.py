@@ -547,6 +547,7 @@ def replay_candidate_on_env(
     step_fn: Any | None = None,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
+    metric_eval_interval: int = 1,
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
     t = time.perf_counter()
@@ -573,15 +574,18 @@ def replay_candidate_on_env(
         metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {})
 
     metric_eval_mode = str(metric_eval_mode or "step").lower()
-    if metric_eval_mode not in {"step", "final"}:
-        raise ValueError(f"metric_eval_mode must be 'step' or 'final', got {metric_eval_mode!r}")
-    # Waymax safety metrics are episode metrics computed from SimulatorState.
-    # Computing OverlapMetric/OffroadMetric after every step is extremely
-    # expensive and repeatedly scans the rollout trajectory.  In final mode, we
-    # run the identical closed-loop rollout and compute the same Waymax metrics
-    # once on the final SimulatorState, which already contains the simulated
-    # trajectory.  Use --metric-eval-mode step to recover the conservative old
-    # path for equivalence checks.
+    if metric_eval_mode == "interval":
+        metric_eval_mode = "sampled"
+    if metric_eval_mode not in {"step", "final", "sampled"}:
+        raise ValueError(f"metric_eval_mode must be one of step/final/sampled, got {metric_eval_mode!r}")
+    metric_eval_interval = max(1, int(metric_eval_interval or 1))
+    # Modes:
+    #   step    : old conservative path; compute Waymax safety metrics every step.
+    #   final   : fastest path; compute once at final state, but can miss transient
+    #             collisions when local Waymax metrics only inspect the current frame.
+    #   sampled : quality/speed compromise; compute at step 1, every N steps, and
+    #             the final step.  This keeps the same closed-loop rollout/actions
+    #             while reducing metric calls from 80 to roughly 80/N + 1.
 
     steps = 0
     action_s = 0.0
@@ -602,6 +606,12 @@ def replay_candidate_on_env(
         steps += 1
         if metric_eval_mode == "step":
             metric_acc.update(state)
+        elif metric_eval_mode == "sampled":
+            is_first_metric = step == 0
+            is_interval_metric = ((step + 1) % int(metric_eval_interval)) == 0
+            is_final_metric = (step + 1) >= int(horizon_steps)
+            if is_first_metric or is_interval_metric or is_final_metric:
+                metric_acc.update(state)
         if collect_timing:
             metric_s += time.perf_counter() - t
             t = time.perf_counter()
@@ -646,6 +656,7 @@ def replay_candidate_on_state(
     action_mode: str = "absolute_xy_yaw",
     metric_set: str = "safety",
     metric_eval_mode: str = "step",
+    metric_eval_interval: int = 1,
 ) -> dict[str, Any]:
     max_objects = _state_num_objects(init_state)
     sdc_index, initial_pose = _initial_sdc_pose(init_state)
@@ -665,6 +676,7 @@ def replay_candidate_on_state(
         initial_pose=initial_pose,
         metric_set=metric_set,
         metric_eval_mode=metric_eval_mode,
+        metric_eval_interval=int(metric_eval_interval),
     )
 
 
@@ -746,6 +758,7 @@ def replay_cache_candidates_to_jsonl(
     jit_env_step: bool = False,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
+    metric_eval_interval: int = 1,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -785,8 +798,11 @@ def replay_cache_candidates_to_jsonl(
     if state_source not in {"auto", "cache", "tfexample"}:
         raise ValueError(f"state_source must be one of auto/cache/tfexample, got {state_source!r}")
     metric_eval_mode = str(metric_eval_mode or "step").lower()
-    if metric_eval_mode not in {"step", "final"}:
-        raise ValueError(f"metric_eval_mode must be one of step/final, got {metric_eval_mode!r}")
+    if metric_eval_mode == "interval":
+        metric_eval_mode = "sampled"
+    if metric_eval_mode not in {"step", "final", "sampled"}:
+        raise ValueError(f"metric_eval_mode must be one of step/final/sampled, got {metric_eval_mode!r}")
+    metric_eval_interval = max(1, int(metric_eval_interval or 1))
     use_cache_state = False
     if state_source == "cache":
         use_cache_state = True
@@ -986,6 +1002,7 @@ def replay_cache_candidates_to_jsonl(
             scene_profile["jit_env_step"] = bool(step_fn is not None)
             scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["metric_eval_mode"] = str(metric_eval_mode)
+            scene_profile["metric_eval_interval"] = int(metric_eval_interval)
             scene_profile["env_init_s"] = time.perf_counter() - t
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
@@ -1038,6 +1055,7 @@ def replay_cache_candidates_to_jsonl(
                     step_fn=step_fn,
                     done_check_interval=int(done_check_interval),
                     metric_eval_mode=str(metric_eval_mode),
+                    metric_eval_interval=int(metric_eval_interval),
                 )
                 row.update(outcome)
                 if collect_timing:
@@ -1061,6 +1079,7 @@ def replay_cache_candidates_to_jsonl(
             row["action_mode"] = str(action_mode)
             row["metric_set"] = str(metric_set)
             row["metric_eval_mode"] = str(metric_eval_mode)
+            row["metric_eval_interval"] = int(metric_eval_interval)
             rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
             done.add((sid, int(k)))
         t = time.perf_counter()
@@ -1122,4 +1141,5 @@ def replay_cache_candidates_to_jsonl(
         "jit_env_step": bool(jit_env_step),
         "done_check_interval": int(done_check_interval),
         "metric_eval_mode": str(metric_eval_mode),
+        "metric_eval_interval": int(metric_eval_interval),
     }
