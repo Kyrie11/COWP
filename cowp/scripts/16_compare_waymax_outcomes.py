@@ -98,34 +98,6 @@ def main() -> None:
         arr = np.asarray(vals, dtype=float)
         return {'count': int(arr.size), 'mean': float(arr.mean()), 'p50': float(np.percentile(arr, 50)), 'p95': float(np.percentile(arr, 95)), 'max': float(arr.max())}
 
-    def binary_report(field: str) -> dict[str, Any]:
-        tp = fp = tn = fn = 0
-        for key in common:
-            b = _bool(base[key].get(field))
-            c = _bool(cand[key].get(field))
-            if b and c:
-                tp += 1
-            elif (not b) and c:
-                fp += 1
-            elif b and (not c):
-                fn += 1
-            else:
-                tn += 1
-        precision = tp / max(tp + fp, 1)
-        recall = tp / max(tp + fn, 1)
-        f1 = 2.0 * precision * recall / max(precision + recall, 1e-12)
-        return {
-            'tp': int(tp),
-            'fp': int(fp),
-            'tn': int(tn),
-            'fn': int(fn),
-            'precision': float(precision),
-            'recall': float(recall),
-            'f1': float(f1),
-            'baseline_positive': int(tp + fn),
-            'candidate_positive': int(tp + fp),
-        }
-
     scene_mismatch_counts = Counter(m['scenario_id'] for ms in mismatches.values() for m in ms)
     out = {
         'baseline_rows': len(base),
@@ -138,7 +110,6 @@ def main() -> None:
         'scenes_with_any_mismatch': len(scene_mismatch_counts),
         'top_mismatch_scenes': scene_mismatch_counts.most_common(20),
         'numeric_absdiff': {f: stats(v) for f, v in numeric_absdiff.items()},
-        'classification_vs_baseline': {f: binary_report(f) for f in fields},
         'exact_safety_label_match': all(len(v) == 0 for v in mismatches.values()) and len(missing_in_candidate) == 0 and len(extra_in_candidate) == 0,
     }
     text = json.dumps(out, indent=2, ensure_ascii=False, allow_nan=True)

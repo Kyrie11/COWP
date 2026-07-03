@@ -105,8 +105,13 @@ def main() -> None:
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
-    ap.add_argument("--metric-eval-mode", choices=["final", "step", "sampled", "interval"], default="step", help="step preserves the exact per-step Waymax metric path. final computes safety metrics once at the final state and is fastest but can miss transient collisions. sampled/interval computes metrics at step 1, every --metric-eval-interval steps, and the final step as a quality/speed compromise.")
-    ap.add_argument("--metric-eval-interval", type=int, default=5, help="Only used with --metric-eval-mode sampled/interval. Compute Waymax safety metrics at step 1, every N rollout steps, and the final step. Lower is more accurate but slower; 1 is equivalent to step mode.")
+    ap.add_argument("--metric-eval-mode", choices=["step", "final", "sampled", "adaptive"], default="step", help="step evaluates Waymax metrics every step. final evaluates once at the end. sampled evaluates every --metric-eval-interval steps plus step 1/final. adaptive uses dense checks for non-conventional candidates and cheap checks for conventional-safe candidates.")
+    ap.add_argument("--metric-eval-interval", type=int, default=1, help="Sampling interval for --metric-eval-mode sampled. 2 means about every 0.2s when dt=0.1; 5 means about every 0.5s.")
+    ap.add_argument("--metric-eval-offsets", default=None, help="Optional comma-separated modulo offsets for sampled metrics, e.g. '0,2' with interval 5. Step 1 and final are always evaluated.")
+    ap.add_argument("--adaptive-safe-metric-mode", choices=["step", "final", "sampled"], default="final", help="Metric mode for conventional_safe candidates when --metric-eval-mode adaptive.")
+    ap.add_argument("--adaptive-safe-metric-interval", type=int, default=5, help="Metric interval for conventional_safe candidates if their adaptive mode is sampled.")
+    ap.add_argument("--adaptive-risky-metric-mode", choices=["step", "final", "sampled"], default="sampled", help="Metric mode for non-conventional candidates when --metric-eval-mode adaptive.")
+    ap.add_argument("--adaptive-risky-metric-interval", type=int, default=2, help="Metric interval for non-conventional candidates if their adaptive mode is sampled.")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
     args = ap.parse_args()
@@ -150,6 +155,11 @@ def main() -> None:
         done_check_interval=int(args.done_check_interval),
         metric_eval_mode=str(args.metric_eval_mode),
         metric_eval_interval=int(args.metric_eval_interval),
+        metric_eval_offsets=args.metric_eval_offsets,
+        adaptive_safe_metric_mode=str(args.adaptive_safe_metric_mode),
+        adaptive_safe_metric_interval=int(args.adaptive_safe_metric_interval),
+        adaptive_risky_metric_mode=str(args.adaptive_risky_metric_mode),
+        adaptive_risky_metric_interval=int(args.adaptive_risky_metric_interval),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
