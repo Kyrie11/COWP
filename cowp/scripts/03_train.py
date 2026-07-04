@@ -499,8 +499,11 @@ def main() -> None:
         )
 
     compile_enabled = bool(args.compile or tcfg.get("compile", False))
-    include_response_traj = not (stage == "response" and float(loss_weights.get("response_traj_l1", 0.1)) == 0.0)
-    include_response_components = not (stage == "response" and float(loss_weights.get("response_components_l1", 0.25)) == 0.0)
+    # Respect response-head disabling flags in both response-only and all-head
+    # training.  Without this, ``--stage all --response-traj-weight 0`` still
+    # loaded ``cowp/response/traj`` and decoded the giant trajectory head.
+    include_response_traj = not (stage in {"response", "all"} and float(loss_weights.get("response_traj_l1", 0.1)) == 0.0)
+    include_response_components = not (stage in {"response", "all"} and float(loss_weights.get("response_components_l1", 0.25)) == 0.0)
     print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}")
     if device.type == "cuda":
         try:

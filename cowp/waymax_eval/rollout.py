@@ -149,6 +149,10 @@ _EVAL_LABEL_KEYS = {
     "cowp/witness/min_safe_burden",
     "cowp/witness/opr",
     "cowp/witness/conflict_interval",
+    "waymax/candidate_rollout_valid",
+    "waymax/candidate_collision",
+    "waymax/candidate_offroad",
+    "waymax/candidate_log_divergence",
 }
 
 
@@ -253,6 +257,10 @@ class _LearnedMetricsAccumulator:
         self.total_ncf = 0
         self.accepted_false_safe = 0
         self.total_false_safe = 0
+        self.selected_waymax_valid = 0
+        self.selected_waymax_collision = 0
+        self.selected_waymax_offroad = 0
+        self.selected_waymax_logdiv_sum = 0.0
 
     def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray]) -> None:
         self.selected_total += 1
@@ -274,6 +282,18 @@ class _LearnedMetricsAccumulator:
         self.total_ncf += int(ncf.sum())
         self.accepted_false_safe += int((accepted & fs).sum())
         self.total_false_safe += int(fs.sum())
+        rollout_valid = label.get("waymax/candidate_rollout_valid")
+        if selected_idx >= 0 and rollout_valid is not None:
+            rv = np.asarray(rollout_valid, dtype=bool)
+            if selected_idx < len(rv) and bool(rv[selected_idx]):
+                self.selected_waymax_valid += 1
+                collision = np.asarray(label.get("waymax/candidate_collision", np.zeros_like(rv)), dtype=bool)
+                offroad = np.asarray(label.get("waymax/candidate_offroad", np.zeros_like(rv)), dtype=bool)
+                logdiv = np.asarray(label.get("waymax/candidate_log_divergence", np.zeros_like(rv, dtype=np.float32)), dtype=np.float32)
+                self.selected_waymax_collision += int(selected_idx < len(collision) and bool(collision[selected_idx]))
+                self.selected_waymax_offroad += int(selected_idx < len(offroad) and bool(offroad[selected_idx]))
+                if selected_idx < len(logdiv) and np.isfinite(logdiv[selected_idx]):
+                    self.selected_waymax_logdiv_sum += float(logdiv[selected_idx])
 
     def add_witness_quality(self, row: dict[str, float]) -> None:
         self.witness_count += 1
@@ -293,6 +313,12 @@ class _LearnedMetricsAccumulator:
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
         metrics["WitnessQuality/AUPRC"] = float(auprc)
         metrics["PlannerRankingPairAccuracy"] = float(rank_good / max(rank_total, 1)) if rank_total else 0.0
+        if self.selected_waymax_valid > 0:
+            metrics["SelectedWaymaxRolloutValid"] = int(self.selected_waymax_valid)
+            metrics["SelectedWaymaxCollisionRate"] = float(self.selected_waymax_collision / max(self.selected_waymax_valid, 1))
+            metrics["SelectedWaymaxOffroadRate"] = float(self.selected_waymax_offroad / max(self.selected_waymax_valid, 1))
+            metrics["SelectedWaymaxUnsafeRate"] = float((self.selected_waymax_collision + self.selected_waymax_offroad) / max(self.selected_waymax_valid, 1))
+            metrics["SelectedWaymaxMeanLogDivergence"] = float(self.selected_waymax_logdiv_sum / max(self.selected_waymax_valid, 1))
         metrics["num_scenes"] = int(self.selected_total)
         metrics["mode"] = "learned_offline"
         metrics["witness_threshold"] = float(witness_threshold)

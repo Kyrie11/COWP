@@ -317,24 +317,28 @@ def _wanted_keys_for_stage(
     include_response_components: bool = True,
     include_waymax_outcomes: bool = False,
 ) -> set[str] | None:
-    if stage is None or stage == "all":
+    """Return the minimal NPZ keys needed by a training/eval stage.
+
+    ``stage=all`` should not mean "read the entire NPZ".  It is the union of
+    model heads, while dense optional tensors remain controlled by flags.  For
+    ``planner_eval`` we also load attached scalar Waymax candidate outcomes when
+    present, so learned-offline evaluation can report replay outcome metrics.
+    """
+    if stage is None:
         return None
-    always_prefixes = (
+    stage = str(stage)
+    wanted: set[str] = {
         "womd/state/",
         "state/",
         "cowp/critical/",
-    )
-    wanted: set[str] = set()
-    # prefixes are represented by ending slash markers in this helper
-    for p in always_prefixes:
-        wanted.add(p)
-    # The model only consumes these two map tensors.  Loading broad ``map/`` or
-    # ``waymax/`` prefixes in Stage A can read large arrays that the loss never
-    # uses, slowing every batch without changing the objective.
-    wanted.update({"map/conflict_regions", "map/conflict_region_valid"})
-    if stage in ("representation", "natural"):
+        "map/conflict_regions",
+        "map/conflict_region_valid",
+    }
+
+    if stage in ("representation", "natural", "all"):
         wanted.add("cowp/natural/")
-    elif stage == "response":
+
+    if stage in ("response", "all"):
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -348,19 +352,18 @@ def _wanted_keys_for_stage(
             wanted.add("cowp/response/burden_components")
         if include_response_traj:
             wanted.add("cowp/response/traj")
-    elif stage == "witness":
+
+    if stage in ("witness", "planner", "planner_eval", "all"):
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
             "cowp/candidates/valid",
             "cowp/witness/",
         })
-    elif stage in ("planner", "planner_eval"):
-        # Training may use optional Waymax candidate-outcome labels, but broad
-        # waymax/* loading can pull large tensors into every batch.  Load only
-        # the three scalar candidate outcome arrays used by planner_outcome_loss,
-        # and only when explicitly requested.
-        if stage == "planner" and include_waymax_outcomes:
+
+    if stage in ("planner", "planner_eval", "all"):
+        load_waymax = (stage == "planner_eval") or (stage in ("planner", "all") and include_waymax_outcomes)
+        if load_waymax:
             wanted.update({
                 "waymax/candidate_rollout_valid",
                 "waymax/candidate_collision",
@@ -368,16 +371,12 @@ def _wanted_keys_for_stage(
                 "waymax/candidate_log_divergence",
             })
         wanted.update({
-            "cowp/candidates/trajectory",
-            "cowp/candidates/macro_type",
-            "cowp/candidates/valid",
             "cowp/candidates/conventional_safe",
             "cowp/candidates/false_safe",
             "cowp/candidates/noncoercive_feasible",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
             "cowp/natural/beta",
-            "cowp/witness/",
         })
     return wanted
 
