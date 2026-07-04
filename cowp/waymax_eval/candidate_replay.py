@@ -273,71 +273,6 @@ def metric_names_for_set(metric_set: str | None) -> set[str] | None:
     raise ValueError(f"unknown metric_set={metric_set!r}; use safety, safety_logdiv, standard, or none")
 
 
-def _normalize_metric_eval_mode(mode: str | None, *, allow_adaptive: bool = False) -> str:
-    mode = str(mode or "step").lower()
-    allowed = {"step", "final", "sampled"} | ({"adaptive"} if allow_adaptive else set())
-    if mode not in allowed:
-        allowed_s = "/".join(sorted(allowed))
-        raise ValueError(f"metric_eval_mode must be one of {allowed_s}, got {mode!r}")
-    return mode
-
-
-def _candidate_prelabel_bucket(arrays: dict[str, np.ndarray], candidate_index: int) -> str:
-    """Classify a candidate for adaptive metric scheduling using existing COWP labels.
-
-    The closed-loop label is still produced by Waymax replay.  This bucket only
-    chooses how often expensive Waymax metrics are evaluated during that replay.
-    A candidate is treated as the fast/safe bucket only when the cache already
-    marks it as conventional-safe and not false-safe.  Missing or malformed
-    labels fall back to the risky bucket so adaptive mode never silently relaxes
-    evaluation for uncertain candidates.
-    """
-    k = int(candidate_index)
-    try:
-        valid = np.asarray(arrays.get("cowp/candidates/valid", []), dtype=bool).reshape(-1)
-        if k < 0 or k >= valid.shape[0] or not bool(valid[k]):
-            return "risky"
-    except Exception:
-        return "risky"
-
-    try:
-        conv = np.asarray(arrays["cowp/candidates/conventional_safe"], dtype=bool).reshape(-1)
-        conventional_safe = bool(k < conv.shape[0] and conv[k])
-    except Exception:
-        return "risky"
-
-    try:
-        fs = np.asarray(arrays.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool).reshape(-1)
-        false_safe = bool(k < fs.shape[0] and fs[k])
-    except Exception:
-        false_safe = True
-
-    return "safe" if conventional_safe and not false_safe else "risky"
-
-
-def _resolve_effective_metric_mode(
-    arrays: dict[str, np.ndarray],
-    candidate_index: int,
-    *,
-    metric_eval_mode: str,
-    adaptive_safe_metric_mode: str = "final",
-    adaptive_risky_metric_mode: str = "sampled",
-) -> tuple[str, str]:
-    mode = _normalize_metric_eval_mode(metric_eval_mode, allow_adaptive=True)
-    if mode != "adaptive":
-        return mode, "fixed"
-    bucket = _candidate_prelabel_bucket(arrays, int(candidate_index))
-    chosen = adaptive_safe_metric_mode if bucket == "safe" else adaptive_risky_metric_mode
-    return _normalize_metric_eval_mode(chosen, allow_adaptive=False), bucket
-
-
-def _set_metric_accumulator_step_count(metric_acc: Any, steps: int) -> None:
-    try:
-        metric_acc.step_count = int(steps)
-    except Exception:
-        pass
-
-
 @dataclass
 class FixedCandidateReplayPolicy:
     trajectory: np.ndarray
@@ -638,23 +573,25 @@ def replay_candidate_on_env(
     else:
         metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {})
 
-    metric_eval_mode = _normalize_metric_eval_mode(metric_eval_mode, allow_adaptive=False)
-    metric_eval_interval = max(1, int(metric_eval_interval))
-    # Waymax safety metrics are episode metrics computed from SimulatorState.
-    # Computing OverlapMetric/OffroadMetric after every step is extremely
-    # expensive and repeatedly scans the rollout trajectory.  In final mode, we
-    # run the identical closed-loop rollout and compute metrics once on the final
-    # SimulatorState.  In sampled mode, we evaluate periodically plus the final or
-    # done state, which is useful for higher-risk candidates when final-only
-    # equivalence has not yet been fully trusted.
+    metric_eval_mode = str(metric_eval_mode or "step").lower()
+    if metric_eval_mode not in {"step", "sampled", "final"}:
+        raise ValueError(f"metric_eval_mode must be one of step/sampled/final, got {metric_eval_mode!r}")
+    metric_eval_interval = max(1, int(metric_eval_interval or 1))
+    # Waymax safety metrics are episode/event metrics computed from SimulatorState.
+    # Computing OverlapMetric/OffroadMetric after every step is expensive.
+    # - step: update metrics at every simulator step (exact reference path).
+    # - sampled: update every metric_eval_interval steps and at the final step
+    #            (faster, but it can miss short-lived collisions/offroad events
+    #             between sampled instants).
+    # - final: update once after the rollout (fastest, lowest recall for transient
+    #          safety events in current Waymax metric semantics).
 
     steps = 0
     action_s = 0.0
     env_step_s = 0.0
     metric_s = 0.0
     done_s = 0.0
-    horizon = int(horizon_steps)
-    for step in range(horizon):
+    for step in range(int(horizon_steps)):
         if collect_timing:
             t = time.perf_counter()
         action = policy(state, step=step)
@@ -666,32 +603,34 @@ def replay_candidate_on_env(
             env_step_s += time.perf_counter() - t
             t = time.perf_counter()
         steps += 1
-        done = False
-        dci = int(done_check_interval)
-        if dci > 0 and (((step + 1) % dci == 0) or ((step + 1) >= horizon)):
-            done = _state_done(state)
-        if collect_timing:
-            done_s += time.perf_counter() - t
-            t = time.perf_counter()
         should_update_metric = False
         if metric_eval_mode == "step":
             should_update_metric = True
         elif metric_eval_mode == "sampled":
-            should_update_metric = (steps % metric_eval_interval == 0) or done or (steps >= horizon)
+            should_update_metric = (((step + 1) % metric_eval_interval) == 0) or ((step + 1) >= int(horizon_steps))
         if should_update_metric:
             metric_acc.update(state)
         if collect_timing:
             metric_s += time.perf_counter() - t
+            t = time.perf_counter()
+        done = False
+        dci = int(done_check_interval)
+        if dci > 0 and (((step + 1) % dci == 0) or ((step + 1) >= int(horizon_steps))):
+            done = _state_done(state)
+        if collect_timing:
+            done_s += time.perf_counter() - t
         if done:
             break
     if metric_eval_mode == "final":
         t_metric = time.perf_counter()
         metric_acc.update(state)
+        # Keep MetricSteps semantically tied to the rollout horizon even though
+        # final-mode metrics are evaluated once on the complete SimulatorState.
+        try:
+            metric_acc.step_count = int(steps)
+        except Exception:
+            pass
         metric_s += time.perf_counter() - t_metric
-    if metric_eval_mode in {"final", "sampled"}:
-        # Keep MetricSteps semantically tied to the rollout, not to the number of
-        # expensive metric.compute calls.
-        _set_metric_accumulator_step_count(metric_acc, steps)
     if collect_timing:
         timings["timing/action_s"] = float(action_s)
         timings["timing/env_step_s"] = float(env_step_s)
@@ -700,6 +639,7 @@ def replay_candidate_on_env(
     t = time.perf_counter()
     metrics = metric_acc.finalize()
     out = _candidate_result_from_metrics(metrics, steps)
+    out["metric_eval_interval"] = int(metric_eval_interval)
     if collect_timing:
         timings["timing/metric_finalize_s"] = time.perf_counter() - t
         out.update(timings)
@@ -817,9 +757,7 @@ def replay_cache_candidates_to_jsonl(
     jit_env_step: bool = False,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
-    adaptive_safe_metric_mode: str = "final",
-    adaptive_risky_metric_mode: str = "sampled",
-    adaptive_risky_metric_interval: int = 2,
+    metric_eval_interval: int = 1,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -858,10 +796,10 @@ def replay_cache_candidates_to_jsonl(
     state_source = str(state_source or "auto").lower()
     if state_source not in {"auto", "cache", "tfexample"}:
         raise ValueError(f"state_source must be one of auto/cache/tfexample, got {state_source!r}")
-    metric_eval_mode = _normalize_metric_eval_mode(metric_eval_mode, allow_adaptive=True)
-    adaptive_safe_metric_mode = _normalize_metric_eval_mode(adaptive_safe_metric_mode, allow_adaptive=False)
-    adaptive_risky_metric_mode = _normalize_metric_eval_mode(adaptive_risky_metric_mode, allow_adaptive=False)
-    adaptive_risky_metric_interval = max(1, int(adaptive_risky_metric_interval))
+    metric_eval_mode = str(metric_eval_mode or "step").lower()
+    if metric_eval_mode not in {"step", "sampled", "final"}:
+        raise ValueError(f"metric_eval_mode must be one of step/sampled/final, got {metric_eval_mode!r}")
+    metric_eval_interval = max(1, int(metric_eval_interval or 1))
     use_cache_state = False
     if state_source == "cache":
         use_cache_state = True
@@ -1061,10 +999,7 @@ def replay_cache_candidates_to_jsonl(
             scene_profile["jit_env_step"] = bool(step_fn is not None)
             scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["metric_eval_mode"] = str(metric_eval_mode)
-            if metric_eval_mode == "adaptive":
-                scene_profile["adaptive_safe_metric_mode"] = str(adaptive_safe_metric_mode)
-                scene_profile["adaptive_risky_metric_mode"] = str(adaptive_risky_metric_mode)
-                scene_profile["adaptive_risky_metric_interval"] = int(adaptive_risky_metric_interval)
+            scene_profile["metric_eval_interval"] = int(metric_eval_interval)
             scene_profile["env_init_s"] = time.perf_counter() - t
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
@@ -1100,13 +1035,6 @@ def replay_cache_candidates_to_jsonl(
             try:
                 if trajs.ndim != 3 or not (0 <= int(k) < trajs.shape[0]):
                     raise ValueError(f"missing candidate trajectory for k={k}")
-                effective_metric_eval_mode, adaptive_bucket = _resolve_effective_metric_mode(
-                    arrays,
-                    int(k),
-                    metric_eval_mode=str(metric_eval_mode),
-                    adaptive_safe_metric_mode=str(adaptive_safe_metric_mode),
-                    adaptive_risky_metric_mode=str(adaptive_risky_metric_mode),
-                )
                 outcome = replay_candidate_on_env(
                     env,
                     init_state,
@@ -1123,13 +1051,10 @@ def replay_cache_candidates_to_jsonl(
                     collect_timing=collect_timing,
                     step_fn=step_fn,
                     done_check_interval=int(done_check_interval),
-                    metric_eval_mode=str(effective_metric_eval_mode),
-                    metric_eval_interval=int(adaptive_risky_metric_interval),
+                    metric_eval_mode=str(metric_eval_mode),
+                    metric_eval_interval=int(metric_eval_interval),
                 )
                 row.update(outcome)
-                row["effective_metric_eval_mode"] = str(effective_metric_eval_mode)
-                row["adaptive_metric_bucket"] = str(adaptive_bucket)
-                row["metric_eval_interval"] = int(adaptive_risky_metric_interval) if str(effective_metric_eval_mode) == "sampled" else 0
                 if collect_timing:
                     timing_count += 1
                     for _tk in _CANDIDATE_TIMING_KEYS:
@@ -1151,10 +1076,7 @@ def replay_cache_candidates_to_jsonl(
             row["action_mode"] = str(action_mode)
             row["metric_set"] = str(metric_set)
             row["metric_eval_mode"] = str(metric_eval_mode)
-            if metric_eval_mode == "adaptive":
-                row.setdefault("adaptive_safe_metric_mode", str(adaptive_safe_metric_mode))
-                row.setdefault("adaptive_risky_metric_mode", str(adaptive_risky_metric_mode))
-                row.setdefault("adaptive_risky_metric_interval", int(adaptive_risky_metric_interval))
+            row["metric_eval_interval"] = int(metric_eval_interval)
             rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
             done.add((sid, int(k)))
         t = time.perf_counter()
@@ -1216,7 +1138,5 @@ def replay_cache_candidates_to_jsonl(
         "jit_env_step": bool(jit_env_step),
         "done_check_interval": int(done_check_interval),
         "metric_eval_mode": str(metric_eval_mode),
-        "adaptive_safe_metric_mode": str(adaptive_safe_metric_mode),
-        "adaptive_risky_metric_mode": str(adaptive_risky_metric_mode),
-        "adaptive_risky_metric_interval": int(adaptive_risky_metric_interval),
+        "metric_eval_interval": int(metric_eval_interval),
     }
