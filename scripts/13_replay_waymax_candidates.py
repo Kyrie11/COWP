@@ -105,8 +105,10 @@ def main() -> None:
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
-    ap.add_argument("--metric-eval-mode", choices=["step", "sampled", "final"], default="step", help="step updates metrics every simulator step; sampled updates every --metric-eval-interval steps plus the final step; final computes metrics once after rollout.")
-    ap.add_argument("--metric-eval-interval", type=int, default=1, help="Metric update interval for --metric-eval-mode sampled. 1 is equivalent to step mode; 2/5 are faster approximations. Ignored by final mode.")
+    ap.add_argument("--metric-eval-mode", choices=["step", "sampled", "adaptive", "final"], default="step", help="step updates metrics every simulator step; sampled updates every --metric-eval-interval steps plus the final step; adaptive adds risk-guarded extra checks near other agents; final computes metrics once after rollout.")
+    ap.add_argument("--metric-eval-interval", type=int, default=1, help="Metric update interval for --metric-eval-mode sampled/adaptive. 1 is equivalent to step mode; 2/5 are faster approximations. Ignored by final mode.")
+    ap.add_argument("--metric-guard-radius-m", type=float, default=8.0, help="For --metric-eval-mode adaptive, add metric checks when the SDC candidate is within this radius of a logged non-SDC future center.")
+    ap.add_argument("--metric-guard-window-steps", type=int, default=1, help="For --metric-eval-mode adaptive, also check +/- this many steps around each guarded timestep.")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--no-jax-runtime-print", action="store_true", help="Do not print JAX backend/device information at startup.")
     args = ap.parse_args()
@@ -150,6 +152,8 @@ def main() -> None:
         done_check_interval=int(args.done_check_interval),
         metric_eval_mode=str(args.metric_eval_mode),
         metric_eval_interval=int(args.metric_eval_interval),
+        metric_guard_radius_m=float(args.metric_guard_radius_m),
+        metric_guard_window_steps=int(args.metric_guard_window_steps),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

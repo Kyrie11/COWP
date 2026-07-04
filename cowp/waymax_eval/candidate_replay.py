@@ -419,6 +419,79 @@ def _metric_set_is_fast_safety(metric_set: str | None, metric_objects: list[tupl
     return names.issubset({"OverlapMetric", "OffroadMetric"})
 
 
+def _array_get_any(arrays: dict[str, np.ndarray], names: tuple[str, ...]) -> np.ndarray | None:
+    for name in names:
+        if name in arrays:
+            return np.asarray(arrays[name])
+    return None
+
+
+def _candidate_metric_guard_steps(
+    arrays: dict[str, np.ndarray],
+    trajectory: np.ndarray,
+    *,
+    horizon_steps: int,
+    radius_m: float = 8.0,
+    window_steps: int = 1,
+) -> set[int]:
+    """Return 1-indexed metric-update steps for risk-guarded sampled replay.
+
+    The expensive part of replay is calling Waymax safety metrics.  Pure sampled
+    replay can miss short collisions between sampled instants.  This lightweight
+    guard uses cached WOMD logged future centers to add extra metric evaluations
+    around timesteps where the replayed SDC candidate is close to any non-SDC
+    agent.  It preserves full Waymax metrics at those guarded instants; the
+    geometric screen is only used to decide *when* to evaluate the metric.
+    """
+    try:
+        traj = np.asarray(trajectory, dtype=np.float32)
+        if traj.ndim != 2 or traj.shape[1] < 2:
+            return set()
+        x = _array_get_any(arrays, ("womd/state/future/x", "state/future/x"))
+        y = _array_get_any(arrays, ("womd/state/future/y", "state/future/y"))
+        valid = _array_get_any(arrays, ("womd/state/future/valid", "state/future/valid"))
+        if x is None or y is None or valid is None:
+            return set()
+        x = np.asarray(x, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32)
+        valid = np.asarray(valid, dtype=bool)
+        if x.ndim != 2 or y.shape != x.shape or valid.shape != x.shape:
+            return set()
+        T = int(min(int(horizon_steps), traj.shape[0], x.shape[1]))
+        if T <= 0:
+            return set()
+        vmask = valid[:, :T].copy()
+        is_sdc = _array_get_any(arrays, ("womd/state/is_sdc", "state/is_sdc"))
+        if is_sdc is not None:
+            is_sdc = np.asarray(is_sdc).reshape(-1).astype(bool)
+            n = min(vmask.shape[0], is_sdc.shape[0])
+            if n > 0:
+                sdc_rows = np.where(is_sdc[:n])[0]
+                if sdc_rows.size:
+                    vmask[sdc_rows, :] = False
+        # Include current validity if present; this removes padded agents that
+        # happen to have arbitrary future arrays.
+        cur_valid = _array_get_any(arrays, ("womd/state/current/valid", "state/current/valid"))
+        if cur_valid is not None:
+            cv = np.asarray(cur_valid).reshape(-1).astype(bool)
+            n = min(vmask.shape[0], cv.shape[0])
+            if n > 0:
+                vmask[:n, :] &= cv[:n, None]
+        cx = traj[:T, 0].reshape(1, T)
+        cy = traj[:T, 1].reshape(1, T)
+        r2 = float(max(radius_m, 0.0)) ** 2
+        near = vmask & np.isfinite(x[:, :T]) & np.isfinite(y[:, :T]) & (((x[:, :T] - cx) ** 2 + (y[:, :T] - cy) ** 2) <= r2)
+        risky_t = np.where(np.any(near, axis=0))[0]
+        out: set[int] = set()
+        w = max(0, int(window_steps))
+        for t in risky_t.astype(int).tolist():
+            for tt in range(max(0, t - w), min(T - 1, t + w) + 1):
+                out.add(int(tt + 1))  # replay loop uses step+1
+        return out
+    except Exception:
+        return set()
+
+
 class _FastSafetyMetricAccumulator:
     """Safety-only Waymax metric accumulator with one host sync at finalize.
 
@@ -548,6 +621,7 @@ def replay_candidate_on_env(
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
+    metric_guard_steps: set[int] | None = None,
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
     t = time.perf_counter()
@@ -574,8 +648,8 @@ def replay_candidate_on_env(
         metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {})
 
     metric_eval_mode = str(metric_eval_mode or "step").lower()
-    if metric_eval_mode not in {"step", "sampled", "final"}:
-        raise ValueError(f"metric_eval_mode must be one of step/sampled/final, got {metric_eval_mode!r}")
+    if metric_eval_mode not in {"step", "sampled", "adaptive", "final"}:
+        raise ValueError(f"metric_eval_mode must be one of step/sampled/adaptive/final, got {metric_eval_mode!r}")
     metric_eval_interval = max(1, int(metric_eval_interval or 1))
     # Waymax safety metrics are episode/event metrics computed from SimulatorState.
     # Computing OverlapMetric/OffroadMetric after every step is expensive.
@@ -583,6 +657,8 @@ def replay_candidate_on_env(
     # - sampled: update every metric_eval_interval steps and at the final step
     #            (faster, but it can miss short-lived collisions/offroad events
     #             between sampled instants).
+    # - adaptive: sampled replay plus extra guarded checks around timesteps where
+    #             the candidate is close to logged non-SDC agents.
     # - final: update once after the rollout (fastest, lowest recall for transient
     #          safety events in current Waymax metric semantics).
 
@@ -606,8 +682,11 @@ def replay_candidate_on_env(
         should_update_metric = False
         if metric_eval_mode == "step":
             should_update_metric = True
-        elif metric_eval_mode == "sampled":
-            should_update_metric = (((step + 1) % metric_eval_interval) == 0) or ((step + 1) >= int(horizon_steps))
+        elif metric_eval_mode in {"sampled", "adaptive"}:
+            step_no = step + 1
+            should_update_metric = ((step_no % metric_eval_interval) == 0) or (step_no >= int(horizon_steps))
+            if metric_eval_mode == "adaptive" and metric_guard_steps is not None and step_no in metric_guard_steps:
+                should_update_metric = True
         if should_update_metric:
             metric_acc.update(state)
         if collect_timing:
@@ -656,6 +735,8 @@ def replay_candidate_on_state(
     metric_set: str = "safety",
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
+    metric_guard_radius_m: float = 8.0,
+    metric_guard_window_steps: int = 1,
 ) -> dict[str, Any]:
     max_objects = _state_num_objects(init_state)
     sdc_index, initial_pose = _initial_sdc_pose(init_state)
@@ -758,6 +839,8 @@ def replay_cache_candidates_to_jsonl(
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
+    metric_guard_radius_m: float = 8.0,
+    metric_guard_window_steps: int = 1,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -797,8 +880,8 @@ def replay_cache_candidates_to_jsonl(
     if state_source not in {"auto", "cache", "tfexample"}:
         raise ValueError(f"state_source must be one of auto/cache/tfexample, got {state_source!r}")
     metric_eval_mode = str(metric_eval_mode or "step").lower()
-    if metric_eval_mode not in {"step", "sampled", "final"}:
-        raise ValueError(f"metric_eval_mode must be one of step/sampled/final, got {metric_eval_mode!r}")
+    if metric_eval_mode not in {"step", "sampled", "adaptive", "final"}:
+        raise ValueError(f"metric_eval_mode must be one of step/sampled/adaptive/final, got {metric_eval_mode!r}")
     metric_eval_interval = max(1, int(metric_eval_interval or 1))
     use_cache_state = False
     if state_source == "cache":
@@ -1000,6 +1083,8 @@ def replay_cache_candidates_to_jsonl(
             scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["metric_eval_mode"] = str(metric_eval_mode)
             scene_profile["metric_eval_interval"] = int(metric_eval_interval)
+            scene_profile["metric_guard_radius_m"] = float(metric_guard_radius_m)
+            scene_profile["metric_guard_window_steps"] = int(metric_guard_window_steps)
             scene_profile["env_init_s"] = time.perf_counter() - t
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
@@ -1035,6 +1120,15 @@ def replay_cache_candidates_to_jsonl(
             try:
                 if trajs.ndim != 3 or not (0 <= int(k) < trajs.shape[0]):
                     raise ValueError(f"missing candidate trajectory for k={k}")
+                metric_guard_steps = None
+                if str(metric_eval_mode).lower() == "adaptive":
+                    metric_guard_steps = _candidate_metric_guard_steps(
+                        arrays,
+                        trajs[int(k)],
+                        horizon_steps=int(horizon_steps),
+                        radius_m=float(metric_guard_radius_m),
+                        window_steps=int(metric_guard_window_steps),
+                    )
                 outcome = replay_candidate_on_env(
                     env,
                     init_state,
@@ -1053,6 +1147,7 @@ def replay_cache_candidates_to_jsonl(
                     done_check_interval=int(done_check_interval),
                     metric_eval_mode=str(metric_eval_mode),
                     metric_eval_interval=int(metric_eval_interval),
+                    metric_guard_steps=metric_guard_steps,
                 )
                 row.update(outcome)
                 if collect_timing:
@@ -1139,4 +1234,6 @@ def replay_cache_candidates_to_jsonl(
         "done_check_interval": int(done_check_interval),
         "metric_eval_mode": str(metric_eval_mode),
         "metric_eval_interval": int(metric_eval_interval),
+        "metric_guard_radius_m": float(metric_guard_radius_m),
+        "metric_guard_window_steps": int(metric_guard_window_steps),
     }
