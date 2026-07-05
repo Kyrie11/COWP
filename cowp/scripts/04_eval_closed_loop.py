@@ -54,12 +54,13 @@ def main() -> None:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--witness-threshold", type=float, default=0.5)
     ap.add_argument("--witness-threshold-sweep", default=None, help="Comma-separated thresholds for learned_offline diagnostic sweep, e.g. 0.1,0.2,0.3,0.5,0.7.")
-    ap.add_argument("--ncf-gate-mode", choices=["hard", "priority", "soft"], default="hard", help="Candidate acceptance gate. hard reproduces the original universal veto; priority hard-vetoes only high-priority/severe coercion and penalizes the rest; soft uses no witness hard veto.")
+    ap.add_argument("--ncf-gate-mode", choices=["hard", "priority", "soft", "none"], default="priority", help="Candidate acceptance gate. priority is the default COWP gate; hard/universal vetoes any predicted witness; soft uses witness only as a score penalty; none disables witness gating.")
     ap.add_argument("--priority-hard-threshold", type=float, default=0.55, help="Online priority proxy threshold for hard P-NCF rejection.")
     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
-    ap.add_argument("--method", default="cowp")
+    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="conservative", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
     ap.add_argument("--mode", choices=["offline", "learned_offline", "waymax"], default="offline")
     ap.add_argument("--policy-fn", default=None, help="For --mode waymax: optional Python callable spec 'module:function' returning Waymax actions. If omitted with --checkpoint, a COWP checkpoint policy is used.")
     ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="delta_xy_yaw")
@@ -99,9 +100,11 @@ def main() -> None:
                 secondary_witness_threshold=args.secondary_witness_threshold,
                 secondary_opr_alpha=args.secondary_opr_alpha,
                 soft_ncf_penalty=args.soft_ncf_penalty,
+                method=args.method,
+                offline_fallback=args.offline_fallback,
             )
             metrics = min(sweep, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
-            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "witness_threshold_sweep": sweep}
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback, "witness_threshold_sweep": sweep}
         else:
             metrics = learned_offline_candidate_eval(
                 args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
@@ -115,8 +118,10 @@ def main() -> None:
                 secondary_witness_threshold=args.secondary_witness_threshold,
                 secondary_opr_alpha=args.secondary_opr_alpha,
                 soft_ncf_penalty=args.soft_ncf_penalty,
+                method=args.method,
+                offline_fallback=args.offline_fallback,
             )
-            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode}
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback}
     else:
         if args.policy_fn:
             policy_fn = import_policy_fn(args.policy_fn)
@@ -132,6 +137,7 @@ def main() -> None:
                 secondary_witness_threshold=args.secondary_witness_threshold,
                 secondary_opr_alpha=args.secondary_opr_alpha,
                 soft_ncf_penalty=args.soft_ncf_penalty,
+                method=args.method,
             )
         else:
             raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")

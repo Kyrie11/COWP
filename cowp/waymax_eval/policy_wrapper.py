@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from cowp.core.constants import MacroType
-from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory
+from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory, repair_planar_kinematics
 
 
 def _to_numpy(x: Any) -> np.ndarray:
@@ -297,6 +297,7 @@ def _add_candidate(
 ) -> None:
     if len(out) >= int(cfg.get("limits", {}).get("max_candidates", 64)):
         return
+    traj = repair_planar_kinematics(traj, agent_state[sdc_index], float(cfg.get("time", {}).get("dt", 0.1)))
     if not _candidate_dyn_ok(traj, cfg):
         return
     # De-duplicate by endpoint to keep the limited candidate tensor useful.
@@ -628,6 +629,7 @@ class COWPWaymaxPolicy:
     secondary_witness_threshold: float = 0.85
     secondary_opr_alpha: float = 0.10
     soft_ncf_penalty: float = 1.5
+    method: str = "cowp"
 
     def __post_init__(self) -> None:
         import torch
@@ -717,12 +719,44 @@ class COWPWaymaxPolicy:
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
             alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
-            gate_mode = str(self.ncf_gate_mode or "hard").lower()
+            method = str(getattr(self, "method", "cowp") or "cowp").lower()
+            alias = {
+                "cowp_priority": "cowp",
+                "priority_ncf": "cowp",
+                "p_ncf": "cowp",
+                "cowp_universal": "universal_ncf",
+                "hard_ncf": "universal_ncf",
+                "ego_utility": "idm_lattice",
+                "utility_lattice": "idm_lattice",
+                "planner_only": "planner_score_only",
+                "no_ncf": "planner_score_only",
+                "safety_only": "conventional_safety",
+            }
+            method = alias.get(method, method)
+            gate_mode = str(self.ncf_gate_mode or "priority").lower()
+            if method == "cowp" and gate_mode == "hard":
+                gate_mode = "priority"
+            if method == "universal_ncf":
+                gate_mode = "hard"
+            elif method == "soft_burden_cost_only":
+                gate_mode = "soft"
+            elif method in {"idm_lattice", "conventional_safety", "planner_score_only"}:
+                gate_mode = "none"
             adjusted_scores = scores
             priority = self.torch.zeros_like(witness)
             primary_bad = self.torch.zeros_like(cand_valid)
             severe_bad = self.torch.zeros_like(cand_valid)
-            if gate_mode == "hard":
+            option_bad = self.torch.zeros_like(cand_valid)
+            utility = batch.get("cowp/candidates/ego_utility_prior", None)
+            utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
+            if method == "idm_lattice":
+                accepted = cand_valid & conventional
+                adjusted_scores = utility_scores
+            elif method == "conventional_safety":
+                accepted = cand_valid & conventional
+            elif method == "planner_score_only":
+                accepted = cand_valid
+            elif gate_mode == "hard":
                 predicted_bad = (witness >= float(self.witness_threshold)).any(dim=-1)
                 accepted = cand_valid & conventional & ~predicted_bad
                 accepted = accepted & (opr.min(dim=-1).values >= alpha)
@@ -747,18 +781,37 @@ class COWPWaymaxPolicy:
                 adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
+                elif gate_mode in {"none", "off"}:
+                    accepted = cand_valid & conventional
                 else:
                     accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad
-            # Conservative fallback hierarchy: first accepted P-NCF/NCF; then conventional
-            # valid; finally any valid candidate.  Diagnostics distinguish these cases.
+            # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
+            # neutral/stop-like conventional candidate; finally the guaranteed
+            # neutral candidate.  Avoid falling back to an arbitrary conventional
+            # false-safe plan, which hid the effect of NCF rejection in the smoke test.
+            macro_t = batch["cowp/candidates/macro_type"][0].long()
+            stop_ids = self.torch.as_tensor(
+                [int(MacroType.STOP_BEFORE_CONFLICT), int(MacroType.YIELD), int(MacroType.CREEP), int(MacroType.NEUTRAL_EGO)],
+                device=self.dev,
+                dtype=macro_t.dtype,
+            )
+            stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
             if accepted.any():
                 select_mask = accepted
                 fallback_used = False
-                fallback_reason = "accepted_ncf" if gate_mode == "hard" else "accepted_priority_ncf"
+                fallback_reason = "accepted_ncf" if gate_mode == "hard" else ("accepted_baseline" if gate_mode in {"none", "off"} else "accepted_priority_ncf")
+            elif (cand_valid & conventional & stop_like).any():
+                select_mask = cand_valid & conventional & stop_like
+                fallback_used = True
+                fallback_reason = "no_ncf_use_stop_like"
+            elif (cand_valid & stop_like).any():
+                select_mask = cand_valid & stop_like
+                fallback_used = True
+                fallback_reason = "no_conventional_use_neutral"
             elif (cand_valid & conventional).any():
                 select_mask = cand_valid & conventional
                 fallback_used = True
-                fallback_reason = "no_ncf_use_conventional"
+                fallback_reason = "no_stop_like_use_conventional"
             else:
                 select_mask = cand_valid
                 fallback_used = True
@@ -785,9 +838,11 @@ class COWPWaymaxPolicy:
                 "witness_threshold": float(self.witness_threshold),
                 "alpha_opr": float(alpha),
                 "gate_mode": str(gate_mode),
+                    "method": str(method),
                 "priority_hard_threshold": float(self.priority_hard_threshold),
                 "accepted_primary_bad_candidates": int(primary_bad.sum().detach().cpu().item()) if primary_bad.numel() else 0,
                 "severe_bad_candidates": int(severe_bad.sum().detach().cpu().item()) if severe_bad.numel() else 0,
+                    "option_bad_candidates": int(option_bad.sum().detach().cpu().item()) if option_bad.numel() else 0,
                 "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
@@ -824,6 +879,7 @@ def make_cowp_policy(
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
 ) -> COWPWaymaxPolicy:
     return COWPWaymaxPolicy(
         checkpoint=checkpoint,
@@ -836,4 +892,5 @@ def make_cowp_policy(
         secondary_witness_threshold=secondary_witness_threshold,
         secondary_opr_alpha=secondary_opr_alpha,
         soft_ncf_penalty=soft_ncf_penalty,
+        method=method,
     )

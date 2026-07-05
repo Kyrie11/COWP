@@ -3,6 +3,47 @@ from __future__ import annotations
 import numpy as np
 
 
+def repair_planar_kinematics(traj: np.ndarray, current: np.ndarray | None = None, dt: float = 0.1, *, max_yaw_rate_rad_s: float | None = 0.8) -> np.ndarray:
+    """Make [x,y,yaw,vx,vy,length,width] internally consistent.
+
+    Lateral-offset primitives can otherwise contain sideways position changes while
+    keeping the original heading/velocity.  Waymax's kinematic feasibility metric
+    correctly flags those rollouts.  This repair keeps the planned positions but
+    derives yaw and velocity from finite differences, with an optional yaw-rate
+    limit for smoother closed-loop actions.
+    """
+    out = np.asarray(traj, dtype=np.float32).copy()
+    if out.ndim != 2 or out.shape[0] == 0 or out.shape[1] < 5:
+        return out
+    dt = max(float(dt), 1e-3)
+    if current is not None and len(current) >= 2:
+        prev_xy = np.asarray(current[:2], dtype=np.float32)
+        prev_yaw = float(current[6] if len(current) >= 7 else out[0, 2])
+    else:
+        prev_xy = out[0, :2].copy()
+        prev_yaw = float(out[0, 2])
+    last_yaw = prev_yaw
+    for k in range(out.shape[0]):
+        step = out[k, :2] - prev_xy
+        vx, vy = step / dt
+        speed = float(np.linalg.norm([vx, vy]))
+        if speed > 1e-3:
+            raw_yaw = float(np.arctan2(vy, vx))
+            if max_yaw_rate_rad_s is not None:
+                max_delta = abs(float(max_yaw_rate_rad_s)) * dt
+                delta = (raw_yaw - last_yaw + np.pi) % (2.0 * np.pi) - np.pi
+                raw_yaw = last_yaw + float(np.clip(delta, -max_delta, max_delta))
+            out[k, 2] = (raw_yaw + np.pi) % (2.0 * np.pi) - np.pi
+            out[k, 3] = vx
+            out[k, 4] = vy
+            last_yaw = float(out[k, 2])
+        else:
+            out[k, 2] = last_yaw
+            out[k, 3:5] = 0.0
+        prev_xy = out[k, :2].copy()
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
 def constant_accel_trajectory(current: np.ndarray, horizon: int, dt: float, accel: float = 0.0, lateral_offset: float = 0.0, speed_offset: float = 0.0, start_delay_s: float = 0.0, duration_s: float | None = None) -> np.ndarray:
     x, y = float(current[0]), float(current[1])
     heading = float(current[6] if len(current) >= 7 else current[2])
@@ -26,7 +67,7 @@ def constant_accel_trajectory(current: np.ndarray, horizon: int, dt: float, acce
         smooth = 10 * frac**3 - 15 * frac**4 + 6 * frac**5
         pos = cur_pos + lateral * (lateral_offset * smooth)
         out[k] = [pos[0], pos[1], heading, direction[0] * cur_speed, direction[1] * cur_speed, length, width]
-    return out
+    return repair_planar_kinematics(out, current, dt)
 
 
 def resample_logged(logged: np.ndarray, horizon: int, time_shift_steps: int = 0, speed_scale: float = 1.0, lateral_offset: float = 0.0) -> np.ndarray:

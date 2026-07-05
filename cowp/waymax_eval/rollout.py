@@ -8,6 +8,7 @@ from typing import Callable
 
 import numpy as np
 
+from cowp.core.constants import MacroType
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, _progress_reference_m, _trajectory_progress_m
@@ -25,48 +26,126 @@ def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
     return out
 
 
+def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
+    """Map method names to a learned-offline selection variant and gate mode."""
+    m = str(method or "cowp").lower()
+    g = str(gate_mode or "priority").lower()
+    aliases = {
+        "cowp_priority": "cowp",
+        "priority_ncf": "cowp",
+        "p_ncf": "cowp",
+        "cowp_universal": "universal_ncf",
+        "hard_ncf": "universal_ncf",
+        "ego_utility": "idm_lattice",
+        "utility_lattice": "idm_lattice",
+        "safety_only": "conventional_safety",
+        "planner_only": "planner_score_only",
+        "no_ncf": "planner_score_only",
+    }
+    m = aliases.get(m, m)
+    if m == "cowp" and g == "hard":
+        # The paper/code now treats COWP as priority-aware NCF.  The original
+        # universal veto remains available as method=universal_ncf.
+        g = "priority"
+    if m == "universal_ncf":
+        g = "hard"
+    elif m == "soft_burden_cost_only":
+        g = "soft"
+    elif m in {"idm_lattice", "conventional_safety", "planner_score_only"}:
+        g = "none"
+    return m, g
+
+
+def _stop_like_mask(batch, cand_valid, conventional):
+    import torch
+
+    macro = batch.get("cowp/candidates/macro_type")
+    is_neutral = batch.get("cowp/candidates/is_neutral")
+    mask = cand_valid.clone()
+    if conventional is not None:
+        mask = mask & conventional
+    if macro is not None:
+        stop_ids = torch.as_tensor(
+            [int(MacroType.STOP_BEFORE_CONFLICT), int(MacroType.YIELD), int(MacroType.CREEP), int(MacroType.NEUTRAL_EGO)],
+            device=macro.device,
+            dtype=macro.dtype,
+        )
+        stop = (macro[..., None] == stop_ids).any(dim=-1)
+        mask = mask & stop
+    elif is_neutral is not None:
+        mask = mask & is_neutral.bool()
+    else:
+        mask = torch.zeros_like(cand_valid)
+    if is_neutral is not None:
+        mask = mask | (cand_valid & conventional & is_neutral.bool())
+    return mask
+
+
 def _select_from_learned(
     batch,
     pred,
     *,
     witness_threshold: float = 0.5,
     alpha_opr: float = 0.35,
-    gate_mode: str = "hard",
+    gate_mode: str = "priority",
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
+    offline_fallback: str = "conservative",
 ) -> tuple[list[int], list[np.ndarray]]:
     import torch
 
+    method, gate_mode = _method_gate_defaults(method, gate_mode)
     scores = torch.nan_to_num(pred["planner_score"].detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
     witness_prob = torch.nan_to_num(torch.sigmoid(pred["witness"]["exist_logits"]).detach().float(), nan=1.0, posinf=1.0, neginf=0.0)
     opr = torch.nan_to_num(pred["witness"]["opr"].detach().float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     cand_valid = batch["cowp/candidates/valid"].bool()
     conventional = batch.get("cowp/candidates/conventional_safe", cand_valid).bool()
+    utility = batch.get("cowp/candidates/ego_utility_prior")
+    if utility is not None:
+        utility_scores = torch.nan_to_num(utility.detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
+    else:
+        utility_scores = scores
     crit_mask = batch.get("cowp/critical/valid")
     if crit_mask is not None and witness_prob.ndim == 3:
         cm = crit_mask.bool()[:, None, :]
         witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
         opr = torch.where(cm, opr, torch.ones_like(opr))
-    gate_mode = str(gate_mode or "hard").lower()
-    adjusted_scores = scores
-    if gate_mode == "hard":
-        predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
-        accepted = cand_valid & conventional & ~predicted_bad
-        accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
+
+    # Internal baselines that do not use the coercion witness.
+    if method == "idm_lattice":
+        accepted = cand_valid & conventional
+        adjusted_scores = utility_scores
+    elif method == "conventional_safety":
+        accepted = cand_valid & conventional
+        adjusted_scores = scores
+    elif method == "planner_score_only":
+        accepted = cand_valid
+        adjusted_scores = scores
     else:
-        # Offline proxy for priority-aware rejection: only hard-veto candidates
-        # where a predicted witness coincides with poor option preservation.
-        # Other witness signals are used as a soft ranking penalty.
-        priority_proxy = (opr < float(alpha_opr)).float()
-        primary_bad = ((witness_prob >= witness_threshold) & (priority_proxy > 0.0)).any(dim=-1)
-        severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha))).any(dim=-1)
-        penalty = (witness_prob * priority_proxy).amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-        adjusted_scores = scores + float(soft_ncf_penalty) * penalty
-        if gate_mode == "soft":
+        adjusted_scores = scores
+        if gate_mode in {"none", "off"}:
             accepted = cand_valid & conventional
+        elif gate_mode == "hard":
+            predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
+            accepted = cand_valid & conventional & ~predicted_bad
+            accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
         else:
-            accepted = cand_valid & conventional & ~primary_bad & ~severe_bad
+            # Learned-offline priority proxy: hard-veto only when a predicted
+            # witness coincides with collapsed option preservation; otherwise use
+            # witness/OPR as a ranking penalty.  Online mode has a richer right-of-
+            # way proxy from geometry and agent state.
+            priority_proxy = (opr < float(alpha_opr)).float()
+            primary_bad = ((witness_prob >= witness_threshold) & (priority_proxy > 0.0)).any(dim=-1)
+            severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha))).any(dim=-1)
+            penalty = (witness_prob * priority_proxy).amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+            adjusted_scores = scores + float(soft_ncf_penalty) * penalty
+            if gate_mode == "soft":
+                accepted = cand_valid & conventional
+            else:
+                accepted = cand_valid & conventional & ~primary_bad & ~severe_bad
+
     selected: list[int] = []
     masks: list[np.ndarray] = []
     B = scores.shape[0]
@@ -76,18 +155,22 @@ def _select_from_learned(
             masked = torch.where(mask, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
             selected.append(int(torch.argmin(masked).item()))
         else:
-            fallback = cand_valid[b] & conventional[b]
-            if fallback.any():
-                masked = torch.where(fallback, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
-                selected.append(int(torch.argmin(masked).item()))
-            elif cand_valid[b].any():
-                masked = torch.where(cand_valid[b], adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
-                selected.append(int(torch.argmin(masked).item()))
+            # Do not silently select the best conventional false-safe candidate
+            # when the learned NCF filter rejects everything.  In closed loop this
+            # corresponds to a conservative stop; in learned-offline metrics mark
+            # it as fallback unless an explicit stop-like/neutral candidate exists
+            # and the caller requested stop_like fallback.
+            if str(offline_fallback).lower() == "stop_like":
+                fallback = _stop_like_mask(batch, cand_valid, conventional)[b]
+                if fallback.any():
+                    masked = torch.where(fallback, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
+                    selected.append(int(torch.argmin(masked).item()))
+                else:
+                    selected.append(-1)
             else:
                 selected.append(-1)
         masks.append(mask.detach().cpu().numpy())
     return selected, masks
-
 
 
 def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
@@ -138,6 +221,10 @@ def offline_candidate_eval(labels_dir: str | Path, cfg: dict, method: str = "cow
 _EVAL_LABEL_KEYS = {
     "cowp/candidates/trajectory",
     "cowp/candidates/valid",
+    "cowp/candidates/macro_type",
+    "cowp/candidates/ego_utility_prior",
+    "cowp/candidates/is_neutral",
+    "cowp/candidates/is_logged",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible",
@@ -338,6 +425,8 @@ def _learned_offline_candidate_eval_many(
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
+    offline_fallback: str = "conservative",
 ) -> dict[float, dict[str, object]]:
     import torch
     from torch.utils.data import DataLoader
@@ -412,6 +501,8 @@ def _learned_offline_candidate_eval_many(
                     secondary_witness_threshold=secondary_witness_threshold,
                     secondary_opr_alpha=secondary_opr_alpha,
                     soft_ncf_penalty=soft_ncf_penalty,
+                    method=method,
+                    offline_fallback=offline_fallback,
                 )
                 pred_exists = (pair_score_np >= float(th))
                 acc = accs[th]
@@ -421,8 +512,17 @@ def _learned_offline_candidate_eval_many(
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(done=accs[thresholds[0]].selected_total, thresholds=len(thresholds), refresh=True)
 
-    auprc = _average_precision_binary(np.concatenate(pair_scores), np.concatenate(pair_targets)) if pair_scores else 0.0
-    return {th: accs[th].finish(auprc=auprc, rank_good=rank_good, rank_total=rank_total, witness_threshold=th) for th in thresholds}
+    all_pair_scores = np.concatenate(pair_scores) if pair_scores else np.asarray([], dtype=np.float32)
+    auprc = _average_precision_binary(all_pair_scores, np.concatenate(pair_targets)) if pair_scores else 0.0
+    out = {th: accs[th].finish(auprc=auprc, rank_good=rank_good, rank_total=rank_total, witness_threshold=th) for th in thresholds}
+    if all_pair_scores.size:
+        qs = np.quantile(all_pair_scores, [0.1, 0.5, 0.9, 0.99])
+        for row in out.values():
+            row["WitnessProb/p10"] = float(qs[0])
+            row["WitnessProb/p50"] = float(qs[1])
+            row["WitnessProb/p90"] = float(qs[2])
+            row["WitnessProb/p99"] = float(qs[3])
+    return out
 
 
 def learned_offline_candidate_eval(
@@ -438,6 +538,8 @@ def learned_offline_candidate_eval(
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
+    offline_fallback: str = "conservative",
 ) -> dict[str, object]:
     return _learned_offline_candidate_eval_many(
         cache_dir,
@@ -451,6 +553,8 @@ def learned_offline_candidate_eval(
         secondary_witness_threshold=secondary_witness_threshold,
         secondary_opr_alpha=secondary_opr_alpha,
         soft_ncf_penalty=soft_ncf_penalty,
+        method=method,
+        offline_fallback=offline_fallback,
     )[float(witness_threshold)]
 
 
@@ -467,6 +571,8 @@ def learned_offline_candidate_eval_sweep(
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
+    offline_fallback: str = "conservative",
 ) -> list[dict[str, object]]:
     out = _learned_offline_candidate_eval_many(
         cache_dir,
@@ -480,6 +586,8 @@ def learned_offline_candidate_eval_sweep(
         secondary_witness_threshold=secondary_witness_threshold,
         secondary_opr_alpha=secondary_opr_alpha,
         soft_ncf_penalty=soft_ncf_penalty,
+        method=method,
+        offline_fallback=offline_fallback,
     )
     return [out[th] for th in sorted(out)]
 

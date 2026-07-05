@@ -20,10 +20,12 @@ def hard_first_filter(candidate_valid: np.ndarray, conventional_safe: np.ndarray
     return valid
 
 
-def candidate_scores(ego_utility: np.ndarray, witness_prob: np.ndarray, opr: np.ndarray, c_i: np.ndarray, p_soft: float = 0.45, alpha: float = 0.35, gamma: float = 0.10, soft_burden_only: bool = False) -> np.ndarray:
+def candidate_scores(ego_utility: np.ndarray, witness_prob: np.ndarray, opr: np.ndarray, c_i: np.ndarray, p_soft: float = 0.45, alpha: float = 0.35, gamma: float = 0.10, soft_burden_only: bool = False, ignore_witness_score: bool = False) -> np.ndarray:
     max_w = np.max(witness_prob, axis=-1) if witness_prob.ndim == 2 else np.asarray(witness_prob)
     min_opr = np.min(opr, axis=-1) if opr.ndim == 2 else np.asarray(opr)
     max_c = np.max(c_i, axis=-1) if c_i.ndim == 2 else np.asarray(c_i)
+    if ignore_witness_score:
+        return np.asarray(ego_utility, dtype=float)
     if soft_burden_only:
         return ego_utility + 2.0 * max_c + 1.0 * np.maximum(0.0, alpha - min_opr)
     return ego_utility + 5.0 * np.maximum(0.0, max_w - p_soft) + 2.0 * np.maximum(0.0, alpha - min_opr) + 2.0 * np.maximum(0.0, max_c - gamma)

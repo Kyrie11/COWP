@@ -6,7 +6,11 @@ from cowp.planning.cowp_planner import COWPPlanner
 def ablation_for_method(method: str) -> dict:
     table = {
         "cowp": {},
-        "idm_lattice": {"use_hard_witness_rejection": False, "use_option_preservation": False, "soft_burden_cost_only": False},
+        "universal_ncf": {},
+        "cowp_universal": {},
+        "idm_lattice": {"use_hard_witness_rejection": False, "use_option_preservation": False, "soft_burden_cost_only": False, "ignore_witness_score": True},
+        "conventional_safety": {"use_hard_witness_rejection": False, "use_option_preservation": False, "soft_burden_cost_only": False},
+        "planner_score_only": {"use_hard_witness_rejection": False, "use_option_preservation": False},
         "cowp_wo_counterfactual": {"use_neutral_branch": False, "use_priority_branch": False},
         "cowp_wo_neutral_branch": {"use_neutral_branch": False},
         "cowp_wo_priority_branch": {"use_priority_branch": False},

@@ -83,6 +83,7 @@ class COWPPlanner:
             alpha=float(pcfg.get("alpha_opr_infer", 0.35)),
             gamma=float(pcfg.get("ncf_gamma_infer", 0.10)),
             soft_burden_only=bool(self.ablation.get("soft_burden_cost_only", False)),
+            ignore_witness_score=bool(self.ablation.get("ignore_witness_score", False)),
         )
         if np.any(accepted):
             masked = np.where(accepted, scores, np.inf)

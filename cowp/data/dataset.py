@@ -376,6 +376,7 @@ def _wanted_keys_for_stage(
             "cowp/candidates/noncoercive_feasible",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
+            "cowp/candidates/is_neutral",
             "cowp/natural/beta",
         })
     return wanted
