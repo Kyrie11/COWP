@@ -441,6 +441,112 @@ def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor])
     return torch.stack(losses).mean() if losses else _zero_like_loss(scores)
 
 
+
+
+def priority_claim_loss(logits: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> torch.Tensor:
+    """Supervise protected-priority claims for pairwise P-NCF gating.
+
+    A pair is treated as a protected claim when a coercion witness exists and the
+    natural response set collapses below the OPR threshold or exceeds the safe
+    burden budget.  This is deliberately pair-level, so the planner can hard-veto
+    coercing high-priority agents while keeping low-priority negotiations as soft
+    costs.
+    """
+    cand_mask = batch["cowp/candidates/valid"].bool()
+    crit_mask = batch["cowp/critical/valid"].bool()
+    pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
+    if logits is None or not pair_mask.any():
+        return _zero_like_loss(batch["cowp/candidates/valid"])
+    exists = _binary_target(batch.get("cowp/witness/exists", torch.zeros_like(logits))) > 0.5
+    opr = _safe_float(batch.get("cowp/witness/opr", torch.ones_like(logits))).clamp(0.0, 1.0)
+    alpha = float(weights.get("priority_claim_opr_alpha", weights.get("alpha_opr", 0.35)))
+    collapse = opr < alpha
+    min_safe = batch.get("cowp/witness/min_safe_burden")
+    if min_safe is not None:
+        beta_default = float(weights.get("priority_claim_beta", 0.65))
+        beta = batch.get("cowp/natural/beta")
+        if beta is not None:
+            beta_t = _safe_float(beta)
+            while beta_t.ndim < min_safe.ndim:
+                beta_t = beta_t[:, None, :]
+            high_burden = _safe_float(min_safe) > beta_t
+        else:
+            high_burden = _safe_float(min_safe) > beta_default
+    else:
+        high_burden = torch.zeros_like(exists)
+    target = (exists & (collapse | high_burden)).float()
+    values = F.binary_cross_entropy_with_logits(_safe_float(logits), target, reduction="none")
+    # Dynamic positive reweighting without exploding when positives are rare.
+    pos = (target > 0.5) & pair_mask
+    neg = (target <= 0.5) & pair_mask
+    if pos.any():
+        pos_weight = float(weights.get("priority_claim_pos_weight", 3.0))
+        values = torch.where(pos, values * pos_weight, values)
+    return masked_mean(values, pair_mask)
+
+
+def planner_outcome_supervision(outcome: dict[str, torch.Tensor] | None, scores: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
+    """Strong closed-loop supervision from attached Waymax candidate outcomes.
+
+    The old expected-cost-only objective is weak when only a few replayed candidates
+    are attached. This combines candidate outcome classification, log-divergence
+    regression, and safe-vs-unsafe pairwise ranking.
+    """
+    zero = _zero_like_loss(scores)
+    rollout_valid = batch.get("waymax/candidate_rollout_valid")
+    collision = batch.get("waymax/candidate_collision")
+    offroad = batch.get("waymax/candidate_offroad")
+    logdiv = batch.get("waymax/candidate_log_divergence")
+    if rollout_valid is None or (collision is None and offroad is None and logdiv is None):
+        return {"loss": zero, "cls": zero, "logdiv": zero, "rank": zero, "expected_cost": zero}
+    mask = batch["cowp/candidates/valid"].bool() & rollout_valid.bool()
+    if not mask.any():
+        return {"loss": zero, "cls": zero, "logdiv": zero, "rank": zero, "expected_cost": zero}
+    unsafe = torch.zeros_like(scores, dtype=torch.float32)
+    if collision is not None:
+        unsafe = torch.maximum(unsafe, _binary_target(collision))
+    if offroad is not None:
+        unsafe = torch.maximum(unsafe, _binary_target(offroad))
+    if logdiv is not None:
+        ld_target = _safe_float(logdiv).clamp_min(0.0)
+        soft_unsafe = (ld_target > float(weights.get("outcome_logdiv_unsafe_threshold", 8.0))).float()
+        unsafe = torch.maximum(unsafe, soft_unsafe)
+    else:
+        ld_target = torch.zeros_like(scores)
+
+    cls = zero
+    ldr = zero
+    if outcome is not None:
+        terms = []
+        if collision is not None and "collision_logit" in outcome:
+            terms.append(masked_mean(F.binary_cross_entropy_with_logits(_safe_float(outcome["collision_logit"]), _binary_target(collision), reduction="none"), mask))
+        if offroad is not None and "offroad_logit" in outcome:
+            terms.append(masked_mean(F.binary_cross_entropy_with_logits(_safe_float(outcome["offroad_logit"]), _binary_target(offroad), reduction="none"), mask))
+        cls = torch.stack(terms).mean() if terms else zero
+        if logdiv is not None and "logdiv" in outcome:
+            ldr = masked_mean(F.smooth_l1_loss(_safe_float(outcome["logdiv"]), ld_target.clamp_max(50.0) / 10.0, reduction="none"), mask)
+
+    # Lower planner score should rank safe rollout candidates above unsafe ones.
+    rank_terms = []
+    for b in range(scores.shape[0]):
+        safe_idx = torch.where(mask[b] & (unsafe[b] < 0.5))[0]
+        unsafe_idx = torch.where(mask[b] & (unsafe[b] >= 0.5))[0]
+        if safe_idx.numel() and unsafe_idx.numel():
+            rank_terms.append(torch.relu(float(weights.get("outcome_pair_margin", 1.0)) + scores[b, safe_idx[:, None]] - scores[b, unsafe_idx[None, :]]).mean())
+    rank = torch.stack(rank_terms).mean() if rank_terms else zero
+
+    cost = unsafe + ld_target.clamp_min(0.0) / float(weights.get("outcome_logdiv_scale", 10.0))
+    prob = F.softmax(torch.where(mask, -_safe_float(scores), torch.full_like(scores, -1e9)), dim=-1)
+    expected = (prob * cost).sum(dim=-1).mean()
+    total = (
+        float(weights.get("outcome_cls", 1.0)) * cls
+        + float(weights.get("outcome_logdiv", 0.5)) * ldr
+        + float(weights.get("outcome_pair_rank", 1.5)) * rank
+        + float(weights.get("outcome_expected_cost", 0.5)) * expected
+    )
+    return {"loss": total, "cls": cls, "logdiv": ldr, "rank": rank, "expected_cost": expected}
+
+
 def planner_outcome_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     """Optional rollout/outcome surrogate when Waymax candidate labels exist."""
     scores = _safe_float(scores)

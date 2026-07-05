@@ -17,7 +17,7 @@ from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
-from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_ranking_loss, response_loss, witness_loss
+from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -240,16 +240,26 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             batch["cowp/candidates/valid"].bool(),
         )
         imitation = planner_imitation_loss(pred["planner_score"], batch)
-        outcome = planner_outcome_loss(pred["planner_score"], batch)
+        outcome_legacy = planner_outcome_loss(pred["planner_score"], batch)
+        outcome = planner_outcome_supervision(pred.get("outcome"), pred["planner_score"], batch, loss_weights)
+        priority_claim = priority_claim_loss(pred.get("priority_claim_logits"), batch, loss_weights)
         cls = candidate_classification_loss(pred["planner_score"], batch, loss_weights)
         out["planner/ranking"] = rank
         out["planner/imitation"] = imitation
-        out["planner/outcome"] = outcome
+        out["planner/outcome"] = outcome["loss"]
+        out["planner/outcome_cls"] = outcome["cls"]
+        out["planner/outcome_logdiv"] = outcome["logdiv"]
+        out["planner/outcome_rank"] = outcome["rank"]
+        out["planner/outcome_expected"] = outcome["expected_cost"]
+        out["planner/outcome_legacy"] = outcome_legacy
+        out["planner/priority_claim"] = priority_claim
         out.update({f"planner/{k}": v for k, v in cls.items() if k != "loss"})
         losses.append(
             loss_weights.get("ranking", 1.0) * rank
             + loss_weights.get("imitation", 1.0) * imitation
-            + loss_weights.get("closed_loop", 0.0) * outcome
+            + loss_weights.get("closed_loop", 0.0) * outcome["loss"]
+            + loss_weights.get("closed_loop_legacy", 0.0) * outcome_legacy
+            + loss_weights.get("priority_claim", 0.5) * priority_claim
             + cls["loss"]
         )
     if not losses:
@@ -354,19 +364,31 @@ def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor
 
 
 def _load_model_state_robust(model: torch.nn.Module, state: dict[str, torch.Tensor]) -> None:
-    """Load checkpoints saved from either eager or compiled models."""
-    first_error: RuntimeError | None = None
-    try:
-        model.load_state_dict(state)
-        return
-    except RuntimeError as exc:
-        first_error = exc
+    """Load checkpoints saved from eager/compiled models and tolerate new heads."""
+    candidates = [state]
     if state and all(k.startswith("_orig_mod.") for k in state.keys()):
-        stripped = {k[len("_orig_mod."):]: v for k, v in state.items()}
-        model.load_state_dict(stripped)
-        return
-    assert first_error is not None
-    raise first_error
+        candidates.insert(0, {k[len("_orig_mod."):]: v for k, v in state.items()})
+    last_error: RuntimeError | None = None
+    model_state = model.state_dict()
+    for cand in candidates:
+        try:
+            model.load_state_dict(cand)
+            return
+        except RuntimeError as exc:
+            last_error = exc
+        compatible = {k: v for k, v in cand.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+        missing = sorted(set(model_state) - set(compatible))
+        unexpected = sorted(set(cand) - set(compatible))
+        if compatible:
+            model.load_state_dict(compatible, strict=False)
+            if missing:
+                print(f"Loaded checkpoint with {len(missing)} newly initialized/missing keys, e.g. {missing[:6]}")
+            if unexpected:
+                print(f"Ignored {len(unexpected)} incompatible/unexpected keys, e.g. {unexpected[:6]}")
+            return
+    assert last_error is not None
+    raise last_error
+
 
 
 def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: float, fused: bool = False) -> torch.optim.Optimizer:

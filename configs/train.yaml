@@ -45,3 +45,18 @@ loss_weights:
   ranking: 1.0
   candidate_ncf_cls: 1.0
   candidate_false_safe_cls: 0.5
+
+  # V4 outcome-calibrated planner terms. They are active only when
+  # --with-waymax-outcome-labels is used and attached waymax/candidate_* fields exist.
+  closed_loop: 1.0
+  closed_loop_legacy: 0.0
+  outcome_cls: 1.0
+  outcome_logdiv: 0.5
+  outcome_pair_rank: 1.5
+  outcome_expected_cost: 0.5
+  outcome_pair_margin: 1.0
+  outcome_logdiv_scale: 10.0
+  outcome_logdiv_unsafe_threshold: 8.0
+  priority_claim: 0.5
+  priority_claim_pos_weight: 3.0
+  priority_claim_opr_alpha: 0.35

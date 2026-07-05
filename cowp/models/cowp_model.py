@@ -7,6 +7,8 @@ from cowp.models.candidate_encoder import CandidateEncoder
 from cowp.models.graph_encoder import GraphEncoder
 from cowp.models.natural_decoder import NaturalDecoder
 from cowp.models.planner_head import PlannerHead
+from cowp.models.priority_head import PriorityClaimHead
+from cowp.models.outcome_head import OutcomeRiskHead
 from cowp.models.response_decoder import ResponseDecoder
 from cowp.models.witness_decoder import WitnessDecoder
 from cowp.data.womd_features import build_agent_history_from_womd, has_womd_state
@@ -34,6 +36,8 @@ class COWPModel(nn.Module):
         self.response_decoder = ResponseDecoder(d_model=d_model, responses=int(m.get("max_safe_responses", 32)), future_steps=int(m.get("future_steps", 80)))
         self.witness_decoder = WitnessDecoder(d_model=d_model, token_count=int(m.get("token_count", 7)))
         self.planner = PlannerHead(d_model=d_model)
+        self.priority_claim = PriorityClaimHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
+        self.outcome_risk = OutcomeRiskHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.max_agents = int(m.get("max_agents", 128))
         self.history_steps = int(m.get("history_steps", 11))
         self.d_state = int(m.get("d_state", 11))
@@ -269,6 +273,14 @@ class COWPModel(nn.Module):
             witness = out.get("witness")
             assert isinstance(witness, dict)
             witness_prob = torch.sigmoid(witness["exist_logits"])
+            out["priority_claim_logits"] = self.priority_claim(
+                enc_cond["z_agent"],
+                z_cand,
+                critical_idx,
+                witness_prob,
+                witness["opr"],
+            )
+            out["outcome"] = self.outcome_risk(z_cand)
             out["planner_score"] = self.planner(
                 z_cand,
                 batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(),

@@ -9,6 +9,25 @@ from cowp.core.constants import MacroType
 from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory, repair_planar_kinematics
 
 
+def _load_state_dict_compatible(model, state: dict) -> None:
+    """Load old checkpoints after adding optional heads."""
+    try:
+        model.load_state_dict(state)
+        return
+    except Exception:
+        pass
+    if state and all(str(k).startswith("_orig_mod.") for k in state.keys()):
+        state = {k[len("_orig_mod."):]: v for k, v in state.items()}
+        try:
+            model.load_state_dict(state)
+            return
+        except Exception:
+            pass
+    model_state = model.state_dict()
+    compatible = {k: v for k, v in state.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+    model.load_state_dict(compatible, strict=False)
+
+
 def _to_numpy(x: Any) -> np.ndarray:
     try:
         import jax  # type: ignore
@@ -242,12 +261,15 @@ def _candidate_dyn_ok(traj: np.ndarray, cfg: dict) -> bool:
     speed = np.linalg.norm(traj[:, 3:5], axis=-1)
     acc = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
     jerk = np.diff(acc, prepend=acc[0]) / max(dt, 1e-3)
+    yaw = np.unwrap(traj[:, 2])
+    yaw_rate = np.diff(yaw, prepend=yaw[0]) / max(dt, 1e-3)
     cand_cfg = cfg.get("candidate", {})
     return bool(
         np.all(np.isfinite(traj))
         and np.nanmax(acc) <= float(cand_cfg.get("max_accel_mps2", 4.0)) + 1e-3
         and -np.nanmin(acc) <= float(cand_cfg.get("max_decel_mps2", 6.0)) + 1e-3
         and np.nanmax(np.abs(jerk)) <= float(cand_cfg.get("max_jerk_mps3", 6.0)) + 4.0
+        and np.nanmax(np.abs(yaw_rate)) <= float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)) + 1e-3
     )
 
 
@@ -630,6 +652,9 @@ class COWPWaymaxPolicy:
     secondary_opr_alpha: float = 0.10
     soft_ncf_penalty: float = 1.5
     method: str = "cowp"
+    adaptive_frontier_margin: float = 0.20
+    outcome_risk_penalty: float = 0.0
+    outcome_risk_threshold: float = 1.10
 
     def __post_init__(self) -> None:
         import torch
@@ -640,7 +665,7 @@ class COWPWaymaxPolicy:
         ckpt = torch.load(self.checkpoint, map_location="cpu")
         model_cfg = ckpt.get("cfg", self.cfg)
         self.model = COWPModel(model_cfg)
-        self.model.load_state_dict(ckpt["model"])
+        _load_state_dict_compatible(self.model, ckpt["model"])
         del ckpt
         self.model.to(dev)
         self.model.eval()
@@ -678,6 +703,20 @@ class COWPWaymaxPolicy:
             vy = float(next_pose[4]) if len(next_pose) > 4 else dy / float(self.cfg.get("time", {}).get("dt", 0.1))
             data[sdc_index, :5] = np.asarray([next_pose[0], next_pose[1], next_pose[2], vx, vy], dtype=np.float32)
         else:
+            # Delta action mode is sensitive to one-step jumps.  Clamp to a
+            # kinematically plausible step so a single bad primitive cannot
+            # trigger Waymax's any-step infeasibility metric.
+            dt = float(self.cfg.get("time", {}).get("dt", 0.1))
+            speed = max(float(agent_state[sdc_index, 5]), 0.0)
+            max_acc = float(self.cfg.get("candidate", {}).get("max_accel_mps2", 4.0))
+            max_step = float(self.cfg.get("waymax", {}).get("max_delta_step_m", speed * dt + 0.5 * max_acc * dt * dt + 0.25))
+            norm = float(np.hypot(dx, dy))
+            if norm > max_step > 1e-6:
+                scale = max_step / norm
+                dx *= scale
+                dy *= scale
+            max_dyaw = float(self.cfg.get("waymax", {}).get("max_delta_yaw_rad", 0.12))
+            dyaw = float(np.clip(dyaw, -max_dyaw, max_dyaw))
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
         try:
@@ -715,6 +754,14 @@ class COWPWaymaxPolicy:
             opr = self.torch.nan_to_num(pred["witness"]["opr"][0].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             burden = pred["witness"].get("burden_total")
             c_i = pred["witness"].get("c_i")
+            outcome = pred.get("outcome", {})
+            if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
+                col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
+                off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
+                ld_r = outcome.get("logdiv", self.torch.zeros_like(scores))[0].float().clamp_min(0.0) / 10.0
+                outcome_risk = self.torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
+            else:
+                outcome_risk = self.torch.zeros_like(scores)
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
@@ -771,20 +818,44 @@ class COWPWaymaxPolicy:
                     batch_np["cowp/candidates/macro_type"][0],
                     self.cfg,
                 )
-                priority = self.torch.as_tensor(priority_np, device=self.dev, dtype=witness.dtype)
+                heuristic_priority = self.torch.as_tensor(priority_np, device=self.dev, dtype=witness.dtype)
+                learned_priority = pred.get("priority_claim_logits")
+                if self.torch.is_tensor(learned_priority):
+                    learned_priority = self.torch.sigmoid(learned_priority[0].float())
+                    # Before the new head is trained it may be uncalibrated; blend with
+                    # the physically grounded heuristic rather than replacing it.
+                    priority = 0.5 * heuristic_priority + 0.5 * learned_priority
+                else:
+                    priority = heuristic_priority
                 primary_claim = priority >= float(self.priority_hard_threshold)
                 primary_bad = ((witness >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
                 option_bad = ((opr < alpha) & primary_claim).any(dim=-1)
                 severe_bad = ((witness >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha))).any(dim=-1)
                 burden_penalty = (witness * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
-                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
+                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + float(self.outcome_risk_penalty) * outcome_risk
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
                 elif gate_mode in {"none", "off"}:
                     accepted = cand_valid & conventional
                 else:
-                    accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad
+                    accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(self.outcome_risk_threshold))
+            # Scene-adaptive feasibility frontier.  If the absolute witness/OPR
+            # calibration is over-conservative (e.g., every candidate is predicted
+            # coercive), keep the least-coercive conventional frontier instead of
+            # degenerating into arbitrary fallback at every step.
+            if method == "cowp" and (not bool(accepted.any().detach().cpu().item())):
+                if gate_mode in {"priority", "soft"}:
+                    frontier_base = cand_valid & conventional & (outcome_risk <= float(self.outcome_risk_threshold))
+                    if frontier_base.any():
+                        if 'priority' in locals() and priority.numel():
+                            frontier_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
+                        else:
+                            frontier_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
+                        finite_risk = self.torch.where(frontier_base, frontier_risk, self.torch.full_like(frontier_risk, float("inf")))
+                        best_risk = finite_risk.min()
+                        accepted = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
+                        adjusted_scores = adjusted_scores + 0.5 * frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
@@ -845,6 +916,7 @@ class COWPWaymaxPolicy:
                     "option_bad_candidates": int(option_bad.sum().detach().cpu().item()) if option_bad.numel() else 0,
                 "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
+                "selected_outcome_risk": float(outcome_risk[selected].detach().cpu().item()) if outcome_risk.numel() else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:
@@ -880,6 +952,9 @@ def make_cowp_policy(
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
 ) -> COWPWaymaxPolicy:
     return COWPWaymaxPolicy(
         checkpoint=checkpoint,
@@ -893,4 +968,7 @@ def make_cowp_policy(
         secondary_opr_alpha=secondary_opr_alpha,
         soft_ncf_penalty=soft_ncf_penalty,
         method=method,
+        adaptive_frontier_margin=adaptive_frontier_margin,
+        outcome_risk_penalty=outcome_risk_penalty,
+        outcome_risk_threshold=outcome_risk_threshold,
     )

@@ -60,7 +60,10 @@ def main() -> None:
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
     ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
-    ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="conservative", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
+    ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
+    ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
+    ap.add_argument("--outcome-risk-penalty", type=float, default=0.0, help="Penalty weight for learned Waymax outcome risk. Keep 0 for checkpoints trained without outcome labels.")
+    ap.add_argument("--outcome-risk-threshold", type=float, default=1.10, help="Maximum learned outcome risk allowed in the hard feasibility layer when outcome-risk-penalty > 0.")
     ap.add_argument("--mode", choices=["offline", "learned_offline", "waymax"], default="offline")
     ap.add_argument("--policy-fn", default=None, help="For --mode waymax: optional Python callable spec 'module:function' returning Waymax actions. If omitted with --checkpoint, a COWP checkpoint policy is used.")
     ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="delta_xy_yaw")
@@ -102,6 +105,9 @@ def main() -> None:
                 soft_ncf_penalty=args.soft_ncf_penalty,
                 method=args.method,
                 offline_fallback=args.offline_fallback,
+                adaptive_frontier_margin=args.adaptive_frontier_margin,
+                outcome_risk_penalty=args.outcome_risk_penalty,
+                outcome_risk_threshold=args.outcome_risk_threshold,
             )
             metrics = min(sweep, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
             payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback, "witness_threshold_sweep": sweep}
@@ -120,6 +126,9 @@ def main() -> None:
                 soft_ncf_penalty=args.soft_ncf_penalty,
                 method=args.method,
                 offline_fallback=args.offline_fallback,
+                adaptive_frontier_margin=args.adaptive_frontier_margin,
+                outcome_risk_penalty=args.outcome_risk_penalty,
+                outcome_risk_threshold=args.outcome_risk_threshold,
             )
             payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback}
     else:
@@ -138,6 +147,9 @@ def main() -> None:
                 secondary_opr_alpha=args.secondary_opr_alpha,
                 soft_ncf_penalty=args.soft_ncf_penalty,
                 method=args.method,
+                adaptive_frontier_margin=args.adaptive_frontier_margin,
+                outcome_risk_penalty=args.outcome_risk_penalty,
+                outcome_risk_threshold=args.outcome_risk_threshold,
             )
         else:
             raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")

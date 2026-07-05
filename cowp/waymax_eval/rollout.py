@@ -15,6 +15,24 @@ from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, 
 from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator
 
 
+def _load_state_dict_compatible(model, state: dict) -> None:
+    try:
+        model.load_state_dict(state)
+        return
+    except Exception:
+        pass
+    if state and all(str(k).startswith("_orig_mod.") for k in state.keys()):
+        state = {k[len("_orig_mod."):]: v for k, v in state.items()}
+        try:
+            model.load_state_dict(state)
+            return
+        except Exception:
+            pass
+    model_state = model.state_dict()
+    compatible = {k: v for k, v in state.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+    model.load_state_dict(compatible, strict=False)
+
+
 def _label_from_batch_item(batch, i: int) -> dict[str, np.ndarray]:
     out: dict[str, np.ndarray] = {}
     for k, v in batch.items():
@@ -51,7 +69,7 @@ def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
         g = "hard"
     elif m == "soft_burden_cost_only":
         g = "soft"
-    elif m in {"idm_lattice", "conventional_safety", "planner_score_only"}:
+    elif m in {"idm_lattice", "conventional_safety", "planner_score_only", "outcome_oracle"}:
         g = "none"
     return m, g
 
@@ -92,7 +110,10 @@ def _select_from_learned(
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
-    offline_fallback: str = "conservative",
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
 ) -> tuple[list[int], list[np.ndarray]]:
     import torch
 
@@ -107,14 +128,37 @@ def _select_from_learned(
         utility_scores = torch.nan_to_num(utility.detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
     else:
         utility_scores = scores
+    outcome = pred.get("outcome", {})
+    if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
+        col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
+        off_r = torch.sigmoid(outcome.get("offroad_logit", torch.zeros_like(scores)).detach().float())
+        ld_r = outcome.get("logdiv", torch.zeros_like(scores)).detach().float().clamp_min(0.0) / 10.0
+        outcome_risk = torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
+    else:
+        outcome_risk = torch.zeros_like(scores)
     crit_mask = batch.get("cowp/critical/valid")
     if crit_mask is not None and witness_prob.ndim == 3:
         cm = crit_mask.bool()[:, None, :]
         witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
         opr = torch.where(cm, opr, torch.ones_like(opr))
 
+    # Offline upper-bound baseline when attached Waymax candidate outcomes exist.
+    if method == "outcome_oracle":
+        rv = batch.get("waymax/candidate_rollout_valid", cand_valid).bool()
+        col = batch.get("waymax/candidate_collision")
+        off = batch.get("waymax/candidate_offroad")
+        ld = batch.get("waymax/candidate_log_divergence")
+        cost = torch.zeros_like(scores)
+        if col is not None:
+            cost = cost + col.float() * 10.0
+        if off is not None:
+            cost = cost + off.float() * 10.0
+        if ld is not None:
+            cost = cost + torch.nan_to_num(ld.float(), nan=50.0, posinf=50.0, neginf=0.0) / 10.0
+        accepted = cand_valid & conventional & rv
+        adjusted_scores = cost + 0.01 * utility_scores
     # Internal baselines that do not use the coercion witness.
-    if method == "idm_lattice":
+    elif method == "idm_lattice":
         accepted = cand_valid & conventional
         adjusted_scores = utility_scores
     elif method == "conventional_safety":
@@ -136,15 +180,34 @@ def _select_from_learned(
             # witness coincides with collapsed option preservation; otherwise use
             # witness/OPR as a ranking penalty.  Online mode has a richer right-of-
             # way proxy from geometry and agent state.
-            priority_proxy = (opr < float(alpha_opr)).float()
+            if "priority_claim_logits" in pred and torch.is_tensor(pred["priority_claim_logits"]):
+                learned_priority = torch.sigmoid(pred["priority_claim_logits"].detach().float())
+                heuristic_priority = (opr < float(alpha_opr)).float()
+                priority_proxy = 0.5 * learned_priority + 0.5 * heuristic_priority
+            else:
+                priority_proxy = (opr < float(alpha_opr)).float()
             primary_bad = ((witness_prob >= witness_threshold) & (priority_proxy > 0.0)).any(dim=-1)
             severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha))).any(dim=-1)
-            penalty = (witness_prob * priority_proxy).amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-            adjusted_scores = scores + float(soft_ncf_penalty) * penalty
+            penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
+            adjusted_scores = scores + float(soft_ncf_penalty) * penalty + float(outcome_risk_penalty) * outcome_risk
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
             else:
-                accepted = cand_valid & conventional & ~primary_bad & ~severe_bad
+                accepted = cand_valid & conventional & ~primary_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
+
+    if method == "cowp" and gate_mode in {"priority", "soft"}:
+        empty = ~accepted.any(dim=-1)
+        if empty.any():
+            frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
+            # If all predicted witnesses are saturated, keep a scene-adaptive
+            # least-coercive frontier instead of turning the whole dataset into
+            # no-selection fallback.
+            risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+            for b in torch.where(empty)[0].tolist():
+                base_b = frontier_base[b]
+                if base_b.any():
+                    best = torch.where(base_b, risk[b], torch.full_like(risk[b], float("inf"))).min()
+                    accepted[b] = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
 
     selected: list[int] = []
     masks: list[np.ndarray] = []
@@ -426,7 +489,10 @@ def _learned_offline_candidate_eval_many(
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
-    offline_fallback: str = "conservative",
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
 ) -> dict[float, dict[str, object]]:
     import torch
     from torch.utils.data import DataLoader
@@ -441,7 +507,7 @@ def _learned_offline_candidate_eval_many(
     ckpt = torch.load(checkpoint, map_location=dev)
     model_cfg = ckpt.get("cfg", cfg)
     model = COWPModel(model_cfg).to(dev)
-    model.load_state_dict(ckpt["model"])
+    _load_state_dict_compatible(model, ckpt["model"])
     model.eval()
     del ckpt
 
@@ -503,6 +569,9 @@ def _learned_offline_candidate_eval_many(
                     soft_ncf_penalty=soft_ncf_penalty,
                     method=method,
                     offline_fallback=offline_fallback,
+                    adaptive_frontier_margin=adaptive_frontier_margin,
+                    outcome_risk_penalty=outcome_risk_penalty,
+                    outcome_risk_threshold=outcome_risk_threshold,
                 )
                 pred_exists = (pair_score_np >= float(th))
                 acc = accs[th]
@@ -539,7 +608,10 @@ def learned_offline_candidate_eval(
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
-    offline_fallback: str = "conservative",
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
 ) -> dict[str, object]:
     return _learned_offline_candidate_eval_many(
         cache_dir,
@@ -555,6 +627,9 @@ def learned_offline_candidate_eval(
         soft_ncf_penalty=soft_ncf_penalty,
         method=method,
         offline_fallback=offline_fallback,
+        adaptive_frontier_margin=adaptive_frontier_margin,
+        outcome_risk_penalty=outcome_risk_penalty,
+        outcome_risk_threshold=outcome_risk_threshold,
     )[float(witness_threshold)]
 
 
@@ -572,7 +647,10 @@ def learned_offline_candidate_eval_sweep(
     secondary_opr_alpha: float = 0.10,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
-    offline_fallback: str = "conservative",
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
 ) -> list[dict[str, object]]:
     out = _learned_offline_candidate_eval_many(
         cache_dir,
@@ -588,6 +666,9 @@ def learned_offline_candidate_eval_sweep(
         soft_ncf_penalty=soft_ncf_penalty,
         method=method,
         offline_fallback=offline_fallback,
+        adaptive_frontier_margin=adaptive_frontier_margin,
+        outcome_risk_penalty=outcome_risk_penalty,
+        outcome_risk_threshold=outcome_risk_threshold,
     )
     return [out[th] for th in sorted(out)]
 
