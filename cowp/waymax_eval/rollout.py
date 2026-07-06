@@ -108,6 +108,7 @@ def _select_from_learned(
     gate_mode: str = "priority",
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
     offline_fallback: str = "stop_like",
@@ -176,18 +177,22 @@ def _select_from_learned(
             accepted = cand_valid & conventional & ~predicted_bad
             accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
         else:
-            # Learned-offline priority proxy: hard-veto only when a predicted
-            # witness coincides with collapsed option preservation; otherwise use
-            # witness/OPR as a ranking penalty.  Online mode has a richer right-of-
-            # way proxy from geometry and agent state.
+            # Priority-aware P-NCF gate.  Low OPR is evidence of option collapse,
+            # but it is not a protected-priority claim by itself.  The previous
+            # implementation used ``priority_proxy > 0`` after mixing in an OPR
+            # indicator, which collapsed priority-aware COWP into the universal NCF
+            # veto and produced all-fallback learned-offline/Waymax behavior.
             if "priority_claim_logits" in pred and torch.is_tensor(pred["priority_claim_logits"]):
                 learned_priority = torch.sigmoid(pred["priority_claim_logits"].detach().float())
-                heuristic_priority = (opr < float(alpha_opr)).float()
-                priority_proxy = 0.5 * learned_priority + 0.5 * heuristic_priority
             else:
-                priority_proxy = (opr < float(alpha_opr)).float()
-            primary_bad = ((witness_prob >= witness_threshold) & (priority_proxy > 0.0)).any(dim=-1)
-            severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha))).any(dim=-1)
+                learned_priority = torch.zeros_like(witness_prob)
+            opr_collapse = (torch.relu(float(alpha_opr) - opr) / max(float(alpha_opr), 1e-6)).clamp(0.0, 1.0)
+            # Keep OPR collapse as a weak tie-breaker.  A hard rejection requires a
+            # calibrated priority claim above ``priority_hard_threshold``.
+            priority_proxy = (0.80 * learned_priority + 0.20 * opr_collapse).clamp(0.0, 1.0)
+            priority_claim = priority_proxy >= float(priority_hard_threshold)
+            primary_bad = ((witness_prob >= witness_threshold) & priority_claim).any(dim=-1)
+            severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
             adjusted_scores = scores + float(soft_ncf_penalty) * penalty + float(outcome_risk_penalty) * outcome_risk
             if gate_mode == "soft":
@@ -487,6 +492,7 @@ def _learned_offline_candidate_eval_many(
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
     offline_fallback: str = "stop_like",
@@ -566,6 +572,7 @@ def _learned_offline_candidate_eval_many(
                     gate_mode=gate_mode,
                     secondary_witness_threshold=secondary_witness_threshold,
                     secondary_opr_alpha=secondary_opr_alpha,
+                    priority_hard_threshold=priority_hard_threshold,
                     soft_ncf_penalty=soft_ncf_penalty,
                     method=method,
                     offline_fallback=offline_fallback,
@@ -606,6 +613,7 @@ def learned_offline_candidate_eval(
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
     offline_fallback: str = "stop_like",
@@ -624,6 +632,7 @@ def learned_offline_candidate_eval(
         gate_mode=gate_mode,
         secondary_witness_threshold=secondary_witness_threshold,
         secondary_opr_alpha=secondary_opr_alpha,
+        priority_hard_threshold=priority_hard_threshold,
         soft_ncf_penalty=soft_ncf_penalty,
         method=method,
         offline_fallback=offline_fallback,
@@ -645,6 +654,7 @@ def learned_offline_candidate_eval_sweep(
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
     secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
     offline_fallback: str = "stop_like",
@@ -663,6 +673,7 @@ def learned_offline_candidate_eval_sweep(
         gate_mode=gate_mode,
         secondary_witness_threshold=secondary_witness_threshold,
         secondary_opr_alpha=secondary_opr_alpha,
+        priority_hard_threshold=priority_hard_threshold,
         soft_ncf_penalty=soft_ncf_penalty,
         method=method,
         offline_fallback=offline_fallback,

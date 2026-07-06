@@ -102,6 +102,7 @@ def main() -> None:
                 gate_mode=args.ncf_gate_mode,
                 secondary_witness_threshold=args.secondary_witness_threshold,
                 secondary_opr_alpha=args.secondary_opr_alpha,
+                priority_hard_threshold=args.priority_hard_threshold,
                 soft_ncf_penalty=args.soft_ncf_penalty,
                 method=args.method,
                 offline_fallback=args.offline_fallback,
@@ -110,7 +111,7 @@ def main() -> None:
                 outcome_risk_threshold=args.outcome_risk_threshold,
             )
             metrics = min(sweep, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
-            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback, "witness_threshold_sweep": sweep}
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "priority_hard_threshold": args.priority_hard_threshold, "offline_fallback": args.offline_fallback, "witness_threshold_sweep": sweep}
         else:
             metrics = learned_offline_candidate_eval(
                 args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
@@ -123,6 +124,7 @@ def main() -> None:
                 gate_mode=args.ncf_gate_mode,
                 secondary_witness_threshold=args.secondary_witness_threshold,
                 secondary_opr_alpha=args.secondary_opr_alpha,
+                priority_hard_threshold=args.priority_hard_threshold,
                 soft_ncf_penalty=args.soft_ncf_penalty,
                 method=args.method,
                 offline_fallback=args.offline_fallback,
@@ -130,7 +132,7 @@ def main() -> None:
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
             )
-            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "offline_fallback": args.offline_fallback}
+            payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "priority_hard_threshold": args.priority_hard_threshold, "offline_fallback": args.offline_fallback}
     else:
         if args.policy_fn:
             policy_fn = import_policy_fn(args.policy_fn)

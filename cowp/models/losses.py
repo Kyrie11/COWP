@@ -414,11 +414,19 @@ def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, to
     ncf = _binary_target(batch["cowp/candidates/noncoercive_feasible"])
     false_safe = _binary_target(batch["cowp/candidates/false_safe"])
     pred_scores = _safe_float(pred_scores)
-    # Lower planner score is better, so supervise -score as NCF logit and score as false-safe logit.
+    # Lower planner score is better.  Only use the scalar planner score as a
+    # binary logit on discriminative candidate labels (NCF or false-safe).  On
+    # neutral/ambiguous candidates where both labels are zero, the old two-BCE
+    # formulation simultaneously pushed the same score high and low, hurting
+    # ranking and calibration.
+    disc_mask = mask & ((ncf > 0.5) | (false_safe > 0.5))
+    if not disc_mask.any():
+        z = _zero_like_loss(pred_scores)
+        return {"loss": z, "ncf": z, "false_safe": z}
     ncf_loss = F.binary_cross_entropy_with_logits(-pred_scores, ncf, reduction="none")
     fs_loss = F.binary_cross_entropy_with_logits(pred_scores, false_safe, reduction="none")
-    loss_ncf = masked_mean(ncf_loss, mask)
-    loss_fs = masked_mean(fs_loss, mask)
+    loss_ncf = masked_mean(ncf_loss, disc_mask)
+    loss_fs = masked_mean(fs_loss, disc_mask)
     total = weights.get("candidate_ncf_cls", 1.0) * loss_ncf + weights.get("candidate_false_safe_cls", 0.5) * loss_fs
     return {"loss": total, "ncf": loss_ncf, "false_safe": loss_fs}
 

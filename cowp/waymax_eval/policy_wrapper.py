@@ -322,10 +322,15 @@ def _add_candidate(
     traj = repair_planar_kinematics(traj, agent_state[sdc_index], float(cfg.get("time", {}).get("dt", 0.1)))
     if not _candidate_dyn_ok(traj, cfg):
         return
-    # De-duplicate by endpoint to keep the limited candidate tensor useful.
+    # De-duplicate by endpoint to keep the limited candidate tensor useful.  The
+    # original 0.35 m threshold removed most short-horizon smoke-test candidates
+    # (especially low-speed accel/yield primitives), leaving the online planner
+    # with too few alternatives and causing brittle fallback.
     end = traj[-1, :2]
+    dedup_eps = float(cfg.get("planning", {}).get("online_candidate_dedup_endpoint_m", cfg.get("candidate", {}).get("dedup_endpoint_tolerance_m", 0.25)))
+    dedup_eps = float(np.clip(dedup_eps, 0.05, 0.35))
     for old in out:
-        if np.linalg.norm(old[-1, :2] - end) < 0.35:
+        if np.linalg.norm(old[-1, :2] - end) < dedup_eps:
             return
     conv = True
     if conventional_check:
@@ -406,6 +411,21 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
                 tr = constant_accel_trajectory(current, H, dt, accel=acc, lateral_offset=float(lateral_offset), start_delay_s=float(delay))
                 progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
                 _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg)
+
+    # Ensure the online batch contains a minimally useful ego-motion set even in
+    # low-speed scenes where endpoint de-duplication and dynamics checks collapse
+    # many primitives.  These are still kinematically repaired and checked first;
+    # only the final neutral fallback bypasses the conservative mask.
+    min_online = int(cfg.get("planning", {}).get("min_online_candidates", min(8, K)))
+    if len(candidates) < min_online:
+        supplemental_acc = [0.25, -0.25, 0.75, -0.75, 1.25, -1.25]
+        for acc in supplemental_acc:
+            if len(candidates) >= min_online or len(candidates) >= K:
+                break
+            macro = MacroType.ACCELERATE_CROSS if acc > 0 else MacroType.YIELD
+            tr = constant_accel_trajectory(current, H, dt, accel=float(acc))
+            progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
+            _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg)
 
     # Guaranteed conservative option, even if marked not conventional-safe.
     if len(candidates) < K:
@@ -698,25 +718,28 @@ class COWPWaymaxPolicy:
         dx = float(next_pose[0] - agent_state[sdc_index, 0])
         dy = float(next_pose[1] - agent_state[sdc_index, 1])
         dyaw = float(_wrap_angle(float(next_pose[2] - agent_state[sdc_index, 6])))
+        # Clamp both action interfaces to a plausible one-step displacement.
+        # Without this, an absolute target emitted from a repaired multi-step
+        # primitive can still violate Waymax kinematics even when delta mode is safe.
+        dt = float(self.cfg.get("time", {}).get("dt", 0.1))
+        speed = max(float(agent_state[sdc_index, 5]), 0.0)
+        max_acc = float(self.cfg.get("candidate", {}).get("max_accel_mps2", 4.0))
+        max_step = float(self.cfg.get("waymax", {}).get("max_delta_step_m", speed * dt + 0.5 * max_acc * dt * dt + 0.25))
+        norm = float(np.hypot(dx, dy))
+        if norm > max_step > 1e-6:
+            scale = max_step / norm
+            dx *= scale
+            dy *= scale
+        max_dyaw = float(self.cfg.get("waymax", {}).get("max_delta_yaw_rad", 0.12))
+        dyaw = float(np.clip(dyaw, -max_dyaw, max_dyaw))
         if self.action_mode == "absolute_xy_yaw":
-            vx = float(next_pose[3]) if len(next_pose) > 3 else dx / float(self.cfg.get("time", {}).get("dt", 0.1))
-            vy = float(next_pose[4]) if len(next_pose) > 4 else dy / float(self.cfg.get("time", {}).get("dt", 0.1))
-            data[sdc_index, :5] = np.asarray([next_pose[0], next_pose[1], next_pose[2], vx, vy], dtype=np.float32)
+            x_abs = float(agent_state[sdc_index, 0] + dx)
+            y_abs = float(agent_state[sdc_index, 1] + dy)
+            yaw_abs = float(_wrap_angle(float(agent_state[sdc_index, 6] + dyaw)))
+            vx = dx / max(dt, 1e-6)
+            vy = dy / max(dt, 1e-6)
+            data[sdc_index, :5] = np.asarray([x_abs, y_abs, yaw_abs, vx, vy], dtype=np.float32)
         else:
-            # Delta action mode is sensitive to one-step jumps.  Clamp to a
-            # kinematically plausible step so a single bad primitive cannot
-            # trigger Waymax's any-step infeasibility metric.
-            dt = float(self.cfg.get("time", {}).get("dt", 0.1))
-            speed = max(float(agent_state[sdc_index, 5]), 0.0)
-            max_acc = float(self.cfg.get("candidate", {}).get("max_accel_mps2", 4.0))
-            max_step = float(self.cfg.get("waymax", {}).get("max_delta_step_m", speed * dt + 0.5 * max_acc * dt * dt + 0.25))
-            norm = float(np.hypot(dx, dy))
-            if norm > max_step > 1e-6:
-                scale = max_step / norm
-                dx *= scale
-                dy *= scale
-            max_dyaw = float(self.cfg.get("waymax", {}).get("max_delta_yaw_rad", 0.12))
-            dyaw = float(np.clip(dyaw, -max_dyaw, max_dyaw))
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
         try:
@@ -830,7 +853,7 @@ class COWPWaymaxPolicy:
                 primary_claim = priority >= float(self.priority_hard_threshold)
                 primary_bad = ((witness >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
                 option_bad = ((opr < alpha) & primary_claim).any(dim=-1)
-                severe_bad = ((witness >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha))).any(dim=-1)
+                severe_bad = ((witness >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha)) & primary_claim).any(dim=-1)
                 burden_penalty = (witness * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                 adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + float(self.outcome_risk_penalty) * outcome_risk
