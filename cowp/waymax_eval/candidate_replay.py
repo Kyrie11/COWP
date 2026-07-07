@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -764,26 +765,126 @@ def _row_key(row: dict[str, Any]) -> tuple[str, int]:
     return str(row.get("scenario_id") or row.get("scenario/id") or ""), int(row.get("candidate_index", row.get("candidate", row.get("k", -1))))
 
 
-def read_existing_outcome_keys(path: str | Path | None) -> set[tuple[str, int]]:
+def _jsonl_row_key_or_none(row: dict[str, Any]) -> tuple[str, int] | None:
+    try:
+        key = _row_key(row)
+    except Exception:
+        return None
+    if key[0] and key[1] >= 0:
+        return key
+    return None
+
+
+def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[set[tuple[str, int]], dict[str, int]]:
+    """Read and repair an existing outcome JSONL before resume.
+
+    A killed replay process can leave the final JSONL record partially written.
+    Appending to such a file is dangerous: the next JSON object may be glued to
+    the broken tail, and scripts/12 can later fail while loading outcomes. This
+    helper keeps only complete JSON objects with a usable (scenario_id,
+    candidate_index), drops corrupt/incomplete rows, deduplicates by key using
+    the latest complete row, and rewrites the JSONL with one newline-terminated
+    object per line. Dropped rows are intentionally not marked done, so resume
+    recomputes them.
+    """
+    stats = {
+        "resume_existing_lines": 0,
+        "resume_valid_rows": 0,
+        "resume_dropped_empty_lines": 0,
+        "resume_dropped_corrupt_lines": 0,
+        "resume_dropped_keyless_rows": 0,
+        "resume_deduplicated_rows": 0,
+        "resume_repaired_file": 0,
+    }
     if path is None:
-        return set()
+        return set(), stats
     p = Path(path)
     if not p.exists():
-        return set()
-    keys: set[tuple[str, int]] = set()
+        return set(), stats
+
+    rows_by_key: dict[tuple[str, int], dict[str, Any]] = {}
+    key_order: list[tuple[str, int]] = []
     with p.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            stats["resume_existing_lines"] += 1
+            line = raw.strip()
             if not line:
+                stats["resume_dropped_empty_lines"] += 1
                 continue
             try:
                 row = json.loads(line)
-                key = _row_key(row)
-                if key[0] and key[1] >= 0:
-                    keys.add(key)
             except Exception:
+                stats["resume_dropped_corrupt_lines"] += 1
                 continue
+            if not isinstance(row, dict):
+                stats["resume_dropped_keyless_rows"] += 1
+                continue
+            key = _jsonl_row_key_or_none(row)
+            if key is None:
+                stats["resume_dropped_keyless_rows"] += 1
+                continue
+            if key in rows_by_key:
+                stats["resume_deduplicated_rows"] += 1
+                try:
+                    key_order.remove(key)
+                except ValueError:
+                    pass
+            key_order.append(key)
+            rows_by_key[key] = row
+
+    stats["resume_valid_rows"] = len(rows_by_key)
+    needs_rewrite = any(
+        stats[k] > 0
+        for k in (
+            "resume_dropped_empty_lines",
+            "resume_dropped_corrupt_lines",
+            "resume_dropped_keyless_rows",
+            "resume_deduplicated_rows",
+        )
+    )
+    try:
+        if p.stat().st_size > 0:
+            with p.open("rb") as bf:
+                bf.seek(-1, 2)
+                needs_rewrite = needs_rewrite or (bf.read(1) != b"\n")
+    except OSError:
+        needs_rewrite = True
+
+    if needs_rewrite:
+        tmp = p.with_name(f"{p.name}.resume_repair.{os.getpid()}.tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for key in key_order:
+                row = rows_by_key[key]
+                f.write(json.dumps(row, ensure_ascii=False, allow_nan=True) + "\n")
+        tmp.replace(p)
+        stats["resume_repaired_file"] = 1
+
+    return set(rows_by_key.keys()), stats
+
+
+def read_existing_outcome_keys(path: str | Path | None) -> set[tuple[str, int]]:
+    # Backward-compatible public helper. The replay path uses the repairing
+    # variant above so partially written JSONL tails cannot poison resume.
+    keys, _ = repair_existing_outcomes_jsonl_for_resume(path)
     return keys
+
+
+def _append_jsonl_lines(path: str | Path, lines: list[str]) -> None:
+    if not lines:
+        return
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    with p.open("ab+") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        if size > 0:
+            f.seek(-1, 2)
+            if f.read(1) != b"\n":
+                f.seek(0, 2)
+                f.write(b"\n")
+        f.seek(0, 2)
+        f.write(payload)
 
 
 def _sid_to_cache_paths(cache_dir: Path, *, verify_cache_sid: bool = False, shard_index: int = 0, num_shards: int = 1) -> dict[str, Path]:
@@ -852,11 +953,18 @@ def replay_cache_candidates_to_jsonl(
         keep = set(list(sid_to_path.keys())[: int(limit_scenes)])
         sid_to_path = {sid: p for sid, p in sid_to_path.items() if sid in keep}
 
-    done = read_existing_outcome_keys(out_path) if resume else set()
-    if not resume:
+    resume_repair_stats: dict[str, int] = {}
+    if resume:
+        if out_path.exists():
+            done, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
+        else:
+            out_path.write_text("", encoding="utf-8")
+            done = set()
+            _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
+    else:
         out_path.write_text("", encoding="utf-8")
-    elif not out_path.exists():
-        out_path.write_text("", encoding="utf-8")
+        done = set()
+        _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
 
     profile_path = Path(profile_replay_jsonl) if profile_replay_jsonl else None
     if profile_path is not None:
@@ -1015,14 +1123,15 @@ def replay_cache_candidates_to_jsonl(
                 }
                 seed = _stable_seed(sid)
                 indices = preselected_indices if preselected_indices is not None else select_candidate_indices(selected_arrays, cfg, selection=candidate_selection, max_candidates=max_candidates_per_scene, seed=seed)
-                with out_path.open("a", encoding="utf-8") as f:
-                    for k in indices:
-                        if (sid, int(k)) in done:
-                            continue
-                        row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"cache_state_failed: {exc}"}
-                        f.write(json.dumps(row, ensure_ascii=False, allow_nan=True) + "\n")
-                        done.add((sid, int(k)))
-                        total_failed += 1
+                failure_lines: list[str] = []
+                for k in indices:
+                    if (sid, int(k)) in done:
+                        continue
+                    row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"cache_state_failed: {exc}"}
+                    failure_lines.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
+                    done.add((sid, int(k)))
+                    total_failed += 1
+                _append_jsonl_lines(out_path, failure_lines)
                 remaining.discard(sid)
                 if profile_path is not None:
                     scene_profile.update({"status": "cache_state_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
@@ -1089,14 +1198,15 @@ def replay_cache_candidates_to_jsonl(
         except Exception as exc:
             # If the scene itself cannot be initialized, record all selected rows
             # as invalid rather than silently leaving them unattached.
-            with out_path.open("a", encoding="utf-8") as f:
-                for k in indices:
-                    if (sid, int(k)) in done:
-                        continue
-                    row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"scene_init_failed: {exc}"}
-                    f.write(json.dumps(row, ensure_ascii=False, allow_nan=True) + "\n")
-                    done.add((sid, int(k)))
-                    total_failed += 1
+            failure_lines: list[str] = []
+            for k in indices:
+                if (sid, int(k)) in done:
+                    continue
+                row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"scene_init_failed: {exc}"}
+                failure_lines.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
+                done.add((sid, int(k)))
+                total_failed += 1
+            _append_jsonl_lines(out_path, failure_lines)
             remaining.discard(sid)
             if profile_path is not None:
                 scene_profile.update({"status": "scene_init_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
@@ -1176,8 +1286,7 @@ def replay_cache_candidates_to_jsonl(
             done.add((sid, int(k)))
         t = time.perf_counter()
         if rows_to_write:
-            with out_path.open("a", encoding="utf-8") as f:
-                f.write("\n".join(rows_to_write) + "\n")
+            _append_jsonl_lines(out_path, rows_to_write)
         write_outcomes_s = time.perf_counter() - t
         remaining.discard(sid)
         if profile_path is not None:
@@ -1217,6 +1326,7 @@ def replay_cache_candidates_to_jsonl(
         "scenes_matched": scenes_matched,
         "candidate_targets": candidate_targets,
         "rows_written_or_resumed": len(done),
+        **resume_repair_stats,
         "new_success_rows": total_written,
         "new_failed_rows": total_failed,
         "unmatched_cache_scenes": len(remaining),
