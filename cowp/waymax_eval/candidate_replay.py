@@ -775,7 +775,35 @@ def _jsonl_row_key_or_none(row: dict[str, Any]) -> tuple[str, int] | None:
     return None
 
 
-def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[set[tuple[str, int]], dict[str, int]]:
+def _jsonl_row_is_successful(row: dict[str, Any]) -> bool:
+    """Return whether an existing replay row should be treated as completed.
+
+    GPU OOM and other transient Waymax/JAX failures are written as JSONL rows
+    with ``rollout_valid=false`` and an ``error`` field. Those rows must not be
+    considered done in resume mode; otherwise rerunning scripts/13 would skip
+    exactly the candidates that need to be repaired.
+    """
+    for key in ("rollout_valid", "candidate_rollout_valid", "valid"):
+        if key in row:
+            value = row.get(key)
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "y"}
+            return bool(value)
+    # Backward compatibility for very old successful rows that did not store an
+    # explicit validity flag. An error/status failure is never complete.
+    if row.get("error"):
+        return False
+    status = str(row.get("status", "")).strip().lower()
+    if status and any(tok in status for tok in ("failed", "error", "oom", "invalid")):
+        return False
+    return True
+
+
+def repair_existing_outcomes_jsonl_for_resume(
+    path: str | Path | None,
+    *,
+    retry_failed_existing: bool = True,
+) -> tuple[set[tuple[str, int]], dict[str, int]]:
     """Read and repair an existing outcome JSONL before resume.
 
     A killed replay process can leave the final JSONL record partially written.
@@ -784,8 +812,12 @@ def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[
     helper keeps only complete JSON objects with a usable (scenario_id,
     candidate_index), drops corrupt/incomplete rows, deduplicates by key using
     the latest complete row, and rewrites the JSONL with one newline-terminated
-    object per line. Dropped rows are intentionally not marked done, so resume
-    recomputes them.
+    object per line.
+
+    When retry_failed_existing=True, rows with rollout_valid=false or an error
+    are also dropped during resume repair. This makes a rerun skip only already
+    successful candidates and recompute failed candidates, which is important
+    after transient GPU OOM failures.
     """
     stats = {
         "resume_existing_lines": 0,
@@ -793,6 +825,7 @@ def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[
         "resume_dropped_empty_lines": 0,
         "resume_dropped_corrupt_lines": 0,
         "resume_dropped_keyless_rows": 0,
+        "resume_dropped_failed_rows": 0,
         "resume_deduplicated_rows": 0,
         "resume_repaired_file": 0,
     }
@@ -823,6 +856,9 @@ def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[
             if key is None:
                 stats["resume_dropped_keyless_rows"] += 1
                 continue
+            if retry_failed_existing and not _jsonl_row_is_successful(row):
+                stats["resume_dropped_failed_rows"] += 1
+                continue
             if key in rows_by_key:
                 stats["resume_deduplicated_rows"] += 1
                 try:
@@ -839,6 +875,7 @@ def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[
             "resume_dropped_empty_lines",
             "resume_dropped_corrupt_lines",
             "resume_dropped_keyless_rows",
+            "resume_dropped_failed_rows",
             "resume_deduplicated_rows",
         )
     )
@@ -865,7 +902,7 @@ def repair_existing_outcomes_jsonl_for_resume(path: str | Path | None) -> tuple[
 def read_existing_outcome_keys(path: str | Path | None) -> set[tuple[str, int]]:
     # Backward-compatible public helper. The replay path uses the repairing
     # variant above so partially written JSONL tails cannot poison resume.
-    keys, _ = repair_existing_outcomes_jsonl_for_resume(path)
+    keys, _ = repair_existing_outcomes_jsonl_for_resume(path, retry_failed_existing=True)
     return keys
 
 
@@ -942,6 +979,7 @@ def replay_cache_candidates_to_jsonl(
     metric_eval_interval: int = 1,
     metric_guard_radius_m: float = 8.0,
     metric_guard_window_steps: int = 1,
+    retry_failed_existing: bool = True,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -956,15 +994,15 @@ def replay_cache_candidates_to_jsonl(
     resume_repair_stats: dict[str, int] = {}
     if resume:
         if out_path.exists():
-            done, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
+            done, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path, retry_failed_existing=bool(retry_failed_existing))
         else:
             out_path.write_text("", encoding="utf-8")
             done = set()
-            _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
+            _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path, retry_failed_existing=bool(retry_failed_existing))
     else:
         out_path.write_text("", encoding="utf-8")
         done = set()
-        _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path)
+        _, resume_repair_stats = repair_existing_outcomes_jsonl_for_resume(out_path, retry_failed_existing=bool(retry_failed_existing))
 
     profile_path = Path(profile_replay_jsonl) if profile_replay_jsonl else None
     if profile_path is not None:
@@ -1346,4 +1384,5 @@ def replay_cache_candidates_to_jsonl(
         "metric_eval_interval": int(metric_eval_interval),
         "metric_guard_radius_m": float(metric_guard_radius_m),
         "metric_guard_window_steps": int(metric_guard_window_steps),
+        "retry_failed_existing": bool(retry_failed_existing),
     }

@@ -80,7 +80,6 @@ def main() -> None:
             "to attach the JSONL fields into the cache."
         )
     )
-    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.", default=True)
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--eval-config", default="configs/eval.yaml")
@@ -102,8 +101,26 @@ def main() -> None:
     ap.add_argument("--num-shards", type=int, default=1, help="Split cache files into this many deterministic shards for multiple parallel runs.")
     ap.add_argument("--shard-index", type=int, default=0, help="Shard index in [0, num_shards). Use a separate outcomes-jsonl per shard.")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
+    ap.add_argument(
+        "--retry-failed-existing",
+        dest="retry_failed_existing",
+        action="store_true",
+        default=True,
+        help=(
+            "Resume mode repairs transient failures by treating existing rollout_valid=false/error rows "
+            "as incomplete, removing them from the JSONL during resume repair, and recomputing them. "
+            "This is the default and is useful after GPU OOM."
+        ),
+    )
+    ap.add_argument(
+        "--keep-failed-existing",
+        dest="retry_failed_existing",
+        action="store_false",
+        help="Old resume behavior: treat existing failed outcome rows as completed and skip them.",
+    )
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
+    ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
     ap.add_argument("--metric-eval-mode", choices=["step", "sampled", "adaptive", "final"], default="step", help="step updates metrics every simulator step; sampled updates every --metric-eval-interval steps plus the final step; adaptive adds risk-guarded extra checks near other agents; final computes metrics once after rollout.")
     ap.add_argument("--metric-eval-interval", type=int, default=1, help="Metric update interval for --metric-eval-mode sampled/adaptive. 1 is equivalent to step mode; 2/5 are faster approximations. Ignored by final mode.")
@@ -148,12 +165,13 @@ def main() -> None:
         gc_every_scenes=args.gc_every_scenes,
         state_source=args.state_source,
         profile_replay_jsonl=args.profile_replay_jsonl,
-        jit_env_step=True,
+        jit_env_step=bool(args.jit_env_step),
         done_check_interval=int(args.done_check_interval),
         metric_eval_mode=str(args.metric_eval_mode),
         metric_eval_interval=int(args.metric_eval_interval),
         metric_guard_radius_m=float(args.metric_guard_radius_m),
         metric_guard_window_steps=int(args.metric_guard_window_steps),
+        retry_failed_existing=bool(args.retry_failed_existing),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

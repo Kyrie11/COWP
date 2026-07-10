@@ -101,6 +101,23 @@ def main() -> None:
     ap.add_argument("--num-shards", type=int, default=1, help="Split cache files into this many deterministic shards for multiple parallel runs.")
     ap.add_argument("--shard-index", type=int, default=0, help="Shard index in [0, num_shards). Use a separate outcomes-jsonl per shard.")
     ap.add_argument("--overwrite", action="store_true", help="Overwrite an existing outcomes JSONL instead of resuming it.")
+    ap.add_argument(
+        "--retry-failed-existing",
+        dest="retry_failed_existing",
+        action="store_true",
+        default=True,
+        help=(
+            "Resume mode repairs transient failures by treating existing rollout_valid=false/error rows "
+            "as incomplete, removing them from the JSONL during resume repair, and recomputing them. "
+            "This is the default and is useful after GPU OOM."
+        ),
+    )
+    ap.add_argument(
+        "--keep-failed-existing",
+        dest="retry_failed_existing",
+        action="store_false",
+        help="Old resume behavior: treat existing failed outcome rows as completed and skip them.",
+    )
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
@@ -154,6 +171,7 @@ def main() -> None:
         metric_eval_interval=int(args.metric_eval_interval),
         metric_guard_radius_m=float(args.metric_guard_radius_m),
         metric_guard_window_steps=int(args.metric_guard_window_steps),
+        retry_failed_existing=bool(args.retry_failed_existing),
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
