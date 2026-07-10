@@ -835,6 +835,10 @@ def waymax_closed_loop_rollout(
     action_mode: str = "delta_xy_yaw",
     keep_rollout_state: bool = False,
     clear_accelerator_cache: bool = False,
+    split: str | None = None,
+    tfexample_glob: str | None = None,
+    shard_index: int = 0,
+    num_shards: int = 1,
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -845,11 +849,16 @@ def waymax_closed_loop_rollout(
     from cowp.waymax_eval.dataloader import waymax_state_generator
 
     horizon = int(horizon_steps) if horizon_steps is not None else 80
-    gen = waymax_state_generator(data_config)
+    gen = waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob)
     total = num_scenarios
-    iterator = tqdm_iter(gen, enabled=progress, total=total, desc="Waymax closed-loop rollout", unit="scenario")
+    num_shards = max(int(num_shards), 1)
+    shard_index = int(shard_index) % num_shards
+    iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
-    for scenario_index, init_state in enumerate(iterator):
+    for raw_index, init_state in enumerate(iterator):
+        if num_shards > 1 and (raw_index % num_shards) != shard_index:
+            continue
+        scenario_index = raw_index
         max_objects = getattr(init_state, "num_objects", None)
         if max_objects is None and hasattr(init_state, "log_trajectory"):
             max_objects = getattr(init_state.log_trajectory, "num_objects", None)

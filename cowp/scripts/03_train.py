@@ -11,7 +11,9 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, WeightedRandomSampler
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, WeightedRandomSampler, DistributedSampler, Sampler
 
 from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
@@ -24,6 +26,62 @@ def _device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
+
+
+def _distributed_env() -> tuple[int, int, int]:
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    return rank, world_size, local_rank
+
+
+def _setup_distributed(device_arg: str) -> tuple[bool, int, int, int]:
+    rank, world_size, local_rank = _distributed_env()
+    distributed = world_size > 1
+    if not distributed:
+        return False, 0, 1, 0
+    use_cuda = str(device_arg).lower() != "cpu" and torch.cuda.is_available()
+    backend = "nccl" if use_cuda else "gloo"
+    if use_cuda:
+        torch.cuda.set_device(local_rank)
+    if not dist.is_initialized():
+        dist.init_process_group(backend=backend, init_method="env://")
+    return True, rank, world_size, local_rank
+
+
+def _cleanup_distributed() -> None:
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _is_main_process() -> bool:
+    return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
+
+
+def _rank0_print(*args, **kwargs) -> None:
+    if _is_main_process():
+        print(*args, **kwargs)
+
+
+def _distributed_mean_metrics(metrics: dict[str, float], device: torch.device) -> dict[str, float]:
+    if not (dist.is_available() and dist.is_initialized()):
+        return metrics
+    if not metrics:
+        return metrics
+    keys = sorted(metrics.keys())
+    values = torch.tensor([float(metrics[k]) for k in keys], dtype=torch.float64, device=device)
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values /= float(dist.get_world_size())
+    return {k: float(v) for k, v in zip(keys, values.detach().cpu().tolist())}
+
+
+def _set_sampler_epoch(dl: DataLoader | None, epoch: int) -> None:
+    if dl is None:
+        return
+    sampler = getattr(dl, "sampler", None)
+    set_epoch = getattr(sampler, "set_epoch", None)
+    if callable(set_epoch):
+        set_epoch(epoch)
 
 
 def _set_runtime_defaults(seed: int, device: torch.device) -> None:
@@ -177,6 +235,41 @@ def _sample_weights(
     return torch.as_tensor(arr, dtype=torch.double)
 
 
+class DistributedWeightedRandomSampler(Sampler[int]):
+    """Weighted replacement sampler split deterministically across DDP ranks."""
+
+    def __init__(
+        self,
+        weights: torch.Tensor,
+        *,
+        num_replicas: int,
+        rank: int,
+        replacement: bool = True,
+        seed: int = 2026,
+    ) -> None:
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.replacement = bool(replacement)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.num_samples = int(math.ceil(len(self.weights) / max(self.num_replicas, 1)))
+        self.total_size = int(self.num_samples * max(self.num_replicas, 1))
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        indices = torch.multinomial(self.weights, self.total_size, self.replacement, generator=g).tolist()
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+
 def _make_loader(
     ds: TorchCOWPDataset,
     cfg: dict,
@@ -190,9 +283,25 @@ def _make_loader(
     sampler_cache: bool = True,
     pin_memory: bool = False,
     prefetch_factor: int | None = None,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    seed: int = 2026,
 ) -> DataLoader:
     sampler = None
-    if shuffle and oversample:
+    if distributed:
+        if shuffle and oversample:
+            sampler = DistributedWeightedRandomSampler(
+                _sample_weights(ds, progress=progress, cache=sampler_cache),
+                num_replicas=world_size,
+                rank=rank,
+                replacement=True,
+                seed=seed,
+            )
+        else:
+            sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=seed, drop_last=False)
+        shuffle = False
+    elif shuffle and oversample:
         sampler = WeightedRandomSampler(_sample_weights(ds, progress=progress, cache=sampler_cache), num_samples=len(ds), replacement=True)
         shuffle = False
     nw = int(cfg["train"].get("num_workers", 0) if num_workers is None else num_workers)
@@ -356,9 +465,10 @@ def _run_epoch(
 
 
 def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor]:
-    """Return a checkpoint state_dict that can be loaded without torch.compile."""
-    inner = getattr(model, "_orig_mod", None)
-    if inner is not None and isinstance(inner, torch.nn.Module):
+    """Return a checkpoint state_dict that can be loaded without DDP/torch.compile wrappers."""
+    inner = getattr(model, "module", model)
+    inner = getattr(inner, "_orig_mod", inner)
+    if isinstance(inner, torch.nn.Module):
         return inner.state_dict()
     return model.state_dict()
 
@@ -479,7 +589,11 @@ def main() -> None:
         loss_weights["response_components_l1"] = 0.0
 
     device_arg = args.device or tcfg.get("device", "auto")
-    device = _device(device_arg)
+    distributed, rank, world_size, local_rank = _setup_distributed(str(device_arg))
+    if distributed and str(device_arg).lower() != "cpu" and torch.cuda.is_available():
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = _device(device_arg)
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
     if device.type == "cpu" and str(device_arg) == "auto" and visible_devices in {"-1", "none", "None", ""}:
         print(
@@ -526,10 +640,13 @@ def main() -> None:
     # loaded ``cowp/response/traj`` and decoded the giant trajectory head.
     include_response_traj = not (stage in {"response", "all"} and float(loss_weights.get("response_traj_l1", 0.1)) == 0.0)
     include_response_components = not (stage in {"response", "all"} and float(loss_weights.get("response_components_l1", 0.25)) == 0.0)
-    print(f"COWP train startup: stage={stage}, device={device}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size={batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}")
+    if distributed and compile_enabled:
+        _rank0_print("Warning: disabling torch.compile under DDP for staged training stability.")
+        compile_enabled = False
+    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}")
     if device.type == "cuda":
         try:
-            print(f"CUDA device: {torch.cuda.get_device_name(device)}")
+            _rank0_print(f"CUDA device: {torch.cuda.get_device_name(device)}")
         except Exception:
             pass
 
@@ -551,16 +668,19 @@ def main() -> None:
         if args.val_cache_dir
         else None
     )
-    print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
+    _rank0_print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
     oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
     # Representation/natural stages do not consume witness/candidate labels.
     # Scanning every npz for those labels can add many minutes before the first
     # batch and does not change the Stage-A objective.
     if stage in {"representation", "natural"} and not args.force_positive_oversampling:
         if oversample_enabled:
-            print(f"Skipping positive oversampling for stage={stage}; use --force-positive-oversampling to enable it.")
+            _rank0_print(f"Skipping positive oversampling for stage={stage}; use --force-positive-oversampling to enable it.")
         oversample_enabled = False
 
+    seed = int(tcfg.get("seed", 2026))
+    if distributed and oversample_enabled and not args.no_sampler_cache and rank != 0:
+        dist.barrier()
     train_dl = _make_loader(
         train_ds,
         cfg,
@@ -568,20 +688,35 @@ def main() -> None:
         shuffle=True,
         oversample=oversample_enabled,
         use_cuda=device.type == "cuda",
-        progress=not args.no_progress,
+        progress=(not args.no_progress) and _is_main_process(),
         num_workers=args.num_workers,
         sampler_cache=not args.no_sampler_cache,
         pin_memory=pin_memory,
         prefetch_factor=effective_prefetch,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        seed=seed,
     )
-    val_dl = _make_loader(val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda", progress=not args.no_progress, num_workers=args.num_workers, pin_memory=pin_memory, prefetch_factor=effective_prefetch) if val_ds is not None else None
+    if distributed and oversample_enabled and not args.no_sampler_cache and rank == 0:
+        dist.barrier()
+    val_dl = _make_loader(
+        val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda",
+        progress=(not args.no_progress) and _is_main_process(), num_workers=args.num_workers, pin_memory=pin_memory,
+        prefetch_factor=effective_prefetch, distributed=distributed, rank=rank, world_size=world_size, seed=seed,
+    ) if val_ds is not None else None
 
-    print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches={len(train_dl)}" + (f", val_batches={len(val_dl)}" if val_dl is not None else ""))
+    _rank0_print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches_per_rank={len(train_dl)}" + (f", val_batches_per_rank={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         _load_model_state_robust(model, ckpt["model"])
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
+    if distributed:
+        ddp_kwargs = {"find_unused_parameters": True}
+        if device.type == "cuda":
+            ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
+        model = DDP(model, **ddp_kwargs)
     opt = _make_adamw_optimizer(
         model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),
@@ -593,52 +728,61 @@ def main() -> None:
     epochs = args.epochs or int(tcfg.get("epochs", 10))
     history = []
     best_val = float("inf")
-    for epoch in range(epochs):
-        train_metrics = _run_epoch(
-            model,
-            train_dl,
-            device,
-            stage,
-            loss_weights,
-            opt,
-            epoch=epoch,
-            progress=not args.no_progress,
-            amp=args.amp,
-            non_blocking_transfer=pin_memory,
-            decode_response_traj=include_response_traj,
-        )
-        row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
-        do_val = val_dl is not None and int(args.val_every) > 0 and ((epoch + 1) % int(args.val_every) == 0 or epoch == epochs - 1)
-        if do_val:
-            val_metrics = _run_epoch(
+    try:
+        for epoch in range(epochs):
+            _set_sampler_epoch(train_dl, epoch)
+            train_metrics = _run_epoch(
                 model,
-                val_dl,
+                train_dl,
                 device,
                 stage,
                 loss_weights,
-                None,
+                opt,
                 epoch=epoch,
-                progress=not args.no_progress,
+                progress=(not args.no_progress) and _is_main_process(),
                 amp=args.amp,
                 non_blocking_transfer=pin_memory,
                 decode_response_traj=include_response_traj,
             )
-            row.update({f"val/{k}": v for k, v in val_metrics.items()})
-            score_loss = float(val_metrics.get("loss", float("inf")))
-            score_name = "val_loss"
-        else:
-            # If validation is intentionally disabled for smoke training, still
-            # produce cowp_<stage>_best.pt so downstream stage commands can resume.
-            score_loss = float(train_metrics.get("loss", float("inf"))) if (val_dl is None or int(args.val_every) == 0) else float("inf")
-            score_name = "train_loss"
-        if math.isfinite(score_loss) and score_loss < best_val:
-            best_val = score_loss
-            torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, score_name: score_loss}, output_dir / f"cowp_{stage}_best.pt")
-        history.append(row)
-        print(json.dumps(row, ensure_ascii=False))
-        torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
-    with (output_dir / f"history_{stage}.json").open("w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2)
+            train_metrics = _distributed_mean_metrics(train_metrics, device)
+            row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
+            do_val = val_dl is not None and int(args.val_every) > 0 and ((epoch + 1) % int(args.val_every) == 0 or epoch == epochs - 1)
+            if do_val:
+                _set_sampler_epoch(val_dl, epoch)
+                val_metrics = _run_epoch(
+                    model,
+                    val_dl,
+                    device,
+                    stage,
+                    loss_weights,
+                    None,
+                    epoch=epoch,
+                    progress=(not args.no_progress) and _is_main_process(),
+                    amp=args.amp,
+                    non_blocking_transfer=pin_memory,
+                    decode_response_traj=include_response_traj,
+                )
+                val_metrics = _distributed_mean_metrics(val_metrics, device)
+                row.update({f"val/{k}": v for k, v in val_metrics.items()})
+                score_loss = float(val_metrics.get("loss", float("inf")))
+                score_name = "val_loss"
+            else:
+                # If validation is intentionally disabled for smoke training, still
+                # produce cowp_<stage>_best.pt so downstream stage commands can resume.
+                score_loss = float(train_metrics.get("loss", float("inf"))) if (val_dl is None or int(args.val_every) == 0) else float("inf")
+                score_name = "train_loss"
+            if _is_main_process():
+                if math.isfinite(score_loss) and score_loss < best_val:
+                    best_val = score_loss
+                    torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, score_name: score_loss}, output_dir / f"cowp_{stage}_best.pt")
+                history.append(row)
+                print(json.dumps(row, ensure_ascii=False))
+                torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
+        if _is_main_process():
+            with (output_dir / f"history_{stage}.json").open("w", encoding="utf-8") as f:
+                json.dump(history, f, indent=2)
+    finally:
+        _cleanup_distributed()
 
 
 if __name__ == "__main__":

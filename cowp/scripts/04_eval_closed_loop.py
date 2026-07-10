@@ -50,6 +50,10 @@ def main() -> None:
     ap.add_argument("--labels-dir", default=None)
     ap.add_argument("--cache-dir", default=None)
     ap.add_argument("--checkpoint", default=None)
+    ap.add_argument("--waymax-split", choices=["training", "validation", "testing"], default="validation", help="WOMD split for --mode waymax. Default validation avoids evaluating online rollouts on training.")
+    ap.add_argument("--tfexample-glob", default=None, help="Optional Waymax/tf.Example path override for --mode waymax.")
+    ap.add_argument("--num-shards", type=int, default=1, help="Shard online Waymax rollouts across multiple parallel processes.")
+    ap.add_argument("--shard-index", type=int, default=0, help="Shard id in [0, num_shards) for --mode waymax.")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--witness-threshold", type=float, default=0.5)
@@ -166,6 +170,10 @@ def main() -> None:
             action_mode=args.waymax_action_mode,
             keep_rollout_state=args.keep_rollout_state,
             clear_accelerator_cache=args.clear_accelerator_cache,
+            split=args.waymax_split,
+            tfexample_glob=args.tfexample_glob,
+            shard_index=args.shard_index,
+            num_shards=args.num_shards,
         )
         payload = {
             "mode": "waymax",
@@ -173,6 +181,10 @@ def main() -> None:
             "checkpoint": args.checkpoint,
             "policy_fn": args.policy_fn,
             "ncf_gate_mode": args.ncf_gate_mode,
+            "waymax_split": args.waymax_split,
+            "tfexample_glob": args.tfexample_glob,
+            "shard_index": int(args.shard_index),
+            "num_shards": int(args.num_shards),
             "num_rollouts": len(rollouts),
             "steps": [int(x.get("steps", 0)) for x in rollouts],
             "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
