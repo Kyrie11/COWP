@@ -53,29 +53,29 @@ if [[ ! -d "$TRAIN_CACHE" || ! -d "$VAL_CACHE" ]]; then
   exit 2
 fi
 
-echo "[0/6] Verify attached Waymax tensor caches"
-python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$TRAIN_CACHE"
-python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$VAL_CACHE"
-
-train_ddp () {
-  local stage="$1"; shift
-  torchrun --standalone --nproc_per_node="$NUM_GPUS" \
-    -m cowp.scripts.03_train \
-    --data-config configs/data.yaml \
-    --model-config configs/model.yaml \
-    --train-config configs/train.yaml \
-    --cache-dir "$TRAIN_CACHE" \
-    --val-cache-dir "$VAL_CACHE" \
-    --stage "$stage" \
-    --batch-size "$PER_GPU_BATCH" \
-    --num-workers "$TRAIN_WORKERS" \
-    --prefetch-factor "$PREFETCH" \
-    --amp \
-    --fused-adamw \
-    --pin-memory \
-    --val-every "$VAL_EVERY" \
-    "$@"
-}
+#echo "[0/6] Verify attached Waymax tensor caches"
+#python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$TRAIN_CACHE"
+#python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$VAL_CACHE"
+#
+#train_ddp () {
+#  local stage="$1"; shift
+#  torchrun --standalone --nproc_per_node="$NUM_GPUS" \
+#    -m cowp.scripts.03_train \
+#    --data-config configs/data.yaml \
+#    --model-config configs/model.yaml \
+#    --train-config configs/train.yaml \
+#    --cache-dir "$TRAIN_CACHE" \
+#    --val-cache-dir "$VAL_CACHE" \
+#    --stage "$stage" \
+#    --batch-size "$PER_GPU_BATCH" \
+#    --num-workers "$TRAIN_WORKERS" \
+#    --prefetch-factor "$PREFETCH" \
+#    --amp \
+#    --fused-adamw \
+#    --pin-memory \
+#    --val-every "$VAL_EVERY" \
+#    "$@"
+#}
 
 echo "[1/6] Train response encoder/head on attached cache, without loading dense response trajectory labels"
 train_ddp response \
