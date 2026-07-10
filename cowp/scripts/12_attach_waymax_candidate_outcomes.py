@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from cowp.utils.progress import tqdm_iter
+
 
 def _restore_key(k: str) -> str:
     return k.replace("__", "/")
@@ -349,23 +351,51 @@ def main() -> None:
     skipped_no_outcomes = 0
     rewritten_existing = 0
     initialized_no_outcomes = 0
-    for src in paths:
+    progress = tqdm_iter(
+        paths,
+        total=len(paths),
+        desc="attach waymax outcomes",
+        unit="scene",
+    )
+
+    def _refresh_progress() -> None:
+        set_postfix = getattr(progress, "set_postfix", None)
+        if set_postfix is None:
+            return
+        try:
+            set_postfix(
+                {
+                    "written": copied,
+                    "valid": attached,
+                    "skip_ok": skipped_existing,
+                    "rewrite": rewritten_existing,
+                    "skip_no_out": skipped_no_outcomes,
+                },
+                refresh=False,
+            )
+        except Exception:
+            pass
+
+    for src in progress:
         # Fast sid path: the replay code also uses filename stem by default.
         sid_hint = src.stem
         sid_rows = outcomes.get(sid_hint, [])
         dst = out_dir / src.name
         if args.only_with_outcomes and not sid_rows:
             skipped_no_outcomes += 1
+            _refresh_progress()
             continue
         if args.skip_existing and dst.exists():
             if args.legacy_file_skip_existing:
                 if _npz_readable(dst):
                     skipped_existing += 1
+                    _refresh_progress()
                     continue
             else:
                 ok, _reason = _npz_outcomes_complete_for_rows(dst, sid_rows)
                 if ok:
                     skipped_existing += 1
+                    _refresh_progress()
                     continue
                 if _npz_readable(dst):
                     rewritten_existing += 1
@@ -381,11 +411,13 @@ def main() -> None:
             sid_rows = outcomes.get(sid, sid_rows)
             if args.only_with_outcomes and not sid_rows:
                 skipped_no_outcomes += 1
+                _refresh_progress()
                 continue
             if args.skip_existing and dst.exists() and not args.legacy_file_skip_existing:
                 ok, _reason = _npz_outcomes_complete_for_rows(dst, sid_rows)
                 if ok:
                     skipped_existing += 1
+                    _refresh_progress()
                     continue
 
         valid = np.asarray(arrays.get("cowp/candidates/valid", []), dtype=bool)
@@ -433,6 +465,7 @@ def main() -> None:
         _write_npz_atomic(dst, stored, compress=bool(args.compress))
         attached += int(rollout_valid.any())
         copied += 1
+        _refresh_progress()
     summary = {
         "processed_or_written": copied,
         "skipped_existing_complete": skipped_existing,
