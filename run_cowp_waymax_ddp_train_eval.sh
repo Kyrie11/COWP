@@ -1,409 +1,264 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# COWP full training + learned-offline + online Waymax closed-loop evaluation.
-# Resume-safe version: every completed stage/method/shard can be skipped.
-# Run from the patched COWP repository root, or set REPO_ROOT=/path/to/COWP.
+# RC-NCF/COWP end-to-end pipeline: outcome replay -> staged DDP training ->
+# held-out calibration -> learned-offline and Waymax closed-loop evaluation.
+# Run from repository root. Every expensive stage is resume-safe.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
 cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# -------------------------- Paths --------------------------
+# ------------------------- User paths -------------------------
 export WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1}"
 export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
+BASE_TRAIN_CACHE="${BASE_TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train}"
+BASE_VAL_CACHE="${BASE_VAL_CACHE:-$COWP_ROOT/tensor_cache_val}"
+TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax_rc24}"
+VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax_rc24}"
+WAYMAX_VAL="${WAYMAX_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
+OUT_ROOT="${OUT_ROOT:-outputs/rc_ncf_full}"
+REPLAY_ROOT="${REPLAY_ROOT:-$OUT_ROOT/outcome_replay}"
 
-# Raw tf.Example globs are kept for cache-building/debug tools that use the lightweight parser.
-# Online Waymax evaluation should use Waymax/TensorFlow sharded path syntax: *_tfexample.tfrecord@N.
-export TFEXAMPLE_TRAIN_GLOB="${TFEXAMPLE_TRAIN_GLOB:-$WOMD_ROOT/uncompressed/tf_example/training/*.tfrecord*}"
-export TFEXAMPLE_VAL_GLOB="${TFEXAMPLE_VAL_GLOB:-$WOMD_ROOT/uncompressed/tf_example/validation/*.tfrecord*}"
-export TFEXAMPLE_TEST_GLOB="${TFEXAMPLE_TEST_GLOB:-$WOMD_ROOT/uncompressed/tf_example/testing/*.tfrecord*}"
-
-export WAYMAX_TFEXAMPLE_TRAIN="${WAYMAX_TFEXAMPLE_TRAIN:-$WOMD_ROOT/uncompressed/tf_example/training/training_tfexample.tfrecord@1000}"
-export WAYMAX_TFEXAMPLE_VAL="${WAYMAX_TFEXAMPLE_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
-export WAYMAX_TFEXAMPLE_TEST="${WAYMAX_TFEXAMPLE_TEST:-$WOMD_ROOT/uncompressed/tf_example/testing/testing_tfexample.tfrecord@150}"
-
-# Backward-compatible variable name.  If you override TFEXAMPLE_VAL with a glob,
-# this script converts it to the validation @150 path before online Waymax eval.
-export TFEXAMPLE_VAL="${TFEXAMPLE_VAL:-$WAYMAX_TFEXAMPLE_VAL}"
-
-export TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
-export VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
-OUT_ROOT="${OUT_ROOT:-outputs/cowp_waymax_full}"
-
-# -------------------------- Runtime --------------------------
-NUM_GPUS="${NUM_GPUS:-2}"
+# ------------------------- Runtime knobs -------------------------
+NUM_GPUS=2
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export TOKENIZERS_PARALLELISM=false
-# Do NOT enable expandable_segments here. On the observed PyTorch/CUDA stack it can
-# crash inside CUDACachingAllocator with: !block->expandable_segment_.
-# max_split_size_mb is stable and helps fragmentation without entering that code path.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-max_split_size_mb:256}"
 
-PER_GPU_BATCH="${PER_GPU_BATCH:-32}"       # effective global batch = NUM_GPUS * PER_GPU_BATCH
+RUN_TESTS="${RUN_TESTS:-1}"
+RUN_OUTCOME_REPLAY="${RUN_OUTCOME_REPLAY:-1}"
+RUN_TRAIN="${RUN_TRAIN:-1}"
+RUN_EVAL="${RUN_EVAL:-1}"
+FORCE_REPLAY="${FORCE_REPLAY:-0}"
+FORCE_TRAIN="${FORCE_TRAIN:-0}"
+FORCE_EVAL="${FORCE_EVAL:-0}"
+
+# 24/64 candidate coverage is a practical first pass. For the final paper run,
+# set OUTCOME_CANDIDATES=0 to replay all candidates if compute permits.
+OUTCOME_CANDIDATES="${OUTCOME_CANDIDATES:-24}"
+TOTAL_ONLINE_SCENARIOS="${TOTAL_ONLINE_SCENARIOS:-1000}"
+PER_GPU_BATCH_NATURAL="${PER_GPU_BATCH_NATURAL:-24}"
+PER_GPU_BATCH_RESPONSE="${PER_GPU_BATCH_RESPONSE:-12}"
+PER_GPU_BATCH_WITNESS="${PER_GPU_BATCH_WITNESS:-20}"
+PER_GPU_BATCH_PLANNER="${PER_GPU_BATCH_PLANNER:-16}"
 EVAL_BATCH="${EVAL_BATCH:-64}"
-TRAIN_WORKERS="${TRAIN_WORKERS:-6}"       # per DDP process; reduce to 4 if CPU/RAM is tight
+TRAIN_WORKERS="${TRAIN_WORKERS:-6}"
 PREFETCH="${PREFETCH:-1}"
-VAL_EVERY="${VAL_EVERY:-1}"
 
-# Resume/skip behavior.
-# SKIP_EXISTING_STAGES=1: skip any completed train/eval stage with valid expected outputs.
-# FORCE_RERUN_LEARNED=1: rerun learned-offline even if JSON exists.
-# FORCE_RERUN_ONLINE=1: rerun online shards even if JSON exists.
-# FORCE_REMERGE_ONLINE=1: recompute merged JSON even if it exists.
-SKIP_EXISTING_STAGES="${SKIP_EXISTING_STAGES:-1}"
-FORCE_RERUN_LEARNED="${FORCE_RERUN_LEARNED:-0}"
-FORCE_RERUN_ONLINE="${FORCE_RERUN_ONLINE:-0}"
-FORCE_REMERGE_ONLINE="${FORCE_REMERGE_ONLINE:-0}"
+mkdir -p "$OUT_ROOT/checkpoints" "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax" "$REPLAY_ROOT"
 
-# Online split and scale.
-ONLINE_SPLIT="${ONLINE_SPLIT:-validation}"   # training | validation | testing
-TOTAL_ONLINE_SCENARIOS="${TOTAL_ONLINE_SCENARIOS:-400}"
-
-# Outcome-risk penalty should be >0 only when planner is trained with attached Waymax labels.
-OUTCOME_RISK_PENALTY="${OUTCOME_RISK_PENALTY:-0.5}"
-OUTCOME_RISK_THRESHOLD="${OUTCOME_RISK_THRESHOLD:-1.10}"
-THRESH_SWEEP="${THRESH_SWEEP:-0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9}"
-
-mkdir -p "$OUT_ROOT" "$OUT_ROOT/checkpoints" "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax"
-
-# -------------------------- Helpers --------------------------
-json_ok () {
+json_ok() {
   local f="$1"
-  [[ -s "$f" ]] || return 1
-  python - "$f" <<'PY' >/dev/null 2>&1
+  [[ -s "$f" ]] && python - "$f" <<'PY' >/dev/null 2>&1
 import json, sys
-with open(sys.argv[1], "r", encoding="utf-8") as fh:
-    json.load(fh)
+json.load(open(sys.argv[1], encoding="utf-8"))
 PY
 }
 
-should_skip_existing () {
-  [[ "$SKIP_EXISTING_STAGES" == "1" ]]
-}
-
-wait_group () {
-  local status=0
-  for pid in "$@"; do
-    wait "$pid" || status=$?
-  done
+wait_all() {
+  local status=0 pid
+  for pid in "$@"; do wait "$pid" || status=$?; done
   return "$status"
 }
 
-waymax_path_for_split () {
-  local split="$1"
-  case "$split" in
-    training|train) echo "$WAYMAX_TFEXAMPLE_TRAIN" ;;
-    validation|val) echo "$WAYMAX_TFEXAMPLE_VAL" ;;
-    testing|test) echo "$WAYMAX_TFEXAMPLE_TEST" ;;
-    *)
-      echo "ERROR: ONLINE_SPLIT must be training, validation, or testing; got: $split" >&2
-      exit 2
-      ;;
-  esac
-}
-
-normalize_waymax_path () {
-  local split="$1"
-  local path="${2:-}"
-  if [[ -z "$path" ]]; then
-    waymax_path_for_split "$split"
-    return 0
-  fi
-  # Waymax dataloader should not receive shell glob patterns.  It should receive
-  # a single sharded path such as validation_tfexample.tfrecord@150.
-  if [[ "$path" == *"*"* ]]; then
-    echo "WARN: online Waymax path contains a wildcard and will be replaced with @shard syntax: $path" >&2
-    waymax_path_for_split "$split"
-    return 0
-  fi
-  echo "$path"
-}
-
-print_waymax_path_hint () {
-  local path="$1"
-  echo "Resolved online Waymax split: $ONLINE_SPLIT"
-  echo "Resolved online Waymax tf.Example path: $path"
-  if [[ "$path" =~ ^(.+)@([0-9]+)$ ]]; then
-    local prefix="${BASH_REMATCH[1]}"
-    local shards="${BASH_REMATCH[2]}"
-    local matched=0
-    # This is diagnostic only.  Some filesystems/GCS-like paths may not be visible to bash globbing.
-    shopt -s nullglob
-    local files=("$prefix"-*-of-*)
-    shopt -u nullglob
-    matched="${#files[@]}"
-    echo "Expected shard prefix: $prefix ; declared shards: $shards ; bash-visible matching files: $matched"
-    if [[ "$matched" == "0" ]]; then
-      echo "WARN: no local files matched the shard prefix by bash glob. If the files exist and TensorFlow can read @shards, this is harmless; otherwise check WOMD_ROOT." >&2
-    fi
-  fi
-}
-
-all_learned_outputs_ok () {
-  local methods=("$@")
-  local m
-  for m in "${methods[@]}"; do
-    json_ok "$OUT_ROOT/eval/learned_offline/${m}.json" || return 1
-  done
-  return 0
-}
-
-all_online_shards_ok () {
-  local method="$1"
-  local shard
-  for shard in $(seq 0 $(( NUM_GPUS - 1 ))); do
-    json_ok "$OUT_ROOT/eval/waymax/${method}_shard${shard}.json" || return 1
-  done
-  return 0
-}
-
-online_method_complete () {
-  local method="$1"
-  json_ok "$OUT_ROOT/eval/waymax/${method}_merged.json" || return 1
-  all_online_shards_ok "$method" || return 1
-  return 0
-}
-
-if ! grep -q "DistributedDataParallel" cowp/scripts/03_train.py; then
-  echo "ERROR: DDP patch not detected in cowp/scripts/03_train.py. Apply the supplied DDP patch or use the patched COWP zip first." >&2
-  exit 2
-fi
-if ! python -m cowp.scripts.04_eval_closed_loop --help 2>/dev/null | grep -q -- "--waymax-split"; then
-  echo "ERROR: Waymax split/shard patch not detected in 04_eval_closed_loop.py. Apply the supplied eval patch or use the patched COWP zip first." >&2
-  exit 2
-fi
-
-if [[ ! -d "$TRAIN_CACHE" || ! -d "$VAL_CACHE" ]]; then
-  echo "ERROR: attached Waymax tensor caches were not found:" >&2
-  echo "  TRAIN_CACHE=$TRAIN_CACHE" >&2
-  echo "  VAL_CACHE=$VAL_CACHE" >&2
-  exit 2
-fi
-
-USER_PROVIDED_WAYMAX_TFEXAMPLE_PATH="${WAYMAX_TFEXAMPLE_PATH+x}"
-if [[ -n "$USER_PROVIDED_WAYMAX_TFEXAMPLE_PATH" ]]; then
-  WAYMAX_TFEXAMPLE_PATH="$(normalize_waymax_path "$ONLINE_SPLIT" "$WAYMAX_TFEXAMPLE_PATH")"
-elif [[ "$ONLINE_SPLIT" == "validation" || "$ONLINE_SPLIT" == "val" ]]; then
-  # Keep compatibility with older runs that overrode TFEXAMPLE_VAL, but convert globs to @150.
-  WAYMAX_TFEXAMPLE_PATH="$(normalize_waymax_path "$ONLINE_SPLIT" "$TFEXAMPLE_VAL")"
-else
-  WAYMAX_TFEXAMPLE_PATH="$(waymax_path_for_split "$ONLINE_SPLIT")"
-fi
-print_waymax_path_hint "$WAYMAX_TFEXAMPLE_PATH"
-
-train_ddp () {
-  local stage="$1"; shift
-  torchrun --standalone --nproc_per_node="$NUM_GPUS" \
-    -m cowp.scripts.03_train \
-    --data-config configs/data.yaml \
-    --model-config configs/model.yaml \
-    --train-config configs/train.yaml \
-    --cache-dir "$TRAIN_CACHE" \
-    --val-cache-dir "$VAL_CACHE" \
-    --stage "$stage" \
-    --batch-size "$PER_GPU_BATCH" \
-    --num-workers "$TRAIN_WORKERS" \
-    --prefetch-factor "$PREFETCH" \
-    --amp \
-    --fused-adamw \
-    --pin-memory \
-    --val-every "$VAL_EVERY" \
-    "$@"
-}
-
-echo "[1/6] Train response encoder/head on attached cache, without loading dense response trajectory labels"
-if should_skip_existing && [[ -f "$OUT_ROOT/checkpoints/response/cowp_response_best.pt" ]]; then
-  echo "  skip response: found $OUT_ROOT/checkpoints/response/cowp_response_best.pt"
-else
-  train_ddp response \
-    --epochs "${RESPONSE_EPOCHS:-14}" \
-    --lr "${RESPONSE_LR:-3e-4}" \
-    --no-response-traj \
-    --no-response-components \
-    --output-dir "$OUT_ROOT/checkpoints/response"
-fi
-
-echo "[2/6] Train witness stage from best response checkpoint"
-if should_skip_existing && [[ -f "$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt" ]]; then
-  echo "  skip witness: found $OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
-else
-  train_ddp witness \
-    --epochs "${WITNESS_EPOCHS:-24}" \
-    --lr "${WITNESS_LR:-3e-4}" \
-    --resume "$OUT_ROOT/checkpoints/response/cowp_response_best.pt" \
-    --output-dir "$OUT_ROOT/checkpoints/witness"
-fi
-
-echo "[3/6] Train planner with attached Waymax candidate outcome labels"
-if should_skip_existing && [[ -f "$OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt" ]]; then
-  echo "  skip planner: found $OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt"
-else
-  train_ddp planner \
-    --epochs "${PLANNER_EPOCHS:-28}" \
-    --lr "${PLANNER_LR:-2e-4}" \
-    --resume "$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt" \
-    --with-waymax-outcome-labels \
-    --output-dir "$OUT_ROOT/checkpoints/planner_waymax"
-fi
-
-CKPT="$OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt"
-if [[ ! -f "$CKPT" ]]; then
-  echo "ERROR: planner checkpoint not found: $CKPT" >&2
-  exit 2
-fi
-
-echo "[4/6] Learned-offline evaluation on attached validation cache, methods run in parallel across GPUs"
-LEARNED_METHODS=(idm_lattice conventional_safety planner_score_only soft_burden_cost_only universal_ncf cowp outcome_oracle)
-if should_skip_existing && [[ "$FORCE_RERUN_LEARNED" != "1" ]] && all_learned_outputs_ok "${LEARNED_METHODS[@]}"; then
-  echo "  skip learned-offline: all method JSON outputs exist and are valid"
-else
-  pids=()
-  i=0
-  for METHOD in "${LEARNED_METHODS[@]}"; do
-    OUT_JSON="$OUT_ROOT/eval/learned_offline/${METHOD}.json"
-    if should_skip_existing && [[ "$FORCE_RERUN_LEARNED" != "1" ]] && json_ok "$OUT_JSON"; then
-      echo "  skip learned-offline/$METHOD: found valid $OUT_JSON"
+run_two_gpu_replay() {
+  local split="$1" cache="$2" prefix="$3"
+  local pids=()
+  for shard in 0 1; do
+    local out="${prefix}_shard${shard}.jsonl"
+    if [[ "$FORCE_REPLAY" != 1 && -s "$out" ]]; then
+      echo "[replay/$split] keep existing shard $shard: $out"
       continue
     fi
-    GPU=$(( i % NUM_GPUS ))
     (
-      export CUDA_VISIBLE_DEVICES="$GPU"
-      python -m cowp.scripts.04_eval_closed_loop \
+      export CUDA_VISIBLE_DEVICES="$shard"
+      export XLA_PYTHON_CLIENT_PREALLOCATE=false
+      python -u -m cowp.scripts.13_replay_waymax_candidates \
         --data-config configs/data.yaml \
         --label-config configs/label.yaml \
         --eval-config configs/eval.yaml \
-        --cache-dir "$VAL_CACHE" \
-        --mode learned_offline \
-        --method "$METHOD" \
-        --checkpoint "$CKPT" \
-        --batch-size "$EVAL_BATCH" \
-        --device cuda \
-        --witness-threshold 0.5 \
-        --witness-threshold-sweep "$THRESH_SWEEP" \
-        --ncf-gate-mode priority \
-        --priority-hard-threshold 0.55 \
-        --offline-fallback stop_like \
-        --adaptive-frontier-margin 0.20 \
-        --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" \
-        --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
-        --output "$OUT_JSON"
-    ) &
-    pids+=("$!")
-    i=$(( i + 1 ))
-    if (( ${#pids[@]} >= NUM_GPUS )); then
-      wait_group "${pids[@]}"
-      pids=()
-    fi
+        --cache-dir "$cache" \
+        --state-source cache \
+        --split "$split" \
+        --outcomes-jsonl "$out" \
+        --candidate-selection balanced \
+        --max-candidates-per-scene "$OUTCOME_CANDIDATES" \
+        --rollout-horizon-steps 80 \
+        --waymax-device gpu \
+        --waymax-action-mode absolute_xy_yaw \
+        --metric-set safety_logdiv \
+        --metric-eval-mode adaptive \
+        --metric-eval-interval 2 \
+        --num-shards 2 \
+        --shard-index "$shard" \
+        --retry-failed-existing
+    ) & pids+=("$!")
   done
-  if (( ${#pids[@]} > 0 )); then
-    wait_group "${pids[@]}"
+  ((${#pids[@]} == 0)) || wait_all "${pids[@]}"
+}
+
+attach_outcomes() {
+  local base_cache="$1" output_cache="$2" prefix="$3"
+  python -m cowp.scripts.12_attach_waymax_candidate_outcomes \
+    --cache-dir "$base_cache" \
+    --output-dir "$output_cache" \
+    --outcomes-jsonl "${prefix}_shard0.jsonl" "${prefix}_shard1.jsonl" \
+    --repair-outcomes-jsonl \
+    --skip-existing
+  python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$output_cache"
+}
+
+train_stage() {
+  local stage="$1" epochs="$2" lr="$3" batch="$4" output="$5" resume="${6:-}"
+  local best="$output/cowp_${stage}_best.pt"
+  if [[ "$FORCE_TRAIN" != 1 && -s "$best" ]]; then
+    echo "[train/$stage] keep existing: $best"
+    return
   fi
-fi
+  local args=(
+    torchrun --standalone --nproc_per_node=2 -m cowp.scripts.03_train
+    --data-config configs/data.yaml --model-config configs/model.yaml --train-config configs/train.yaml
+    --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE"
+    --stage "$stage" --epochs "$epochs" --lr "$lr" --batch-size "$batch"
+    --num-workers "$TRAIN_WORKERS" --prefetch-factor "$PREFETCH"
+    --amp --fused-adamw --pin-memory --val-every 1 --output-dir "$output"
+  )
+  [[ -z "$resume" ]] || args+=(--resume "$resume")
+  [[ "$stage" != response ]] || args+=(--no-response-traj)
+  [[ "$stage" != planner ]] || args+=(--with-waymax-outcome-labels)
+  "${args[@]}"
+}
 
-echo "[5/6] Online Waymax closed-loop evaluation on $ONLINE_SPLIT split, sharded across GPUs"
-ONLINE_METHODS=(planner_score_only conventional_safety soft_burden_cost_only universal_ncf cowp)
-PER_SHARD_SCENARIOS=$(( (TOTAL_ONLINE_SCENARIOS + NUM_GPUS - 1) / NUM_GPUS ))
-
-for METHOD in "${ONLINE_METHODS[@]}"; do
-  if should_skip_existing && [[ "$FORCE_RERUN_ONLINE" != "1" ]] && [[ "$FORCE_REMERGE_ONLINE" != "1" ]] && online_method_complete "$METHOD"; then
-    echo "  skip online/$METHOD: all shard JSONs and merged JSON are valid"
-    continue
+run_learned_eval() {
+  local method="$1" gpu="$2" threshold="$3" output="$4"
+  if [[ "$FORCE_EVAL" != 1 ]] && json_ok "$output"; then
+    echo "[learned/$method] keep existing: $output"
+    return
   fi
+  (
+    export CUDA_VISIBLE_DEVICES="$gpu"
+    python -m cowp.scripts.04_eval_closed_loop \
+      --data-config configs/data.yaml --label-config configs/label.yaml --eval-config configs/eval.yaml \
+      --cache-dir "$VAL_CACHE" --mode learned_offline --method "$method" \
+      --checkpoint "$CKPT" --batch-size "$EVAL_BATCH" --device cuda \
+      --witness-threshold "$threshold" --ncf-gate-mode priority \
+      --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
+      --secondary-opr-alpha 0.10 --soft-ncf-penalty 1.5 \
+      --offline-fallback stop_like --adaptive-frontier-margin 0.15 \
+      --outcome-risk-penalty 0.5 --outcome-risk-threshold 1.10 \
+      --output "$output"
+  )
+}
 
-  pids=()
-  for SHARD in $(seq 0 $(( NUM_GPUS - 1 ))); do
-    SHARD_JSON="$OUT_ROOT/eval/waymax/${METHOD}_shard${SHARD}.json"
-    if should_skip_existing && [[ "$FORCE_RERUN_ONLINE" != "1" ]] && json_ok "$SHARD_JSON"; then
-      echo "  skip online/$METHOD shard $SHARD: found valid $SHARD_JSON"
+run_waymax_method() {
+  local method="$1" threshold="$2"
+  local pids=() shard gpu out
+  local per_shard=$(( (TOTAL_ONLINE_SCENARIOS + NUM_GPUS - 1) / NUM_GPUS ))
+  for shard in 0 1; do
+    gpu="$shard"
+    out="$OUT_ROOT/eval/waymax/${method}_shard${shard}.json"
+    if [[ "$FORCE_EVAL" != 1 ]] && json_ok "$out"; then
+      echo "[waymax/$method] keep existing shard $shard"
       continue
     fi
-    GPU="$SHARD"
     (
-      export CUDA_VISIBLE_DEVICES="$GPU"
+      export CUDA_VISIBLE_DEVICES="$gpu"
       export XLA_PYTHON_CLIENT_PREALLOCATE=false
       python -m cowp.scripts.04_eval_closed_loop \
-        --data-config configs/data.yaml \
-        --label-config configs/label.yaml \
-        --eval-config configs/eval.yaml \
-        --mode waymax \
-        --waymax-split "$ONLINE_SPLIT" \
-        --tfexample-glob "$WAYMAX_TFEXAMPLE_PATH" \
-        --method "$METHOD" \
-        --checkpoint "$CKPT" \
-        --num-scenarios "$PER_SHARD_SCENARIOS" \
-        --num-shards "$NUM_GPUS" \
-        --shard-index "$SHARD" \
-        --rollout-horizon-steps 80 \
-        --waymax-standard-metrics \
-        --waymax-device gpu \
-        --jax-visible-devices 0 \
-        --jax-preallocate false \
-        --waymax-action-mode absolute_xy_yaw \
-        --device cuda \
-        --witness-threshold 0.5 \
-        --ncf-gate-mode priority \
-        --priority-hard-threshold 0.55 \
-        --adaptive-frontier-margin 0.20 \
-        --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" \
-        --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
-        --clear-accelerator-cache \
-        --output "$SHARD_JSON"
-    ) &
-    pids+=("$!")
+        --data-config configs/data.yaml --label-config configs/label.yaml --eval-config configs/eval.yaml \
+        --mode waymax --waymax-split validation --tfexample-glob "$WAYMAX_VAL" \
+        --method "$method" --checkpoint "$CKPT" \
+        --num-scenarios "$per_shard" --num-shards 2 --shard-index "$shard" \
+        --rollout-horizon-steps 80 --waymax-standard-metrics \
+        --waymax-device gpu --jax-visible-devices 0 --jax-preallocate false \
+        --waymax-action-mode absolute_xy_yaw --device cuda \
+        --witness-threshold "$threshold" --ncf-gate-mode priority \
+        --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
+        --secondary-opr-alpha 0.10 --soft-ncf-penalty 1.5 \
+        --adaptive-frontier-margin 0.15 \
+        --outcome-risk-penalty 0.5 --outcome-risk-threshold 1.10 \
+        --clear-accelerator-cache --output "$out"
+    ) & pids+=("$!")
   done
-  if (( ${#pids[@]} > 0 )); then
-    wait_group "${pids[@]}"
-  fi
+  ((${#pids[@]} == 0)) || wait_all "${pids[@]}"
+  python -m cowp.scripts.17_merge_waymax_shards \
+    --output "$OUT_ROOT/eval/waymax/${method}_merged.json" \
+    "$OUT_ROOT/eval/waymax/${method}_shard0.json" \
+    "$OUT_ROOT/eval/waymax/${method}_shard1.json"
+}
 
-  if ! all_online_shards_ok "$METHOD"; then
-    echo "ERROR: not all online shard outputs are present/valid for method=$METHOD; refusing to write merged metrics." >&2
-    exit 2
-  fi
+# ------------------------- Pipeline -------------------------
+if [[ "$RUN_TESTS" == 1 ]]; then
+  echo "[0/6] Regression tests"
+  pytest --rootdir="$REPO_ROOT" -q
+fi
 
-  MERGED_JSON="$OUT_ROOT/eval/waymax/${METHOD}_merged.json"
-  if should_skip_existing && [[ "$FORCE_REMERGE_ONLINE" != "1" ]] && json_ok "$MERGED_JSON" && [[ "$FORCE_RERUN_ONLINE" != "1" ]]; then
-    echo "  skip merge online/$METHOD: found valid $MERGED_JSON"
-    continue
-  fi
+if [[ "$RUN_OUTCOME_REPLAY" == 1 ]]; then
+  echo "[1/6] Replay 24 balanced candidates with safety + log-divergence labels"
+  [[ -d "$BASE_TRAIN_CACHE" && -d "$BASE_VAL_CACHE" ]] || { echo "Base caches not found" >&2; exit 2; }
+  run_two_gpu_replay training "$BASE_TRAIN_CACHE" "$REPLAY_ROOT/train_rc24"
+  attach_outcomes "$BASE_TRAIN_CACHE" "$TRAIN_CACHE" "$REPLAY_ROOT/train_rc24"
+  run_two_gpu_replay validation "$BASE_VAL_CACHE" "$REPLAY_ROOT/val_rc24"
+  attach_outcomes "$BASE_VAL_CACHE" "$VAL_CACHE" "$REPLAY_ROOT/val_rc24"
+fi
 
-  SHARD_PATHS=()
-  for SHARD in $(seq 0 $(( NUM_GPUS - 1 ))); do
-    SHARD_PATHS+=("$OUT_ROOT/eval/waymax/${METHOD}_shard${SHARD}.json")
+[[ -d "$TRAIN_CACHE" && -d "$VAL_CACHE" ]] || { echo "Attached RC caches not found: $TRAIN_CACHE / $VAL_CACHE" >&2; exit 2; }
+
+if [[ "$RUN_TRAIN" == 1 ]]; then
+  echo "[2/6] Cross-world staged training on two GPUs"
+  train_stage natural 20 3e-4 "$PER_GPU_BATCH_NATURAL" "$OUT_ROOT/checkpoints/natural"
+  NAT="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+  train_stage response 16 2.5e-4 "$PER_GPU_BATCH_RESPONSE" "$OUT_ROOT/checkpoints/response" "$NAT"
+  RESP="$OUT_ROOT/checkpoints/response/cowp_response_best.pt"
+  train_stage witness 28 2e-4 "$PER_GPU_BATCH_WITNESS" "$OUT_ROOT/checkpoints/witness" "$RESP"
+  WIT="$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
+  train_stage planner 32 1.5e-4 "$PER_GPU_BATCH_PLANNER" "$OUT_ROOT/checkpoints/planner" "$WIT"
+fi
+
+CKPT="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
+[[ -s "$CKPT" ]] || { echo "Planner checkpoint not found: $CKPT" >&2; exit 2; }
+
+if [[ "$RUN_EVAL" == 1 ]]; then
+  echo "[3/6] Validation threshold calibration"
+  CAL_JSON="$OUT_ROOT/eval/learned_offline/cowp_threshold_sweep.json"
+  if [[ "$FORCE_EVAL" == 1 ]] || ! json_ok "$CAL_JSON"; then
+    export CUDA_VISIBLE_DEVICES=0
+    python -m cowp.scripts.04_eval_closed_loop \
+      --data-config configs/data.yaml --label-config configs/label.yaml --eval-config configs/eval.yaml \
+      --cache-dir "$VAL_CACHE" --mode learned_offline --method cowp --checkpoint "$CKPT" \
+      --batch-size "$EVAL_BATCH" --device cuda --witness-threshold 0.5 \
+      --witness-threshold-sweep 0.20,0.30,0.40,0.50,0.60,0.70,0.80 \
+      --ncf-gate-mode priority --priority-hard-threshold 0.55 \
+      --offline-fallback stop_like --adaptive-frontier-margin 0.15 \
+      --outcome-risk-penalty 0.5 --outcome-risk-threshold 1.10 --output "$CAL_JSON"
+  fi
+  python -m cowp.scripts.18_calibrate_witness_threshold \
+    --input "$CAL_JSON" --output "$OUT_ROOT/eval/witness_calibration.json" \
+    --min-ncf-recall 0.90 --max-fallback 0.25
+  WITNESS_THRESHOLD="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["witness_threshold"])' "$OUT_ROOT/eval/witness_calibration.json")"
+  echo "Calibrated witness threshold: $WITNESS_THRESHOLD"
+
+  echo "[4/6] Learned-offline baselines in two-GPU waves"
+  METHODS=(idm_lattice conventional_safety planner_score_only soft_burden_cost_only universal_ncf cowp outcome_oracle)
+  for ((i=0; i<${#METHODS[@]}; i+=2)); do
+    pids=()
+    for offset in 0 1; do
+      j=$((i+offset)); ((j < ${#METHODS[@]})) || continue
+      m="${METHODS[$j]}"
+      run_learned_eval "$m" "$offset" "$WITNESS_THRESHOLD" "$OUT_ROOT/eval/learned_offline/${m}.json" & pids+=("$!")
+    done
+    wait_all "${pids[@]}"
   done
 
-  python - "$MERGED_JSON" "${SHARD_PATHS[@]}" <<'PY'
-import json, sys
-from pathlib import Path
-from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
-from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
-out = Path(sys.argv[1])
-paths = [Path(p) for p in sys.argv[2:]]
-payloads = []
-for p in paths:
-    if not p.exists():
-        continue
-    with p.open("r", encoding="utf-8") as f:
-        payloads.append(json.load(f))
-rollouts = []
-for payload in payloads:
-    rollouts.extend(payload.get("rollouts", []))
-merged = dict(payloads[0]) if payloads else {}
-merged["merged_from"] = [str(p) for p in paths]
-merged["num_rollouts"] = len(rollouts)
-merged["steps"] = [int(x.get("steps", 0)) for x in rollouts]
-merged["policy_diagnostic_summary"] = policy_diagnostic_summary(rollouts)
-merged["closed_loop_cowp_metric_summary"] = policy_diagnostic_episode_summary(rollouts)
-if any("standard_metric_summary" in p for p in payloads):
-    merged["standard_metric_summary"] = aggregate_waymax_standard_metrics(rollouts)
-merged.pop("standard_metrics", None)
-out.write_text(json.dumps(merged, indent=2, default=str), encoding="utf-8")
-print(json.dumps({"merged_output": str(out), "num_rollouts": len(rollouts)}, indent=2))
-PY
-done
+  echo "[5/6] Waymax closed-loop methods, each sharded across both GPUs"
+  ONLINE_METHODS=(planner_score_only conventional_safety soft_burden_cost_only universal_ncf cowp)
+  for m in "${ONLINE_METHODS[@]}"; do run_waymax_method "$m" "$WITNESS_THRESHOLD"; done
+fi
 
-echo "[6/6] Done"
-echo "Best planner checkpoint: $CKPT"
-echo "Learned-offline outputs: $OUT_ROOT/eval/learned_offline"
-echo "Waymax closed-loop outputs: $OUT_ROOT/eval/waymax"
+echo "[6/6] Complete"
+echo "Checkpoint: $CKPT"
+echo "Learned-offline: $OUT_ROOT/eval/learned_offline"
+echo "Waymax: $OUT_ROOT/eval/waymax"

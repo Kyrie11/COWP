@@ -368,7 +368,11 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
     if stage in ("witness", "planner", "all"):
         wl = witness_loss(pred["witness"], batch, loss_weights)
         out.update({f"witness/{k}": v for k, v in wl.items() if k != "loss"})
-        losses.append(wl["loss"])
+        # Planner fine-tuning should not erase witness calibration learned in the
+        # dedicated stage.  Keep a small consistency gradient instead of adding
+        # the full witness objective a second time.
+        witness_scale = 1.0 if stage in {"witness", "all"} else float(loss_weights.get("planner_witness_scale", 0.20))
+        losses.append(witness_scale * wl["loss"])
     if stage in ("planner", "all"):
         rank = planner_ranking_loss(
             pred["planner_score"],

@@ -12,6 +12,7 @@ from cowp.models.outcome_head import OutcomeRiskHead
 from cowp.models.response_decoder import ResponseDecoder
 from cowp.models.witness_decoder import WitnessDecoder
 from cowp.data.womd_features import build_agent_history_from_womd, has_womd_state
+from cowp.models.coordinate import ego_centric_inputs, infer_sdc_index
 
 
 class COWPModel(nn.Module):
@@ -188,12 +189,16 @@ class COWPModel(nn.Module):
         agent_history, agent_mask = self._agent_history_from_batch(batch)
         conflict = batch.get("map/conflict_regions")
         conflict_mask = batch.get("map/conflict_region_valid")
+        sdc_index, ego_mask = infer_sdc_index(batch, agent_history)
 
         # Decode only the heads needed by the current stage.  Natural alternatives
         # should be conditioned on the root scene, not on a particular ego
         # candidate.  Response/witness/planner heads use the candidate-conditioned
         # graph.  This also avoids loading/encoding candidate tensors in Stage A.
-        need_natural = stage in ("natural", "representation", "all")
+        # Witness/planner stages need the root-scene natural latent.  Only the
+        # dedicated natural/all stages decode the dense 24x80 trajectory bank.
+        need_natural = stage in ("natural", "representation", "witness", "planner", "all")
+        decode_natural_traj = stage in ("natural", "representation", "all")
         need_response = stage in ("response", "all")
         need_witness = stage in ("witness", "planner", "all")
         need_planner = stage in ("planner", "all")
@@ -206,30 +211,38 @@ class COWPModel(nn.Module):
 
         enc_scene = None
         enc_cond = None
-        cand_traj = None
-        cand_mask = None
+        cand_traj = batch["cowp/candidates/trajectory"].float() if need_candidate_context else None
+        cand_mask = batch["cowp/candidates/valid"].bool() if need_candidate_context else None
         z_cand = None
+
+        enc_history, enc_candidates, enc_conflict = ego_centric_inputs(
+            agent_history,
+            cand_traj,
+            conflict.float() if conflict is not None else None,
+            sdc_index,
+        )
 
         if need_natural:
             enc_scene = self.graph(
-                agent_history,
+                enc_history,
                 agent_mask,
                 None,
                 None,
-                conflict.float() if conflict is not None else None,
+                enc_conflict,
                 conflict_mask.bool() if conflict_mask is not None else None,
+                ego_mask=ego_mask,
             )
 
         if need_candidate_context:
-            cand_traj = batch["cowp/candidates/trajectory"].float()
-            cand_mask = batch["cowp/candidates/valid"].bool()
+            assert cand_traj is not None and cand_mask is not None and enc_candidates is not None
             enc_cond = self.graph(
-                agent_history,
+                enc_history,
                 agent_mask,
-                cand_traj,
+                enc_candidates,
                 cand_mask,
-                conflict.float() if conflict is not None else None,
+                enc_conflict,
                 conflict_mask.bool() if conflict_mask is not None else None,
+                ego_mask=ego_mask,
             )
         enc = enc_cond if enc_cond is not None else enc_scene
         assert enc is not None
@@ -238,20 +251,27 @@ class COWPModel(nn.Module):
             "enc": enc,
             "critical_idx": critical_idx,
             "critical_mask": critical_mask,
+            "sdc_index": sdc_index,
         }
         if need_candidate_context:
             assert cand_traj is not None and cand_mask is not None and enc_cond is not None
-            z_cand = self.candidate_encoder(cand_traj, batch["cowp/candidates/macro_type"].long())
+            assert enc_candidates is not None
+            z_cand = self.candidate_encoder(enc_candidates, batch["cowp/candidates/macro_type"].long())
             if "z_candidate_context" in enc_cond:
                 z_cand = z_cand + enc_cond["z_candidate_context"]
             out["z_candidate"] = z_cand
 
         anchor7 = None
-        if need_natural or need_response:
+        if decode_natural_traj or need_response:
             anchor7 = self._critical_anchor7(agent_history, critical_idx)
+        natural_out = None
         if need_natural:
-            assert enc_scene is not None and anchor7 is not None
-            out["natural"] = self._add_natural_anchor(self.natural_decoder(enc_scene["z_agent"], critical_idx), anchor7)
+            assert enc_scene is not None
+            natural_out = self.natural_decoder(enc_scene["z_agent"], critical_idx, decode_traj=decode_natural_traj)
+            if decode_natural_traj:
+                assert anchor7 is not None
+                natural_out = self._add_natural_anchor(natural_out, anchor7)
+            out["natural"] = natural_out
         if need_response:
             assert z_cand is not None and enc_cond is not None and anchor7 is not None
             out["response"] = self._add_response_anchor(
@@ -266,13 +286,20 @@ class COWPModel(nn.Module):
             )
         if need_witness:
             assert z_cand is not None and enc_cond is not None
-            witness = self.witness_decoder(enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx)
+            natural_latent = natural_out.get("latent") if isinstance(natural_out, dict) else None
+            witness = self.witness_decoder(
+                enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx,
+                natural_latent=natural_latent,
+            )
             out["witness"] = witness
         if need_planner:
             assert z_cand is not None and cand_mask is not None
             witness = out.get("witness")
             assert isinstance(witness, dict)
-            witness_prob = torch.sigmoid(witness["exist_logits"])
+            logit_prob = torch.sigmoid(witness["exist_logits"])
+            evidence_prob = witness.get("evidential_prob")
+            evidence_mix = float(self.cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
+            witness_prob = (1.0 - evidence_mix) * logit_prob + evidence_mix * evidence_prob if evidence_prob is not None else logit_prob
             out["priority_claim_logits"] = self.priority_claim(
                 enc_cond["z_agent"],
                 z_cand,

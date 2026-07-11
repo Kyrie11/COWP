@@ -138,6 +138,116 @@ def pair_mined_focal_bce_with_logits(
     return masked_mean(values, mask)
 
 
+
+def balanced_bce_all_pairs(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    max_pos_weight: float = 8.0,
+) -> torch.Tensor:
+    """Class-balanced BCE over the complete valid pair distribution.
+
+    Pair mining is useful for localization, but by itself changes the effective
+    witness prior and can admit a nearly constant high-probability solution.
+    This full-distribution term restores calibration while retaining the mined
+    focal term for hard examples.
+    """
+    mask_b = mask.bool()
+    if not mask_b.any():
+        return _zero_like_loss(logits)
+    y = _binary_target(target)
+    pos = ((y > 0.5) & mask_b).float().sum()
+    neg = ((y <= 0.5) & mask_b).float().sum()
+    pos_weight = (neg / pos.clamp_min(1.0)).clamp(1.0, float(max_pos_weight))
+    values = F.binary_cross_entropy_with_logits(_safe_float(logits), y, reduction="none")
+    values = torch.where(y > 0.5, values * pos_weight, values)
+    return masked_mean(values, mask_b)
+
+
+def witness_pair_ranking_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    margin: float = 1.0,
+    max_pairs_per_class: int = 64,
+) -> torch.Tensor:
+    """Force positive witness logits above negatives within the same root scene."""
+    y = _binary_target(target) > 0.5
+    mask_b = mask.bool()
+    logits_f = _safe_float(logits)
+    terms = []
+    for b in range(logits_f.shape[0]):
+        pos = logits_f[b][mask_b[b] & y[b]].reshape(-1)
+        neg = logits_f[b][mask_b[b] & ~y[b]].reshape(-1)
+        if pos.numel() == 0 or neg.numel() == 0:
+            continue
+        if max_pairs_per_class > 0:
+            pos = pos[:max_pairs_per_class]
+            neg = neg[:max_pairs_per_class]
+        terms.append(torch.relu(float(margin) - pos[:, None] + neg[None, :]).mean())
+    return torch.stack(terms).mean() if terms else _zero_like_loss(logits)
+
+
+def witness_candidate_consistency_loss(
+    logits: torch.Tensor,
+    opr: torch.Tensor,
+    batch: dict[str, torch.Tensor],
+    pair_mask: torch.Tensor,
+    weights: dict[str, float],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Link pair witnesses and option preservation to candidate-level labels."""
+    cand_mask = batch["cowp/candidates/valid"].bool()
+    crit_mask = batch["cowp/critical/valid"].bool()
+    pair_prob = torch.sigmoid(_safe_float(logits))
+    pair_prob = torch.where(pair_mask, pair_prob.clamp(1e-5, 1.0 - 1e-5), torch.zeros_like(pair_prob))
+    # Smooth noisy-OR is less brittle than max and gives every critical pair a gradient.
+    candidate_prob = 1.0 - torch.prod(1.0 - pair_prob, dim=-1)
+    candidate_prob = candidate_prob.clamp(1e-5, 1.0 - 1e-5)
+    candidate_logit = torch.logit(candidate_prob)
+    fs_target = _binary_target(batch.get("cowp/candidates/false_safe", torch.zeros_like(candidate_prob)))
+    fs_loss = masked_mean(F.binary_cross_entropy_with_logits(candidate_logit, fs_target, reduction="none"), cand_mask)
+
+    opr_safe = torch.where(crit_mask[:, None, :], _safe_float(opr).clamp(0.0, 1.0), torch.ones_like(opr))
+    min_opr = opr_safe.min(dim=-1).values
+    alpha = float(weights.get("priority_claim_opr_alpha", weights.get("alpha_opr", 0.35)))
+    tau = max(float(weights.get("witness_opr_consistency_tau", 0.08)), 1e-3)
+    ncf_logit = (min_opr - alpha) / tau
+    ncf_target = _binary_target(batch.get("cowp/candidates/noncoercive_feasible", torch.zeros_like(min_opr)))
+    ncf_mask = cand_mask & batch.get("cowp/candidates/conventional_safe", cand_mask).bool()
+    ncf_loss = masked_mean(F.binary_cross_entropy_with_logits(ncf_logit, ncf_target, reduction="none"), ncf_mask)
+    return fs_loss, ncf_loss
+
+
+def evidential_binary_loss(
+    alpha: torch.Tensor,
+    beta: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    kl_weight: float = 0.01,
+) -> torch.Tensor:
+    """Expected beta-Bernoulli NLL plus evidence regularization to a uniform prior."""
+    mask_b = mask.bool()
+    if not mask_b.any():
+        return _zero_like_loss(alpha)
+    a = _safe_float(alpha).clamp_min(1.0 + 1e-4)
+    b = _safe_float(beta).clamp_min(1.0 + 1e-4)
+    y = _binary_target(target)
+    strength = a + b
+    nll = y * (torch.digamma(strength) - torch.digamma(a)) + (1.0 - y) * (torch.digamma(strength) - torch.digamma(b))
+    # Remove evidence for the correct class before KL, as in evidential classification.
+    a_tilde = y + (1.0 - y) * a
+    b_tilde = (1.0 - y) + y * b
+    st = a_tilde + b_tilde
+    kl = (
+        torch.lgamma(st) - torch.lgamma(a_tilde) - torch.lgamma(b_tilde)
+        + (a_tilde - 1.0) * (torch.digamma(a_tilde) - torch.digamma(st))
+        + (b_tilde - 1.0) * (torch.digamma(b_tilde) - torch.digamma(st))
+    )
+    return masked_mean(nll + float(kl_weight) * kl, mask_b)
+
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
     for v in pred.values():
         if torch.is_tensor(v):
@@ -348,7 +458,7 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     crit_mask = batch["cowp/critical/valid"].bool()
     pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
     y = _binary_target(batch["cowp/witness/exists"])
-    exist = pair_mined_focal_bce_with_logits(
+    mined = pair_mined_focal_bce_with_logits(
         pred["exist_logits"],
         y,
         pair_mask,
@@ -358,6 +468,19 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         max_neg_per_scene=int(weights.get("witness_mining_max_neg_per_scene", 48)),
         neg_pos_ratio=int(weights.get("witness_mining_neg_pos_ratio", 3)),
         min_neg_per_scene=int(weights.get("witness_mining_min_neg_per_scene", 8)),
+    )
+    balanced = balanced_bce_all_pairs(
+        pred["exist_logits"], y, pair_mask,
+        max_pos_weight=float(weights.get("witness_max_pos_weight", 8.0)),
+    )
+    pair_rank = witness_pair_ranking_loss(
+        pred["exist_logits"], y, pair_mask,
+        margin=float(weights.get("witness_pair_margin", 1.0)),
+        max_pairs_per_class=int(weights.get("witness_rank_max_per_class", 64)),
+    )
+    exist = (
+        float(weights.get("witness_mined_fraction", 0.35)) * mined
+        + float(weights.get("witness_balanced_fraction", 0.65)) * balanced
     )
     pos_mask = pair_mask & (y > 0.5)
     if pos_mask.any():
@@ -381,15 +504,32 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         comps = _zero_like_loss(pred["exist_logits"])
     opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair_mask)
     ci = masked_mean(torch.abs(_safe_float(pred["c_i"]) - _safe_float(batch["cowp/witness/c_i"])), pair_mask)
+    candidate_fs, candidate_ncf = witness_candidate_consistency_loss(pred["exist_logits"], pred["opr"], batch, pair_mask, weights)
+    if "evidence_alpha" in pred and "evidence_beta" in pred:
+        evidence = evidential_binary_loss(
+            pred["evidence_alpha"], pred["evidence_beta"], y, pair_mask,
+            kl_weight=float(weights.get("witness_evidence_kl", 0.01)),
+        )
+    else:
+        evidence = _zero_like_loss(pred["exist_logits"])
     total = (
         weights.get("witness_exist", 2.0) * exist
+        + weights.get("witness_pair_rank", 0.5) * pair_rank
+        + weights.get("witness_candidate_false_safe", 0.75) * candidate_fs
+        + weights.get("witness_candidate_ncf", 0.5) * candidate_ncf
+        + weights.get("witness_evidential", 0.25) * evidence
         + weights.get("witness_token", 1.0) * token
         + weights.get("witness_burden", 0.5) * burden
         + weights.get("witness_burden_components", 0.25) * comps
         + weights.get("witness_conflict", 0.3) * interval
         + weights.get("witness_opr", 0.5) * (opr + ci)
     )
-    return {"loss": total, "exist": exist, "token": token, "burden": burden, "components": comps, "interval": interval, "opr": opr, "ci": ci}
+    return {
+        "loss": total, "exist": exist, "exist_mined": mined, "exist_balanced": balanced,
+        "pair_rank": pair_rank, "candidate_fs": candidate_fs, "candidate_ncf": candidate_ncf,
+        "evidence": evidence, "token": token, "burden": burden, "components": comps,
+        "interval": interval, "opr": opr, "ci": ci,
+    }
 
 
 def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:

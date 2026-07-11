@@ -187,7 +187,7 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
     """
     rg = _get_field(state, ("roadgraph_points", "roadgraph", "roadgraph_static_points"))
     if rg is None:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool)}
+        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
     x_field = _get_field(rg, ("x", "center_x"))
     y_field = _get_field(rg, ("y", "center_y"))
     xy_field = _get_field(rg, ("xy", "points", "xyz"))
@@ -204,7 +204,7 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
             arr = arr[0]
         xy = arr[..., :2].reshape(-1, 2).astype(np.float32)
     else:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool)}
+        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
     dir_x = _get_field(rg, ("dir_x", "direction_x", "dx"))
     dir_y = _get_field(rg, ("dir_y", "direction_y", "dy"))
     if dir_x is not None and dir_y is not None:
@@ -227,6 +227,14 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
         valid = valid.reshape(-1).astype(bool)[: len(xy)]
     else:
         valid = np.isfinite(xy).all(axis=-1)
+    type_field = _get_field(rg, ("types", "type", "map_element_type"))
+    if type_field is not None:
+        types = _to_numpy(type_field)
+        while types.ndim > 1:
+            types = types[0]
+        types = types.reshape(-1).astype(np.int32)[: len(xy)]
+    else:
+        types = np.zeros(len(xy), dtype=np.int32)
     finite = np.isfinite(xy).all(axis=-1) & np.isfinite(heading)
     valid = valid & finite
     max_points = int(cfg.get("limits", {}).get("max_roadgraph_points", 20000))
@@ -234,13 +242,24 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
         # Keep a deterministic spread of points; local filtering below selects
         # only points near ego, so this mostly protects pathological states.
         idx = np.linspace(0, len(xy) - 1, max_points, dtype=np.int64)
-        xy, heading, valid = xy[idx], heading[idx], valid[idx]
-    return {"xy": xy, "heading": heading, "valid": valid}
+        xy, heading, valid, types = xy[idx], heading[idx], valid[idx], types[idx]
+    return {"xy": xy, "heading": heading, "valid": valid, "types": types}
+
+
+def _lane_centerline_mask(roadgraph: dict[str, np.ndarray]) -> np.ndarray:
+    """Waymax/WOMD lane centerline points only (exclude edges/crosswalks)."""
+    valid = roadgraph.get("valid", np.zeros(0, dtype=bool)).astype(bool, copy=False)
+    types = roadgraph.get("types", np.zeros(len(valid), dtype=np.int32))
+    if len(types) != len(valid) or not np.any(types):
+        return valid
+    # WOMD RoadGraphSamples: 1 freeway, 2 surface street, 3 bike lane.
+    # Vehicle planning intentionally excludes bike-lane centerlines.
+    return valid & np.isin(types.astype(np.int32, copy=False), np.asarray([1, 2], dtype=np.int32))
 
 
 def _nearest_lane_heading(current: np.ndarray, roadgraph: dict[str, np.ndarray], *, search_radius: float = 8.0) -> float:
     xy = roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32))
-    valid = roadgraph.get("valid", np.zeros(0, dtype=bool))
+    valid = _lane_centerline_mask(roadgraph)
     heading = roadgraph.get("heading", np.zeros(0, dtype=np.float32))
     if len(xy) == 0 or not np.any(valid):
         return float(current[6])
@@ -256,26 +275,87 @@ def _nearest_lane_heading(current: np.ndarray, roadgraph: dict[str, np.ndarray],
     return h
 
 
+def _quintic_frenet_trajectory(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    *,
+    accel: float = 0.0,
+    lateral_offset: float = 0.0,
+    start_delay_s: float = 0.0,
+    lane_change_duration_s: float = 4.0,
+) -> np.ndarray:
+    """Tangent-consistent Frenet primitive with quintic lateral motion.
+
+    Unlike adding an offset to a longitudinal trajectory and repairing yaw later,
+    this primitive derives position, velocity, and yaw from the same differentiable
+    curve.  It therefore satisfies the StateDynamics action contract much more
+    closely and avoids the dominant kinematic-infeasibility failure mode.
+    """
+    H = int(horizon)
+    dt = float(dt)
+    t = (np.arange(H, dtype=np.float32) + 1.0) * dt
+    yaw0 = float(current[6])
+    v0 = max(float(current[5]), float(np.linalg.norm(current[3:5])), 0.0)
+    a = float(accel)
+    v = np.maximum(v0 + a * t, 0.0)
+    # Exact integral with a stop clamp; cumulative trapezoid is robust when v hits zero.
+    v_prev = np.concatenate([np.asarray([v0], dtype=np.float32), v[:-1]])
+    s_long = np.cumsum(0.5 * (v_prev + v) * dt).astype(np.float32)
+
+    delay = max(float(start_delay_s), 0.0)
+    duration = max(float(lane_change_duration_s), 1.5)
+    u = np.clip((t - delay) / duration, 0.0, 1.0)
+    q = 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+    dq_du = 30.0 * u**2 - 60.0 * u**3 + 30.0 * u**4
+    d_lat = float(lateral_offset) * q
+    d_dot = float(lateral_offset) * dq_du / duration
+    d_dot[(t <= delay) | (t >= delay + duration)] = 0.0
+
+    e_s = np.asarray([np.cos(yaw0), np.sin(yaw0)], dtype=np.float32)
+    e_d = np.asarray([-np.sin(yaw0), np.cos(yaw0)], dtype=np.float32)
+    xy = current[:2][None, :] + s_long[:, None] * e_s[None, :] + d_lat[:, None] * e_d[None, :]
+    vel = v[:, None] * e_s[None, :] + d_dot[:, None] * e_d[None, :]
+    speed = np.linalg.norm(vel, axis=-1)
+    yaw = np.where(speed > 0.15, np.arctan2(vel[:, 1], vel[:, 0]), yaw0).astype(np.float32)
+    out = np.zeros((H, 7), dtype=np.float32)
+    out[:, 0:2] = xy
+    out[:, 2] = yaw
+    out[:, 3:5] = vel
+    out[:, 5] = float(current[7]) if current.shape[0] > 7 else 4.8
+    out[:, 6] = float(current[8]) if current.shape[0] > 8 else 1.9
+    return out
+
+
 def _candidate_dyn_ok(traj: np.ndarray, cfg: dict) -> bool:
     dt = float(cfg.get("time", {}).get("dt", 0.1))
-    speed = np.linalg.norm(traj[:, 3:5], axis=-1)
-    acc = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
-    jerk = np.diff(acc, prepend=acc[0]) / max(dt, 1e-3)
+    cand_cfg = cfg.get("candidate", {})
+    if traj.ndim != 2 or traj.shape[0] < 2 or traj.shape[1] < 5 or not np.all(np.isfinite(traj)):
+        return False
+    vel = traj[:, 3:5]
+    speed = np.linalg.norm(vel, axis=-1)
+    acc_vec = np.diff(vel, axis=0, prepend=vel[:1]) / max(dt, 1e-3)
+    acc_long = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
+    jerk_vec = np.diff(acc_vec, axis=0, prepend=acc_vec[:1]) / max(dt, 1e-3)
     yaw = np.unwrap(traj[:, 2])
     yaw_rate = np.diff(yaw, prepend=yaw[0]) / max(dt, 1e-3)
-    cand_cfg = cfg.get("candidate", {})
+    moving = speed > 0.5
+    vel_heading = np.arctan2(vel[:, 1], vel[:, 0])
+    slip = np.abs(_wrap_angle(vel_heading - traj[:, 2]))
+    lateral_acc = np.abs(acc_vec[:, 0] * (-np.sin(traj[:, 2])) + acc_vec[:, 1] * np.cos(traj[:, 2]))
     return bool(
-        np.all(np.isfinite(traj))
-        and np.nanmax(acc) <= float(cand_cfg.get("max_accel_mps2", 4.0)) + 1e-3
-        and -np.nanmin(acc) <= float(cand_cfg.get("max_decel_mps2", 6.0)) + 1e-3
-        and np.nanmax(np.abs(jerk)) <= float(cand_cfg.get("max_jerk_mps3", 6.0)) + 4.0
+        np.nanmax(acc_long) <= float(cand_cfg.get("max_accel_mps2", 4.0)) + 1e-3
+        and -np.nanmin(acc_long) <= float(cand_cfg.get("max_decel_mps2", 6.0)) + 1e-3
+        and np.nanmax(np.linalg.norm(jerk_vec, axis=-1)) <= float(cand_cfg.get("max_jerk_mps3", 8.0)) + 1e-3
         and np.nanmax(np.abs(yaw_rate)) <= float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)) + 1e-3
+        and np.nanmax(lateral_acc) <= float(cand_cfg.get("max_lateral_accel_mps2", 4.0)) + 1e-3
+        and (not np.any(moving) or np.nanmax(slip[moving]) <= float(cand_cfg.get("max_sideslip_rad", 0.20)))
     )
 
 
-def _roadgraph_drivable_mask(traj: np.ndarray, roadgraph: dict[str, np.ndarray], max_dist: float = 7.0) -> bool:
+def _roadgraph_drivable_mask(traj: np.ndarray, roadgraph: dict[str, np.ndarray], max_dist: float = 5.5) -> bool:
     xy = roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32))
-    valid = roadgraph.get("valid", np.zeros(0, dtype=bool))
+    valid = _lane_centerline_mask(roadgraph)
     if len(xy) == 0 or not np.any(valid):
         return True
     pts = xy[valid]
@@ -408,7 +488,11 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
         macro = MacroType.LANE_CHANGE_LEFT if lateral_offset > 0 else MacroType.LANE_CHANGE_RIGHT
         for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5, 2.0]):
             for acc in [0.0, -0.5, 0.5]:
-                tr = constant_accel_trajectory(current, H, dt, accel=acc, lateral_offset=float(lateral_offset), start_delay_s=float(delay))
+                tr = _quintic_frenet_trajectory(
+                    current, H, dt, accel=acc, lateral_offset=float(lateral_offset),
+                    start_delay_s=float(delay),
+                    lane_change_duration_s=float(cfg.get("planning", {}).get("online_lane_change_duration_s", 4.0)),
+                )
                 progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
                 _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg)
 
@@ -447,30 +531,46 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
 
 
 def _critical_interaction_rank(agent_state: np.ndarray, sdc_index: int, candidates: np.ndarray, cand_valid: np.ndarray, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Select a small, risk-focused critical-agent set.
+
+    The original online builder filled almost every available slot, including
+    weakly related agents.  That creates a severe train/online distribution shift
+    and lets the max-over-agents witness gate reject nearly every candidate.
+    """
     A = int(cfg.get("limits", {}).get("max_critical_agents", 8))
+    plan_cfg = cfg.get("planning", {})
+    active_cap = min(A, int(plan_cfg.get("max_online_critical_agents", 4)))
+    min_score = float(plan_cfg.get("online_critical_score_threshold", 1.20))
+    max_now = float(plan_cfg.get("online_critical_max_distance_m", 55.0))
+    max_closest = float(plan_cfg.get("online_critical_max_closest_m", 18.0))
     valid_agents = agent_state[:, 10] > 0.5
     ego_xy = agent_state[sdc_index, :2]
     dist_now = np.linalg.norm(agent_state[:, :2] - ego_xy[None], axis=-1)
     scores = np.full(agent_state.shape[0], -1e9, dtype=np.float32)
-    if np.any(cand_valid):
-        cand_xy = candidates[cand_valid, :, :2]
-    else:
-        cand_xy = candidates[:1, :, :2]
+    closest = np.full(agent_state.shape[0], np.inf, dtype=np.float32)
+    cand_xy = candidates[cand_valid, :, :2] if np.any(cand_valid) else candidates[:1, :, :2]
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     t = np.arange(1, cand_xy.shape[1] + 1, dtype=np.float32)[None, :, None] * dt
+    ego_vel = agent_state[sdc_index, 3:5]
     for j in range(agent_state.shape[0]):
-        if j == sdc_index or not valid_agents[j]:
+        if j == sdc_index or not valid_agents[j] or dist_now[j] > max_now:
             continue
         pred = agent_state[j, :2][None, None, :] + agent_state[j, 3:5][None, None, :] * t
         min_dist = float(np.min(np.linalg.norm(cand_xy - pred, axis=-1))) if cand_xy.size else float(dist_now[j])
+        closest[j] = min_dist
         rel = agent_state[j, :2] - ego_xy
-        closing = -float(np.dot(rel, agent_state[j, 3:5] - agent_state[sdc_index, 3:5])) / max(float(np.linalg.norm(rel)), 1e-3)
-        ttc_score = np.exp(-max(0.0, min_dist) / 12.0) + (0.5 if closing > 0.5 else 0.0)
-        scores[j] = 3.0 * np.exp(-dist_now[j] / 25.0) + 4.0 * ttc_score
-    order = [i for i in np.argsort(-scores).tolist() if i != sdc_index and valid_agents[i] and scores[i] > -1e8]
+        closing = -float(np.dot(rel, agent_state[j, 3:5] - ego_vel)) / max(float(np.linalg.norm(rel)), 1e-3)
+        time_risk = np.exp(-max(0.0, min_dist) / 8.0)
+        proximity = np.exp(-float(dist_now[j]) / 22.0)
+        closing_bonus = 0.75 if closing > 1.0 else (0.35 if closing > 0.25 else 0.0)
+        scores[j] = 3.5 * time_risk + 2.0 * proximity + closing_bonus
+    order = [
+        i for i in np.argsort(-scores).tolist()
+        if i != sdc_index and valid_agents[i] and scores[i] >= min_score and closest[i] <= max_closest
+    ]
     idx = np.full(A, 0, dtype=np.int64)
     mask = np.zeros(A, dtype=bool)
-    for a, j in enumerate(order[:A]):
+    for a, j in enumerate(order[:active_cap]):
         idx[a] = int(j)
         mask[a] = True
     return idx, mask
@@ -478,40 +578,52 @@ def _critical_interaction_rank(agent_state: np.ndarray, sdc_index: int, candidat
 
 def _online_conflict_tokens(agent_state: np.ndarray, sdc_index: int, candidates: np.ndarray, cand_valid: np.ndarray, critical_idx: np.ndarray, critical_valid: np.ndarray, roadgraph: dict[str, np.ndarray], cfg: dict) -> tuple[np.ndarray, np.ndarray]:
     C = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
+    plan_cfg = cfg.get("planning", {})
+    pair_cap = min(C, int(plan_cfg.get("max_online_pair_conflict_tokens", 24)))
+    map_cap = min(max(C - pair_cap, 0), int(plan_cfg.get("max_online_map_tokens", 12)))
     tokens = np.zeros((C, 8), dtype=np.float32)
     valid = np.zeros(C, dtype=bool)
     rows: list[np.ndarray] = []
     ego = agent_state[sdc_index]
-    # Candidate-agent closest approach centers.
     active = candidates[cand_valid] if np.any(cand_valid) else candidates[:1]
+    # Preserve macro/candidate diversity but avoid filling all 64 tokens with
+    # near-duplicates.  Rank candidate-agent closest approaches globally.
+    proposals: list[tuple[float, np.ndarray]] = []
     for a, j in enumerate(critical_idx):
         if not bool(critical_valid[a]):
             continue
         j = int(j)
         t = np.arange(1, active.shape[1] + 1, dtype=np.float32)[:, None] * float(cfg.get("time", {}).get("dt", 0.1))
         pred = agent_state[j, :2][None, :] + agent_state[j, 3:5][None, :] * t
-        for tr in active[: min(8, len(active))]:
+        stride = max(1, len(active) // max(1, pair_cap // max(1, int(critical_valid.sum()))))
+        for tr in active[::stride]:
             d = np.linalg.norm(tr[:, :2] - pred, axis=-1)
             m = int(np.argmin(d))
             center = 0.5 * (tr[m, :2] + pred[m])
             radius = max(4.0, 0.5 * (float(ego[7]) + float(agent_state[j, 7])) + 1.0)
-            rows.append(np.asarray([1.0, center[0], center[1], radius, float(d[m]), m / max(len(tr) - 1, 1), float(a), 1.0], dtype=np.float32))
-            if len(rows) >= C // 2:
-                break
-        if len(rows) >= C // 2:
-            break
-    # Add nearby roadgraph anchors so conflict query is not all-zero even in sparse traffic.
+            row = np.asarray([1.0, center[0], center[1], radius, float(d[m]), m / max(len(tr) - 1, 1), float(a), 1.0], dtype=np.float32)
+            proposals.append((float(d[m]), row))
+    for _, row in sorted(proposals, key=lambda x: x[0])[:pair_cap]:
+        rows.append(row)
+
     xy = roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32))
-    rg_valid = roadgraph.get("valid", np.zeros(0, dtype=bool))
-    if len(xy) and np.any(rg_valid):
+    lane_valid = _lane_centerline_mask(roadgraph)
+    if len(xy) and np.any(lane_valid) and map_cap > 0:
         d = np.linalg.norm(xy - ego[:2][None], axis=-1)
         order = np.argsort(d)
-        for q in order[:C]:
-            if len(rows) >= C:
+        last_xy = None
+        added = 0
+        min_spacing = float(plan_cfg.get("online_map_token_spacing_m", 6.0))
+        for q in order:
+            if added >= map_cap or len(rows) >= C:
                 break
-            if not rg_valid[q] or d[q] > 60.0:
+            if not lane_valid[q] or d[q] > 60.0:
+                continue
+            if last_xy is not None and np.linalg.norm(xy[q] - last_xy) < min_spacing:
                 continue
             rows.append(np.asarray([2.0, xy[q, 0], xy[q, 1], 4.0, d[q], 0.0, 0.0, 1.0], dtype=np.float32))
+            last_xy = xy[q]
+            added += 1
     for i, row in enumerate(rows[:C]):
         tokens[i] = np.nan_to_num(row, nan=0.0, posinf=0.0, neginf=0.0)
         valid[i] = True
@@ -602,7 +714,7 @@ def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, hi
     d_state = int(cfg.get("model", cfg).get("d_state", 11))
     max_agents = int(cfg.get("limits", {}).get("max_agents", cfg.get("model", cfg).get("max_agents", 128)))
     if roadgraph is None:
-        roadgraph = {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool)}
+        roadgraph = {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
     if history_model_state is None:
         hist = np.zeros((max_agents, 1, d_state), dtype=np.float32)
         n = min(max_agents, agent_state.shape[0])
@@ -626,6 +738,7 @@ def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, hi
     batch = {
         "state/history": hist[None],
         "state/agent_valid": agent_mask[None],
+        "state/is_sdc": np.eye(max_agents, dtype=bool)[sdc_index][None] if 0 <= sdc_index < max_agents else np.zeros((1, max_agents), dtype=bool),
         "cowp/candidates/trajectory": cand_traj[None],
         "cowp/candidates/valid": cand_valid[None],
         "cowp/candidates/macro_type": macro[None],
@@ -657,6 +770,55 @@ def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, hi
         "map/conflict_region_valid": conflict_valid[None],
     }
     return batch
+
+
+def _consistent_one_step_target(
+    current: np.ndarray,
+    desired: np.ndarray,
+    cfg: dict,
+    previous_longitudinal_accel: float = 0.0,
+) -> tuple[np.ndarray, float]:
+    """Convert a trajectory waypoint into a dynamically consistent 10 Hz state.
+
+    Direct-state Waymax actions must not independently command position, yaw and
+    velocity that contradict one another.  This controller integrates a jerk-
+    limited longitudinal acceleration and yaw-rate-limited heading for one step.
+    """
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    cand_cfg = cfg.get("candidate", {})
+    wm_cfg = cfg.get("waymax", {})
+    cur_xy = np.asarray(current[:2], dtype=np.float64)
+    cur_yaw = float(current[6])
+    cur_vel = np.asarray(current[3:5], dtype=np.float64)
+    cur_speed = float(max(np.linalg.norm(cur_vel), float(current[5]) if current.shape[0] > 5 else 0.0, 0.0))
+    desired_vel = np.asarray(desired[3:5], dtype=np.float64) if desired.shape[0] >= 5 else np.zeros(2)
+    desired_speed = float(np.linalg.norm(desired_vel))
+    if desired_speed < 1e-3:
+        desired_speed = float(np.linalg.norm(np.asarray(desired[:2], dtype=np.float64) - cur_xy) / max(dt, 1e-6))
+    raw_accel = (desired_speed - cur_speed) / max(dt, 1e-6)
+    max_accel = float(cand_cfg.get("max_accel_mps2", 4.0))
+    max_decel = float(cand_cfg.get("max_decel_mps2", 6.0))
+    max_jerk = float(cand_cfg.get("max_jerk_mps3", 8.0))
+    raw_accel = float(np.clip(raw_accel, -max_decel, max_accel))
+    accel = float(np.clip(raw_accel, previous_longitudinal_accel - max_jerk * dt, previous_longitudinal_accel + max_jerk * dt))
+    next_speed = float(max(0.0, cur_speed + accel * dt))
+
+    if desired_speed > 0.25:
+        desired_yaw = float(np.arctan2(desired_vel[1], desired_vel[0]))
+    else:
+        desired_yaw = float(desired[2]) if desired.shape[0] > 2 else cur_yaw
+    max_yaw_rate = float(cand_cfg.get("max_yaw_rate_rad_s", 1.2))
+    max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
+    dyaw = float(np.clip(_wrap_angle(desired_yaw - cur_yaw), -max_dyaw, max_dyaw))
+    next_yaw = float(_wrap_angle(cur_yaw + dyaw))
+
+    # Trapezoidal integration makes displacement and reported velocity mutually
+    # consistent, reducing Waymax kinematic-infeasibility flags.
+    v0 = cur_speed * np.asarray([np.cos(cur_yaw), np.sin(cur_yaw)], dtype=np.float64)
+    v1 = next_speed * np.asarray([np.cos(next_yaw), np.sin(next_yaw)], dtype=np.float64)
+    next_xy = cur_xy + 0.5 * (v0 + v1) * dt
+    target = np.asarray([next_xy[0], next_xy[1], next_yaw, v1[0], v1[1]], dtype=np.float32)
+    return target, accel
 
 
 @dataclass
@@ -698,6 +860,8 @@ class COWPWaymaxPolicy:
                 pass
         self._last_diagnostics: dict[str, Any] | None = None
         self._diagnostics_log: list[dict[str, Any]] = []
+        self._previous_longitudinal_accel: float = 0.0
+        self._previous_scenario_index: int | None = None
 
     def _trajectory_to_action(self, state: Any, agent_state: np.ndarray, sdc_index: int, traj: np.ndarray) -> Any:
         try:
@@ -711,51 +875,36 @@ class COWPWaymaxPolicy:
         data = np.zeros((N, data_dim), dtype=np.float32)
         valid = np.zeros((N, 1), dtype=bool)
         valid[sdc_index, 0] = True
-        # Candidate trajectories are future-indexed; traj[0] is the next Waymax
-        # step.  Using traj[1] doubles the commanded displacement and was one of
-        # the causes of huge kinematic/offroad smoke-test failures.
-        next_pose = traj[0]
-        dx = float(next_pose[0] - agent_state[sdc_index, 0])
-        dy = float(next_pose[1] - agent_state[sdc_index, 1])
-        dyaw = float(_wrap_angle(float(next_pose[2] - agent_state[sdc_index, 6])))
-        # Clamp both action interfaces to a plausible one-step displacement.
-        # Without this, an absolute target emitted from a repaired multi-step
-        # primitive can still violate Waymax kinematics even when delta mode is safe.
-        dt = float(self.cfg.get("time", {}).get("dt", 0.1))
-        speed = max(float(agent_state[sdc_index, 5]), 0.0)
-        max_acc = float(self.cfg.get("candidate", {}).get("max_accel_mps2", 4.0))
-        max_step = float(self.cfg.get("waymax", {}).get("max_delta_step_m", speed * dt + 0.5 * max_acc * dt * dt + 0.25))
-        norm = float(np.hypot(dx, dy))
-        if norm > max_step > 1e-6:
-            scale = max_step / norm
-            dx *= scale
-            dy *= scale
-        max_dyaw = float(self.cfg.get("waymax", {}).get("max_delta_yaw_rad", 0.12))
-        dyaw = float(np.clip(dyaw, -max_dyaw, max_dyaw))
+        desired = traj[0]
+        target, accel = _consistent_one_step_target(
+            agent_state[sdc_index], desired, self.cfg, self._previous_longitudinal_accel
+        )
+        self._previous_longitudinal_accel = float(accel)
         if self.action_mode == "absolute_xy_yaw":
-            x_abs = float(agent_state[sdc_index, 0] + dx)
-            y_abs = float(agent_state[sdc_index, 1] + dy)
-            yaw_abs = float(_wrap_angle(float(agent_state[sdc_index, 6] + dyaw)))
-            vx = dx / max(dt, 1e-6)
-            vy = dy / max(dt, 1e-6)
-            data[sdc_index, :5] = np.asarray([x_abs, y_abs, yaw_abs, vx, vy], dtype=np.float32)
+            data[sdc_index, :5] = target
         else:
+            dx = float(target[0] - agent_state[sdc_index, 0])
+            dy = float(target[1] - agent_state[sdc_index, 1])
+            dyaw = float(_wrap_angle(float(target[2] - agent_state[sdc_index, 6])))
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
         data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
         try:
             import jax.numpy as jnp  # type: ignore
-
             return datatypes.Action(data=jnp.asarray(data), valid=jnp.asarray(valid))
         except Exception:
             return datatypes.Action(data=data, valid=valid)
 
     def __call__(self, state: Any, *, step: int | None = None, scenario_index: int | None = None) -> Any:
+        if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
+            self._previous_longitudinal_accel = 0.0
+        self._previous_scenario_index = scenario_index
         history, agent_state, sdc_index = extract_agent_history_model_state(state, self.cfg)
         roadgraph = _extract_roadgraph_tokens(state, self.cfg)
         batch_np = build_online_batch(agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph)
         online_keys = (
             "state/history",
             "state/agent_valid",
+            "state/is_sdc",
             "cowp/candidates/trajectory",
             "cowp/candidates/valid",
             "cowp/candidates/macro_type",
@@ -773,7 +922,22 @@ class COWPWaymaxPolicy:
             scores = self.torch.nan_to_num(pred["planner_score"][0].float(), nan=1e6, posinf=1e6, neginf=-1e6)
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
-            witness = self.torch.nan_to_num(self.torch.sigmoid(pred["witness"]["exist_logits"])[0].float(), nan=1.0, posinf=1.0, neginf=0.0)
+            logit_witness = self.torch.sigmoid(pred["witness"]["exist_logits"])[0].float()
+            evidence_witness = pred["witness"].get("evidential_prob")
+            uncertainty = pred["witness"].get("epistemic_uncertainty")
+            mix = float(self.cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
+            if self.torch.is_tensor(evidence_witness):
+                witness = (1.0 - mix) * logit_witness + mix * evidence_witness[0].float()
+            else:
+                witness = logit_witness
+            if self.torch.is_tensor(uncertainty):
+                uncertainty = uncertainty[0].float().clamp(0.0, 1.0)
+            else:
+                uncertainty = self.torch.zeros_like(witness)
+            witness = self.torch.nan_to_num(witness, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+            uncertainty = self.torch.nan_to_num(uncertainty, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+            ucb_scale = float(self.cfg.get("planning", {}).get("evidential_ucb_scale", 0.15))
+            witness_cert = (witness + ucb_scale * uncertainty).clamp(0.0, 1.0)
             opr = self.torch.nan_to_num(pred["witness"]["opr"][0].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             burden = pred["witness"].get("burden_total")
             c_i = pred["witness"].get("c_i")
@@ -787,6 +951,8 @@ class COWPWaymaxPolicy:
                 outcome_risk = self.torch.zeros_like(scores)
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
+            witness_cert = self.torch.where(crit_mask[None, :], witness_cert, self.torch.zeros_like(witness_cert))
+            uncertainty = self.torch.where(crit_mask[None, :], uncertainty, self.torch.zeros_like(uncertainty))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
             alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
             method = str(getattr(self, "method", "cowp") or "cowp").lower()
@@ -827,7 +993,7 @@ class COWPWaymaxPolicy:
             elif method == "planner_score_only":
                 accepted = cand_valid
             elif gate_mode == "hard":
-                predicted_bad = (witness >= float(self.witness_threshold)).any(dim=-1)
+                predicted_bad = (witness_cert >= float(self.witness_threshold)).any(dim=-1)
                 accepted = cand_valid & conventional & ~predicted_bad
                 accepted = accepted & (opr.min(dim=-1).values >= alpha)
             else:
@@ -851,9 +1017,9 @@ class COWPWaymaxPolicy:
                 else:
                     priority = heuristic_priority
                 primary_claim = priority >= float(self.priority_hard_threshold)
-                primary_bad = ((witness >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
+                primary_bad = ((witness_cert >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
                 option_bad = ((opr < alpha) & primary_claim).any(dim=-1)
-                severe_bad = ((witness >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha)) & primary_claim).any(dim=-1)
+                severe_bad = ((witness_cert >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha)) & primary_claim).any(dim=-1)
                 burden_penalty = (witness * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                 adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + float(self.outcome_risk_penalty) * outcome_risk
@@ -926,6 +1092,8 @@ class COWPWaymaxPolicy:
                 "fallback_reason": fallback_reason,
                 "max_witness_prob": float(selected_witness.max().detach().cpu().item()) if selected_witness.numel() else 0.0,
                 "mean_witness_prob": float(selected_witness.mean().detach().cpu().item()) if selected_witness.numel() else 0.0,
+                "mean_witness_uncertainty": float(uncertainty[selected].mean().detach().cpu().item()) if uncertainty[selected].numel() else 0.0,
+                "max_witness_certificate": float(witness_cert[selected].max().detach().cpu().item()) if witness_cert[selected].numel() else 0.0,
                 "min_opr": float(selected_opr.min().detach().cpu().item()) if selected_opr.numel() else 1.0,
                 "mean_opr": float(selected_opr.mean().detach().cpu().item()) if selected_opr.numel() else 1.0,
                 "score": float(scores[selected].detach().cpu().item()),

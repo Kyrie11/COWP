@@ -99,6 +99,21 @@ def _stop_like_mask(batch, cand_valid, conventional):
     return mask
 
 
+def _witness_probability_and_certificate(pred_witness, cfg=None):
+    import torch
+    cfg = cfg or {}
+    logit_prob = torch.sigmoid(pred_witness["exist_logits"]).float()
+    evidence_prob = pred_witness.get("evidential_prob")
+    uncertainty = pred_witness.get("epistemic_uncertainty")
+    mix = float(cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
+    prob = (1.0 - mix) * logit_prob + mix * evidence_prob.float() if torch.is_tensor(evidence_prob) else logit_prob
+    unc = uncertainty.float().clamp(0.0, 1.0) if torch.is_tensor(uncertainty) else torch.zeros_like(prob)
+    prob = torch.nan_to_num(prob, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    unc = torch.nan_to_num(unc, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    ucb = float(cfg.get("planning", {}).get("evidential_ucb_scale", 0.15))
+    return prob, (prob + ucb * unc).clamp(0.0, 1.0), unc
+
+
 def _select_from_learned(
     batch,
     pred,
@@ -115,12 +130,15 @@ def _select_from_learned(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    cfg: dict | None = None,
 ) -> tuple[list[int], list[np.ndarray]]:
     import torch
 
     method, gate_mode = _method_gate_defaults(method, gate_mode)
     scores = torch.nan_to_num(pred["planner_score"].detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
-    witness_prob = torch.nan_to_num(torch.sigmoid(pred["witness"]["exist_logits"]).detach().float(), nan=1.0, posinf=1.0, neginf=0.0)
+    witness_prob, witness_cert, witness_uncertainty = _witness_probability_and_certificate(pred["witness"], cfg)
+    witness_prob = witness_prob.detach()
+    witness_cert = witness_cert.detach()
     opr = torch.nan_to_num(pred["witness"]["opr"].detach().float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     cand_valid = batch["cowp/candidates/valid"].bool()
     conventional = batch.get("cowp/candidates/conventional_safe", cand_valid).bool()
@@ -141,6 +159,7 @@ def _select_from_learned(
     if crit_mask is not None and witness_prob.ndim == 3:
         cm = crit_mask.bool()[:, None, :]
         witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
+        witness_cert = torch.where(cm, witness_cert, torch.zeros_like(witness_cert))
         opr = torch.where(cm, opr, torch.ones_like(opr))
 
     # Offline upper-bound baseline when attached Waymax candidate outcomes exist.
@@ -173,7 +192,7 @@ def _select_from_learned(
         if gate_mode in {"none", "off"}:
             accepted = cand_valid & conventional
         elif gate_mode == "hard":
-            predicted_bad = (witness_prob >= witness_threshold).any(dim=-1)
+            predicted_bad = (witness_cert >= witness_threshold).any(dim=-1)
             accepted = cand_valid & conventional & ~predicted_bad
             accepted = accepted & (opr.min(dim=-1).values >= float(alpha_opr))
         else:
@@ -191,8 +210,8 @@ def _select_from_learned(
             # calibrated priority claim above ``priority_hard_threshold``.
             priority_proxy = (0.80 * learned_priority + 0.20 * opr_collapse).clamp(0.0, 1.0)
             priority_claim = priority_proxy >= float(priority_hard_threshold)
-            primary_bad = ((witness_prob >= witness_threshold) & priority_claim).any(dim=-1)
-            severe_bad = ((witness_prob >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
+            primary_bad = ((witness_cert >= witness_threshold) & priority_claim).any(dim=-1)
+            severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
             adjusted_scores = scores + float(soft_ncf_penalty) * penalty + float(outcome_risk_penalty) * outcome_risk
             if gate_mode == "soft":
@@ -544,7 +563,7 @@ def _learned_offline_candidate_eval_many(
             crit_mask = batch["cowp/critical/valid"].bool()
             pair_mask_t = cand_mask[:, :, None] & crit_mask[:, None, :]
             pair_mask = pair_mask_t.detach().cpu().numpy()
-            prob_t = torch.sigmoid(pred["witness"]["exist_logits"])
+            prob_t, _, _ = _witness_probability_and_certificate(pred["witness"], cfg)
             pair_score_np = prob_t.detach().cpu().numpy()
             gt_exists = batch["cowp/witness/exists"].bool().detach().cpu().numpy()
             if pair_mask.any():
@@ -579,6 +598,7 @@ def _learned_offline_candidate_eval_many(
                     adaptive_frontier_margin=adaptive_frontier_margin,
                     outcome_risk_penalty=outcome_risk_penalty,
                     outcome_risk_threshold=outcome_risk_threshold,
+                    cfg=cfg,
                 )
                 pred_exists = (pair_score_np >= float(th))
                 acc = accs[th]

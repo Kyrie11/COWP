@@ -196,6 +196,18 @@ planning:
   online_lane_change_offsets_m: [-3.5, 3.5]
   online_candidate_dedup_endpoint_m: 0.15
   min_online_candidates: 8
+  # Keep online tensors close to the distribution used by the interaction labels.
+  max_online_critical_agents: 4
+  online_critical_score_threshold: 1.20
+  online_critical_max_distance_m: 55.0
+  online_critical_max_closest_m: 18.0
+  max_online_pair_conflict_tokens: 24
+  max_online_map_tokens: 12
+  online_map_token_spacing_m: 6.0
+  online_lane_change_duration_s: 4.0
+  # Evidential risk certificate: mean witness probability plus an uncertainty UCB.
+  evidential_probability_mix: 0.50
+  evidential_ucb_scale: 0.15
 
 waymax:
   # Per-step safety clamp for COWP selected trajectory -> Waymax action.

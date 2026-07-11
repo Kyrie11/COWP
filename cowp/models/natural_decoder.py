@@ -25,13 +25,15 @@ class NaturalDecoder(nn.Module):
         self.source_logit = nn.Linear(d_model, modes * source_count)
         self.priority_logit = nn.Linear(d_model, modes)
 
-    def forward(self, z_agent: torch.Tensor, critical_indices: torch.Tensor) -> dict[str, torch.Tensor]:
+    def forward(self, z_agent: torch.Tensor, critical_indices: torch.Tensor, *, decode_traj: bool = True) -> dict[str, torch.Tensor]:
         B, A = critical_indices.shape
         idx = critical_indices.clamp(0, max(z_agent.shape[1] - 1, 0)).long().unsqueeze(-1).expand(B, A, z_agent.shape[-1])
         z = torch.gather(z_agent, 1, idx)
         h = self.shared(z)
-        traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
         logits = self.logit(h)
         source_logits = self.source_logit(h).reshape(B, A, self.modes, self.source_count)
         priority_logits = self.priority_logit(h)
-        return {"traj": traj, "logits": logits, "source_logits": source_logits, "priority_logits": priority_logits}
+        out = {"latent": h, "logits": logits, "source_logits": source_logits, "priority_logits": priority_logits}
+        if decode_traj:
+            out["traj"] = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
+        return out

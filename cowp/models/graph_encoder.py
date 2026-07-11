@@ -244,9 +244,16 @@ class GraphEncoder(nn.Module):
         candidate_mask: torch.Tensor | None = None,
         conflict_regions: torch.Tensor | None = None,
         conflict_mask: torch.Tensor | None = None,
+        ego_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         x_agent = self._history_mean(agent_history)
-        z_agent = self.agent_proj(x_agent) + self.type_embed(torch.zeros_like(agent_mask.long()))
+        if ego_mask is None:
+            agent_type = torch.full_like(agent_mask.long(), 3)
+            if agent_type.shape[1] > 0:
+                agent_type[:, 0] = 0
+        else:
+            agent_type = torch.where(ego_mask.bool(), torch.zeros_like(agent_mask.long()), torch.full_like(agent_mask.long(), 3))
+        z_agent = self.agent_proj(x_agent) + self.type_embed(agent_type)
         z_cand = None
         if candidate_traj is not None:
             z_cand = self.candidate_proj(candidate_traj.mean(dim=2)) + self.type_embed(torch.ones(candidate_traj.shape[:2], device=candidate_traj.device, dtype=torch.long))
