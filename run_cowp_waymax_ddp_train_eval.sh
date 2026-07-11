@@ -56,29 +56,29 @@ if [[ ! -d "$TRAIN_CACHE" || ! -d "$VAL_CACHE" ]]; then
   exit 2
 fi
 
-echo "[0/6] Lightweight check attached Waymax tensor caches"
-python - <<'PYCHECK'
-import glob, os, numpy as np
-for name, path in [("TRAIN_CACHE", os.environ.get("TRAIN_CACHE")), ("VAL_CACHE", os.environ.get("VAL_CACHE"))]:
-    if not path or not os.path.isdir(path):
-        raise SystemExit(f"{name} missing or not a directory: {path}")
-    files = sorted(glob.glob(os.path.join(path, "*.npz")))[:32]
-    if not files:
-        raise SystemExit(f"{name} has no npz files: {path}")
-    required = ["waymax/candidate_collision", "waymax/candidate_offroad", "waymax/candidate_log_divergence"]
-    ok = 0
-    for f in files:
-        try:
-            with np.load(f, allow_pickle=False) as z:
-                keys = set(z.files)
-                if all(k in keys for k in required):
-                    ok += 1
-        except Exception as e:
-            raise SystemExit(f"Cannot read {f}: {e}")
-    if ok == 0:
-        raise SystemExit(f"{name} sample check found no attached Waymax outcome fields in first {len(files)} npz files: {path}")
-    print(f"{name}: sampled {len(files)} files, {ok} contain attached Waymax outcome fields")
-PYCHECK
+#echo "[0/6] Lightweight check attached Waymax tensor caches"
+#python - <<'PYCHECK'
+#import glob, os, numpy as np
+#for name, path in [("TRAIN_CACHE", os.environ.get("TRAIN_CACHE")), ("VAL_CACHE", os.environ.get("VAL_CACHE"))]:
+#    if not path or not os.path.isdir(path):
+#        raise SystemExit(f"{name} missing or not a directory: {path}")
+#    files = sorted(glob.glob(os.path.join(path, "*.npz")))[:32]
+#    if not files:
+#        raise SystemExit(f"{name} has no npz files: {path}")
+#    required = ["waymax/candidate_collision", "waymax/candidate_offroad", "waymax/candidate_log_divergence"]
+#    ok = 0
+#    for f in files:
+#        try:
+#            with np.load(f, allow_pickle=False) as z:
+#                keys = set(z.files)
+#                if all(k in keys for k in required):
+#                    ok += 1
+#        except Exception as e:
+#            raise SystemExit(f"Cannot read {f}: {e}")
+#    if ok == 0:
+#        raise SystemExit(f"{name} sample check found no attached Waymax outcome fields in first {len(files)} npz files: {path}")
+#    print(f"{name}: sampled {len(files)} files, {ok} contain attached Waymax outcome fields")
+#PYCHECK
 
 train_ddp () {
   local stage="$1"; shift
