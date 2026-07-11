@@ -9,6 +9,34 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+
+def _sanitize_cuda_alloc_conf_before_torch_import() -> None:
+    """Avoid known PyTorch expandable-segment allocator crashes on some CUDA stacks.
+
+    This must run before the first CUDA allocation.  ``expandable_segments`` is
+    optional and experimental; if a launcher exports it, keep the stable knobs
+    such as ``max_split_size_mb`` but remove expandable-segment mode.
+    """
+    conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+    if not conf or "expandable_segments" not in conf:
+        return
+    kept = []
+    for item in conf.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        key = item.split(":", 1)[0].strip().lower()
+        if key == "expandable_segments":
+            continue
+        kept.append(item)
+    if kept:
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = ",".join(kept)
+    else:
+        os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+
+
+_sanitize_cuda_alloc_conf_before_torch_import()
+
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -643,7 +671,7 @@ def main() -> None:
     if distributed and compile_enabled:
         _rank0_print("Warning: disabling torch.compile under DDP for staged training stability.")
         compile_enabled = False
-    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}")
+    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}, cuda_alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '')!r}")
     if device.type == "cuda":
         try:
             _rank0_print(f"CUDA device: {torch.cuda.get_device_name(device)}")

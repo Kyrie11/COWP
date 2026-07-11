@@ -165,6 +165,17 @@ class GraphEncoder(nn.Module):
         denom = w.sum(dim=dim).clamp_min(1.0)
         return (edge_h * w).sum(dim=dim) / denom
 
+    def _edge_type_bias(self, edge_ndim_without_channel: int, edge_type: int) -> torch.Tensor:
+        """Return a broadcastable edge-type embedding without allocating a full LongTensor.
+
+        The previous implementation called ``torch.full(edge_shape, edge_type)``
+        on every forward pass before an embedding lookup.  With large batches and
+        PyTorch CUDA expandable segments this can trigger allocator internal
+        assertions even though the model tensors are valid.  Index the embedding
+        weight directly and rely on broadcasting instead.
+        """
+        return self.edge_type_embed.weight[int(edge_type)].view(*([1] * int(edge_ndim_without_channel)), -1)
+
     def _inject_edge_messages(
         self,
         z_agent: torch.Tensor,
@@ -186,7 +197,7 @@ class GraphEncoder(nn.Module):
             edge_feat = self._candidate_agent_features(x_agent, candidate_traj)
             pair_mask = cm[:, :, None] & agent_mask.bool()[:, None, :]
             edge_type = 1 if self.use_dual_edge else 0
-            cond_h = self.edge_feat_proj(edge_feat) + self.edge_type_embed(torch.full(edge_feat.shape[:-1], edge_type, device=edge_feat.device, dtype=torch.long))
+            cond_h = self.edge_feat_proj(edge_feat) + self._edge_type_bias(edge_feat.ndim - 1, edge_type)
             z_cand = z_cand + self.candidate_update(self._aggregate(cond_h, pair_mask, dim=2))
             z_agent = z_agent + self.agent_update(self._aggregate(cond_h, pair_mask, dim=1))
             if self.use_dual_edge:
@@ -195,7 +206,7 @@ class GraphEncoder(nn.Module):
                 # do under a candidate" without requiring extra graph libraries.
                 nat_feat = edge_feat.clone()
                 nat_feat[..., 4] = 0.0  # remove candidate relative-speed conditioning
-                nat_h = self.edge_feat_proj(nat_feat) + self.edge_type_embed(torch.full(edge_feat.shape[:-1], 2, device=edge_feat.device, dtype=torch.long))
+                nat_h = self.edge_feat_proj(nat_feat) + self._edge_type_bias(edge_feat.ndim - 1, 2)
                 z_agent = z_agent + 0.5 * self.agent_update(self._aggregate(nat_h, pair_mask, dim=1))
 
         if z_conf is not None and conflict_regions is not None:
@@ -203,7 +214,7 @@ class GraphEncoder(nn.Module):
             # Agent-current to conflict region.
             agent_cf = self._conflict_features(x_agent[..., :2], conflict_regions)
             agent_cf_mask = agent_mask.bool()[:, :, None] & fm[:, None, :]
-            agent_h = self.edge_feat_proj(agent_cf) + self.edge_type_embed(torch.full(agent_cf.shape[:-1], 4, device=agent_cf.device, dtype=torch.long))
+            agent_h = self.edge_feat_proj(agent_cf) + self._edge_type_bias(agent_cf.ndim - 1, 4)
             z_agent = z_agent + self.agent_update(self._aggregate(agent_h, agent_cf_mask, dim=2))
             z_conf = z_conf + self.conflict_update(self._aggregate(agent_h, agent_cf_mask, dim=1))
             query_msg = self._aggregate(agent_h, agent_cf_mask, dim=(1, 2)) if False else None
@@ -212,7 +223,7 @@ class GraphEncoder(nn.Module):
                 cand_cf = self._conflict_features(candidate_traj[..., :2], conflict_regions)
                 cm = candidate_mask.bool() if candidate_mask is not None else torch.ones(z_cand.shape[:2], device=z_cand.device, dtype=torch.bool)
                 cand_cf_mask = cm[:, :, None] & fm[:, None, :]
-                cand_h = self.edge_feat_proj(cand_cf) + self.edge_type_embed(torch.full(cand_cf.shape[:-1], 3, device=cand_cf.device, dtype=torch.long))
+                cand_h = self.edge_feat_proj(cand_cf) + self._edge_type_bias(cand_cf.ndim - 1, 3)
                 z_cand = z_cand + self.candidate_update(self._aggregate(cand_h, cand_cf_mask, dim=2))
                 z_conf = z_conf + self.conflict_update(self._aggregate(cand_h, cand_cf_mask, dim=1))
                 # Query uses the strongest candidate-conflict messages.

@@ -13,8 +13,8 @@ export WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_m
 export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 export TFEXAMPLE_VAL="${TFEXAMPLE_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
 
-TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
-VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
+export TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
+export VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
 OUT_ROOT="${OUT_ROOT:-outputs/cowp_waymax_full}"
 
 # -------------------------- Runtime --------------------------
@@ -22,7 +22,10 @@ NUM_GPUS="${NUM_GPUS:-2}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export TOKENIZERS_PARALLELISM=false
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
+# Do NOT enable expandable_segments here. On the observed PyTorch/CUDA stack it can
+# crash inside CUDACachingAllocator with: !block->expandable_segment_.
+# max_split_size_mb is stable and helps fragmentation without entering that code path.
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:256"
 
 PER_GPU_BATCH="${PER_GPU_BATCH:-32}"       # effective global batch = NUM_GPUS * PER_GPU_BATCH
 EVAL_BATCH="${EVAL_BATCH:-64}"
@@ -53,10 +56,30 @@ if [[ ! -d "$TRAIN_CACHE" || ! -d "$VAL_CACHE" ]]; then
   exit 2
 fi
 
-#echo "[0/6] Verify attached Waymax tensor caches"
-#python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$TRAIN_CACHE"
-#python -m cowp.scripts.14_verify_waymax_cache --cache-dir "$VAL_CACHE"
-#
+echo "[0/6] Lightweight check attached Waymax tensor caches"
+python - <<'PYCHECK'
+import glob, os, numpy as np
+for name, path in [("TRAIN_CACHE", os.environ.get("TRAIN_CACHE")), ("VAL_CACHE", os.environ.get("VAL_CACHE"))]:
+    if not path or not os.path.isdir(path):
+        raise SystemExit(f"{name} missing or not a directory: {path}")
+    files = sorted(glob.glob(os.path.join(path, "*.npz")))[:32]
+    if not files:
+        raise SystemExit(f"{name} has no npz files: {path}")
+    required = ["waymax/candidate_collision", "waymax/candidate_offroad", "waymax/candidate_log_divergence"]
+    ok = 0
+    for f in files:
+        try:
+            with np.load(f, allow_pickle=False) as z:
+                keys = set(z.files)
+                if all(k in keys for k in required):
+                    ok += 1
+        except Exception as e:
+            raise SystemExit(f"Cannot read {f}: {e}")
+    if ok == 0:
+        raise SystemExit(f"{name} sample check found no attached Waymax outcome fields in first {len(files)} npz files: {path}")
+    print(f"{name}: sampled {len(files)} files, {ok} contain attached Waymax outcome fields")
+PYCHECK
+
 train_ddp () {
   local stage="$1"; shift
   torchrun --standalone --nproc_per_node="$NUM_GPUS" \
