@@ -11,7 +11,7 @@ cd "$REPO_ROOT"
 # -------------------------- Paths --------------------------
 export WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1}"
 export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
-export TFEXAMPLE_VAL="${TFEXAMPLE_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
+export TFEXAMPLE_VAL="${TFEXAMPLE_VAL:-export TFEXAMPLE_VAL=$WOMD_ROOT/uncompressed/tf_example/validation/*.tfrecord*}"
 
 export TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
 export VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
