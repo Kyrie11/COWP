@@ -101,27 +101,39 @@ train_ddp () {
 }
 
 echo "[1/6] Train response encoder/head on attached cache, without loading dense response trajectory labels"
-train_ddp response \
-  --epochs "${RESPONSE_EPOCHS:-14}" \
-  --lr "${RESPONSE_LR:-3e-4}" \
-  --no-response-traj \
-  --no-response-components \
-  --output-dir "$OUT_ROOT/checkpoints/response"
+if [[ "${SKIP_EXISTING_STAGES:-1}" == "1" && -f "$OUT_ROOT/checkpoints/response/cowp_response_best.pt" ]]; then
+  echo "  skip response: found $OUT_ROOT/checkpoints/response/cowp_response_best.pt"
+else
+  train_ddp response \
+    --epochs "${RESPONSE_EPOCHS:-14}" \
+    --lr "${RESPONSE_LR:-3e-4}" \
+    --no-response-traj \
+    --no-response-components \
+    --output-dir "$OUT_ROOT/checkpoints/response"
+fi
 
 echo "[2/6] Train witness stage from best response checkpoint"
-train_ddp witness \
-  --epochs "${WITNESS_EPOCHS:-24}" \
-  --lr "${WITNESS_LR:-3e-4}" \
-  --resume "$OUT_ROOT/checkpoints/response/cowp_response_best.pt" \
-  --output-dir "$OUT_ROOT/checkpoints/witness"
+if [[ "${SKIP_EXISTING_STAGES:-1}" == "1" && -f "$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt" ]]; then
+  echo "  skip witness: found $OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
+else
+  train_ddp witness \
+    --epochs "${WITNESS_EPOCHS:-24}" \
+    --lr "${WITNESS_LR:-3e-4}" \
+    --resume "$OUT_ROOT/checkpoints/response/cowp_response_best.pt" \
+    --output-dir "$OUT_ROOT/checkpoints/witness"
+fi
 
 echo "[3/6] Train planner with attached Waymax candidate outcome labels"
-train_ddp planner \
-  --epochs "${PLANNER_EPOCHS:-28}" \
-  --lr "${PLANNER_LR:-2e-4}" \
-  --resume "$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt" \
-  --with-waymax-outcome-labels \
-  --output-dir "$OUT_ROOT/checkpoints/planner_waymax"
+if [[ "${SKIP_EXISTING_STAGES:-1}" == "1" && -f "$OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt" ]]; then
+  echo "  skip planner: found $OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt"
+else
+  train_ddp planner \
+    --epochs "${PLANNER_EPOCHS:-28}" \
+    --lr "${PLANNER_LR:-2e-4}" \
+    --resume "$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt" \
+    --with-waymax-outcome-labels \
+    --output-dir "$OUT_ROOT/checkpoints/planner_waymax"
+fi
 
 CKPT="$OUT_ROOT/checkpoints/planner_waymax/cowp_planner_best.pt"
 if [[ ! -f "$CKPT" ]]; then

@@ -52,6 +52,31 @@ def _zero_like_loss(ref: torch.Tensor | dict | None = None, *, device=None) -> t
     return torch.zeros((), dtype=torch.float32)
 
 
+def _masked_neg_score_logits(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """AMP-safe logits for selecting low-cost planner candidates.
+
+    Model outputs can be fp16 under autocast.  Constants such as -1e9 cannot be
+    represented in fp16 and may crash before type promotion.  Convert scores to
+    fp32 first, then apply a finite fp32 mask value.
+    """
+    scores_f = _safe_float(scores)
+    mask_b = mask.bool()
+    fill = torch.full_like(scores_f, -1.0e9)
+    return torch.where(mask_b, -scores_f, fill)
+
+
+def _masked_softmax_low_score(scores: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Softmax over valid candidates only, with all-invalid rows set to zero."""
+    mask_b = mask.bool()
+    logits = _masked_neg_score_logits(scores, mask_b)
+    prob = F.softmax(logits, dim=-1)
+    prob = torch.where(mask_b, prob, torch.zeros_like(prob))
+    denom = prob.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+    row_valid = mask_b.any(dim=-1, keepdim=True)
+    prob = torch.where(row_valid, prob / denom, torch.zeros_like(prob))
+    return prob
+
+
 def _pairwise_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Tensor:
     """Pairwise ADE [B,A,M_pred,M_gt], computed once and reused."""
     pred_f = _safe_float(pred_traj)
@@ -444,7 +469,7 @@ def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor])
         tgt = torch.where(target_mask[b])[0]
         if tgt.numel() == 0:
             continue
-        logits = torch.where(mask[b], -scores[b], torch.full_like(scores[b], -1e9))
+        logits = _masked_neg_score_logits(scores[b], mask[b])
         losses.append(F.cross_entropy(logits.unsqueeze(0), tgt[:1]))
     return torch.stack(losses).mean() if losses else _zero_like_loss(scores)
 
@@ -510,7 +535,8 @@ def planner_outcome_supervision(outcome: dict[str, torch.Tensor] | None, scores:
     mask = batch["cowp/candidates/valid"].bool() & rollout_valid.bool()
     if not mask.any():
         return {"loss": zero, "cls": zero, "logdiv": zero, "rank": zero, "expected_cost": zero}
-    unsafe = torch.zeros_like(scores, dtype=torch.float32)
+    scores_f = _safe_float(scores)
+    unsafe = torch.zeros_like(scores_f, dtype=torch.float32)
     if collision is not None:
         unsafe = torch.maximum(unsafe, _binary_target(collision))
     if offroad is not None:
@@ -540,12 +566,14 @@ def planner_outcome_supervision(outcome: dict[str, torch.Tensor] | None, scores:
         safe_idx = torch.where(mask[b] & (unsafe[b] < 0.5))[0]
         unsafe_idx = torch.where(mask[b] & (unsafe[b] >= 0.5))[0]
         if safe_idx.numel() and unsafe_idx.numel():
-            rank_terms.append(torch.relu(float(weights.get("outcome_pair_margin", 1.0)) + scores[b, safe_idx[:, None]] - scores[b, unsafe_idx[None, :]]).mean())
+            rank_terms.append(torch.relu(float(weights.get("outcome_pair_margin", 1.0)) + scores_f[b, safe_idx[:, None]] - scores_f[b, unsafe_idx[None, :]]).mean())
     rank = torch.stack(rank_terms).mean() if rank_terms else zero
 
     cost = unsafe + ld_target.clamp_min(0.0) / float(weights.get("outcome_logdiv_scale", 10.0))
-    prob = F.softmax(torch.where(mask, -_safe_float(scores), torch.full_like(scores, -1e9)), dim=-1)
-    expected = (prob * cost).sum(dim=-1).mean()
+    prob = _masked_softmax_low_score(scores_f, mask)
+    row_valid = mask.any(dim=-1)
+    expected_per_scene = (prob * cost).sum(dim=-1)
+    expected = expected_per_scene[row_valid].mean() if row_valid.any() else zero
     total = (
         float(weights.get("outcome_cls", 1.0)) * cls
         + float(weights.get("outcome_logdiv", 0.5)) * ldr
@@ -576,8 +604,10 @@ def planner_outcome_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -
         cost = cost + _safe_float(offroad)
     if logdiv is not None:
         cost = cost + _safe_float(logdiv).clamp_min(0.0) / 10.0
-    prob = F.softmax(torch.where(mask, -scores, torch.full_like(scores, -1e9)), dim=-1)
-    return (prob * cost).sum(dim=-1).mean()
+    prob = _masked_softmax_low_score(scores, mask)
+    row_valid = mask.any(dim=-1)
+    expected_per_scene = (prob * cost).sum(dim=-1)
+    return expected_per_scene[row_valid].mean() if row_valid.any() else _zero_like_loss(scores)
 
 
 def planner_ranking_loss(scores: torch.Tensor, ncf: torch.Tensor, false_safe: torch.Tensor, cand_mask: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
