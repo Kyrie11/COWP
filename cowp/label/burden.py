@@ -151,7 +151,10 @@ def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: 
     if effective_gap_loss_m > gap_tol:
         b_norm += 1.0
     b_norm = float(np.clip(b_norm, 0.0, 2.0))
-    return np.asarray([b_acc, b_jerk, b_prog, b_risk, b_option, b_norm], dtype=np.float32)
+    # Keep the local return in float64 so scalar component comparisons remain
+    # numerically stable across NumPy/Python versions. Downstream cache tensors
+    # are allocated as float32, so assignment still stores compact float32 labels.
+    return np.asarray([b_acc, b_jerk, b_prog, b_risk, b_option, b_norm], dtype=np.float64)
 
 
 def burden_total(components: np.ndarray, cfg: dict) -> float:

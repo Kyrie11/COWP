@@ -23,4 +23,4 @@ def test_option_collapse_component(cfg):
     current = np.array([0, 0, 0, 5, 0, 5, 0, 4.8, 1.9, 1.6, 1], dtype=np.float32)
     tr = constant_accel_trajectory(current, 80, 0.1, accel=0.0)
     _, comps = compute_burden(tr, None, cfg, ObjectType.VEHICLE, natural_ref=tr, option_loss=0.8)
-    assert comps[4] == 0.8
+    assert np.isclose(float(comps[4]), 0.8, atol=1e-6)

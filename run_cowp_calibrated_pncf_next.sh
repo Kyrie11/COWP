@@ -88,9 +88,9 @@ run_logged() {
 run_bg_logged() {
   local name="$1"; shift
   local log="$LOG_DIR/${name}.log"
-  echo "[$name] start bg -> $log" >&2
+  echo "[$name] start bg -> $log"
   ( "$@" > "$log" 2>&1 ) &
-  echo $!
+  RUN_BG_PID=$!
 }
 
 require_file() { [[ -f "$1" ]] || { echo "Missing file: $1" >&2; exit 2; }; }
@@ -192,7 +192,7 @@ PY
 
 if [[ "$RUN_TESTS" == 1 ]]; then
   echo "[1/8] Regression tests"
-  run_logged tests "$PYTHON_BIN" -m pytest --rootdir="$REPO_ROOT" -q
+  run_logged tests env PYTHONDONTWRITEBYTECODE=1 "$PYTHON_BIN" -m pytest --rootdir="$REPO_ROOT" -q
 else
   echo "[1/8] Regression tests skipped"
 fi
@@ -321,8 +321,8 @@ if [[ "$RUN_OFFLINE_EVAL" == 1 ]]; then
     for offset in 0 1; do
       j=$((i+offset)); ((j < ${#METHODS[@]})) || continue
       m="${METHODS[$j]}"
-      pid=$(run_bg_logged "learned_${m}" run_learned_eval "$m" "$offset" "$OUT_ROOT/eval/learned_offline/${m}.json")
-      pids+=("$pid")
+      run_bg_logged "learned_${m}" run_learned_eval "$m" "$offset" "$OUT_ROOT/eval/learned_offline/${m}.json"
+      pids+=("$RUN_BG_PID")
     done
     wait_all "${pids[@]}"
   done
@@ -339,7 +339,7 @@ run_waymax_method() {
       echo "[waymax/$method] keep shard $shard"
       continue
     fi
-    pid=$(run_bg_logged "waymax_${method}_shard${shard}" env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_PREALLOCATE=false "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
+    run_bg_logged "waymax_${method}_shard${shard}" env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_PREALLOCATE=false "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
       --data-config configs/data.yaml --label-config "$LABEL_CFG" --eval-config configs/eval.yaml \
       --mode waymax --waymax-split validation --tfexample-glob "$WAYMAX_VAL" \
       --method "$method" --checkpoint "$CKPT" \
@@ -352,8 +352,8 @@ run_waymax_method() {
       --secondary-opr-alpha 0.10 --soft-ncf-penalty 2.0 \
       --adaptive-frontier-margin 0.25 \
       --outcome-risk-penalty 0.0 \
-      --clear-accelerator-cache --output "$out")
-    pids+=("$pid")
+      --clear-accelerator-cache --output "$out"
+    pids+=("$RUN_BG_PID")
     shards+=("$out")
   done
   ((${#pids[@]} == 0)) || wait_all "${pids[@]}"
