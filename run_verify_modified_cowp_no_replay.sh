@@ -68,13 +68,13 @@ PER_GPU_BATCH_PLANNER="${PER_GPU_BATCH_PLANNER:-16}"
 mkdir -p "$OUT_ROOT" "$OUT_ROOT/configs" "$OUT_ROOT/checkpoints" \
   "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax" "$OUT_ROOT/cache_splits"
 
-json_ok() {
-  local f="$1"
-  [[ -s "$f" ]] && python - "$f" <<'PY' >/dev/null 2>&1
-import json, sys
-json.load(open(sys.argv[1], encoding="utf-8"))
-PY
-}
+#json_ok() {
+#  local f="$1"
+#  [[ -s "$f" ]] && python - "$f" <<'PY' >/dev/null 2>&1
+#import json, sys
+#json.load(open(sys.argv[1], encoding="utf-8"))
+#PY
+#}
 
 wait_all() {
   local status=0 pid
