@@ -122,3 +122,70 @@ def test_merge_waymax_shards_preserves_per_episode_metrics(tmp_path: Path):
     assert len(merged["standard_metrics"]) == 2
     assert np.isclose(merged["standard_metric_summary"]["CollisionRate"], 0.5)
     assert np.isclose(merged["policy_diagnostic_summary"]["ClosedLoopFallbackStepRate"], 0.05)
+
+
+def test_planner_forward_keeps_config_for_evidential_probability_mix():
+    from cowp.models.cowp_model import COWPModel
+    from importlib import import_module
+
+    train_mod = import_module("cowp.scripts.03_train")
+    cfg = {
+        "model": {
+            "d_state": 11,
+            "history_steps": 11,
+            "d_model": 32,
+            "num_heads": 4,
+            "num_layers": 1,
+            "dropout": 0.0,
+            "max_agents": 4,
+            "max_natural_alternatives": 4,
+            "max_safe_responses": 4,
+            "future_steps": 8,
+            "token_count": 7,
+        },
+        "ablation": {},
+        "planning": {"evidential_probability_mix": 0.5},
+    }
+    B, N, T, K, A = 1, 4, 11, 3, 2
+    batch = {
+        "state/history": torch.zeros(B, N, T, 11),
+        "state/agent_valid": torch.ones(B, N, dtype=torch.bool),
+        "state/is_sdc": torch.tensor([[True, False, False, False]]),
+        "map/conflict_regions": torch.zeros(B, 2, 8),
+        "map/conflict_region_valid": torch.zeros(B, 2, dtype=torch.bool),
+        "cowp/critical/track_index": torch.tensor([[1, 2]]),
+        "cowp/critical/input_index": torch.tensor([[1, 2]]),
+        "cowp/critical/valid": torch.ones(B, A, dtype=torch.bool),
+        "cowp/candidates/trajectory": torch.zeros(B, K, 8, 7),
+        "cowp/candidates/macro_type": torch.zeros(B, K, dtype=torch.long),
+        "cowp/candidates/valid": torch.ones(B, K, dtype=torch.bool),
+        "cowp/candidates/noncoercive_feasible": torch.tensor([[True, False, False]]),
+        "cowp/candidates/false_safe": torch.tensor([[False, True, False]]),
+        "cowp/candidates/conventional_safe": torch.ones(B, K, dtype=torch.bool),
+        "cowp/candidates/is_logged": torch.tensor([[True, False, False]]),
+        "cowp/candidates/ego_utility_prior": torch.zeros(B, K),
+        "cowp/witness/exists": torch.tensor([[[False, False], [True, True], [False, False]]]),
+        "cowp/witness/token": torch.zeros(B, K, A, dtype=torch.long),
+        "cowp/witness/burden_total": torch.zeros(B, K, A),
+        "cowp/witness/conflict_interval": torch.zeros(B, K, A, 2),
+        "cowp/witness/opr": torch.ones(B, K, A),
+        "cowp/witness/c_i": torch.zeros(B, K, A),
+        "cowp/witness/min_safe_burden": torch.zeros(B, K, A),
+        "cowp/natural/beta": torch.ones(B, A) * 0.65,
+        "waymax/candidate_rollout_valid": torch.ones(B, K, dtype=torch.bool),
+        "waymax/candidate_collision": torch.tensor([[False, False, True]]),
+        "waymax/candidate_offroad": torch.zeros(B, K, dtype=torch.bool),
+        "waymax/candidate_log_divergence": torch.full((B, K), float("nan")),
+    }
+    batch["state/history"][..., 10] = 1.0
+
+    model = COWPModel(cfg)
+    pred = model(batch, stage="planner")
+    assert pred["planner_score"].shape == (B, K)
+    losses = train_mod._compute_losses(
+        pred,
+        batch,
+        "planner",
+        {"outcome_logdiv": 0.0, "outcome_logdiv_unsafe_threshold": 1.0e9},
+    )
+    assert torch.isfinite(losses["loss"])

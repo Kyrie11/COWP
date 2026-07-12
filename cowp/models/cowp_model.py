@@ -18,6 +18,12 @@ from cowp.models.coordinate import ego_centric_inputs, infer_sdc_index
 class COWPModel(nn.Module):
     def __init__(self, cfg: dict):
         super().__init__()
+        # Keep the merged configuration on the module.  The planner forward pass
+        # reads planning.evidential_probability_mix when combining witness-logit
+        # probability with the evidential witness probability.  Earlier stages did
+        # not touch this field, so the missing attribute only surfaced when
+        # stage=planner was trained/evaluated.
+        self.cfg = cfg
         m = cfg.get("model", cfg)
         d_model = int(m.get("d_model", 128))
         ab = cfg.get("ablation", {})
