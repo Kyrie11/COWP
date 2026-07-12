@@ -102,15 +102,26 @@ def _stop_like_mask(batch, cand_valid, conventional):
 def _witness_probability_and_certificate(pred_witness, cfg=None):
     import torch
     cfg = cfg or {}
-    logit_prob = torch.sigmoid(pred_witness["exist_logits"]).float()
+    pcfg = cfg.get("planning", {})
+    temp = max(float(pcfg.get("witness_temperature", 1.0)), 1e-3)
+    bias = float(pcfg.get("witness_logit_bias", 0.0))
+    logit_prob = torch.sigmoid((pred_witness["exist_logits"].float() - bias) / temp).float()
     evidence_prob = pred_witness.get("evidential_prob")
     uncertainty = pred_witness.get("epistemic_uncertainty")
-    mix = float(cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
-    prob = (1.0 - mix) * logit_prob + mix * evidence_prob.float() if torch.is_tensor(evidence_prob) else logit_prob
+    source = str(pcfg.get("witness_probability_source", "mixed")).lower()
+    if source == "logit" or not torch.is_tensor(evidence_prob):
+        prob = logit_prob
+    elif source == "evidential":
+        prob = evidence_prob.float()
+    else:
+        mix = float(pcfg.get("evidential_probability_mix", 0.5))
+        prob = (1.0 - mix) * logit_prob + mix * evidence_prob.float()
     unc = uncertainty.float().clamp(0.0, 1.0) if torch.is_tensor(uncertainty) else torch.zeros_like(prob)
+    # Invalid numerical outputs are treated conservatively, but finite outputs are
+    # no longer forced through the evidential head unless explicitly requested.
     prob = torch.nan_to_num(prob, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     unc = torch.nan_to_num(unc, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
-    ucb = float(cfg.get("planning", {}).get("evidential_ucb_scale", 0.15))
+    ucb = float(pcfg.get("evidential_ucb_scale", 0.0 if source == "logit" else 0.15))
     return prob, (prob + ucb * unc).clamp(0.0, 1.0), unc
 
 
@@ -205,33 +216,46 @@ def _select_from_learned(
                 learned_priority = torch.sigmoid(pred["priority_claim_logits"].detach().float())
             else:
                 learned_priority = torch.zeros_like(witness_prob)
+            # Offline eval has no live Waymax state, so use cached witness rho as a
+            # physically grounded priority anchor.  Online evaluation uses the live
+            # priority heuristic in policy_wrapper.py.  This keeps offline/online
+            # COWP semantics aligned instead of relying on an uncalibrated learned
+            # priority head alone.
+            rho = batch.get("cowp/witness/rho")
+            if rho is not None and torch.is_tensor(rho):
+                # PriorityRelation.AGENT_PRIORITY == 2.
+                rule_priority = (rho.long() == 2).float()
+            else:
+                rule_priority = torch.zeros_like(witness_prob)
             opr_collapse = (torch.relu(float(alpha_opr) - opr) / max(float(alpha_opr), 1e-6)).clamp(0.0, 1.0)
-            # Keep OPR collapse as a weak tie-breaker.  A hard rejection requires a
-            # calibrated priority claim above ``priority_hard_threshold``.
-            priority_proxy = (0.80 * learned_priority + 0.20 * opr_collapse).clamp(0.0, 1.0)
+            priority_proxy = (0.45 * learned_priority + 0.45 * rule_priority + 0.10 * opr_collapse).clamp(0.0, 1.0)
             priority_claim = priority_proxy >= float(priority_hard_threshold)
             primary_bad = ((witness_cert >= witness_threshold) & priority_claim).any(dim=-1)
+            option_bad = ((opr < float(alpha_opr)) & priority_claim).any(dim=-1)
             severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
             adjusted_scores = scores + float(soft_ncf_penalty) * penalty + float(outcome_risk_penalty) * outcome_risk
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
             else:
-                accepted = cand_valid & conventional & ~primary_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
+                accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
 
     if method == "cowp" and gate_mode in {"priority", "soft"}:
-        empty = ~accepted.any(dim=-1)
-        if empty.any():
-            frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
-            # If all predicted witnesses are saturated, keep a scene-adaptive
-            # least-coercive frontier instead of turning the whole dataset into
-            # no-selection fallback.
-            risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-            for b in torch.where(empty)[0].tolist():
-                base_b = frontier_base[b]
-                if base_b.any():
-                    best = torch.where(base_b, risk[b], torch.full_like(risk[b], float("inf"))).min()
-                    accepted[b] = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
+        frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
+        # Relative certificate frontier: even when absolute witness probabilities are
+        # imperfectly calibrated, COWP should choose from the least-coercive
+        # conventional frontier in the same scene.  This is a set-valued NCF
+        # relaxation, not an ad-hoc threshold: the threshold is the scene's own
+        # minimum predicted coercion risk plus a margin.
+        risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+        for b in range(int(scores.shape[0])):
+            base_b = frontier_base[b]
+            if not base_b.any():
+                continue
+            best = torch.where(base_b, risk[b], torch.full_like(risk[b], float("inf"))).min()
+            frontier = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
+            if frontier.any():
+                accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
 
     selected: list[int] = []
     masks: list[np.ndarray] = []

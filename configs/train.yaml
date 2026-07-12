@@ -10,7 +10,6 @@ train:
   positive_pair_oversampling: true
   max_positive_pairs_per_scene: 8
   max_negative_pairs_per_scene: 16
-
 loss_weights:
   obs_prediction: 1.0
   neutral: 0.5
@@ -36,9 +35,9 @@ loss_weights:
   witness_conflict: 0.3
   witness_opr: 0.5
   witness_focal_gamma: 2.0
-  witness_focal_alpha: 0.50
-  witness_mined_fraction: 0.35
-  witness_balanced_fraction: 0.65
+  witness_focal_alpha: 0.5
+  witness_mined_fraction: 0.25
+  witness_balanced_fraction: 0.75
   witness_max_pos_weight: 8.0
   witness_pair_rank: 0.5
   witness_pair_margin: 1.0
@@ -46,9 +45,9 @@ loss_weights:
   witness_candidate_false_safe: 0.75
   witness_candidate_ncf: 0.5
   witness_opr_consistency_tau: 0.08
-  witness_evidential: 0.25
+  witness_evidential: 0.05
   witness_evidence_kl: 0.01
-  planner_witness_scale: 0.20
+  planner_witness_scale: 0.05
   witness_mining_max_pos_per_scene: 16
   witness_mining_max_neg_per_scene: 48
   witness_mining_neg_pos_ratio: 3
@@ -57,18 +56,18 @@ loss_weights:
   ranking: 1.0
   candidate_ncf_cls: 1.0
   candidate_false_safe_cls: 0.5
-
-  # V4 outcome-calibrated planner terms. They are active only when
-  # --with-waymax-outcome-labels is used and attached waymax/candidate_* fields exist.
   closed_loop: 1.0
   closed_loop_legacy: 0.0
   outcome_cls: 1.0
-  outcome_logdiv: 0.5
+  outcome_logdiv: 0.0
   outcome_pair_rank: 1.5
   outcome_expected_cost: 0.5
   outcome_pair_margin: 1.0
   outcome_logdiv_scale: 10.0
-  outcome_logdiv_unsafe_threshold: 8.0
+  outcome_logdiv_unsafe_threshold: 1000000000.0
   priority_claim: 0.5
   priority_claim_pos_weight: 3.0
   priority_claim_opr_alpha: 0.35
+  witness_scene_prior: 1.5
+  witness_scene_prior_min_pairs: 4
+  witness_logit_l2: 0.001

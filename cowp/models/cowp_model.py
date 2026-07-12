@@ -302,10 +302,19 @@ class COWPModel(nn.Module):
             assert z_cand is not None and cand_mask is not None
             witness = out.get("witness")
             assert isinstance(witness, dict)
-            logit_prob = torch.sigmoid(witness["exist_logits"])
+            pcfg = self.cfg.get("planning", {})
+            temp = max(float(pcfg.get("witness_temperature", 1.0)), 1e-3)
+            bias = float(pcfg.get("witness_logit_bias", 0.0))
+            logit_prob = torch.sigmoid((witness["exist_logits"] - bias) / temp)
             evidence_prob = witness.get("evidential_prob")
-            evidence_mix = float(self.cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
-            witness_prob = (1.0 - evidence_mix) * logit_prob + evidence_mix * evidence_prob if evidence_prob is not None else logit_prob
+            source = str(pcfg.get("witness_probability_source", "mixed")).lower()
+            if source == "logit" or evidence_prob is None:
+                witness_prob = logit_prob
+            elif source == "evidential":
+                witness_prob = evidence_prob
+            else:
+                evidence_mix = float(pcfg.get("evidential_probability_mix", 0.5))
+                witness_prob = (1.0 - evidence_mix) * logit_prob + evidence_mix * evidence_prob
             out["priority_claim_logits"] = self.priority_claim(
                 enc_cond["z_agent"],
                 z_cand,

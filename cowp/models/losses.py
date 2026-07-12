@@ -248,6 +248,46 @@ def evidential_binary_loss(
     )
     return masked_mean(nll + float(kl_weight) * kl, mask_b)
 
+
+
+def witness_scene_prior_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    min_pairs_per_scene: int = 4,
+) -> torch.Tensor:
+    """Scene-level calibration for witness existence.
+
+    The pairwise witness head is used as a certificate at inference time.  In the
+    current experiments it can collapse to a nearly constant high probability,
+    which gives acceptable recall but destroys ranking and turns COWP into either
+    conventional-safety selection or universal fallback.  This term constrains
+    the average predicted witness rate in each scene to match the pseudo-label
+    witness rate over valid candidate-agent pairs.  It is intentionally a
+    calibration constraint, not an extra heuristic planner rule.
+    """
+    mask_b = mask.bool()
+    if not mask_b.any():
+        return _zero_like_loss(logits)
+    prob = torch.sigmoid(_safe_float(logits))
+    y = _binary_target(target)
+    counts = mask_b.float().sum(dim=(1, 2))
+    scene_ok = counts >= int(min_pairs_per_scene)
+    if not scene_ok.any():
+        return _zero_like_loss(logits)
+    pred_rate = (prob * mask_b.float()).sum(dim=(1, 2)) / counts.clamp_min(1.0)
+    true_rate = (y * mask_b.float()).sum(dim=(1, 2)) / counts.clamp_min(1.0)
+    return F.smooth_l1_loss(pred_rate[scene_ok], true_rate[scene_ok], reduction="mean")
+
+
+def witness_logit_l2_loss(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Tiny anti-saturation regularizer for certificate logits."""
+    mask_b = mask.bool()
+    if not mask_b.any():
+        return _zero_like_loss(logits)
+    return masked_mean(_safe_float(logits).pow(2), mask_b)
+
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
     for v in pred.values():
         if torch.is_tensor(v):
@@ -512,12 +552,19 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         )
     else:
         evidence = _zero_like_loss(pred["exist_logits"])
+    scene_prior = witness_scene_prior_loss(
+        pred["exist_logits"], y, pair_mask,
+        min_pairs_per_scene=int(weights.get("witness_scene_prior_min_pairs", 4)),
+    )
+    logit_l2 = witness_logit_l2_loss(pred["exist_logits"], pair_mask)
     total = (
         weights.get("witness_exist", 2.0) * exist
         + weights.get("witness_pair_rank", 0.5) * pair_rank
         + weights.get("witness_candidate_false_safe", 0.75) * candidate_fs
         + weights.get("witness_candidate_ncf", 0.5) * candidate_ncf
         + weights.get("witness_evidential", 0.25) * evidence
+        + weights.get("witness_scene_prior", 0.0) * scene_prior
+        + weights.get("witness_logit_l2", 0.0) * logit_l2
         + weights.get("witness_token", 1.0) * token
         + weights.get("witness_burden", 0.5) * burden
         + weights.get("witness_burden_components", 0.25) * comps
@@ -527,7 +574,8 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     return {
         "loss": total, "exist": exist, "exist_mined": mined, "exist_balanced": balanced,
         "pair_rank": pair_rank, "candidate_fs": candidate_fs, "candidate_ncf": candidate_ncf,
-        "evidence": evidence, "token": token, "burden": burden, "components": comps,
+        "evidence": evidence, "scene_prior": scene_prior, "logit_l2": logit_l2,
+        "token": token, "burden": burden, "components": comps,
         "interval": interval, "opr": opr, "ci": ci,
     }
 

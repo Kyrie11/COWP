@@ -580,6 +580,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Train COWP model stages on COWP tensor cache.")
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--model-config", default="configs/model.yaml")
+    ap.add_argument("--label-config", default="configs/label.yaml", help="Label/planning config. Loaded into the training checkpoint so witness/planner semantics match evaluation.")
     ap.add_argument("--train-config", default="configs/train.yaml")
     ap.add_argument("--cache-dir", default=None)
     ap.add_argument("--val-cache-dir", default=None)
@@ -609,7 +610,7 @@ def main() -> None:
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     args = ap.parse_args()
 
-    cfg = load_config(args.model_config, args.train_config, args.data_config)
+    cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
     tcfg = cfg["train"]
     stage = args.stage or tcfg.get("stage", "witness")
     loss_weights = dict(cfg.get("loss_weights", {}))

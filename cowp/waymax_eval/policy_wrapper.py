@@ -922,21 +922,27 @@ class COWPWaymaxPolicy:
             scores = self.torch.nan_to_num(pred["planner_score"][0].float(), nan=1e6, posinf=1e6, neginf=-1e6)
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
-            logit_witness = self.torch.sigmoid(pred["witness"]["exist_logits"])[0].float()
+            pcfg = self.cfg.get("planning", {})
+            temp = max(float(pcfg.get("witness_temperature", 1.0)), 1e-3)
+            bias = float(pcfg.get("witness_logit_bias", 0.0))
+            logit_witness = self.torch.sigmoid((pred["witness"]["exist_logits"][0].float() - bias) / temp)
             evidence_witness = pred["witness"].get("evidential_prob")
             uncertainty = pred["witness"].get("epistemic_uncertainty")
-            mix = float(self.cfg.get("planning", {}).get("evidential_probability_mix", 0.5))
-            if self.torch.is_tensor(evidence_witness):
-                witness = (1.0 - mix) * logit_witness + mix * evidence_witness[0].float()
-            else:
+            source = str(pcfg.get("witness_probability_source", "mixed")).lower()
+            if source == "logit" or not self.torch.is_tensor(evidence_witness):
                 witness = logit_witness
+            elif source == "evidential":
+                witness = evidence_witness[0].float()
+            else:
+                mix = float(pcfg.get("evidential_probability_mix", 0.5))
+                witness = (1.0 - mix) * logit_witness + mix * evidence_witness[0].float()
             if self.torch.is_tensor(uncertainty):
                 uncertainty = uncertainty[0].float().clamp(0.0, 1.0)
             else:
                 uncertainty = self.torch.zeros_like(witness)
             witness = self.torch.nan_to_num(witness, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             uncertainty = self.torch.nan_to_num(uncertainty, nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
-            ucb_scale = float(self.cfg.get("planning", {}).get("evidential_ucb_scale", 0.15))
+            ucb_scale = float(pcfg.get("evidential_ucb_scale", 0.0 if source == "logit" else 0.15))
             witness_cert = (witness + ucb_scale * uncertainty).clamp(0.0, 1.0)
             opr = self.torch.nan_to_num(pred["witness"]["opr"][0].float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             burden = pred["witness"].get("burden_total")
@@ -1030,20 +1036,22 @@ class COWPWaymaxPolicy:
                 else:
                     accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(self.outcome_risk_threshold))
             # Scene-adaptive feasibility frontier.  If the absolute witness/OPR
-            # calibration is over-conservative (e.g., every candidate is predicted
-            # coercive), keep the least-coercive conventional frontier instead of
-            # degenerating into arbitrary fallback at every step.
-            if method == "cowp" and (not bool(accepted.any().detach().cpu().item())):
-                if gate_mode in {"priority", "soft"}:
-                    frontier_base = cand_valid & conventional & (outcome_risk <= float(self.outcome_risk_threshold))
-                    if frontier_base.any():
-                        if 'priority' in locals() and priority.numel():
-                            frontier_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
-                        else:
-                            frontier_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
-                        finite_risk = self.torch.where(frontier_base, frontier_risk, self.torch.full_like(frontier_risk, float("inf")))
-                        best_risk = finite_risk.min()
-                        accepted = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
+            # calibration is imperfect, restrict COWP to the least-coercive
+            # conventional frontier in the current scene.  This makes the online
+            # controller consistent with the set-valued NCF certificate used in
+            # learned-offline evaluation.
+            if method == "cowp" and gate_mode in {"priority", "soft"}:
+                frontier_base = cand_valid & conventional & (outcome_risk <= float(self.outcome_risk_threshold))
+                if frontier_base.any():
+                    if 'priority' in locals() and priority.numel():
+                        frontier_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
+                    else:
+                        frontier_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
+                    finite_risk = self.torch.where(frontier_base, frontier_risk, self.torch.full_like(frontier_risk, float("inf")))
+                    best_risk = finite_risk.min()
+                    frontier = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
+                    if frontier.any():
+                        accepted = (accepted & frontier) if bool(accepted.any().detach().cpu().item()) else frontier
                         adjusted_scores = adjusted_scores + 0.5 * frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
