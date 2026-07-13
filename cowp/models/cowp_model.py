@@ -43,6 +43,18 @@ class COWPModel(nn.Module):
         self.response_decoder = ResponseDecoder(d_model=d_model, responses=int(m.get("max_safe_responses", 32)), future_steps=int(m.get("future_steps", 80)))
         self.witness_decoder = WitnessDecoder(d_model=d_model, token_count=int(m.get("token_count", 7)))
         self.planner = PlannerHead(d_model=d_model)
+        # Candidate-level calibrated non-coercive feasibility certificate.
+        # The pairwise witness decoder remains the explanation/localization module,
+        # but closed-loop selection should not depend solely on a max over noisy
+        # pair certificates.  This head learns candidate-level NCF / false-safe
+        # probabilities directly from the same candidate embedding and aggregate
+        # witness features.
+        self.candidate_certificate = nn.Sequential(
+            nn.Linear(d_model + 4, d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, 3),
+        )
         self.priority_claim = PriorityClaimHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.outcome_risk = OutcomeRiskHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.max_agents = int(m.get("max_agents", 128))
@@ -323,12 +335,33 @@ class COWPModel(nn.Module):
                 witness["opr"],
             )
             out["outcome"] = self.outcome_risk(z_cand)
+            ego_utility = batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float()
+            conventional_safe = batch.get("cowp/candidates/conventional_safe")
+            if witness_prob.ndim == 3:
+                if critical_mask is not None:
+                    cm = critical_mask.bool()[:, None, :]
+                    wp_aux = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
+                    opr_aux = torch.where(cm, witness["opr"], torch.ones_like(witness["opr"]))
+                else:
+                    wp_aux = witness_prob
+                    opr_aux = witness["opr"]
+                max_wit = wp_aux.max(dim=-1).values
+                min_opr = opr_aux.min(dim=-1).values
+            else:
+                max_wit = witness_prob
+                min_opr = witness["opr"]
+            safe_aux = torch.ones_like(max_wit) if conventional_safe is None else conventional_safe.float()
+            cert_aux = torch.stack([ego_utility.float(), max_wit.float(), min_opr.float(), safe_aux], dim=-1)
+            cert_logits = self.candidate_certificate(torch.cat([z_cand, cert_aux], dim=-1))
+            out["candidate_ncf_logit"] = cert_logits[..., 0]
+            out["candidate_false_safe_logit"] = cert_logits[..., 1]
+            out["candidate_quality_logit"] = cert_logits[..., 2]
             out["planner_score"] = self.planner(
                 z_cand,
-                batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float(),
+                ego_utility,
                 witness_prob,
                 witness["opr"],
-                batch.get("cowp/candidates/conventional_safe"),
+                conventional_safe,
                 critical_mask=critical_mask,
             )
         return out

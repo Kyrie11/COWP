@@ -47,7 +47,7 @@ from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
-from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, witness_loss
+from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -385,6 +385,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         outcome = planner_outcome_supervision(pred.get("outcome"), pred["planner_score"], batch, loss_weights)
         priority_claim = priority_claim_loss(pred.get("priority_claim_logits"), batch, loss_weights)
         cls = candidate_classification_loss(pred["planner_score"], batch, loss_weights)
+        cert = candidate_certificate_loss(pred, batch, loss_weights)
         out["planner/ranking"] = rank
         out["planner/imitation"] = imitation
         out["planner/outcome"] = outcome["loss"]
@@ -395,6 +396,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         out["planner/outcome_legacy"] = outcome_legacy
         out["planner/priority_claim"] = priority_claim
         out.update({f"planner/{k}": v for k, v in cls.items() if k != "loss"})
+        out.update({f"candidate_cert/{k}": v for k, v in cert.items() if k != "loss"})
         losses.append(
             loss_weights.get("ranking", 1.0) * rank
             + loss_weights.get("imitation", 1.0) * imitation
@@ -402,6 +404,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             + loss_weights.get("closed_loop_legacy", 0.0) * outcome_legacy
             + loss_weights.get("priority_claim", 0.5) * priority_claim
             + cls["loss"]
+            + float(loss_weights.get("candidate_certificate", 1.0)) * cert["loss"]
         )
     if not losses:
         # Representation fallback: keep graph/planner path differentiable.

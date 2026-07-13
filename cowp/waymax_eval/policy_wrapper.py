@@ -948,6 +948,22 @@ class COWPWaymaxPolicy:
             burden = pred["witness"].get("burden_total")
             c_i = pred["witness"].get("c_i")
             outcome = pred.get("outcome", {})
+            cand_ncf_logit = pred.get("candidate_ncf_logit")
+            cand_fs_logit = pred.get("candidate_false_safe_logit")
+            cand_quality_logit = pred.get("candidate_quality_logit")
+            if self.torch.is_tensor(cand_ncf_logit):
+                cand_ncf_prob = self.torch.sigmoid(self.torch.nan_to_num(cand_ncf_logit[0].float(), nan=0.0, posinf=20.0, neginf=-20.0))
+            else:
+                cand_ncf_prob = self.torch.sigmoid(self.torch.nan_to_num(-scores, nan=0.0, posinf=20.0, neginf=-20.0))
+            if self.torch.is_tensor(cand_fs_logit):
+                cand_false_safe_prob = self.torch.sigmoid(self.torch.nan_to_num(cand_fs_logit[0].float(), nan=0.0, posinf=20.0, neginf=-20.0))
+            else:
+                cand_false_safe_prob = self.torch.sigmoid(self.torch.nan_to_num(scores, nan=0.0, posinf=20.0, neginf=-20.0))
+            if self.torch.is_tensor(cand_quality_logit):
+                cand_quality_prob = self.torch.sigmoid(self.torch.nan_to_num(cand_quality_logit[0].float(), nan=0.0, posinf=20.0, neginf=-20.0))
+            else:
+                cand_quality_prob = cand_ncf_prob * (1.0 - cand_false_safe_prob)
+            candidate_cert_risk = (1.0 - cand_ncf_prob.clamp(0.0, 1.0)) + cand_false_safe_prob.clamp(0.0, 1.0)
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
                 off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
@@ -1028,7 +1044,8 @@ class COWPWaymaxPolicy:
                 severe_bad = ((witness_cert >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha)) & primary_claim).any(dim=-1)
                 burden_penalty = (witness * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
-                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + float(self.outcome_risk_penalty) * outcome_risk
+                cert_penalty = float(self.cfg.get("planning", {}).get("candidate_certificate_penalty", 1.5))
+                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + cert_penalty * candidate_cert_risk + float(self.outcome_risk_penalty) * outcome_risk
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
                 elif gate_mode in {"none", "off"}:
@@ -1044,15 +1061,21 @@ class COWPWaymaxPolicy:
                 frontier_base = cand_valid & conventional & (outcome_risk <= float(self.outcome_risk_threshold))
                 if frontier_base.any():
                     if 'priority' in locals() and priority.numel():
-                        frontier_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
+                        pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                     else:
-                        frontier_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
+                        pair_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
+                    frontier_risk = candidate_cert_risk + 0.25 * pair_risk
                     finite_risk = self.torch.where(frontier_base, frontier_risk, self.torch.full_like(frontier_risk, float("inf")))
                     best_risk = finite_risk.min()
                     frontier = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
+                    min_ncf = float(self.cfg.get("planning", {}).get("candidate_min_ncf_prob", 0.20))
+                    max_fs = float(self.cfg.get("planning", {}).get("candidate_max_false_safe_prob", 0.85))
+                    frontier = frontier & (cand_ncf_prob >= min_ncf) & (cand_false_safe_prob <= max_fs)
+                    if not frontier.any():
+                        frontier = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
                     if frontier.any():
                         accepted = (accepted & frontier) if bool(accepted.any().detach().cpu().item()) else frontier
-                        adjusted_scores = adjusted_scores + 0.5 * frontier_risk
+                        adjusted_scores = adjusted_scores + frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
@@ -1116,6 +1139,9 @@ class COWPWaymaxPolicy:
                 "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_outcome_risk": float(outcome_risk[selected].detach().cpu().item()) if outcome_risk.numel() else 0.0,
+                "selected_candidate_ncf_prob": float(cand_ncf_prob[selected].detach().cpu().item()) if cand_ncf_prob.numel() else 0.0,
+                "selected_candidate_false_safe_prob": float(cand_false_safe_prob[selected].detach().cpu().item()) if cand_false_safe_prob.numel() else 0.0,
+                "selected_candidate_quality_prob": float(cand_quality_prob[selected].detach().cpu().item()) if cand_quality_prob.numel() else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:

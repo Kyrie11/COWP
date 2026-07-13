@@ -125,6 +125,28 @@ def _witness_probability_and_certificate(pred_witness, cfg=None):
     return prob, (prob + ucb * unc).clamp(0.0, 1.0), unc
 
 
+
+
+def _candidate_certificate_scores(pred, scores):
+    import torch
+    ncf_logit = pred.get("candidate_ncf_logit")
+    fs_logit = pred.get("candidate_false_safe_logit")
+    q_logit = pred.get("candidate_quality_logit")
+    if torch.is_tensor(ncf_logit):
+        ncf_prob = torch.sigmoid(torch.nan_to_num(ncf_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+    else:
+        # Fallback for legacy checkpoints: lower planner score means better NCF.
+        ncf_prob = torch.sigmoid(torch.nan_to_num(-scores.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+    if torch.is_tensor(fs_logit):
+        false_safe_prob = torch.sigmoid(torch.nan_to_num(fs_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+    else:
+        false_safe_prob = torch.sigmoid(torch.nan_to_num(scores.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+    if torch.is_tensor(q_logit):
+        quality_prob = torch.sigmoid(torch.nan_to_num(q_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+    else:
+        quality_prob = ncf_prob * (1.0 - false_safe_prob)
+    return ncf_prob.clamp(0.0, 1.0), false_safe_prob.clamp(0.0, 1.0), quality_prob.clamp(0.0, 1.0)
+
 def _select_from_learned(
     batch,
     pred,
@@ -158,6 +180,8 @@ def _select_from_learned(
         utility_scores = torch.nan_to_num(utility.detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
     else:
         utility_scores = scores
+    cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores)
+    candidate_cert_risk = (1.0 - cand_ncf_prob) + cand_false_safe_prob
     outcome = pred.get("outcome", {})
     if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
         col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
@@ -234,28 +258,37 @@ def _select_from_learned(
             option_bad = ((opr < float(alpha_opr)) & priority_claim).any(dim=-1)
             severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
-            adjusted_scores = scores + float(soft_ncf_penalty) * penalty + float(outcome_risk_penalty) * outcome_risk
+            cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.5))
+            adjusted_scores = scores + float(soft_ncf_penalty) * penalty + cert_penalty * candidate_cert_risk + float(outcome_risk_penalty) * outcome_risk
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
             else:
                 accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
 
     if method == "cowp" and gate_mode in {"priority", "soft"}:
+        # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
+        # explanatory evidence, but selection is anchored by a candidate-level NCF
+        # certificate trained from the dataset's noncoercive_feasible/false_safe
+        # labels.  This avoids the max-pair saturation observed in the current run.
         frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
-        # Relative certificate frontier: even when absolute witness probabilities are
-        # imperfectly calibrated, COWP should choose from the least-coercive
-        # conventional frontier in the same scene.  This is a set-valued NCF
-        # relaxation, not an ad-hoc threshold: the threshold is the scene's own
-        # minimum predicted coercion risk plus a margin.
-        risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+        pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
+        risk = candidate_cert_risk + 0.25 * pair_risk
+        min_ncf = float((cfg or {}).get("planning", {}).get("candidate_min_ncf_prob", 0.20))
+        max_fs = float((cfg or {}).get("planning", {}).get("candidate_max_false_safe_prob", 0.85))
         for b in range(int(scores.shape[0])):
             base_b = frontier_base[b]
             if not base_b.any():
                 continue
             best = torch.where(base_b, risk[b], torch.full_like(risk[b], float("inf"))).min()
             frontier = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
+            frontier = frontier & (cand_ncf_prob[b] >= min_ncf) & (cand_false_safe_prob[b] <= max_fs)
+            if not frontier.any():
+                # Keep a relative frontier even when absolute candidate probabilities
+                # are not calibrated early in training.
+                frontier = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
             if frontier.any():
                 accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
+                adjusted_scores[b] = adjusted_scores[b] + risk[b]
 
     selected: list[int] = []
     masks: list[np.ndarray] = []

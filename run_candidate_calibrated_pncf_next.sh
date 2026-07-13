@@ -20,7 +20,7 @@ export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
 VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
 WAYMAX_VAL="${WAYMAX_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
-OUT_ROOT="${OUT_ROOT:-outputs/calibrated_pncf_next}"
+OUT_ROOT="${OUT_ROOT:-outputs/candidate_calibrated_pncf_next}"
 LOG_DIR="$OUT_ROOT/logs"
 
 mkdir -p "$OUT_ROOT" "$LOG_DIR" "$OUT_ROOT/configs" "$OUT_ROOT/checkpoints" \
@@ -107,6 +107,8 @@ grep -q "witness_scene_prior" cowp/models/losses.py
 grep -q "witness_probability_source" cowp/waymax_eval/rollout.py
 grep -q -- "--label-config" cowp/scripts/03_train.py
 grep -q "standard_metrics" cowp/scripts/17_merge_waymax_shards.py
+grep -q "candidate_certificate" cowp/models/cowp_model.py
+grep -q "candidate_certificate_loss" cowp/models/losses.py
 
 echo "[0/8] Calibrated P-NCF code signatures found"
 
@@ -173,7 +175,17 @@ w["witness_logit_l2"] = float(w.get("witness_logit_l2", 0.001))
 w["witness_evidential"] = float(w.get("witness_evidential", 0.05))
 w["witness_mined_fraction"] = float(w.get("witness_mined_fraction", 0.25))
 w["witness_balanced_fraction"] = float(w.get("witness_balanced_fraction", 0.75))
-w["planner_witness_scale"] = float(w.get("planner_witness_scale", 0.05))
+w["planner_witness_scale"] = float(w.get("planner_witness_scale", 0.02))
+w["candidate_certificate"] = float(w.get("candidate_certificate", 2.0))
+w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 1.5))
+w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 2.0))
+w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.0))
+w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 0.75))
+w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 1.0))
+w["candidate_ncf_cls"] = float(w.get("candidate_ncf_cls", 1.5))
+w["candidate_false_safe_cls"] = float(w.get("candidate_false_safe_cls", 1.0))
+w["ranking"] = float(w.get("ranking", 1.5))
+w["imitation"] = float(w.get("imitation", 0.4))
 with open(train_dst, "w", encoding="utf-8") as f:
     yaml.safe_dump(train, f, sort_keys=False, allow_unicode=True)
 with open(label_src, encoding="utf-8") as f:
@@ -184,7 +196,10 @@ pcfg["witness_temperature"] = float(pcfg.get("witness_temperature", 1.0))
 pcfg["witness_logit_bias"] = float(pcfg.get("witness_logit_bias", 0.0))
 pcfg["evidential_probability_mix"] = 0.0
 pcfg["evidential_ucb_scale"] = 0.0
-pcfg["adaptive_frontier_margin"] = float(pcfg.get("adaptive_frontier_margin", 0.25))
+pcfg["adaptive_frontier_margin"] = float(pcfg.get("adaptive_frontier_margin", 0.35))
+pcfg["candidate_certificate_penalty"] = float(pcfg.get("candidate_certificate_penalty", 1.5))
+pcfg["candidate_min_ncf_prob"] = float(pcfg.get("candidate_min_ncf_prob", 0.20))
+pcfg["candidate_max_false_safe_prob"] = float(pcfg.get("candidate_max_false_safe_prob", 0.85))
 with open(label_dst, "w", encoding="utf-8") as f:
     yaml.safe_dump(label, f, sort_keys=False, allow_unicode=True)
 print({"train_cfg": train_dst, "label_cfg": label_dst})
@@ -370,7 +385,8 @@ run_waymax_method() {
 
 if [[ "$RUN_ONLINE_EVAL" == 1 ]]; then
   echo "[6/8] Real Waymax closed-loop comparison on identical sharded scenarios"
-  for m in planner_score_only conventional_safety cowp; do
+  read -r -a ONLINE_METHOD_ARRAY <<< "${ONLINE_METHODS:-planner_score_only conventional_safety cowp}"
+  for m in "${ONLINE_METHOD_ARRAY[@]}"; do
     run_waymax_method "$m"
   done
 fi

@@ -276,7 +276,10 @@ planning:
   witness_probability_source: logit
   witness_temperature: 1.0
   witness_logit_bias: 0.0
-  adaptive_frontier_margin: 0.25
+  adaptive_frontier_margin: 0.35
+  candidate_certificate_penalty: 1.5
+  candidate_min_ncf_prob: 0.2
+  candidate_max_false_safe_prob: 0.85
 waymax:
   max_delta_yaw_rad: 0.12
 diagnostics:

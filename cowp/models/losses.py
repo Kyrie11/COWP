@@ -644,6 +644,79 @@ def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, to
     return {"loss": total, "ncf": loss_ncf, "false_safe": loss_fs}
 
 
+def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
+    """Direct candidate-level supervision for calibrated P-NCF selection.
+
+    Pairwise coercion witnesses are useful for explanations, but the current
+    pseudo-labels can make the max-over-pairs certificate saturate.  This loss
+    gives the planner a scene-comparable candidate certificate: probability of
+    non-coercive feasibility, probability of false-safety, and a quality logit
+    that separates NCF candidates from false-safe candidates.  The head is trained
+    from existing dataset labels, so no Waymax replay is required.
+    """
+    mask = batch["cowp/candidates/valid"].bool()
+    if not mask.any() or "candidate_ncf_logit" not in pred or "candidate_false_safe_logit" not in pred:
+        z = _zero_like_loss(batch["cowp/candidates/valid"])
+        return {"loss": z, "ncf": z, "false_safe": z, "quality": z, "prior": z, "rank": z}
+    ncf = _binary_target(batch.get("cowp/candidates/noncoercive_feasible", torch.zeros_like(pred["candidate_ncf_logit"])))
+    false_safe = _binary_target(batch.get("cowp/candidates/false_safe", torch.zeros_like(pred["candidate_false_safe_logit"])))
+    ncf_logits = _safe_float(pred["candidate_ncf_logit"])
+    fs_logits = _safe_float(pred["candidate_false_safe_logit"])
+    quality_logits = _safe_float(pred.get("candidate_quality_logit", -fs_logits + ncf_logits))
+
+    # Label imbalance is strong but scene-dependent; use bounded dynamic weights.
+    pos_n = ((ncf > 0.5) & mask).float().sum()
+    neg_n = ((ncf <= 0.5) & mask).float().sum()
+    pos_f = ((false_safe > 0.5) & mask).float().sum()
+    neg_f = ((false_safe <= 0.5) & mask).float().sum()
+    max_pw = float(weights.get("candidate_cert_max_pos_weight", 6.0))
+    ncf_pw = (neg_n / pos_n.clamp_min(1.0)).clamp(1.0, max_pw)
+    fs_pw = (neg_f / pos_f.clamp_min(1.0)).clamp(1.0, max_pw)
+    ncf_loss_raw = F.binary_cross_entropy_with_logits(ncf_logits, ncf, reduction="none", pos_weight=ncf_pw)
+    fs_loss_raw = F.binary_cross_entropy_with_logits(fs_logits, false_safe, reduction="none", pos_weight=fs_pw)
+    ncf_loss = masked_mean(ncf_loss_raw, mask)
+    fs_loss = masked_mean(fs_loss_raw, mask)
+
+    # Quality logit is positive for NCF candidates and negative for false-safe
+    # candidates; ambiguous candidates are ignored to avoid contradictory targets.
+    disc = mask & ((ncf > 0.5) | (false_safe > 0.5))
+    if disc.any():
+        q_target = (ncf > 0.5).float()
+        q_loss = masked_mean(F.binary_cross_entropy_with_logits(quality_logits, q_target, reduction="none"), disc)
+    else:
+        q_loss = _zero_like_loss(quality_logits)
+
+    # Scene prior calibration prevents all-candidate high NCF or all-candidate high
+    # false-safe solutions.  This is the candidate-level analogue of the witness
+    # scene prior, but it is less brittle than pair max-pooling.
+    counts = mask.float().sum(dim=1).clamp_min(1.0)
+    ncf_rate = (ncf * mask.float()).sum(dim=1) / counts
+    fs_rate = (false_safe * mask.float()).sum(dim=1) / counts
+    pred_ncf_rate = (torch.sigmoid(ncf_logits) * mask.float()).sum(dim=1) / counts
+    pred_fs_rate = (torch.sigmoid(fs_logits) * mask.float()).sum(dim=1) / counts
+    prior = F.smooth_l1_loss(pred_ncf_rate, ncf_rate, reduction="mean") + F.smooth_l1_loss(pred_fs_rate, fs_rate, reduction="mean")
+
+    # Pair ranking inside each scene: NCF candidates should have higher quality
+    # and lower false-safe score than false-safe candidates.
+    rank_terms = []
+    margin = float(weights.get("candidate_cert_pair_margin", 1.0))
+    for b in range(mask.shape[0]):
+        pos = torch.where(mask[b] & (ncf[b] > 0.5))[0]
+        neg = torch.where(mask[b] & (false_safe[b] > 0.5))[0]
+        if pos.numel() and neg.numel():
+            rank_terms.append(torch.relu(margin - quality_logits[b, pos[:, None]] + quality_logits[b, neg[None, :]]).mean())
+    rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(quality_logits)
+
+    total = (
+        float(weights.get("candidate_certificate_ncf", 1.0)) * ncf_loss
+        + float(weights.get("candidate_certificate_false_safe", 1.0)) * fs_loss
+        + float(weights.get("candidate_certificate_quality", 1.0)) * q_loss
+        + float(weights.get("candidate_certificate_prior", 0.5)) * prior
+        + float(weights.get("candidate_certificate_rank", 0.5)) * rank
+    )
+    return {"loss": total, "ncf": ncf_loss, "false_safe": fs_loss, "quality": q_loss, "prior": prior, "rank": rank}
+
+
 def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     """Imitation term using the logged ego candidate when available."""
     scores = _safe_float(scores)
