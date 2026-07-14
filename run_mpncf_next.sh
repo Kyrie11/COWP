@@ -28,7 +28,11 @@ mkdir -p "$OUT_ROOT" "$LOG_DIR" "$OUT_ROOT/configs" "$OUT_ROOT/checkpoints" \
 
 if [[ "${DETACH:-0}" == "1" && -z "${COWP_ALREADY_DETACHED:-}" ]]; then
   export COWP_ALREADY_DETACHED=1
-  nohup bash "$0" "$@" > "$LOG_DIR/driver.nohup.log" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid bash "$0" "$@" > "$LOG_DIR/driver.nohup.log" 2>&1 &
+  else
+    nohup bash "$0" "$@" > "$LOG_DIR/driver.nohup.log" 2>&1 &
+  fi
   echo "Detached PID: $!"
   echo "Driver log: $LOG_DIR/driver.nohup.log"
   exit 0
@@ -82,6 +86,12 @@ run_logged() {
   local log="$LOG_DIR/${name}.log"
   echo "[$name] start -> $log"
   "$@" > "$log" 2>&1
+  local rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "[$name] failed with exit code $rc. Last 80 log lines:" >&2
+    tail -80 "$log" >&2 || true
+    return "$rc"
+  fi
   echo "[$name] done"
 }
 
@@ -91,6 +101,63 @@ run_bg_logged() {
   echo "[$name] start bg -> $log"
   ( "$@" > "$log" 2>&1 ) &
   RUN_BG_PID=$!
+}
+
+
+checkpoint_epoch() {
+  local ckpt="$1"
+  [[ -s "$ckpt" ]] || { echo -1; return 0; }
+  "$PYTHON_BIN" - "$ckpt" <<'PYCKPT'
+import re, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    import torch
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        obj = torch.load(path, map_location="cpu")
+    print(int(obj.get("epoch", -1)) if isinstance(obj, dict) else -1)
+except Exception:
+    m = re.search(r"_epoch(\d+)\.pt$", path.name)
+    print(int(m.group(1)) if m else -1)
+PYCKPT
+}
+
+latest_valid_stage_checkpoint() {
+  local output="$1" stage="$2"
+  "$PYTHON_BIN" - "$output" "$stage" <<'PYLATEST'
+from pathlib import Path
+import re, sys
+out = Path(sys.argv[1]); stage = sys.argv[2]
+
+def file_epoch(p: Path) -> int:
+    m = re.search(r"_epoch(\d+)\.pt$", p.name)
+    return int(m.group(1)) if m else -1
+cands = sorted(out.glob(f"cowp_{stage}_epoch*.pt"), key=file_epoch, reverse=True)
+if not cands:
+    print("\t-1")
+    raise SystemExit(0)
+try:
+    import torch
+except Exception:
+    p = cands[0]
+    print(f"{p}\t{file_epoch(p)}")
+    raise SystemExit(0)
+for p in cands:
+    try:
+        try:
+            obj = torch.load(p, map_location="cpu", weights_only=False)
+        except TypeError:
+            obj = torch.load(p, map_location="cpu")
+        epoch = int(obj.get("epoch", file_epoch(p))) if isinstance(obj, dict) else file_epoch(p)
+        if epoch >= 0:
+            print(f"{p}\t{epoch}")
+            raise SystemExit(0)
+    except Exception as exc:
+        print(f"Warning: ignoring unreadable checkpoint {p}: {exc}", file=sys.stderr)
+print("\t-1")
+PYLATEST
 }
 
 require_file() { [[ -f "$1" ]] || { echo "Missing file: $1" >&2; exit 2; }; }
@@ -267,13 +334,50 @@ PY
 echo "[2/8] Existing caches reused. Logdiv disabled; collision/offroad kept as auxiliary labels."
 
 train_stage() {
-  local stage="$1" epochs="$2" lr="$3" batch="$4" output="$5" resume="${6:-}"
+  local stage="$1" epochs="$2" lr="$3" batch="$4" output="$5" upstream_resume="${6:-}"
   local best="$output/cowp_${stage}_best.pt"
-  if [[ "$FORCE_TRAIN" != 1 && -s "$best" ]]; then
-    echo "[train/$stage] keep existing: $best"
-    return
-  fi
   mkdir -p "$output"
+
+  local latest_info latest latest_epoch best_epoch resume resume_training target_last_epoch
+  latest_info="$(latest_valid_stage_checkpoint "$output" "$stage")"
+  IFS=$'\t' read -r latest latest_epoch <<< "$latest_info"
+  latest="${latest:-}"
+  latest_epoch="${latest_epoch:--1}"
+  best_epoch="$(checkpoint_epoch "$best")"
+  resume="${upstream_resume:-}"
+  resume_training=0
+  target_last_epoch=$((epochs - 1))
+
+  if [[ "$FORCE_TRAIN" != 1 ]]; then
+    if [[ -n "$latest" && -s "$latest" && "$latest_epoch" =~ ^-?[0-9]+$ && $latest_epoch -ge $target_last_epoch ]]; then
+      if [[ ! -s "$best" ]]; then
+        cp -f "$latest" "$best"
+        echo "[train/$stage] completed $epochs epochs; copied latest checkpoint to missing best: $best"
+      else
+        echo "[train/$stage] completed $epochs epochs; keep existing best: $best"
+      fi
+      return
+    fi
+    if [[ -n "$latest" && -s "$latest" && "$latest_epoch" =~ ^-?[0-9]+$ && $latest_epoch -ge 0 ]]; then
+      resume="$latest"
+      resume_training=1
+      echo "[train/$stage] resume from latest checkpoint epoch=$latest_epoch -> target_epochs=$epochs: $latest"
+    elif [[ -s "$best" && "$best_epoch" =~ ^-?[0-9]+$ && $best_epoch -ge $target_last_epoch ]]; then
+      echo "[train/$stage] best checkpoint already reaches target epoch=$best_epoch/$target_last_epoch: $best"
+      return
+    elif [[ -s "$best" && "$best_epoch" =~ ^-?[0-9]+$ && $best_epoch -ge 0 ]]; then
+      resume="$best"
+      resume_training=1
+      echo "[train/$stage] no readable epoch checkpoint; resume from best epoch=$best_epoch -> target_epochs=$epochs: $best"
+    elif [[ -n "$resume" ]]; then
+      echo "[train/$stage] warm start from upstream checkpoint: $resume"
+    else
+      echo "[train/$stage] start from scratch"
+    fi
+  else
+    echo "[train/$stage] FORCE_TRAIN=1, ignoring same-stage checkpoints and retraining this stage"
+  fi
+
   local args=(
     "$PYTHON_BIN" -m torch.distributed.run --standalone --nproc_per_node="$NUM_GPUS" -m cowp.scripts.03_train
     --data-config configs/data.yaml
@@ -287,6 +391,7 @@ train_stage() {
     --amp --fused-adamw --val-every 1 --output-dir "$output"
   )
   [[ -z "$resume" ]] || args+=(--resume "$resume")
+  [[ "$resume_training" != 1 ]] || args+=(--resume-training)
   [[ "$stage" != response ]] || args+=(--no-response-traj)
   [[ "$stage" != planner ]] || args+=(--with-waymax-outcome-labels)
   run_logged "train_${stage}" "${args[@]}"
@@ -300,11 +405,14 @@ if [[ "$RUN_TRAIN" == 1 ]]; then
   else
     train_stage natural "$NATURAL_EPOCHS" 3e-4 "$PER_GPU_BATCH_NATURAL" "$OUT_ROOT/checkpoints/natural"
     NAT="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+    require_file "$NAT"
     train_stage response "$RESPONSE_EPOCHS" 2.5e-4 "$PER_GPU_BATCH_RESPONSE" "$OUT_ROOT/checkpoints/response" "$NAT"
     RESP="$OUT_ROOT/checkpoints/response/cowp_response_best.pt"
+    require_file "$RESP"
   fi
   train_stage witness "$EPOCH_WITNESS" 2e-4 "$PER_GPU_BATCH_WITNESS" "$OUT_ROOT/checkpoints/witness" "$RESP"
   WIT="$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
+  require_file "$WIT"
   train_stage planner "$EPOCH_PLANNER" 1.5e-4 "$PER_GPU_BATCH_PLANNER" "$OUT_ROOT/checkpoints/planner" "$WIT"
 fi
 

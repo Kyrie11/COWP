@@ -536,6 +536,80 @@ def _load_model_state_robust(model: torch.nn.Module, state: dict[str, torch.Tens
 
 
 
+def _score_from_history_row(row: dict[str, Any]) -> float:
+    """Return the scalar used for best-checkpoint selection for a history row."""
+    if "val/loss" in row:
+        return float(row.get("val/loss", float("inf")))
+    if "train/loss" in row:
+        return float(row.get("train/loss", float("inf")))
+    return float("inf")
+
+
+def _load_existing_history(path: Path, *, before_epoch: int | None = None) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"Warning: failed to read existing history {path}: {exc}")
+        return []
+    if not isinstance(data, list):
+        return []
+    rows = [r for r in data if isinstance(r, dict)]
+    if before_epoch is not None:
+        rows = [r for r in rows if int(r.get("epoch", -1)) < int(before_epoch)]
+    return rows
+
+
+def _best_score_from_history(history: list[dict[str, Any]]) -> float:
+    best = float("inf")
+    for row in history:
+        score = _score_from_history_row(row)
+        if math.isfinite(score) and score < best:
+            best = score
+    return best
+
+
+def _checkpoint_stage(ckpt: dict[str, Any]) -> str | None:
+    stage = ckpt.get("stage")
+    return str(stage) if stage is not None else None
+
+
+def _checkpoint_epoch(ckpt: dict[str, Any]) -> int | None:
+    epoch = ckpt.get("epoch")
+    if epoch is None:
+        return None
+    try:
+        return int(epoch)
+    except Exception:
+        return None
+
+
+def _make_checkpoint_payload(
+    model: torch.nn.Module,
+    cfg: dict[str, Any],
+    opt: torch.optim.Optimizer,
+    *,
+    epoch: int,
+    stage: str,
+    best_val: float,
+    save_optimizer: bool,
+    extra: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": _model_state_dict_for_save(model),
+        "cfg": cfg,
+        "epoch": int(epoch),
+        "stage": stage,
+        "best_val": float(best_val),
+    }
+    if save_optimizer:
+        payload["optimizer"] = opt.state_dict()
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: float, fused: bool = False) -> torch.optim.Optimizer:
     """Create AdamW, using fused CUDA implementation when available/requested."""
     kwargs: dict[str, Any] = {"lr": float(lr), "weight_decay": float(weight_decay)}
@@ -592,6 +666,8 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--resume-training", action="store_true", help="When --resume points to a checkpoint from the same stage, continue epoch numbering/history instead of treating it as a warm start.")
+    ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
     ap.add_argument("--output-dir", default="outputs/checkpoints")
     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
     ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
@@ -744,9 +820,10 @@ def main() -> None:
 
     _rank0_print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches_per_rank={len(train_dl)}" + (f", val_batches_per_rank={len(val_dl)}" if val_dl is not None else ""))
     model = COWPModel(cfg).to(device)
+    resume_ckpt: dict[str, Any] | None = None
     if args.resume:
-        ckpt = torch.load(args.resume, map_location=device)
-        _load_model_state_robust(model, ckpt["model"])
+        resume_ckpt = torch.load(args.resume, map_location=device)
+        _load_model_state_robust(model, resume_ckpt["model"])
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
         ddp_kwargs = {"find_unused_parameters": True}
@@ -762,10 +839,45 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = args.epochs or int(tcfg.get("epochs", 10))
-    history = []
+    history_path = output_dir / f"history_{stage}.json"
+    history: list[dict[str, Any]] = []
     best_val = float("inf")
+    start_epoch = 0
+    if args.resume_training:
+        if not args.resume or resume_ckpt is None:
+            raise ValueError("--resume-training requires --resume to point to a same-stage checkpoint")
+        ckpt_stage = _checkpoint_stage(resume_ckpt)
+        ckpt_epoch = _checkpoint_epoch(resume_ckpt)
+        if ckpt_epoch is None:
+            raise ValueError(f"Checkpoint {args.resume} has no integer epoch; cannot use --resume-training")
+        if ckpt_stage is not None and ckpt_stage != stage:
+            raise ValueError(f"--resume-training expected stage={stage}, but checkpoint stage={ckpt_stage}; use plain --resume for cross-stage warm start")
+        start_epoch = ckpt_epoch + 1
+        history = _load_existing_history(history_path, before_epoch=start_epoch)
+        best_val = _best_score_from_history(history)
+        ckpt_best = resume_ckpt.get("best_val")
+        if ckpt_best is not None:
+            try:
+                best_val = min(best_val, float(ckpt_best))
+            except Exception:
+                pass
+        if not math.isfinite(best_val):
+            best_val = float("inf")
+        if "optimizer" in resume_ckpt:
+            try:
+                opt.load_state_dict(resume_ckpt["optimizer"])
+                _rank0_print(f"Resumed optimizer state from {args.resume}")
+            except Exception as exc:
+                _rank0_print(f"Warning: failed to load optimizer state from {args.resume}; continuing with a fresh optimizer: {exc}")
+        else:
+            _rank0_print(f"Warning: checkpoint {args.resume} has no optimizer state; continuing model weights from epoch {ckpt_epoch} with a fresh optimizer.")
+        _rank0_print(f"Resume-training stage={stage}: checkpoint_epoch={ckpt_epoch}, next_epoch={start_epoch}, target_epochs={epochs}, previous_history_rows={len(history)}")
+    if start_epoch >= epochs:
+        _rank0_print(f"Stage {stage} already reached target epochs: checkpoint next_epoch={start_epoch}, target_epochs={epochs}")
+        _cleanup_distributed()
+        return
     try:
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,
@@ -810,12 +922,35 @@ def main() -> None:
             if _is_main_process():
                 if math.isfinite(score_loss) and score_loss < best_val:
                     best_val = score_loss
-                    torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage, score_name: score_loss}, output_dir / f"cowp_{stage}_best.pt")
+                    torch.save(
+                        _make_checkpoint_payload(
+                            model,
+                            cfg,
+                            opt,
+                            epoch=epoch,
+                            stage=stage,
+                            best_val=best_val,
+                            save_optimizer=not args.no_save_optimizer,
+                            extra={score_name: score_loss},
+                        ),
+                        output_dir / f"cowp_{stage}_best.pt",
+                    )
                 history.append(row)
                 print(json.dumps(row, ensure_ascii=False))
-                torch.save({"model": _model_state_dict_for_save(model), "cfg": cfg, "epoch": epoch, "stage": stage}, output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt")
+                torch.save(
+                    _make_checkpoint_payload(
+                        model,
+                        cfg,
+                        opt,
+                        epoch=epoch,
+                        stage=stage,
+                        best_val=best_val,
+                        save_optimizer=not args.no_save_optimizer,
+                    ),
+                    output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt",
+                )
         if _is_main_process():
-            with (output_dir / f"history_{stage}.json").open("w", encoding="utf-8") as f:
+            with history_path.open("w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2)
     finally:
         _cleanup_distributed()
