@@ -147,6 +147,25 @@ def _candidate_certificate_scores(pred, scores):
         quality_prob = ncf_prob * (1.0 - false_safe_prob)
     return ncf_prob.clamp(0.0, 1.0), false_safe_prob.clamp(0.0, 1.0), quality_prob.clamp(0.0, 1.0)
 
+
+def _candidate_certificate_risk(ncf_prob, false_safe_prob, quality_prob, cfg: dict | None = None):
+    """Candidate-level calibrated P-NCF risk used by both offline and online selection.
+
+    The previous risk `(1 - P_NCF) + P_false_safe` ignored the learned quality
+    head and was often nearly constant, so COWP collapsed back to conventional
+    safety.  This risk is still label-compatible but gives the quality head a
+    direct role in the frontier ranking.  Absolute probabilities are not trusted:
+    the selector below keeps a within-scene low-risk quantile frontier.
+    """
+    import torch
+    pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+    w_ncf = float(pcfg.get("candidate_risk_ncf_weight", 1.0))
+    w_fs = float(pcfg.get("candidate_risk_false_safe_weight", 2.0))
+    w_q = float(pcfg.get("candidate_risk_quality_weight", 0.75))
+    return (w_ncf * (1.0 - ncf_prob.clamp(0.0, 1.0))
+            + w_fs * false_safe_prob.clamp(0.0, 1.0)
+            + w_q * (1.0 - quality_prob.clamp(0.0, 1.0)))
+
 def _select_from_learned(
     batch,
     pred,
@@ -181,7 +200,7 @@ def _select_from_learned(
     else:
         utility_scores = scores
     cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores)
-    candidate_cert_risk = (1.0 - cand_ncf_prob) + cand_false_safe_prob
+    candidate_cert_risk = _candidate_certificate_risk(cand_ncf_prob, cand_false_safe_prob, cand_quality_prob, cfg)
     outcome = pred.get("outcome", {})
     if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
         col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
@@ -272,20 +291,31 @@ def _select_from_learned(
         # labels.  This avoids the max-pair saturation observed in the current run.
         frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
         pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-        risk = candidate_cert_risk + 0.25 * pair_risk
-        min_ncf = float((cfg or {}).get("planning", {}).get("candidate_min_ncf_prob", 0.20))
-        max_fs = float((cfg or {}).get("planning", {}).get("candidate_max_false_safe_prob", 0.85))
+        pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.15))
+        risk = candidate_cert_risk + pair_mix * pair_risk
+        pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+        min_ncf = float(pcfg.get("candidate_min_ncf_prob", 0.05))
+        max_fs = float(pcfg.get("candidate_max_false_safe_prob", 0.95))
+        keep_frac = float(pcfg.get("candidate_frontier_keep_fraction", 0.40))
+        keep_min = int(pcfg.get("candidate_frontier_min_keep", 1))
+        keep_max = int(pcfg.get("candidate_frontier_max_keep", 4))
         for b in range(int(scores.shape[0])):
             base_b = frontier_base[b]
             if not base_b.any():
                 continue
-            best = torch.where(base_b, risk[b], torch.full_like(risk[b], float("inf"))).min()
-            frontier = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
-            frontier = frontier & (cand_ncf_prob[b] >= min_ncf) & (cand_false_safe_prob[b] <= max_fs)
-            if not frontier.any():
-                # Keep a relative frontier even when absolute candidate probabilities
-                # are not calibrated early in training.
-                frontier = base_b & (risk[b] <= best + float(adaptive_frontier_margin))
+            idx = torch.where(base_b)[0]
+            risk_b = risk[b, idx]
+            k = max(keep_min, int(torch.ceil(torch.tensor(float(idx.numel()) * keep_frac)).item()))
+            k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
+            cutoff = torch.kthvalue(risk_b, k).values
+            frontier = base_b & (risk[b] <= cutoff + 1e-6)
+            # Use absolute probabilities only as a weak sanity screen.  If the
+            # screen would remove everything, fall back to the relative quantile
+            # frontier; otherwise early probability miscalibration cannot collapse
+            # the controller into all-fallback.
+            screened = frontier & (cand_ncf_prob[b] >= min_ncf) & (cand_false_safe_prob[b] <= max_fs)
+            if screened.any():
+                frontier = screened
             if frontier.any():
                 accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
                 adjusted_scores[b] = adjusted_scores[b] + risk[b]
@@ -492,8 +522,15 @@ class _LearnedMetricsAccumulator:
         self.selected_waymax_collision = 0
         self.selected_waymax_offroad = 0
         self.selected_waymax_logdiv_sum = 0.0
+        self.cert_selected_count = 0
+        self.cert_selected_ncf_sum = 0.0
+        self.cert_selected_fs_sum = 0.0
+        self.cert_selected_quality_sum = 0.0
+        self.cert_selected_risk_sum = 0.0
+        self.cert_accepted_count = 0
+        self.cert_accepted_risk_sum = 0.0
 
-    def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray]) -> None:
+    def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
         self.selected_total += 1
         self.label_metrics.add(selected_idx, label)
         valid = np.asarray(label.get("cowp/candidates/valid", []), dtype=bool)
@@ -507,6 +544,21 @@ class _LearnedMetricsAccumulator:
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
             self.selected_conventional += int(bool(conv[selected_idx]))
+            if cert is not None:
+                try:
+                    self.cert_selected_count += 1
+                    self.cert_selected_ncf_sum += float(np.asarray(cert.get("ncf_prob"))[selected_idx])
+                    self.cert_selected_fs_sum += float(np.asarray(cert.get("false_safe_prob"))[selected_idx])
+                    self.cert_selected_quality_sum += float(np.asarray(cert.get("quality_prob"))[selected_idx])
+                    self.cert_selected_risk_sum += float(np.asarray(cert.get("risk"))[selected_idx])
+                except Exception:
+                    pass
+        if cert is not None and accepted.any():
+            try:
+                self.cert_accepted_count += int(accepted.sum())
+                self.cert_accepted_risk_sum += float(np.asarray(cert.get("risk"))[accepted].sum())
+            except Exception:
+                pass
         self.accepted_total += int(accepted.sum())
         self.valid_total += int(valid.sum())
         self.accepted_ncf += int((accepted & ncf).sum())
@@ -550,6 +602,13 @@ class _LearnedMetricsAccumulator:
             metrics["SelectedWaymaxOffroadRate"] = float(self.selected_waymax_offroad / max(self.selected_waymax_valid, 1))
             metrics["SelectedWaymaxUnsafeRate"] = float((self.selected_waymax_collision + self.selected_waymax_offroad) / max(self.selected_waymax_valid, 1))
             metrics["SelectedWaymaxMeanLogDivergence"] = float(self.selected_waymax_logdiv_sum / max(self.selected_waymax_valid, 1))
+        if self.cert_selected_count > 0:
+            metrics["CandidateCertificate/SelectedNcfProbMean"] = float(self.cert_selected_ncf_sum / max(self.cert_selected_count, 1))
+            metrics["CandidateCertificate/SelectedFalseSafeProbMean"] = float(self.cert_selected_fs_sum / max(self.cert_selected_count, 1))
+            metrics["CandidateCertificate/SelectedQualityProbMean"] = float(self.cert_selected_quality_sum / max(self.cert_selected_count, 1))
+            metrics["CandidateCertificate/SelectedRiskMean"] = float(self.cert_selected_risk_sum / max(self.cert_selected_count, 1))
+        if self.cert_accepted_count > 0:
+            metrics["CandidateCertificate/AcceptedRiskMean"] = float(self.cert_accepted_risk_sum / max(self.cert_accepted_count, 1))
         metrics["num_scenes"] = int(self.selected_total)
         metrics["mode"] = "learned_offline"
         metrics["witness_threshold"] = float(witness_threshold)
@@ -601,6 +660,14 @@ def _learned_offline_candidate_eval_many(
     accs = {th: _LearnedMetricsAccumulator(beta_default=beta_default) for th in thresholds}
     pair_scores: list[np.ndarray] = []
     pair_targets: list[np.ndarray] = []
+    cert_ncf_scores: list[np.ndarray] = []
+    cert_ncf_targets: list[np.ndarray] = []
+    cert_fs_scores: list[np.ndarray] = []
+    cert_fs_targets: list[np.ndarray] = []
+    cert_q_scores: list[np.ndarray] = []
+    cert_q_targets: list[np.ndarray] = []
+    cert_rank_good = 0
+    cert_rank_total = 0
     rank_good = 0
     rank_total = 0
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc="Learned offline COWP eval", unit="batch")
@@ -635,9 +702,27 @@ def _learned_offline_candidate_eval_many(
             ncf_np = batch["cowp/candidates/noncoercive_feasible"].bool().detach().cpu().numpy()
             fs_np = batch["cowp/candidates/false_safe"].bool().detach().cpu().numpy()
             valid_np = cand_mask.detach().cpu().numpy()
+            cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"])
+            cert_risk_t = _candidate_certificate_risk(cert_ncf_t, cert_fs_t, cert_q_t, cfg)
+            cert_ncf_np = cert_ncf_t.detach().cpu().numpy()
+            cert_fs_np = cert_fs_t.detach().cpu().numpy()
+            cert_q_np = cert_q_t.detach().cpu().numpy()
+            cert_risk_np = cert_risk_t.detach().cpu().numpy()
+            if valid_np.any():
+                cert_ncf_scores.append(cert_ncf_np[valid_np])
+                cert_ncf_targets.append(ncf_np[valid_np])
+                cert_fs_scores.append(cert_fs_np[valid_np])
+                cert_fs_targets.append(fs_np[valid_np])
+                cert_q_scores.append(cert_q_np[valid_np])
+                cert_q_targets.append(ncf_np[valid_np] & ~fs_np[valid_np])
             g, t = _ranking_pair_accuracy(score_np, ncf_np, fs_np, valid_np)
             rank_good += g
             rank_total += t
+            # _ranking_pair_accuracy expects lower score for first positive class;
+            # here lower risk should rank NCF before false-safe, so pass ncf as pos.
+            cg, ct = _ranking_pair_accuracy(cert_risk_np, ncf_np, fs_np, valid_np)
+            cert_rank_good += cg
+            cert_rank_total += ct
 
             for th in thresholds:
                 batch_selected, batch_accepted_masks = _select_from_learned(
@@ -660,14 +745,28 @@ def _learned_offline_candidate_eval_many(
                 pred_exists = (pair_score_np >= float(th))
                 acc = accs[th]
                 for i, item in enumerate(batch_labels):
-                    acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item)
+                    cert_item = {
+                        "ncf_prob": cert_ncf_np[i],
+                        "false_safe_prob": cert_fs_np[i],
+                        "quality_prob": cert_q_np[i],
+                        "risk": cert_risk_np[i],
+                    }
+                    acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
                     acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(done=accs[thresholds[0]].selected_total, thresholds=len(thresholds), refresh=True)
 
     all_pair_scores = np.concatenate(pair_scores) if pair_scores else np.asarray([], dtype=np.float32)
     auprc = _average_precision_binary(all_pair_scores, np.concatenate(pair_targets)) if pair_scores else 0.0
+    cert_ncf_auprc = _average_precision_binary(np.concatenate(cert_ncf_scores), np.concatenate(cert_ncf_targets)) if cert_ncf_scores else 0.0
+    cert_fs_auprc = _average_precision_binary(np.concatenate(cert_fs_scores), np.concatenate(cert_fs_targets)) if cert_fs_scores else 0.0
+    cert_q_auprc = _average_precision_binary(np.concatenate(cert_q_scores), np.concatenate(cert_q_targets)) if cert_q_scores else 0.0
     out = {th: accs[th].finish(auprc=auprc, rank_good=rank_good, rank_total=rank_total, witness_threshold=th) for th in thresholds}
+    for row in out.values():
+        row["CandidateCertificate/NCF_AUPRC"] = float(cert_ncf_auprc)
+        row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
+        row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
+        row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
     if all_pair_scores.size:
         qs = np.quantile(all_pair_scores, [0.1, 0.5, 0.9, 0.99])
         for row in out.values():

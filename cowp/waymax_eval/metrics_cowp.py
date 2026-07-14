@@ -182,6 +182,18 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
     for key in ("accepted_candidates", "valid_candidates", "conventional_candidates", "critical_agents", "conflict_tokens"):
         vals = np.asarray([float(r.get(key, 0.0)) for r in rows], dtype=np.float32)
         out[f"ClosedLoopMean/{key}"] = float(np.mean(vals)) if vals.size else 0.0
+    for key in (
+        "selected_candidate_ncf_prob",
+        "selected_candidate_false_safe_prob",
+        "selected_candidate_quality_prob",
+        "selected_candidate_cert_risk",
+        "min_candidate_cert_risk",
+        "mean_candidate_cert_risk",
+    ):
+        vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float32)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            out[f"ClosedLoopMean/{key}"] = float(np.mean(vals))
     reasons = [str(r.get("fallback_reason", "none")) for r in rows]
     for reason in sorted(set(reasons)):
         out[f"ClosedLoopFallbackReason/{reason}"] = float(sum(x == reason for x in reasons) / max(len(reasons), 1))

@@ -337,16 +337,28 @@ def _candidate_dyn_ok(traj: np.ndarray, cfg: dict) -> bool:
     acc_vec = np.diff(vel, axis=0, prepend=vel[:1]) / max(dt, 1e-3)
     acc_long = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
     jerk_vec = np.diff(acc_vec, axis=0, prepend=acc_vec[:1]) / max(dt, 1e-3)
+    # A constant-acceleration primitive has a one-sample acceleration jump at the
+    # beginning when acceleration is estimated from discrete velocities.  Counting
+    # that initialization transient as jerk rejected nearly all yield/accelerate
+    # online primitives, leaving only ~8 valid candidates and forcing frequent
+    # fallback.  Ignore a small configurable prefix and evaluate the true steady
+    # trajectory jerk.
+    ignore = int(cand_cfg.get("ignore_initial_jerk_steps", cfg.get("planning", {}).get("online_ignore_initial_jerk_steps", 2)))
+    jerk_eval = jerk_vec[min(max(ignore, 0), max(len(jerk_vec) - 1, 0)) :] if len(jerk_vec) else jerk_vec
+    if jerk_eval.size == 0:
+        jerk_eval = jerk_vec
     yaw = np.unwrap(traj[:, 2])
     yaw_rate = np.diff(yaw, prepend=yaw[0]) / max(dt, 1e-3)
     moving = speed > 0.5
     vel_heading = np.arctan2(vel[:, 1], vel[:, 0])
     slip = np.abs(_wrap_angle(vel_heading - traj[:, 2]))
     lateral_acc = np.abs(acc_vec[:, 0] * (-np.sin(traj[:, 2])) + acc_vec[:, 1] * np.cos(traj[:, 2]))
+    jerk_norm = np.linalg.norm(jerk_eval, axis=-1) if jerk_eval.size else np.asarray([0.0], dtype=np.float32)
+    jerk_stat = float(np.nanpercentile(jerk_norm, float(cand_cfg.get("jerk_check_percentile", 99.0))))
     return bool(
         np.nanmax(acc_long) <= float(cand_cfg.get("max_accel_mps2", 4.0)) + 1e-3
         and -np.nanmin(acc_long) <= float(cand_cfg.get("max_decel_mps2", 6.0)) + 1e-3
-        and np.nanmax(np.linalg.norm(jerk_vec, axis=-1)) <= float(cand_cfg.get("max_jerk_mps3", 8.0)) + 1e-3
+        and jerk_stat <= float(cand_cfg.get("max_jerk_mps3", 8.0)) + 1e-3
         and np.nanmax(np.abs(yaw_rate)) <= float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)) + 1e-3
         and np.nanmax(lateral_acc) <= float(cand_cfg.get("max_lateral_accel_mps2", 4.0)) + 1e-3
         and (not np.any(moving) or np.nanmax(slip[moving]) <= float(cand_cfg.get("max_sideslip_rad", 0.20)))
@@ -438,6 +450,11 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
     acc_bank = [0.0]
     acc_bank.extend(float(x) for x in cand_cfg.get("yield_decel_values_mps2", [-1.0, -2.0, -3.0]))
     acc_bank.extend(float(x) for x in cand_cfg.get("accelerate_values_mps2", [0.5, 1.0, 1.5]))
+    # Online closed-loop states are more diverse than the offline root cache.
+    # Add a denser longitudinal bank so COWP can trade progress against safety
+    # instead of being forced into fallback whenever the few root primitives fail.
+    acc_bank.extend(float(x) for x in cfg.get("planning", {}).get("online_extra_accel_values_mps2", [-4.0, -2.5, -1.5, -0.5, 0.25, 0.75, 1.25, 2.0]))
+    acc_bank = sorted(set(round(float(a), 3) for a in acc_bank))
     # Route/keep-lane timing lattice.
     for acc in acc_bank:
         macro = MacroType.KEEP_LANE if abs(acc) < 1e-6 else (MacroType.ACCELERATE_CROSS if acc > 0 else MacroType.YIELD)
@@ -963,7 +980,12 @@ class COWPWaymaxPolicy:
                 cand_quality_prob = self.torch.sigmoid(self.torch.nan_to_num(cand_quality_logit[0].float(), nan=0.0, posinf=20.0, neginf=-20.0))
             else:
                 cand_quality_prob = cand_ncf_prob * (1.0 - cand_false_safe_prob)
-            candidate_cert_risk = (1.0 - cand_ncf_prob.clamp(0.0, 1.0)) + cand_false_safe_prob.clamp(0.0, 1.0)
+            pcfg_runtime = self.cfg.get("planning", {})
+            candidate_cert_risk = (
+                float(pcfg_runtime.get("candidate_risk_ncf_weight", 1.0)) * (1.0 - cand_ncf_prob.clamp(0.0, 1.0))
+                + float(pcfg_runtime.get("candidate_risk_false_safe_weight", 2.0)) * cand_false_safe_prob.clamp(0.0, 1.0)
+                + float(pcfg_runtime.get("candidate_risk_quality_weight", 0.75)) * (1.0 - cand_quality_prob.clamp(0.0, 1.0))
+            )
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
                 off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
@@ -1064,18 +1086,25 @@ class COWPWaymaxPolicy:
                         pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                     else:
                         pair_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
-                    frontier_risk = candidate_cert_risk + 0.25 * pair_risk
-                    finite_risk = self.torch.where(frontier_base, frontier_risk, self.torch.full_like(frontier_risk, float("inf")))
-                    best_risk = finite_risk.min()
-                    frontier = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
-                    min_ncf = float(self.cfg.get("planning", {}).get("candidate_min_ncf_prob", 0.20))
-                    max_fs = float(self.cfg.get("planning", {}).get("candidate_max_false_safe_prob", 0.85))
-                    frontier = frontier & (cand_ncf_prob >= min_ncf) & (cand_false_safe_prob <= max_fs)
-                    if not frontier.any():
-                        frontier = frontier_base & (frontier_risk <= best_risk + float(self.adaptive_frontier_margin))
-                    if frontier.any():
-                        accepted = (accepted & frontier) if bool(accepted.any().detach().cpu().item()) else frontier
-                        adjusted_scores = adjusted_scores + frontier_risk
+                    pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.15))
+                    frontier_risk = candidate_cert_risk + pair_mix * pair_risk
+                    idx = self.torch.where(frontier_base)[0]
+                    if idx.numel() > 0:
+                        keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
+                        keep_min = int(self.cfg.get("planning", {}).get("candidate_frontier_min_keep", 1))
+                        keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
+                        k = max(keep_min, int(self.torch.ceil(self.torch.tensor(float(idx.numel()) * keep_frac, device=self.dev)).item()))
+                        k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
+                        cutoff = self.torch.kthvalue(frontier_risk[idx], k).values
+                        frontier = frontier_base & (frontier_risk <= cutoff + 1e-6)
+                        min_ncf = float(self.cfg.get("planning", {}).get("candidate_min_ncf_prob", 0.05))
+                        max_fs = float(self.cfg.get("planning", {}).get("candidate_max_false_safe_prob", 0.95))
+                        screened = frontier & (cand_ncf_prob >= min_ncf) & (cand_false_safe_prob <= max_fs)
+                        if bool(screened.any().detach().cpu().item()):
+                            frontier = screened
+                        if bool(frontier.any().detach().cpu().item()):
+                            accepted = (accepted & frontier) if bool(accepted.any().detach().cpu().item()) else frontier
+                            adjusted_scores = adjusted_scores + frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
@@ -1142,6 +1171,9 @@ class COWPWaymaxPolicy:
                 "selected_candidate_ncf_prob": float(cand_ncf_prob[selected].detach().cpu().item()) if cand_ncf_prob.numel() else 0.0,
                 "selected_candidate_false_safe_prob": float(cand_false_safe_prob[selected].detach().cpu().item()) if cand_false_safe_prob.numel() else 0.0,
                 "selected_candidate_quality_prob": float(cand_quality_prob[selected].detach().cpu().item()) if cand_quality_prob.numel() else 0.0,
+                "selected_candidate_cert_risk": float(candidate_cert_risk[selected].detach().cpu().item()) if candidate_cert_risk.numel() else 0.0,
+                "min_candidate_cert_risk": float(candidate_cert_risk[cand_valid].min().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
+                "mean_candidate_cert_risk": float(candidate_cert_risk[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:

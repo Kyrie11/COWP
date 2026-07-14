@@ -47,15 +47,15 @@ loss_weights:
   witness_opr_consistency_tau: 0.08
   witness_evidential: 0.05
   witness_evidence_kl: 0.01
-  planner_witness_scale: 0.02
+  planner_witness_scale: 0.005
   witness_mining_max_pos_per_scene: 16
   witness_mining_max_neg_per_scene: 48
   witness_mining_neg_pos_ratio: 3
   witness_mining_min_neg_per_scene: 8
-  imitation: 0.4
-  ranking: 1.5
-  candidate_ncf_cls: 1.5
-  candidate_false_safe_cls: 1.0
+  imitation: 0.25
+  ranking: 1.0
+  candidate_ncf_cls: 2.0
+  candidate_false_safe_cls: 1.5
   closed_loop: 1.0
   closed_loop_legacy: 0.0
   outcome_cls: 1.0
@@ -71,11 +71,11 @@ loss_weights:
   witness_scene_prior: 3.0
   witness_scene_prior_min_pairs: 4
   witness_logit_l2: 0.005
-  candidate_certificate: 2.0
-  candidate_certificate_ncf: 1.5
-  candidate_certificate_false_safe: 2.0
-  candidate_certificate_quality: 1.0
-  candidate_certificate_prior: 0.75
-  candidate_certificate_rank: 1.0
+  candidate_certificate: 3.0
+  candidate_certificate_ncf: 2.0
+  candidate_certificate_false_safe: 3.0
+  candidate_certificate_quality: 1.5
+  candidate_certificate_prior: 1.0
+  candidate_certificate_rank: 2.0
   candidate_cert_max_pos_weight: 6.0
   candidate_cert_pair_margin: 1.0

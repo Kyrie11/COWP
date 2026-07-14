@@ -20,7 +20,7 @@ export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
 VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
 WAYMAX_VAL="${WAYMAX_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
-OUT_ROOT="${OUT_ROOT:-outputs/candidate_calibrated_pncf_next}"
+OUT_ROOT="${OUT_ROOT:-outputs/dynamics_quantile_pncf_next}"
 LOG_DIR="$OUT_ROOT/logs"
 
 mkdir -p "$OUT_ROOT" "$LOG_DIR" "$OUT_ROOT/configs" "$OUT_ROOT/checkpoints" \
@@ -175,17 +175,20 @@ w["witness_logit_l2"] = float(w.get("witness_logit_l2", 0.001))
 w["witness_evidential"] = float(w.get("witness_evidential", 0.05))
 w["witness_mined_fraction"] = float(w.get("witness_mined_fraction", 0.25))
 w["witness_balanced_fraction"] = float(w.get("witness_balanced_fraction", 0.75))
-w["planner_witness_scale"] = float(w.get("planner_witness_scale", 0.02))
-w["candidate_certificate"] = float(w.get("candidate_certificate", 2.0))
-w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 1.5))
-w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 2.0))
-w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.0))
-w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 0.75))
-w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 1.0))
-w["candidate_ncf_cls"] = float(w.get("candidate_ncf_cls", 1.5))
-w["candidate_false_safe_cls"] = float(w.get("candidate_false_safe_cls", 1.0))
-w["ranking"] = float(w.get("ranking", 1.5))
-w["imitation"] = float(w.get("imitation", 0.4))
+# Pairwise witness is still trained, but planner fine-tuning should not be
+# dominated by the saturated pair certificate.  Shift the planner stage toward
+# candidate-level NCF/false-safe discrimination.
+w["planner_witness_scale"] = float(w.get("planner_witness_scale", 0.005))
+w["candidate_certificate"] = float(w.get("candidate_certificate", 3.0))
+w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 2.0))
+w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 3.0))
+w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.5))
+w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 1.0))
+w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 2.0))
+w["candidate_ncf_cls"] = float(w.get("candidate_ncf_cls", 2.0))
+w["candidate_false_safe_cls"] = float(w.get("candidate_false_safe_cls", 1.5))
+w["ranking"] = float(w.get("ranking", 1.0))
+w["imitation"] = float(w.get("imitation", 0.25))
 with open(train_dst, "w", encoding="utf-8") as f:
     yaml.safe_dump(train, f, sort_keys=False, allow_unicode=True)
 with open(label_src, encoding="utf-8") as f:
@@ -196,10 +199,24 @@ pcfg["witness_temperature"] = float(pcfg.get("witness_temperature", 1.0))
 pcfg["witness_logit_bias"] = float(pcfg.get("witness_logit_bias", 0.0))
 pcfg["evidential_probability_mix"] = 0.0
 pcfg["evidential_ucb_scale"] = 0.0
-pcfg["adaptive_frontier_margin"] = float(pcfg.get("adaptive_frontier_margin", 0.35))
-pcfg["candidate_certificate_penalty"] = float(pcfg.get("candidate_certificate_penalty", 1.5))
-pcfg["candidate_min_ncf_prob"] = float(pcfg.get("candidate_min_ncf_prob", 0.20))
-pcfg["candidate_max_false_safe_prob"] = float(pcfg.get("candidate_max_false_safe_prob", 0.85))
+pcfg["adaptive_frontier_margin"] = float(pcfg.get("adaptive_frontier_margin", 0.25))
+pcfg["candidate_certificate_penalty"] = float(pcfg.get("candidate_certificate_penalty", 2.5))
+pcfg["candidate_min_ncf_prob"] = float(pcfg.get("candidate_min_ncf_prob", 0.05))
+pcfg["candidate_max_false_safe_prob"] = float(pcfg.get("candidate_max_false_safe_prob", 0.95))
+pcfg["candidate_risk_ncf_weight"] = float(pcfg.get("candidate_risk_ncf_weight", 1.0))
+pcfg["candidate_risk_false_safe_weight"] = float(pcfg.get("candidate_risk_false_safe_weight", 2.0))
+pcfg["candidate_risk_quality_weight"] = float(pcfg.get("candidate_risk_quality_weight", 0.75))
+pcfg["candidate_pair_risk_mix"] = float(pcfg.get("candidate_pair_risk_mix", 0.15))
+pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.40))
+pcfg["candidate_frontier_min_keep"] = int(pcfg.get("candidate_frontier_min_keep", 1))
+pcfg["candidate_frontier_max_keep"] = int(pcfg.get("candidate_frontier_max_keep", 4))
+pcfg["online_ignore_initial_jerk_steps"] = int(pcfg.get("online_ignore_initial_jerk_steps", 3))
+pcfg["online_candidate_dedup_endpoint_m"] = float(pcfg.get("online_candidate_dedup_endpoint_m", 0.08))
+pcfg["online_extra_accel_values_mps2"] = pcfg.get("online_extra_accel_values_mps2", [-4.0, -2.5, -1.5, -0.5, 0.25, 0.75, 1.25, 2.0])
+ccfg = label.setdefault("candidate", {})
+ccfg["ignore_initial_jerk_steps"] = int(ccfg.get("ignore_initial_jerk_steps", 3))
+ccfg["jerk_check_percentile"] = float(ccfg.get("jerk_check_percentile", 99.0))
+ccfg["max_jerk_mps3"] = float(max(float(ccfg.get("max_jerk_mps3", 6.0)), 10.0))
 with open(label_dst, "w", encoding="utf-8") as f:
     yaml.safe_dump(label, f, sort_keys=False, allow_unicode=True)
 print({"train_cfg": train_dst, "label_cfg": label_dst})
@@ -451,18 +468,18 @@ if cs and bs:
     report["gates"]["online_ep_noninferior"]={"value":cs.get("EP"),"baseline":bs.get("EP"),"margin":0.05,"pass":float(cs.get("EP",0))>=float(bs.get("EP",0))-0.05}
 
 (root/"verification_report.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
-lines=["# Calibrated Priority-NCF/COWP verification", "", f"Mode: `{mode}`", "", "## Held-out learned-offline", "", "| Method | FSR | EP | CBS | OPR | HBCR | Selected FS | Fallback | Witness AUPRC | p10 | p50 | p90 |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+lines=["# Dynamics-aware Quantile P-NCF/COWP verification", "", f"Mode: `{mode}`", "", "## Held-out learned-offline", "", "| Method | FSR | EP | CBS | OPR | HBCR | Selected FS | Fallback | Witness AUPRC | Cert FS AUPRC | Cert NCF AUPRC | Cert Risk Rank | Sel Cert Risk |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
 for m in methods:
     x=L.get(m,{})
     def f(k):
         v=x.get(k)
         return "-" if v is None else f"{float(v):.4f}"
-    lines.append(f"| {m} | {f('FSR')} | {f('EP')} | {f('CBS')} | {f('OPR')} | {f('HBCR')} | {f('SelectedFalseSafeRate')} | {f('FallbackRate')} | {f('WitnessQuality/AUPRC')} | {f('WitnessProb/p10')} | {f('WitnessProb/p50')} | {f('WitnessProb/p90')} |")
-lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kinematic infeasible | Mean critical | Fallback step |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    lines.append(f"| {m} | {f('FSR')} | {f('EP')} | {f('CBS')} | {f('OPR')} | {f('HBCR')} | {f('SelectedFalseSafeRate')} | {f('FallbackRate')} | {f('WitnessQuality/AUPRC')} | {f('CandidateCertificate/FalseSafe_AUPRC')} | {f('CandidateCertificate/NCF_AUPRC')} | {f('CandidateCertificate/RiskRankingPairAccuracy')} | {f('CandidateCertificate/SelectedRiskMean')} |")
+lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kin infeasible | Valid cand | Conv cand | Accepted | Fallback step | Sel cert risk |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
 for m in ("planner_score_only","conventional_safety","cowp"):
     x=report["online"].get(m,{}); s=x.get("standard",{}); d=x.get("diagnostic",{})
     def g(v): return "-" if v is None else f"{float(v):.4f}"
-    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/critical_agents'))} | {g(d.get('ClosedLoopFallbackStepRate'))} |")
+    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/valid_candidates'))} | {g(d.get('ClosedLoopMean/conventional_candidates'))} | {g(d.get('ClosedLoopMean/accepted_candidates'))} | {g(d.get('ClosedLoopFallbackStepRate'))} | {g(d.get('ClosedLoopMean/selected_candidate_cert_risk'))} |")
 lines += ["", "## Gates", ""]
 for k,v in report["gates"].items():
     passed=v.get("pass")
