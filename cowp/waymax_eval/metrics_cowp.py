@@ -187,8 +187,10 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
         "selected_candidate_false_safe_prob",
         "selected_candidate_quality_prob",
         "selected_candidate_cert_risk",
+        "selected_candidate_pressure_prior",
         "min_candidate_cert_risk",
         "mean_candidate_cert_risk",
+        "mean_candidate_pressure_prior",
     ):
         vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float32)
         vals = vals[np.isfinite(vals)]

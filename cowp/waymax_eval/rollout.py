@@ -166,6 +166,95 @@ def _candidate_certificate_risk(ncf_prob, false_safe_prob, quality_prob, cfg: di
             + w_fs * false_safe_prob.clamp(0.0, 1.0)
             + w_q * (1.0 - quality_prob.clamp(0.0, 1.0)))
 
+def _candidate_pressure_prior_torch(batch, cfg: dict | None, scores):
+    """Torch offline counterpart of the online mechanism-aware pressure prior.
+
+    Vectorized over candidates and time.  It is a weak, relative prior used only
+    to break flat candidate-certificate ties in the quantile frontier.
+    """
+    import torch
+    cand = batch.get("cowp/candidates/trajectory")
+    cand_valid = batch.get("cowp/candidates/valid")
+    if cand is None or cand_valid is None:
+        return torch.zeros_like(scores)
+    cand = cand.float()
+    cand_valid = cand_valid.bool()
+    macro = batch.get("cowp/candidates/macro_type")
+    macro = torch.zeros_like(cand_valid, dtype=torch.long) if macro is None else macro.long()
+    hist = batch.get("state/history", batch.get("womd/state/history"))
+    if hist is None or hist.ndim != 4 or hist.shape[-1] < 10:
+        return torch.zeros_like(scores)
+    cur = hist[:, :, -1, :].float()
+    B, K = scores.shape[:2]
+    out = torch.zeros_like(scores)
+    crit_idx = batch.get("cowp/critical/input_index", batch.get("cowp/critical/track_index"))
+    crit_valid = batch.get("cowp/critical/valid")
+    if crit_idx is None or crit_valid is None:
+        return out
+    crit_idx = crit_idx.long()
+    crit_valid = crit_valid.bool()
+    is_sdc = batch.get("state/is_sdc", batch.get("womd/state/is_sdc"))
+    if is_sdc is not None and is_sdc.ndim >= 2:
+        sdc_idx = torch.argmax(is_sdc.float(), dim=1)
+    else:
+        sdc_idx = torch.zeros(B, device=scores.device, dtype=torch.long)
+    dt = float((cfg or {}).get("time", {}).get("dt", 0.1))
+    H = int(cand.shape[2])
+    ts = (torch.arange(H, device=scores.device, dtype=torch.float32) + 1.0) * max(dt, 1e-3)
+    pressure = torch.zeros_like(scores) + 0.05
+    pressure = torch.where(macro == int(MacroType.ACCELERATE_CROSS), torch.full_like(pressure, 0.75), pressure)
+    pressure = torch.where(macro == int(MacroType.MERGE_AHEAD), torch.full_like(pressure, 0.90), pressure)
+    pressure = torch.where((macro == int(MacroType.LANE_CHANGE_LEFT)) | (macro == int(MacroType.LANE_CHANGE_RIGHT)), torch.full_like(pressure, 0.70), pressure)
+    relief = (macro == int(MacroType.YIELD)) | (macro == int(MacroType.STOP_BEFORE_CONFLICT)) | (macro == int(MacroType.NEUTRAL_EGO)) | (macro == int(MacroType.CREEP)) | (macro == int(MacroType.MERGE_BEHIND))
+    pressure = torch.where(relief, pressure - 0.25, pressure)
+    out = torch.clamp(pressure, min=0.0, max=1.0)
+    cand_xy_all = cand[:, :, :, 0:2]
+    finite_all = torch.isfinite(cand_xy_all).all(dim=-1) & cand_valid[:, :, None]
+    A = int(crit_idx.shape[1])
+    for b in range(B):
+        si = int(sdc_idx[b].item())
+        if si < 0 or si >= cur.shape[1]:
+            continue
+        ego = cur[b, si]
+        ego_xy = ego[0:2]
+        ego_yaw = ego[6] if cur.shape[-1] > 6 else torch.tensor(0.0, device=scores.device)
+        ego_dir = torch.stack((torch.cos(ego_yaw), torch.sin(ego_yaw)))
+        ego_lat = torch.stack((-torch.sin(ego_yaw), torch.cos(ego_yaw)))
+        ego_speed = torch.clamp(ego[9] if cur.shape[-1] > 9 else torch.linalg.norm(ego[7:9]), min=0.0)
+        for a in range(A):
+            if not bool(crit_valid[b, a].item()):
+                continue
+            j = int(crit_idx[b, a].item())
+            if j < 0 or j >= cur.shape[1] or j == si:
+                continue
+            aj = cur[b, j]
+            if cur.shape[-1] > 10 and float(aj[10].item()) <= 0.5:
+                continue
+            aj_xy = aj[0:2]
+            aj_vel = aj[7:9] if cur.shape[-1] > 8 else torch.zeros(2, device=scores.device)
+            pred = aj_xy[None, :] + ts[:, None] * aj_vel[None, :]
+            finite = finite_all[b] & torch.isfinite(pred).all(dim=-1)[None, :]
+            d = torch.linalg.norm(cand_xy_all[b] - pred[None, :, :], dim=-1)
+            d = torch.where(finite, d, torch.full_like(d, float("inf")))
+            min_d = torch.min(d, dim=-1).values
+            close = torch.exp(-torch.clamp(min_d, min=0.0, max=1e4) / 6.5)
+            close = torch.where(torch.isfinite(min_d), close, torch.zeros_like(close))
+            rel = aj_xy - ego_xy
+            longitudinal = torch.dot(rel, ego_dir)
+            lateral = torch.abs(torch.dot(rel, ego_lat))
+            rel_speed = ego_speed - torch.dot(aj_vel, ego_dir)
+            priority = torch.tensor(0.0, device=scores.device, dtype=torch.float32)
+            if bool((longitudinal >= -6.0 and longitudinal <= 45.0 and lateral <= 5.5).item()):
+                priority = priority + 0.35
+            if bool((longitudinal > 0.0 and rel_speed > 0.25 and (longitudinal / torch.clamp(rel_speed, min=1e-3)) <= 5.0).item()):
+                priority = priority + 0.25
+            if bool((torch.min(min_d) <= 6.0).item()):
+                priority = priority + 0.20
+            out[b] = torch.maximum(out[b], pressure[b] + 0.55 * close + priority)
+    out = torch.where(cand_valid, out, torch.zeros_like(out))
+    return torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+
+
 def _select_from_learned(
     batch,
     pred,
@@ -201,6 +290,7 @@ def _select_from_learned(
         utility_scores = scores
     cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores)
     candidate_cert_risk = _candidate_certificate_risk(cand_ncf_prob, cand_false_safe_prob, cand_quality_prob, cfg)
+    pressure_prior = _candidate_pressure_prior_torch(batch, cfg, scores)
     outcome = pred.get("outcome", {})
     if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
         col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
@@ -278,7 +368,14 @@ def _select_from_learned(
             severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
             cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.5))
-            adjusted_scores = scores + float(soft_ncf_penalty) * penalty + cert_penalty * candidate_cert_risk + float(outcome_risk_penalty) * outcome_risk
+            pressure_penalty = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
+            adjusted_scores = (
+                scores
+                + float(soft_ncf_penalty) * penalty
+                + cert_penalty * candidate_cert_risk
+                + pressure_penalty * pressure_prior
+                + float(outcome_risk_penalty) * outcome_risk
+            )
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
             else:
@@ -291,8 +388,9 @@ def _select_from_learned(
         # labels.  This avoids the max-pair saturation observed in the current run.
         frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
         pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-        pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.15))
-        risk = candidate_cert_risk + pair_mix * pair_risk
+        pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.10))
+        pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
+        risk = candidate_cert_risk + pair_mix * pair_risk + pressure_mix * pressure_prior
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         min_ncf = float(pcfg.get("candidate_min_ncf_prob", 0.05))
         max_fs = float(pcfg.get("candidate_max_false_safe_prob", 0.95))
@@ -527,8 +625,10 @@ class _LearnedMetricsAccumulator:
         self.cert_selected_fs_sum = 0.0
         self.cert_selected_quality_sum = 0.0
         self.cert_selected_risk_sum = 0.0
+        self.cert_selected_pressure_sum = 0.0
         self.cert_accepted_count = 0
         self.cert_accepted_risk_sum = 0.0
+        self.cert_accepted_pressure_sum = 0.0
 
     def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
         self.selected_total += 1
@@ -551,12 +651,16 @@ class _LearnedMetricsAccumulator:
                     self.cert_selected_fs_sum += float(np.asarray(cert.get("false_safe_prob"))[selected_idx])
                     self.cert_selected_quality_sum += float(np.asarray(cert.get("quality_prob"))[selected_idx])
                     self.cert_selected_risk_sum += float(np.asarray(cert.get("risk"))[selected_idx])
+                    if cert.get("pressure_prior") is not None:
+                        self.cert_selected_pressure_sum += float(np.asarray(cert.get("pressure_prior"))[selected_idx])
                 except Exception:
                     pass
         if cert is not None and accepted.any():
             try:
                 self.cert_accepted_count += int(accepted.sum())
                 self.cert_accepted_risk_sum += float(np.asarray(cert.get("risk"))[accepted].sum())
+                if cert.get("pressure_prior") is not None:
+                    self.cert_accepted_pressure_sum += float(np.asarray(cert.get("pressure_prior"))[accepted].sum())
             except Exception:
                 pass
         self.accepted_total += int(accepted.sum())
@@ -607,8 +711,10 @@ class _LearnedMetricsAccumulator:
             metrics["CandidateCertificate/SelectedFalseSafeProbMean"] = float(self.cert_selected_fs_sum / max(self.cert_selected_count, 1))
             metrics["CandidateCertificate/SelectedQualityProbMean"] = float(self.cert_selected_quality_sum / max(self.cert_selected_count, 1))
             metrics["CandidateCertificate/SelectedRiskMean"] = float(self.cert_selected_risk_sum / max(self.cert_selected_count, 1))
+            metrics["CandidateCertificate/SelectedPressurePriorMean"] = float(self.cert_selected_pressure_sum / max(self.cert_selected_count, 1))
         if self.cert_accepted_count > 0:
             metrics["CandidateCertificate/AcceptedRiskMean"] = float(self.cert_accepted_risk_sum / max(self.cert_accepted_count, 1))
+            metrics["CandidateCertificate/AcceptedPressurePriorMean"] = float(self.cert_accepted_pressure_sum / max(self.cert_accepted_count, 1))
         metrics["num_scenes"] = int(self.selected_total)
         metrics["mode"] = "learned_offline"
         metrics["witness_threshold"] = float(witness_threshold)
@@ -704,10 +810,12 @@ def _learned_offline_candidate_eval_many(
             valid_np = cand_mask.detach().cpu().numpy()
             cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"])
             cert_risk_t = _candidate_certificate_risk(cert_ncf_t, cert_fs_t, cert_q_t, cfg)
+            pressure_prior_t = _candidate_pressure_prior_torch(batch, cfg, pred["planner_score"].detach().float())
             cert_ncf_np = cert_ncf_t.detach().cpu().numpy()
             cert_fs_np = cert_fs_t.detach().cpu().numpy()
             cert_q_np = cert_q_t.detach().cpu().numpy()
             cert_risk_np = cert_risk_t.detach().cpu().numpy()
+            pressure_prior_np = pressure_prior_t.detach().cpu().numpy()
             if valid_np.any():
                 cert_ncf_scores.append(cert_ncf_np[valid_np])
                 cert_ncf_targets.append(ncf_np[valid_np])
@@ -750,6 +858,7 @@ def _learned_offline_candidate_eval_many(
                         "false_safe_prob": cert_fs_np[i],
                         "quality_prob": cert_q_np[i],
                         "risk": cert_risk_np[i],
+                        "pressure_prior": pressure_prior_np[i],
                     }
                     acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
                     acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))

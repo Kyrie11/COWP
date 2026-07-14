@@ -141,6 +141,37 @@ def extract_current_agent_state(state: Any) -> tuple[np.ndarray, int]:
     return _state11_at(comps, t), _extract_sdc_index(state)
 
 
+def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) -> np.ndarray | None:
+    """Best-effort logged/simulator future for online conventional checks."""
+    try:
+        _, t = _traj_arrays(state)
+        comps = _extract_traj_components(state)
+    except Exception:
+        return None
+    H = int(cfg.get("time", {}).get("future_steps", cfg.get("eval", {}).get("rollout_horizon_steps", 80)))
+    cur = _state11_at(comps, t)
+    N = int(cur.shape[0])
+    out = np.zeros((N, H, 7), dtype=np.float32)
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    has_temporal = np.asarray(comps.get("x", np.zeros(0))).ndim == 2
+    T = int(comps["x"].shape[1]) if has_temporal else 0
+    for h in range(H):
+        if has_temporal and t + 1 + h < T:
+            s11 = _state11_at(comps, t + 1 + h)
+        else:
+            s11 = cur.copy()
+            tau = float(h + 1) * dt
+            s11[:, :2] = cur[:, :2] + cur[:, 3:5] * tau
+        out[:, h, 0:2] = s11[:, 0:2]
+        out[:, h, 2] = s11[:, 6]
+        out[:, h, 3:5] = s11[:, 3:5]
+        out[:, h, 5] = s11[:, 7]
+        out[:, h, 6] = s11[:, 8]
+    if 0 <= int(sdc_index) < N:
+        out[int(sdc_index), :, :] = 0.0
+    return out
+
+
 def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray, np.ndarray, int]:
     """Extract model-format history and current ScenarioData-format states.
 
@@ -327,6 +358,51 @@ def _quintic_frenet_trajectory(
     return out
 
 
+def _terminal_frenet_trajectory(
+    current: np.ndarray,
+    H: int,
+    dt: float,
+    *,
+    target_s: float,
+    target_speed: float,
+    lateral_offset: float = 0.0,
+    lane_change_duration_s: float = 4.0,
+) -> np.ndarray:
+    """Cubic-longitudinal / quintic-lateral terminal primitive."""
+    T = max(float(H) * float(dt), float(dt))
+    tau = (np.arange(1, H + 1, dtype=np.float32) * dt).astype(np.float32)
+    v0 = float(max(current[5], np.linalg.norm(current[3:5]), 0.0))
+    vT = float(max(target_speed, 0.0))
+    sT = float(max(target_s, 0.0))
+    A = np.asarray([[T**3, T**2], [3.0 * T**2, 2.0 * T]], dtype=np.float64)
+    b = np.asarray([sT - v0 * T, vT - v0], dtype=np.float64)
+    try:
+        a3, a2 = np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        a3, a2 = 0.0, (vT - v0) / max(2.0 * T, 1e-3)
+    s_long = (a3 * tau**3 + a2 * tau**2 + v0 * tau).astype(np.float32)
+    v = np.maximum((3.0 * a3 * tau**2 + 2.0 * a2 * tau + v0).astype(np.float32), 0.0)
+    yaw0 = float(current[6])
+    e_s = np.asarray([np.cos(yaw0), np.sin(yaw0)], dtype=np.float32)
+    e_d = np.asarray([-np.sin(yaw0), np.cos(yaw0)], dtype=np.float32)
+    u = np.clip(tau / max(float(lane_change_duration_s), 1.5), 0.0, 1.0)
+    q = 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+    dq_du = 30.0 * u**2 - 60.0 * u**3 + 30.0 * u**4
+    d_lat = float(lateral_offset) * q
+    d_dot = float(lateral_offset) * dq_du / max(float(lane_change_duration_s), 1.5)
+    vel = v[:, None] * e_s[None, :] + d_dot[:, None] * e_d[None, :]
+    xy = current[:2][None, :] + s_long[:, None] * e_s[None, :] + d_lat[:, None] * e_d[None, :]
+    speed = np.linalg.norm(vel, axis=-1)
+    yaw = np.where(speed > 0.15, np.arctan2(vel[:, 1], vel[:, 0]), yaw0).astype(np.float32)
+    out = np.zeros((H, 7), dtype=np.float32)
+    out[:, 0:2] = xy
+    out[:, 2] = yaw
+    out[:, 3:5] = vel
+    out[:, 5] = float(current[7]) if current.shape[0] > 7 else 4.8
+    out[:, 6] = float(current[8]) if current.shape[0] > 8 else 1.9
+    return out
+
+
 def _candidate_dyn_ok(traj: np.ndarray, cfg: dict) -> bool:
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     cand_cfg = cfg.get("candidate", {})
@@ -377,18 +453,33 @@ def _roadgraph_drivable_mask(traj: np.ndarray, roadgraph: dict[str, np.ndarray],
     return bool(np.mean(np.sqrt(np.min(d2, axis=1)) <= float(max_dist)) >= 0.75)
 
 
-def _collision_free_against_constant_velocity(traj: np.ndarray, agent_state: np.ndarray, sdc_index: int, cfg: dict) -> bool:
+def _collision_free_against_constant_velocity(
+    traj: np.ndarray,
+    agent_state: np.ndarray,
+    sdc_index: int,
+    cfg: dict,
+    other_future_trajs: np.ndarray | None = None,
+) -> bool:
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     ego_radius = max(float(agent_state[sdc_index, 7]), float(agent_state[sdc_index, 8]), 4.0) * 0.5 + 0.4
     valid = agent_state[:, 10] > 0.5
+    H = int(len(traj))
+    ts = np.arange(1, H + 1, dtype=np.float32)[:, None] * max(dt, 1e-3)
     for j in range(agent_state.shape[0]):
         if j == sdc_index or not valid[j]:
             continue
-        # Only near objects can invalidate an online proposal.
         if np.linalg.norm(agent_state[j, :2] - agent_state[sdc_index, :2]) > 65.0:
             continue
-        t = np.arange(1, len(traj) + 1, dtype=np.float32)[:, None] * dt
-        pred = agent_state[j, :2][None] + agent_state[j, 3:5][None] * t
+        if other_future_trajs is not None and j < int(other_future_trajs.shape[0]) and other_future_trajs.shape[1] > 0:
+            pred = np.asarray(other_future_trajs[j, :H, :2], dtype=np.float32)
+            if pred.shape[0] < H:
+                tail = agent_state[j, :2][None] + agent_state[j, 3:5][None] * ts[pred.shape[0]:]
+                pred = np.concatenate([pred, tail.astype(np.float32)], axis=0)
+            bad = ~np.isfinite(pred).all(axis=-1)
+            if bad.any():
+                pred[bad] = agent_state[j, :2][None] + agent_state[j, 3:5][None] * ts[bad]
+        else:
+            pred = agent_state[j, :2][None] + agent_state[j, 3:5][None] * ts
         radius = ego_radius + max(float(agent_state[j, 7]), float(agent_state[j, 8]), 4.0) * 0.5 + 0.5
         if np.any(np.linalg.norm(traj[:, :2] - pred, axis=-1) < radius):
             return False
@@ -408,6 +499,7 @@ def _add_candidate(
     roadgraph: dict[str, np.ndarray],
     cfg: dict,
     conventional_check: bool = True,
+    other_future_trajs: np.ndarray | None = None,
 ) -> None:
     if len(out) >= int(cfg.get("limits", {}).get("max_candidates", 64)):
         return
@@ -421,19 +513,34 @@ def _add_candidate(
     end = traj[-1, :2]
     dedup_eps = float(cfg.get("planning", {}).get("online_candidate_dedup_endpoint_m", cfg.get("candidate", {}).get("dedup_endpoint_tolerance_m", 0.25)))
     dedup_eps = float(np.clip(dedup_eps, 0.05, 0.35))
-    for old in out:
-        if np.linalg.norm(old[-1, :2] - end) < dedup_eps:
+    end_speed = float(np.linalg.norm(traj[-1, 3:5]))
+    speed_eps = float(cfg.get("planning", {}).get("online_candidate_dedup_speed_mps", cfg.get("candidate", {}).get("dedup_speed_tolerance_mps", 0.15)))
+    same_macro_only = bool(cfg.get("planning", {}).get("online_dedup_same_macro_only", True))
+    for old_traj, old_macro in zip(out, macros):
+        if same_macro_only and int(old_macro) != int(macro):
+            continue
+        old_speed = float(np.linalg.norm(old_traj[-1, 3:5]))
+        if np.linalg.norm(old_traj[-1, :2] - end) < dedup_eps and abs(old_speed - end_speed) < speed_eps:
             return
     conv = True
     if conventional_check:
-        conv = _roadgraph_drivable_mask(traj, roadgraph) and _collision_free_against_constant_velocity(traj, agent_state, sdc_index, cfg)
+        conv = _roadgraph_drivable_mask(traj, roadgraph) and _collision_free_against_constant_velocity(
+            traj, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs
+        )
     out.append(traj.astype(np.float32))
     macros.append(int(macro))
     utils.append(float(utility))
     valids.append(bool(conv))
 
 
-def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgraph: dict[str, np.ndarray], cfg: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _route_lane_aware_candidates(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    *,
+    other_future_trajs: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     limits = cfg.get("limits", {})
     K = int(limits.get("max_candidates", 64))
     H = int(cfg.get("time", {}).get("future_steps", cfg.get("eval", {}).get("rollout_horizon_steps", 80)))
@@ -462,7 +569,7 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
         progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
         # Lower score is better. Prefer progress, penalize aggressive accel.
         util = -0.03 * progress + 0.08 * abs(acc)
-        _add_candidate(candidates, macros, utils, conventional, tr, macro, util, agent_state, sdc_index, roadgraph, cfg)
+        _add_candidate(candidates, macros, utils, conventional, tr, macro, util, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     # Stop / yield before likely conflicts.  In online mode we do not have proto
     # conflict regions, so estimate conflict distance from nearest forward agent
@@ -479,7 +586,7 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
     for dist in sorted(conflict_dists)[:4]:
         for margin in cand_cfg.get("stop_margin_to_conflict_m", [2.0, 5.0, 8.0]):
             tr = smooth_stop_trajectory(current, H, dt, decel=-2.0, stop_after_m=max(0.0, float(dist) - float(margin)))
-            _add_candidate(candidates, macros, utils, conventional, tr, MacroType.STOP_BEFORE_CONFLICT, 0.4 + 0.02 * max(0.0, 20.0 - dist), agent_state, sdc_index, roadgraph, cfg)
+            _add_candidate(candidates, macros, utils, conventional, tr, MacroType.STOP_BEFORE_CONFLICT, 0.4 + 0.02 * max(0.0, 20.0 - dist), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     # Merge-ahead/behind timing around nearby agents: vary speed to pass before or
     # after their projected conflict time.  This is still primitive-based, but it
@@ -496,7 +603,7 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
                     acc = float(np.clip(-0.9 * float(offset), -3.0, 2.0))
                     tr = constant_accel_trajectory(current, H, dt, accel=acc)
                     m = MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND
-                    _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg)
+                    _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     # Lane-change/cut-in proposals.  Use ±lane_width relative to the local lane
     # heading; the conventional mask filters obvious offroad/collision cases.
@@ -511,7 +618,45 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
                     lane_change_duration_s=float(cfg.get("planning", {}).get("online_lane_change_duration_s", 4.0)),
                 )
                 progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
-                _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg)
+                _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
+
+    # Terminal position-speed frontier fill.  This exposes distinct progress/yield
+    # alternatives after closed-loop states have drifted away from the root cache.
+    target_online = int(cfg.get("planning", {}).get("target_online_candidates", min(32, K)))
+    if len(candidates) < min(target_online, K):
+        speed_offsets = [float(x) for x in cfg.get("planning", {}).get(
+            "online_terminal_speed_offsets_mps", [-5.0, -3.0, -1.5, 0.0, 1.5, 3.0]
+        )]
+        s_offsets = [float(x) for x in cfg.get("planning", {}).get(
+            "online_terminal_s_offsets_m", [-16.0, -8.0, 0.0, 8.0, 16.0]
+        )]
+        lat_offsets = [0.0] + [float(x) for x in cfg.get("planning", {}).get("online_terminal_lateral_offsets_m", [])]
+        nominal_s = max(float(speed) * float(H) * float(dt), 4.0)
+        for lat in lat_offsets:
+            for ds in s_offsets:
+                for dv in speed_offsets:
+                    if len(candidates) >= min(target_online, K) or len(candidates) >= K:
+                        break
+                    target_speed = max(0.0, speed + dv)
+                    target_s = max(1.0, nominal_s + ds)
+                    tr = _terminal_frenet_trajectory(
+                        current, H, dt, target_s=target_s, target_speed=target_speed,
+                        lateral_offset=float(lat),
+                        lane_change_duration_s=float(cfg.get("planning", {}).get("online_lane_change_duration_s", 4.0)),
+                    )
+                    if abs(lat) > 1.0:
+                        macro = MacroType.LANE_CHANGE_LEFT if lat > 0 else MacroType.LANE_CHANGE_RIGHT
+                    elif target_speed > speed + 0.75 or target_s > nominal_s + 4.0:
+                        macro = MacroType.ACCELERATE_CROSS
+                    elif target_speed < max(speed - 0.75, 0.0) or target_s < nominal_s - 4.0:
+                        macro = MacroType.YIELD
+                    else:
+                        macro = MacroType.KEEP_LANE
+                    util = -0.025 * float(target_s) + 0.08 * abs(float(dv)) + 0.10 * abs(float(lat))
+                    _add_candidate(
+                        candidates, macros, utils, conventional, tr, macro, util,
+                        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
+                    )
 
     # Ensure the online batch contains a minimally useful ego-motion set even in
     # low-speed scenes where endpoint de-duplication and dynamics checks collapse
@@ -526,12 +671,12 @@ def _route_lane_aware_candidates(agent_state: np.ndarray, sdc_index: int, roadgr
             macro = MacroType.ACCELERATE_CROSS if acc > 0 else MacroType.YIELD
             tr = constant_accel_trajectory(current, H, dt, accel=float(acc))
             progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
-            _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg)
+            _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     # Guaranteed conservative option, even if marked not conventional-safe.
     if len(candidates) < K:
         tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
-        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False)
+        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)
 
     traj = np.zeros((K, H, 7), dtype=np.float32)
     valid = np.zeros(K, dtype=bool)
@@ -722,7 +867,96 @@ def _priority_claim_weights(
             out[k, a] = np.float32(np.clip(w, 0.0, 1.0))
     return out
 
-def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, history_model_state: np.ndarray | None = None, roadgraph: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
+def _candidate_pressure_prior_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    candidates: np.ndarray,
+    cand_valid: np.ndarray,
+    critical_idx: np.ndarray,
+    critical_valid: np.ndarray,
+    macro: np.ndarray,
+    cfg: dict,
+    other_future_trajs: np.ndarray | None = None,
+) -> np.ndarray:
+    """Mechanism-aware coercion pressure prior for online P-NCF selection."""
+    K = int(candidates.shape[0])
+    out = np.zeros(K, dtype=np.float32)
+    if not (0 <= int(sdc_index) < int(agent_state.shape[0])):
+        return out
+    H = int(candidates.shape[1]) if candidates.ndim >= 3 else int(cfg.get("time", {}).get("future_steps", 80))
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    ts = (np.arange(H, dtype=np.float32) + 1.0)[:, None] * max(dt, 1e-3)
+    pressure_macros = {
+        int(MacroType.ACCELERATE_CROSS): 0.75,
+        int(MacroType.MERGE_AHEAD): 0.90,
+        int(MacroType.LANE_CHANGE_LEFT): 0.70,
+        int(MacroType.LANE_CHANGE_RIGHT): 0.70,
+    }
+    relief_macros = {
+        int(MacroType.YIELD): -0.25,
+        int(MacroType.STOP_BEFORE_CONFLICT): -0.35,
+        int(MacroType.NEUTRAL_EGO): -0.20,
+        int(MacroType.CREEP): -0.10,
+        int(MacroType.MERGE_BEHIND): -0.15,
+    }
+    ego = agent_state[int(sdc_index)]
+    ego_xy = ego[:2].astype(np.float32)
+    ego_yaw = float(ego[6])
+    ego_dir = np.asarray([np.cos(ego_yaw), np.sin(ego_yaw)], dtype=np.float32)
+    ego_lat = np.asarray([-np.sin(ego_yaw), np.cos(ego_yaw)], dtype=np.float32)
+    ego_speed = float(max(ego[5], np.linalg.norm(ego[3:5]), 0.0))
+    for k in range(K):
+        if not bool(cand_valid[k]):
+            continue
+        mk = int(macro[k]) if k < len(macro) else int(MacroType.KEEP_LANE)
+        macro_bias = float(pressure_macros.get(mk, 0.05) + relief_macros.get(mk, 0.0))
+        cand_xy = np.asarray(candidates[k, :, :2], dtype=np.float32)
+        finite = np.isfinite(cand_xy).all(axis=-1)
+        if not finite.any():
+            continue
+        worst = max(macro_bias, 0.0)
+        for a, raw_j in enumerate(critical_idx):
+            if not bool(critical_valid[a]):
+                continue
+            j = int(raw_j)
+            if j < 0 or j >= agent_state.shape[0] or j == sdc_index or agent_state[j, 10] <= 0.5:
+                continue
+            aj = agent_state[j]
+            if other_future_trajs is not None and j < int(other_future_trajs.shape[0]) and other_future_trajs.shape[1] > 0:
+                pred = np.asarray(other_future_trajs[j, :H, :2], dtype=np.float32)
+                if pred.shape[0] < H:
+                    tail = aj[:2][None, :] + aj[3:5][None, :] * ts[pred.shape[0]:]
+                    pred = np.concatenate([pred, tail.astype(np.float32)], axis=0)
+            else:
+                pred = aj[:2][None, :] + aj[3:5][None, :] * ts
+            m = finite & np.isfinite(pred).all(axis=-1)
+            if not m.any():
+                continue
+            min_d = float(np.min(np.linalg.norm(cand_xy[m] - pred[m], axis=-1)))
+            close = float(np.exp(-max(min_d, 0.0) / 6.5))
+            rel = aj[:2].astype(np.float32) - ego_xy
+            longitudinal = float(np.dot(rel, ego_dir))
+            lateral = abs(float(np.dot(rel, ego_lat)))
+            rel_speed = ego_speed - float(np.dot(aj[3:5], ego_dir))
+            ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
+            priority = 0.0
+            priority += 0.35 if -6.0 <= longitudinal <= 45.0 and lateral <= 5.5 else 0.0
+            priority += 0.25 if ttc <= 5.0 else 0.0
+            priority += 0.20 if min_d <= 6.0 else 0.0
+            worst = max(worst, macro_bias + 0.55 * close + priority)
+        out[k] = np.float32(np.clip(worst, 0.0, 1.0))
+    return out
+
+
+def build_online_batch(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    cfg: dict,
+    *,
+    history_model_state: np.ndarray | None = None,
+    roadgraph: dict[str, np.ndarray] | None = None,
+    other_future_trajs: np.ndarray | None = None,
+) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
     A = int(cfg.get("limits", {}).get("max_critical_agents", 8))
     M = int(cfg.get("limits", {}).get("max_natural_alternatives", 24))
@@ -749,7 +983,9 @@ def build_online_batch(agent_state: np.ndarray, sdc_index: int, cfg: dict, *, hi
     if 0 <= sdc_index < max_agents:
         agent_mask[sdc_index] = True
 
-    cand_traj, cand_valid, conventional_safe, macro, utility = _route_lane_aware_candidates(agent_state, sdc_index, roadgraph, cfg)
+    cand_traj, cand_valid, conventional_safe, macro, utility = _route_lane_aware_candidates(
+        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
+    )
     crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
     conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
     batch = {
@@ -917,7 +1153,11 @@ class COWPWaymaxPolicy:
         self._previous_scenario_index = scenario_index
         history, agent_state, sdc_index = extract_agent_history_model_state(state, self.cfg)
         roadgraph = _extract_roadgraph_tokens(state, self.cfg)
-        batch_np = build_online_batch(agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph)
+        other_future_trajs = _extract_logged_future_agent_trajs(state, sdc_index, self.cfg)
+        batch_np = build_online_batch(
+            agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
+            other_future_trajs=other_future_trajs,
+        )
         online_keys = (
             "state/history",
             "state/agent_valid",
@@ -986,6 +1226,18 @@ class COWPWaymaxPolicy:
                 + float(pcfg_runtime.get("candidate_risk_false_safe_weight", 2.0)) * cand_false_safe_prob.clamp(0.0, 1.0)
                 + float(pcfg_runtime.get("candidate_risk_quality_weight", 0.75)) * (1.0 - cand_quality_prob.clamp(0.0, 1.0))
             )
+            pressure_np = _candidate_pressure_prior_np(
+                agent_state,
+                sdc_index,
+                batch_np["cowp/candidates/trajectory"][0],
+                batch_np["cowp/candidates/valid"][0].astype(bool),
+                batch_np["cowp/critical/track_index"][0],
+                batch_np["cowp/critical/valid"][0].astype(bool),
+                batch_np["cowp/candidates/macro_type"][0],
+                self.cfg,
+                other_future_trajs=other_future_trajs,
+            )
+            pressure_prior = self.torch.as_tensor(pressure_np, device=self.dev, dtype=scores.dtype).clamp(0.0, 1.0)
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
                 off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
@@ -1067,7 +1319,14 @@ class COWPWaymaxPolicy:
                 burden_penalty = (witness * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                 cert_penalty = float(self.cfg.get("planning", {}).get("candidate_certificate_penalty", 1.5))
-                adjusted_scores = scores + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty) + cert_penalty * candidate_cert_risk + float(self.outcome_risk_penalty) * outcome_risk
+                pressure_penalty = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
+                adjusted_scores = (
+                    scores
+                    + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
+                    + cert_penalty * candidate_cert_risk
+                    + pressure_penalty * pressure_prior
+                    + float(self.outcome_risk_penalty) * outcome_risk
+                )
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
                 elif gate_mode in {"none", "off"}:
@@ -1086,8 +1345,9 @@ class COWPWaymaxPolicy:
                         pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                     else:
                         pair_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
-                    pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.15))
-                    frontier_risk = candidate_cert_risk + pair_mix * pair_risk
+                    pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.10))
+                    pressure_mix = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
+                    frontier_risk = candidate_cert_risk + pair_mix * pair_risk + pressure_mix * pressure_prior
                     idx = self.torch.where(frontier_base)[0]
                     if idx.numel() > 0:
                         keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
@@ -1172,8 +1432,10 @@ class COWPWaymaxPolicy:
                 "selected_candidate_false_safe_prob": float(cand_false_safe_prob[selected].detach().cpu().item()) if cand_false_safe_prob.numel() else 0.0,
                 "selected_candidate_quality_prob": float(cand_quality_prob[selected].detach().cpu().item()) if cand_quality_prob.numel() else 0.0,
                 "selected_candidate_cert_risk": float(candidate_cert_risk[selected].detach().cpu().item()) if candidate_cert_risk.numel() else 0.0,
+                "selected_candidate_pressure_prior": float(pressure_prior[selected].detach().cpu().item()) if pressure_prior.numel() else 0.0,
                 "min_candidate_cert_risk": float(candidate_cert_risk[cand_valid].min().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
                 "mean_candidate_cert_risk": float(candidate_cert_risk[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
+                "mean_candidate_pressure_prior": float(pressure_prior[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:
