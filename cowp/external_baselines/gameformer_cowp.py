@@ -88,7 +88,7 @@ class FutureEncoder(nn.Module):
         xy = torch.cat([current_states[:, :, :, None, :2], trajs], dim=-2)
         dxy = torch.diff(xy, dim=-2)
         v = dxy / 0.1
-        theta = torch.atan2(dxy[..., 1], dxy[..., 0].clamp(min=1e-3)).unsqueeze(-1)
+        theta = torch.atan2(dxy[..., 1], dxy[..., 0]).unsqueeze(-1)
         T = trajs.shape[3]
         size = current_states[:, :, :, None, 5:8].expand(-1, -1, -1, T, -1)
         return torch.cat([trajs, theta, v, size], dim=-1)
@@ -289,13 +289,16 @@ class COWPGameFormer(nn.Module):
         return torch.where(candidate_valid, score, torch.full_like(score, -1e9))
 
 
-def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     # gmm [B,N,M,T,4], scores [B,N,M], gt [B,N,T,2], valid [B,N,T]
     valid_f = valid.float()
+    agent_valid = valid.any(dim=-1)
     denom_agent = valid_f.sum(dim=-1).clamp_min(1.0)
     dist = torch.linalg.norm((gmm[..., :2] - gt_xy[:, :, None]) * valid_f[:, :, None, :, None], dim=-1)
     mode_ade = dist.sum(dim=-1) / denom_agent[:, :, None]
-    best_mode = torch.argmin(mode_ade.sum(dim=1), dim=-1)
+    mode_ade = torch.where(agent_valid[:, :, None], mode_ade, torch.zeros_like(mode_ade))
+    scene_mode_ade = mode_ade.sum(dim=1) / agent_valid.float().sum(dim=1, keepdim=True).clamp_min(1.0)
+    best_mode = torch.argmin(scene_mode_ade, dim=-1)
     B, N, M, T, _ = gmm.shape
     gather_idx = best_mode[:, None, None, None, None].expand(B, N, 1, T, 4)
     best = torch.gather(gmm, 2, gather_idx).squeeze(2)
@@ -305,11 +308,13 @@ def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor,
     log_std_y = torch.clamp(best[..., 3], -2, 2)
     loss_t = log_std_x + log_std_y + 0.5 * ((dx / torch.exp(log_std_x)) ** 2 + (dy / torch.exp(log_std_y)) ** 2)
     reg = (loss_t * valid_f).sum() / valid_f.sum().clamp_min(1.0)
-    # Supervise all agents with same best scene mode, as in original GameFormer open-loop code.
+    # Original GameFormer uses one scene-level mode.  Mask invalid padded agents so
+    # nonexistent neighbors do not train the mode classifier.
     ce_target = best_mode[:, None].expand(-1, N)
-    ce = F.cross_entropy(scores.permute(0, 2, 1), ce_target, label_smoothing=0.2)
+    ce_per_agent = F.cross_entropy(scores.permute(0, 2, 1), ce_target, label_smoothing=0.2, reduction="none")
+    ce = (ce_per_agent * agent_valid.float()).sum() / agent_valid.float().sum().clamp_min(1.0)
     future = best[..., :2]
-    return reg + ce, future
+    return reg + ce, future, {"gmm_nll": reg.detach(), "mode_ce": ce.detach()}
 
 
 def interaction_loss(trajectories: torch.Tensor, last_trajectories: torch.Tensor, neighbors_valid: torch.Tensor) -> torch.Tensor:
@@ -333,19 +338,27 @@ def gameformer_loss(outputs: Mapping[str, torch.Tensor], ego_future_xy: torch.Te
     valid = torch.cat([ego_future_valid[:, None], neighbors_future_valid], dim=1)
     total = gt.sum() * 0.0
     future = None
+    metric_tensors: dict[str, torch.Tensor] = {}
     levels = len([k for k in outputs if k.endswith("_interactions")])
     for k in range(levels):
         traj = outputs[f"level_{k}_interactions"]
         scores = outputs[f"level_{k}_scores"]
-        il, future = imitation_loss(traj, scores, gt, valid)
+        il, future, parts = imitation_loss(traj, scores, gt, valid)
         total = total + il
+        metric_tensors[f"level{k}_gmm_nll"] = parts["gmm_nll"]
+        metric_tensors[f"level{k}_mode_ce"] = parts["mode_ce"]
         if k >= 1:
             nvalid = neighbors_future_valid[:, :, 0] if neighbors_future_valid.numel() else torch.zeros(gt.shape[0], 0, device=gt.device, dtype=torch.bool)
-            total = total + 0.1 * interaction_loss(traj, outputs[f"level_{k-1}_interactions"], nvalid)
-    metrics = {}
+            inter = interaction_loss(traj, outputs[f"level_{k-1}_interactions"], nvalid)
+            total = total + 0.1 * inter
+            metric_tensors[f"level{k}_interaction"] = inter.detach()
+    metrics: dict[str, float] = {k: float(v.detach().cpu()) for k, v in metric_tensors.items()}
     if future is not None:
-        ego_dist = torch.linalg.norm((future[:, 0] - ego_future_xy) * ego_future_valid[..., None].float(), dim=-1)
-        metrics["plannerADE"] = float((ego_dist.sum() / ego_future_valid.float().sum().clamp_min(1.0)).detach().cpu())
+        valid_f = ego_future_valid.float()
+        ego_dist = torch.linalg.norm((future[:, 0] - ego_future_xy) * valid_f[..., None], dim=-1)
+        metrics["plannerADE"] = float((ego_dist.sum() / valid_f.sum().clamp_min(1.0)).detach().cpu())
         if ego_future_valid.any():
-            metrics["plannerFDE"] = float(ego_dist[:, -1].mean().detach().cpu())
+            last_idx = valid_f.sum(dim=1).long().clamp_min(1) - 1
+            rows = torch.arange(ego_dist.shape[0], device=ego_dist.device)
+            metrics["plannerFDE"] = float(ego_dist[rows, last_idx].mean().detach().cpu())
     return total, metrics

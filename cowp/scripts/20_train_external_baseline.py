@@ -82,6 +82,22 @@ def _num_parameters(model: torch.nn.Module) -> tuple[int, int]:
     return total, trainable
 
 
+def _make_grad_scaler(enabled: bool):
+    if not enabled:
+        return None
+    try:
+        return torch.amp.GradScaler("cuda", enabled=True)
+    except Exception:  # older PyTorch
+        return torch.cuda.amp.GradScaler(enabled=True)
+
+
+def _autocast(device: torch.device, enabled: bool):
+    try:
+        return torch.autocast(device_type=device.type, dtype=torch.float16, enabled=enabled)
+    except Exception:  # pragma: no cover - older PyTorch fallback
+        return torch.cuda.amp.autocast(enabled=enabled)
+
+
 def _run_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -90,6 +106,7 @@ def _run_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer | None,
     epoch: int,
+    scaler=None,
 ) -> dict[str, float]:
     train = optimizer is not None
     phase = "train" if train else "val"
@@ -99,7 +116,8 @@ def _run_epoch(
     skipped = 0
     total_batches = _safe_len(loader)
     log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
-    _log(f"{phase} {args.baseline} epoch={epoch} start batches={total_batches if total_batches is not None else 'unknown'} batch_size={args.batch_size} workers={args.num_workers}")
+    amp_enabled = bool(getattr(args, "amp", False) and device.type == "cuda")
+    _log(f"{phase} {args.baseline} epoch={epoch} start batches={total_batches if total_batches is not None else 'unknown'} batch_size={args.batch_size} workers={args.num_workers} amp={amp_enabled}")
     iterator = tqdm_iter(
         loader,
         enabled=not args.no_progress,
@@ -112,12 +130,13 @@ def _run_epoch(
     for batch_idx, batch in enumerate(iterator, start=1):
         try:
             ext = make_external_batch(batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates, horizon=args.future_len)
-            if args.baseline == "gameformer":
-                outputs = model(ext.gameformer_inputs)
-                loss, metrics = gameformer_loss(outputs, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid)
-            else:
-                best_idx = best_candidate_to_logged_ego(ext.candidates, ext.candidate_valid, ext.ego_future_xy, ext.ego_future_valid)
-                loss, metrics = dtpp_loss(model, ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, best_idx, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid, timesteps=args.future_len)
+            with _autocast(device, amp_enabled):
+                if args.baseline == "gameformer":
+                    outputs = model(ext.gameformer_inputs)
+                    loss, metrics = gameformer_loss(outputs, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid)
+                else:
+                    best_idx = best_candidate_to_logged_ego(ext.candidates, ext.candidate_valid, ext.ego_future_xy, ext.ego_future_valid)
+                    loss, metrics = dtpp_loss(model, ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, best_idx, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid, timesteps=args.future_len)
             if not torch.isfinite(loss):
                 skipped += 1
                 if log_every and (skipped <= 3 or skipped % log_every == 0):
@@ -125,9 +144,16 @@ def _run_epoch(
                 continue
             if train:
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                optimizer.step()
+                if scaler is not None and amp_enabled:
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    optimizer.step()
             bs = int(ext.candidate_valid.shape[0])
             n += bs
             sums["loss"] = sums.get("loss", 0.0) + float(loss.detach().cpu()) * bs
@@ -135,7 +161,14 @@ def _run_epoch(
                 sums[k] = sums.get(k, 0.0) + float(v) * bs
             mean_loss = sums["loss"] / max(n, 1)
             if hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(loss=mean_loss, samples=n, skipped=skipped, refresh=False)
+                postfix = {"loss": f"{mean_loss:.4f}", "samples": n, "skipped": skipped}
+                for mk in ("plannerADE", "plannerFDE", "score_ce", "neighbor_cmp", "ego_reg"):
+                    if mk in metrics:
+                        try:
+                            postfix[mk] = f"{float(metrics[mk]):.4f}"
+                        except Exception:
+                            pass
+                iterator.set_postfix(postfix, refresh=False)
             now = time.time()
             should_log = bool(log_every and (batch_idx == 1 or batch_idx % log_every == 0 or (total_batches is not None and batch_idx == total_batches)))
             if should_log:
@@ -193,6 +226,9 @@ def main() -> None:
     ap.add_argument("--gameformer-decoder-levels", type=int, default=4)
     ap.add_argument("--dtpp-fixed-cost", action="store_true")
     ap.add_argument("--grad-clip", type=float, default=5.0)
+    ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
+    ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
+    ap.add_argument("--no-persistent-workers", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")), help="Emit one line per N batches even when tqdm is disabled. Use 0 to disable heartbeat lines.")
@@ -210,14 +246,20 @@ def main() -> None:
     _log(f"loading train dataset from {args.cache_dir}")
     train_ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=False)
     _log(f"train dataset ready scenes={len(train_ds)}")
+    loader_kwargs = {
+        "num_workers": args.num_workers,
+        "collate_fn": collate_torch,
+        "pin_memory": (device.type == "cuda" and args.num_workers > 0),
+        "drop_last": False,
+    }
+    if args.num_workers > 0:
+        loader_kwargs["persistent_workers"] = not args.no_persistent_workers
+        loader_kwargs["prefetch_factor"] = max(int(args.prefetch_factor), 1)
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_torch,
-        pin_memory=(device.type == "cuda" and args.num_workers > 0),
-        drop_last=False,
+        **loader_kwargs,
     )
     _log(f"train loader ready batches={len(train_loader)}")
     val_loader = None
@@ -225,21 +267,26 @@ def main() -> None:
         _log(f"loading val dataset from {args.val_cache_dir}")
         val_ds = ExternalCOWPDataset(args.val_cache_dir, include_waymax_outcomes=True)
         _log(f"val dataset ready scenes={len(val_ds)}")
-        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_torch, pin_memory=False, drop_last=False)
+        val_loader_kwargs = dict(loader_kwargs)
+        val_loader_kwargs["pin_memory"] = False
+        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **val_loader_kwargs)
         _log(f"val loader ready batches={len(val_loader)}")
 
     model = _build_model(args).to(device)
     total_params, trainable_params = _num_parameters(model)
     _log(f"model built baseline={args.baseline} total_params={total_params} trainable_params={trainable_params}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scaler = _make_grad_scaler(bool(args.amp and device.type == "cuda"))
+    if scaler is not None:
+        _log("AMP GradScaler enabled")
     best_metric = math.inf
     history = []
     best_path = out_dir / f"external_{args.baseline}_best.pt"
 
     for epoch in range(1, args.epochs + 1):
         _log(f"epoch {epoch}/{args.epochs} begin baseline={args.baseline}")
-        train_metrics = _run_epoch(model, train_loader, cfg, args, device, optimizer, epoch)
-        val_metrics = _run_epoch(model, val_loader, cfg, args, device, None, epoch) if val_loader is not None else {}
+        train_metrics = _run_epoch(model, train_loader, cfg, args, device, optimizer, epoch, scaler=scaler)
+        val_metrics = _run_epoch(model, val_loader, cfg, args, device, None, epoch, scaler=None) if val_loader is not None else {}
         metric = float(val_metrics.get("plannerADE", val_metrics.get("loss", train_metrics.get("loss", math.inf))))
         record = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         history.append(record)

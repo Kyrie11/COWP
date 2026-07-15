@@ -108,14 +108,19 @@ class ScoreDecoder(nn.Module):
 
     def get_latent_interaction_features(self, ego_traj: torch.Tensor, agent_traj: torch.Tensor, agents_states: torch.Tensor, max_time: int) -> torch.Tensor:
         agent_mask = torch.ne(agents_states.sum(-1), 0)
-        relative_yaw = torch.atan2(torch.sin(agent_traj[:, :, :max_time, 2] - ego_traj[:, None, :max_time, 2]), torch.cos(agent_traj[:, :, :max_time, 2] - ego_traj[:, None, :max_time, 2]))
-        relative_pos = agent_traj[:, :, :max_time, :2] - ego_traj[:, None, :max_time, :2]
-        relative_pos = torch.stack([relative_pos[..., 0] * torch.cos(relative_yaw), relative_pos[..., 1] * torch.sin(relative_yaw)], dim=-1)
+        ego_yaw = ego_traj[:, None, :max_time, 2]
+        relative_yaw = torch.atan2(torch.sin(agent_traj[:, :, :max_time, 2] - ego_yaw), torch.cos(agent_traj[:, :, :max_time, 2] - ego_yaw))
+        rel = agent_traj[:, :, :max_time, :2] - ego_traj[:, None, :max_time, :2]
+        cos_y = torch.cos(ego_yaw)
+        sin_y = torch.sin(ego_yaw)
+        relative_pos = torch.stack([rel[..., 0] * cos_y + rel[..., 1] * sin_y, -rel[..., 0] * sin_y + rel[..., 1] * cos_y], dim=-1)
         agent_velocity = torch.diff(agent_traj[:, :, :max_time, :2], dim=-2) / 0.1
         agent_velocity = torch.cat((agent_velocity[:, :, :1, :], agent_velocity), dim=-2)
         ego_vx = ego_traj[:, :max_time, 3] * torch.cos(ego_traj[:, :max_time, 2])
         ego_vy = ego_traj[:, :max_time, 3] * torch.sin(ego_traj[:, :max_time, 2])
-        relative_velocity = torch.stack([(agent_velocity[..., 0] - ego_vx[:, None]) * torch.cos(relative_yaw), (agent_velocity[..., 1] - ego_vy[:, None]) * torch.sin(relative_yaw)], dim=-1)
+        dvx = agent_velocity[..., 0] - ego_vx[:, None]
+        dvy = agent_velocity[..., 1] - ego_vy[:, None]
+        relative_velocity = torch.stack([dvx * cos_y + dvy * sin_y, -dvx * sin_y + dvy * cos_y], dim=-1)
         relative_attributes = torch.cat((relative_pos, relative_yaw.unsqueeze(-1), relative_velocity), dim=-1)
         agent_attributes = agents_states[:, :, None, 6:].expand(-1, -1, relative_attributes.shape[2], -1)
         attributes = torch.cat((relative_attributes, agent_attributes), dim=-1) * agent_mask[:, :, None, None]
@@ -267,24 +272,43 @@ class COWPDTPP(nn.Module):
 def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, candidate_valid: torch.Tensor, best_idx: torch.Tensor, ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor, neighbors_future_xy: torch.Tensor, neighbors_future_valid: torch.Tensor, timesteps: int = 80) -> tuple[torch.Tensor, dict[str, float]]:
     neighbors_pred, scores, ego_reg, weights = model(inputs, ego_traj_tree, timesteps=timesteps)
     B = scores.shape[0]
+    sample_valid = candidate_valid.any(dim=1) & ego_future_valid.any(dim=1)
+    if not bool(sample_valid.any()):
+        zero = scores.sum() * 0.0 + neighbors_pred.sum() * 0.0 + ego_reg.sum() * 0.0 + weights.sum() * 0.0
+        return zero, {"plannerADE": float("nan"), "valid_samples": 0.0}
+
     scores_masked = torch.where(candidate_valid, scores, torch.full_like(scores, -1e9))
-    ce = F.cross_entropy(scores_masked, best_idx.long())
-    row = torch.arange(B, device=scores.device)
-    pred = neighbors_pred[row, best_idx]
+    row_all = torch.arange(B, device=scores.device)
+    rows = row_all[sample_valid]
+    target = best_idx[sample_valid].long()
+    ce = F.cross_entropy(scores_masked[sample_valid], target)
+
+    pred = neighbors_pred[rows, target]
     T = min(pred.shape[2], neighbors_future_xy.shape[2])
     pred_xy = pred[:, :, :T, :2]
-    gt_xy = neighbors_future_xy[:, :, :T, :2]
-    valid = neighbors_future_valid[:, :, :T].float()
+    gt_xy = neighbors_future_xy[sample_valid, :, :T, :2]
+    valid = neighbors_future_valid[sample_valid, :, :T].float()
     cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy, reduction="none").sum(-1)
     cmp_loss = (cmp_loss * valid).sum() / valid.sum().clamp_min(1.0)
+
     ego_T = min(ego_reg.shape[1], ego_future_xy.shape[1])
-    reg = F.smooth_l1_loss(ego_reg[:, :ego_T, :2], ego_future_xy[:, :ego_T], reduction="none").sum(-1)
-    reg = (reg * ego_future_valid[:, :ego_T].float()).sum() / ego_future_valid[:, :ego_T].float().sum().clamp_min(1.0)
-    wreg = torch.square(weights).mean()
+    ego_valid = ego_future_valid[sample_valid, :ego_T].float()
+    reg = F.smooth_l1_loss(ego_reg[sample_valid, :ego_T, :2], ego_future_xy[sample_valid, :ego_T], reduction="none").sum(-1)
+    reg = (reg * ego_valid).sum() / ego_valid.sum().clamp_min(1.0)
+    wreg = torch.square(weights[sample_valid]).mean()
     loss = ce + cmp_loss + 0.1 * reg + 0.01 * wreg
-    sel = torch.argmax(scores_masked, dim=1)
-    plan = ego_traj_tree[row, sel, :, :2]
+
+    sel = torch.argmax(scores_masked[sample_valid], dim=1)
+    plan = ego_traj_tree[sample_valid][torch.arange(sel.shape[0], device=scores.device), sel, :, :2]
     pt = min(plan.shape[1], ego_future_xy.shape[1])
-    pde = torch.linalg.norm((plan[:, :pt] - ego_future_xy[:, :pt]) * ego_future_valid[:, :pt, None].float(), dim=-1)
-    metrics = {"plannerADE": float((pde.sum() / ego_future_valid[:, :pt].float().sum().clamp_min(1.0)).detach().cpu())}
+    valid_ego = ego_future_valid[sample_valid, :pt].float()
+    pde = torch.linalg.norm((plan[:, :pt] - ego_future_xy[sample_valid, :pt]) * valid_ego[:, :, None], dim=-1)
+    metrics = {
+        "plannerADE": float((pde.sum() / valid_ego.sum().clamp_min(1.0)).detach().cpu()),
+        "score_ce": float(ce.detach().cpu()),
+        "neighbor_cmp": float(cmp_loss.detach().cpu()),
+        "ego_reg": float(reg.detach().cpu()),
+        "weight_reg": float(wreg.detach().cpu()),
+        "valid_samples": float(sample_valid.float().sum().detach().cpu()),
+    }
     return loss, metrics
