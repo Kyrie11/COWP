@@ -138,7 +138,7 @@ class CrossTransformer(nn.Module):
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         y, _ = self.cross_attention(query, key, value, key_padding_mask=mask)
-        y = self.norm_1(y)
+        y = self.norm_1(y + query)
         return self.norm_2(self.ffn(y) + y)
 
 
@@ -174,7 +174,7 @@ class InteractionDecoder(nn.Module):
     def forward(self, idx: int, current_states: torch.Tensor, actors: torch.Tensor, scores: torch.Tensor, last_content: torch.Tensor, encoding: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, N, M, T, _ = actors.shape
         multi_futures = self.future_encoder(actors[..., :2], current_states)
-        futures = (multi_futures * scores.softmax(-1).unsqueeze(-1)).mean(dim=2)
+        futures = (multi_futures * scores.softmax(-1).unsqueeze(-1)).sum(dim=2)
         interaction = self.interaction_encoder(futures, mask[:, :N])
         encoding2 = torch.cat([interaction, encoding], dim=1)
         mask2 = torch.cat([mask[:, :N], mask], dim=1).clone()

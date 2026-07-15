@@ -61,7 +61,7 @@ class CrossAttention(nn.Module):
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         out, _ = self.cross_attention(query, key, value, attn_mask=mask)
-        out = self.norm_1(out)
+        out = self.norm_1(out + query)
         return self.norm_2(out + self.dropout(self.ffn(out)))
 
 
@@ -206,19 +206,33 @@ class DTPPDecoder(nn.Module):
         current_states = agents_states[:, : self.neighbors, -1]
         encoding, encoding_mask = encoder_outputs["encoding"], encoder_outputs["mask"]
         ego_traj_ori_encoding = self.ego_traj_encoder(ego_traj_inputs)
-        branch_embedding = ego_traj_ori_encoding[:, :, timesteps - 1]
-        ego_traj_pooled = self.pooling_trajectory(ego_traj_ori_encoding)
+        branch_t = min(max(int(timesteps), 1), ego_traj_ori_encoding.shape[2]) - 1
+        branch_embedding = ego_traj_ori_encoding[:, :, branch_t]
         time_embedding = self.time_embed(self.time_index)
         tree_embedding = time_embedding[None] + branch_embedding[:, :, None, :]
-        ego_traj_mask = torch.ne(ego_traj_inputs.sum(-1), 0)
-        step = max(ego_traj_mask.shape[-1] // self.time, 1)
-        ego_traj_mask = ego_traj_mask[:, :, ::step][:, :, : self.time]
-        ego_traj_mask = torch.reshape(ego_traj_mask, (ego_traj_mask.shape[0], -1))
-        env_mask = torch.einsum("ij,ik->ijk", ego_traj_mask, encoding_mask.logical_not())
-        env_mask = torch.where(env_mask == 1, 0.0, -1e9).repeat(self.nheads, 1, 1)
-        ego_condition_mask = self.casual_mask[None] * ego_traj_mask[:, :, None]
-        ego_condition_mask = torch.where(ego_condition_mask == 1, 0.0, -1e9).repeat(self.nheads, 1, 1)
-        ego_flat = torch.reshape(ego_traj_pooled, (ego_traj_pooled.shape[0], -1, ego_traj_pooled.shape[-1]))
+        raw_ego_traj_mask = torch.ne(ego_traj_inputs.sum(-1), 0)
+        step = max(raw_ego_traj_mask.shape[-1] // self.time, 1)
+        ego_traj_mask_3d = raw_ego_traj_mask[:, :, ::step][:, :, : self.time]
+        ego_tree_for_attn = ego_traj_ori_encoding[:, :, ::step][:, :, : self.time]
+        if ego_traj_mask_3d.shape[2] < self.time:
+            pad_t = self.time - ego_traj_mask_3d.shape[2]
+            ego_traj_mask_3d = F.pad(ego_traj_mask_3d, (0, pad_t), value=False)
+            ego_tree_for_attn = F.pad(ego_tree_for_attn, (0, 0, 0, pad_t), value=0.0)
+        ego_traj_mask = torch.reshape(ego_traj_mask_3d, (ego_traj_mask_3d.shape[0], -1)).bool()
+        # MultiheadAttention returns NaNs when a query row has every key masked.
+        # Padded/invalid candidate branches are later removed by candidate_valid,
+        # so let those query rows attend normally and mask only valid query rows.
+        env_allowed = ego_traj_mask[:, :, None] & encoding_mask.logical_not()[:, None, :]
+        env_mask = torch.where(env_allowed, 0.0, -1e9)
+        env_mask = torch.where(ego_traj_mask[:, :, None], env_mask, torch.zeros_like(env_mask))
+        env_mask = env_mask.repeat(self.nheads, 1, 1)
+        causal = self.casual_mask.to(device=ego_traj_inputs.device, dtype=torch.bool)[None]
+        ego_key_valid = ego_traj_mask[:, None, :]
+        ego_allowed = ego_traj_mask[:, :, None] & ego_key_valid & causal
+        ego_condition_mask = torch.where(ego_allowed, 0.0, -1e9)
+        ego_condition_mask = torch.where(ego_traj_mask[:, :, None], ego_condition_mask, torch.zeros_like(ego_condition_mask))
+        ego_condition_mask = ego_condition_mask.repeat(self.nheads, 1, 1)
+        ego_flat = torch.reshape(ego_tree_for_attn, (ego_tree_for_attn.shape[0], -1, ego_tree_for_attn.shape[-1]))
         agents_trajectories = []
         for i in range(self.neighbors):
             query = encoding[:, i + 1, None, None] + tree_embedding

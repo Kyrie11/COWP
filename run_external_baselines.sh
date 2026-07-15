@@ -17,13 +17,9 @@ MODE="${MODE:-smoke}"        # smoke | full
 RUN_TRAIN="${RUN_TRAIN:-1}"
 RUN_OFFLINE_EVAL="${RUN_OFFLINE_EVAL:-1}"
 RUN_ONLINE_EVAL="${RUN_ONLINE_EVAL:-1}"
-# Unified list. Learning-based baselines are trained/evaluated; rule baselines
-# skip training and run learned-offline + Waymax evaluation directly.
 BASELINES="${BASELINES:-gameformer dtpp idm_lattice frenet_optimal state_lattice}"
 DEVICE="${DEVICE:-auto}"
-
-LEARNING_BASELINES="${LEARNING_BASELINES:-gameformer dtpp}"
-RULE_BASELINES="${RULE_BASELINES:-idm_lattice frenet_optimal state_lattice}"
+NO_PROGRESS="${NO_PROGRESS:-1}"
 
 mkdir -p "$OUT_ROOT" "$OUT_ROOT/logs" "$OUT_ROOT/checkpoints" "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax"
 
@@ -33,7 +29,6 @@ case "$MODE" in
     EPOCHS_DTPP="${EPOCHS_DTPP:-2}"
     BATCH_GAMEFORMER="${BATCH_GAMEFORMER:-4}"
     BATCH_DTPP="${BATCH_DTPP:-4}"
-    EVAL_BATCH="${EVAL_BATCH:-32}"
     ONLINE_SCENARIOS="${ONLINE_SCENARIOS:-50}"
     ;;
   full)
@@ -41,47 +36,41 @@ case "$MODE" in
     EPOCHS_DTPP="${EPOCHS_DTPP:-24}"
     BATCH_GAMEFORMER="${BATCH_GAMEFORMER:-8}"
     BATCH_DTPP="${BATCH_DTPP:-8}"
-    EVAL_BATCH="${EVAL_BATCH:-64}"
     ONLINE_SCENARIOS="${ONLINE_SCENARIOS:-1000}"
     ;;
   *) echo "MODE must be smoke or full" >&2; exit 2 ;;
 esac
 
-contains_word() {
-  local needle="$1"; shift
-  local item
-  for item in "$@"; do
-    [[ "$item" == "$needle" ]] && return 0
-  done
-  return 1
-}
-
-is_learning_baseline() {
-  local b="$1"
-  # shellcheck disable=SC2086
-  contains_word "$b" $LEARNING_BASELINES
-}
+RULE_BASELINES=" idm_lattice frenet_optimal state_lattice "
+LEARNED_BASELINES=" gameformer dtpp "
 
 is_rule_baseline() {
-  local b="$1"
-  # shellcheck disable=SC2086
-  contains_word "$b" $RULE_BASELINES
+  [[ "$RULE_BASELINES" == *" $1 "* ]]
+}
+
+is_learned_baseline() {
+  [[ "$LEARNED_BASELINES" == *" $1 "* ]]
+}
+
+progress_flag() {
+  if [[ "$NO_PROGRESS" == "1" ]]; then
+    echo "--no-progress"
+  fi
 }
 
 run_logged() {
   local name="$1"; shift
   local log="$OUT_ROOT/logs/${name}.log"
   echo "[$name] -> $log"
-  "$@" > "$log" 2>&1
-  local rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    echo "[$name] failed with exit code $rc. Last 80 log lines:" >&2
-    tail -80 "$log" >&2 || true
-    return "$rc"
+  if ! "$@" > "$log" 2>&1; then
+    local rc=$?
+    echo "[$name] failed with exit code $rc. Last 120 log lines:" >&2
+    tail -120 "$log" >&2 || true
+    exit "$rc"
   fi
 }
 
-train_one_learning() {
+train_one() {
   local b="$1"
   local epochs batch
   if [[ "$b" == "gameformer" ]]; then
@@ -89,7 +78,8 @@ train_one_learning() {
   elif [[ "$b" == "dtpp" ]]; then
     epochs="$EPOCHS_DTPP"; batch="$BATCH_DTPP"
   else
-    echo "Unknown learning baseline: $b" >&2; exit 2
+    echo "[$b] rule-based baseline: skip training"
+    return 0
   fi
   run_logged "train_${b}" "$PYTHON_BIN" -m cowp.scripts.20_train_external_baseline \
     --baseline "$b" \
@@ -102,12 +92,17 @@ train_one_learning() {
     --epochs "$epochs" \
     --batch-size "$batch" \
     --num-workers "${NUM_WORKERS:-4}" \
-    --device "$DEVICE"
+    --device "$DEVICE" \
+    $(progress_flag)
 }
 
-eval_one_learning_offline() {
+eval_one_offline_learned() {
   local b="$1"
   local ckpt="$OUT_ROOT/checkpoints/$b/external_${b}_best.pt"
+  if [[ ! -s "$ckpt" ]]; then
+    echo "Missing learned-baseline checkpoint: $ckpt" >&2
+    exit 2
+  fi
   run_logged "eval_offline_${b}" "$PYTHON_BIN" -m cowp.scripts.21_eval_external_baseline \
     --mode learned_offline \
     --data-config configs/data.yaml \
@@ -115,15 +110,20 @@ eval_one_learning_offline() {
     --eval-config configs/eval.yaml \
     --checkpoint "$ckpt" \
     --cache-dir "$VAL_CACHE" \
-    --batch-size "$EVAL_BATCH" \
+    --batch-size "${EVAL_BATCH:-16}" \
     --num-workers "${NUM_WORKERS:-4}" \
     --device "$DEVICE" \
-    --output "$OUT_ROOT/eval/learned_offline/${b}.json"
+    --output "$OUT_ROOT/eval/learned_offline/${b}.json" \
+    $(progress_flag)
 }
 
-eval_one_learning_waymax() {
+eval_one_waymax_learned() {
   local b="$1"
   local ckpt="$OUT_ROOT/checkpoints/$b/external_${b}_best.pt"
+  if [[ ! -s "$ckpt" ]]; then
+    echo "Missing learned-baseline checkpoint: $ckpt" >&2
+    exit 2
+  fi
   run_logged "eval_waymax_${b}" "$PYTHON_BIN" -m cowp.scripts.21_eval_external_baseline \
     --mode waymax \
     --data-config configs/data.yaml \
@@ -139,15 +139,12 @@ eval_one_learning_waymax() {
     --jax-preallocate false \
     --waymax-standard-metrics \
     --device "$DEVICE" \
-    --output "$OUT_ROOT/eval/waymax/${b}.json"
+    --output "$OUT_ROOT/eval/waymax/${b}.json" \
+    $(progress_flag)
 }
 
-eval_one_rule_offline() {
+eval_one_offline_rule() {
   local b="$1"
-  local extra=()
-  if [[ "${RULE_NO_CONVENTIONAL_FILTER:-0}" == "1" ]]; then
-    extra+=(--no-conventional-filter)
-  fi
   run_logged "eval_offline_${b}" "$PYTHON_BIN" -m cowp.scripts.22_eval_rule_baseline \
     --mode learned_offline \
     --baseline "$b" \
@@ -155,18 +152,14 @@ eval_one_rule_offline() {
     --label-config configs/label.yaml \
     --eval-config configs/eval.yaml \
     --cache-dir "$VAL_CACHE" \
-    --batch-size "$EVAL_BATCH" \
+    --batch-size "${EVAL_BATCH:-64}" \
     --num-workers "${NUM_WORKERS:-4}" \
     --output "$OUT_ROOT/eval/learned_offline/${b}.json" \
-    "${extra[@]}"
+    $(progress_flag)
 }
 
-eval_one_rule_waymax() {
+eval_one_waymax_rule() {
   local b="$1"
-  local extra=()
-  if [[ "${RULE_NO_CONVENTIONAL_FILTER:-0}" == "1" ]]; then
-    extra+=(--no-conventional-filter)
-  fi
   run_logged "eval_waymax_${b}" "$PYTHON_BIN" -m cowp.scripts.22_eval_rule_baseline \
     --mode waymax \
     --baseline "$b" \
@@ -182,20 +175,21 @@ eval_one_rule_waymax() {
     --jax-preallocate false \
     --waymax-standard-metrics \
     --output "$OUT_ROOT/eval/waymax/${b}.json" \
-    "${extra[@]}"
+    $(progress_flag)
 }
 
 for b in $BASELINES; do
-  if is_learning_baseline "$b"; then
-    if [[ "$RUN_TRAIN" == "1" ]]; then train_one_learning "$b"; fi
-    if [[ "$RUN_OFFLINE_EVAL" == "1" ]]; then eval_one_learning_offline "$b"; fi
-    if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then eval_one_learning_waymax "$b"; fi
+  if is_learned_baseline "$b"; then
+    if [[ "$RUN_TRAIN" == "1" ]]; then train_one "$b"; fi
+    if [[ "$RUN_OFFLINE_EVAL" == "1" ]]; then eval_one_offline_learned "$b"; fi
+    if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then eval_one_waymax_learned "$b"; fi
   elif is_rule_baseline "$b"; then
-    echo "[$b] rule-based baseline: skip training"
-    if [[ "$RUN_OFFLINE_EVAL" == "1" ]]; then eval_one_rule_offline "$b"; fi
-    if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then eval_one_rule_waymax "$b"; fi
+    if [[ "$RUN_TRAIN" == "1" ]]; then train_one "$b"; fi
+    if [[ "$RUN_OFFLINE_EVAL" == "1" ]]; then eval_one_offline_rule "$b"; fi
+    if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then eval_one_waymax_rule "$b"; fi
   else
-    echo "Unknown baseline '$b'. Learning: $LEARNING_BASELINES; Rule: $RULE_BASELINES" >&2
+    echo "Unknown baseline: $b" >&2
+    echo "Supported baselines: gameformer dtpp idm_lattice frenet_optimal state_lattice" >&2
     exit 2
   fi
   echo "[$b] done"

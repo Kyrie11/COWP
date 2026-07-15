@@ -40,7 +40,14 @@ def tqdm_iter(
         "ascii": not bool(getattr(sys.stderr, "encoding", "") and "UTF" in str(sys.stderr.encoding).upper()),
     }
     defaults.update(kwargs)
-    bar = tqdm(iterable, total=total, desc=desc, unit=unit, **defaults)
+    tqdm_kwargs = dict(defaults)
+    if total is not None:
+        tqdm_kwargs["total"] = total
+    if desc is not None:
+        tqdm_kwargs["desc"] = desc
+    if unit is not None:
+        tqdm_kwargs["unit"] = unit
+    bar = tqdm(iterable, **tqdm_kwargs)
     try:
         bar.refresh()
     except Exception:

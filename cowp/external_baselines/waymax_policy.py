@@ -27,7 +27,10 @@ def _device(name: str) -> torch.device:
 
 def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str = "auto"):
     dev = _device(device)
-    ckpt = torch.load(checkpoint, map_location="cpu")
+    try:
+        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(checkpoint, map_location="cpu")
     args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
     baseline = str(ckpt.get("baseline", args.get("baseline", "gameformer")))
     model_cfg = ckpt.get("cfg", cfg)
