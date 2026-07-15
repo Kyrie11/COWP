@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,21 @@ from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _log(msg: str) -> None:
+    print(f"[{_now()}] {msg}", flush=True)
+
+
+def _safe_len(obj: Any) -> int | None:
+    try:
+        return int(len(obj))
+    except Exception:
+        return None
 
 
 def _configure_waymax_runtime(args) -> None:
@@ -40,13 +57,29 @@ def _json_safe(obj):
     return str(obj)
 
 
+def _reference_family(method: str) -> str:
+    table = {
+        "idm_lattice": "Treiber-Hennecke-Helbing IDM longitudinal car-following + local lattice candidate selection",
+        "frenet_optimal": "Werling-Ziegler-Kammel-Thrun Frenet-frame optimal trajectory cost",
+        "state_lattice": "Pivtoraiko-Kelly state lattice motion-primitive edge cost + progress heuristic",
+    }
+    return table.get(method, method)
+
+
 def learned_offline_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
+    _log(f"loading rule learned-offline dataset from {args.cache_dir}")
     ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=True)
+    _log(f"rule learned-offline dataset ready baseline={args.baseline} scenes={len(ds)}")
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_torch, pin_memory=False)
+    total_batches = _safe_len(loader)
+    _log(f"rule learned-offline loader ready baseline={args.baseline} batches={total_batches} batch_size={args.batch_size} workers={args.num_workers}")
     acc = _LearnedMetricsAccumulator(beta_default=float(cfg.get("label", {}).get("beta_default", cfg.get("burden", {}).get("beta0_vehicle", 0.65))))
     selected_rows = []
-    iterator = tqdm_iter(loader, enabled=not args.no_progress, desc=f"learned_offline {args.baseline}")
-    for batch in iterator:
+    log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
+    iterator = tqdm_iter(loader, enabled=not args.no_progress, total=total_batches, desc=f"learned_offline {args.baseline}", unit="batch")
+    seen = 0
+    t0 = time.time()
+    for batch_idx, batch in enumerate(iterator, start=1):
         selected, accept, scores = select_rule_indices(
             batch,
             cfg,
@@ -54,6 +87,7 @@ def learned_offline_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> 
             require_conventional_safe=not args.no_conventional_filter,
         )
         B = int(selected.shape[0])
+        seen += B
         for i in range(B):
             label = label_from_batch_item(batch, i)
             accepted_np = np.asarray(accept[i], dtype=bool)
@@ -65,22 +99,20 @@ def learned_offline_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> 
                     "selected_score": float(scores[i, selected_i]) if selected_i >= 0 else None,
                     "accepted_candidates": int(accepted_np.sum()),
                 })
+        if hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(samples=seen, refresh=False)
+        if log_every and (batch_idx == 1 or batch_idx % log_every == 0 or (total_batches is not None and batch_idx == total_batches)):
+            elapsed = max(time.time() - t0, 1e-6)
+            total_txt = str(total_batches) if total_batches is not None else "?"
+            _log(f"rule learned_offline {args.baseline} batch={batch_idx}/{total_txt} samples={seen} batch_rate={batch_idx/elapsed:.3f}/s sample_rate={seen/elapsed:.1f}/s")
     metrics = acc.finish(auprc=0.0, rank_good=0, rank_total=0, witness_threshold=0.0)
     metrics.update({
         "baseline": args.baseline,
         "reference_family": _reference_family(args.baseline),
         "require_conventional_safe": not bool(args.no_conventional_filter),
     })
+    _log(f"rule learned_offline {args.baseline} done samples={seen}")
     return {"mode": "learned_offline", args.baseline: metrics, "selections_preview": selected_rows}
-
-
-def _reference_family(method: str) -> str:
-    table = {
-        "idm_lattice": "Treiber-Hennecke-Helbing IDM longitudinal car-following + local lattice candidate selection",
-        "frenet_optimal": "Werling-Ziegler-Kammel-Thrun Frenet-frame optimal trajectory cost",
-        "state_lattice": "Pivtoraiko-Kelly state lattice motion-primitive edge cost + progress heuristic",
-    }
-    return table.get(method, method)
 
 
 def waymax_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
@@ -91,6 +123,11 @@ def waymax_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str,
         require_conventional_safe=not args.no_conventional_filter,
     )
     horizon = int(args.rollout_horizon_steps or cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
+    _log(
+        f"rule waymax {policy.baseline} start split={args.waymax_split} tfexample_glob={args.tfexample_glob} "
+        f"num_scenarios={args.num_scenarios} horizon={horizon} progress={not args.no_progress} standard_metrics={args.waymax_standard_metrics}"
+    )
+    t0 = time.time()
     rollouts = waymax_closed_loop_rollout(
         cfg,
         policy,
@@ -106,6 +143,7 @@ def waymax_rule_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str,
         shard_index=args.shard_index,
         num_shards=args.num_shards,
     )
+    _log(f"rule waymax {policy.baseline} rollout done episodes={len(rollouts)} seconds={time.time()-t0:.1f}")
     payload: dict[str, Any] = {
         "mode": "waymax",
         "baseline": policy.baseline,
@@ -152,7 +190,10 @@ def main() -> None:
     ap.add_argument("--clear-accelerator-cache", action="store_true")
     ap.add_argument("--output", required=True)
     ap.add_argument("--no-progress", action="store_true")
+    ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
     args = ap.parse_args()
+    _log(f"rule baseline eval entry mode={args.mode} baseline={args.baseline} pid={os.getpid()} python={sys.executable}")
+    _log(f"args={json.dumps(vars(args), sort_keys=True)}")
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
     if args.mode == "learned_offline":
@@ -165,7 +206,8 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=_json_safe)
-    print(json.dumps(payload, indent=2, default=_json_safe))
+    _log(f"wrote output {out}")
+    print(json.dumps(payload, indent=2, default=_json_safe), flush=True)
 
 
 if __name__ == "__main__":

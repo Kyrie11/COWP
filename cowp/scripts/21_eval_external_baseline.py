@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,21 @@ from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _log(msg: str) -> None:
+    print(f"[{_now()}] {msg}", flush=True)
+
+
+def _safe_len(obj: Any) -> int | None:
+    try:
+        return int(len(obj))
+    except Exception:
+        return None
 
 
 def _configure_waymax_runtime(args) -> None:
@@ -41,17 +58,26 @@ def _json_safe(obj):
 
 
 def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
+    _log(f"loading checkpoint {args.checkpoint}")
     model, baseline, model_cfg, ckpt_args, device = build_external_model_from_checkpoint(args.checkpoint, cfg, args.device)
     max_neighbors = int(args.max_neighbors or ckpt_args.get("max_neighbors", 10))
     max_candidates = int(args.max_candidates or ckpt_args.get("max_candidates", cfg.get("limits", {}).get("max_candidates", 30)))
     future_len = int(args.future_len or ckpt_args.get("future_len", cfg.get("time", {}).get("future_steps", 80)))
+    _log(f"checkpoint ready baseline={baseline} device={device} max_neighbors={max_neighbors} max_candidates={max_candidates} future_len={future_len}")
+    _log(f"loading learned-offline dataset from {args.cache_dir}")
     ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=True)
+    _log(f"learned-offline dataset ready scenes={len(ds)}")
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_torch, pin_memory=False)
+    total_batches = _safe_len(loader)
+    _log(f"learned-offline loader ready batches={total_batches} batch_size={args.batch_size} workers={args.num_workers}")
     acc = _LearnedMetricsAccumulator(beta_default=float(cfg.get("label", {}).get("beta_default", 0.65)))
     selected_rows = []
-    iterator = tqdm_iter(loader, enabled=not args.no_progress, desc=f"learned_offline {baseline}")
+    log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
+    iterator = tqdm_iter(loader, enabled=not args.no_progress, total=total_batches, desc=f"learned_offline {baseline}", unit="batch")
+    seen = 0
+    t0 = time.time()
     with torch.inference_mode():
-        for batch in iterator:
+        for batch_idx, batch in enumerate(iterator, start=1):
             ext = make_external_batch(batch, model_cfg, device=device, max_neighbors=max_neighbors, max_candidates=max_candidates, horizon=future_len)
             if baseline == "gameformer":
                 scores = model.score_candidates(ext.gameformer_inputs, ext.candidates, ext.candidate_valid)
@@ -70,6 +96,13 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
                 acc.add_selection(selected_i, accepted_np, label, cert=None)
                 if args.dump_selections and len(selected_rows) < args.max_dump_rows:
                     selected_rows.append({"selected_idx": selected_i, "selected_score": float(scores[i, selected_i].detach().cpu()) if selected_i >= 0 else None})
+            seen += int(selected.shape[0])
+            if hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(samples=seen, refresh=False)
+            if log_every and (batch_idx == 1 or batch_idx % log_every == 0 or (total_batches is not None and batch_idx == total_batches)):
+                elapsed = max(time.time() - t0, 1e-6)
+                total_txt = str(total_batches) if total_batches is not None else "?"
+                _log(f"learned_offline {baseline} batch={batch_idx}/{total_txt} samples={seen} batch_rate={batch_idx/elapsed:.3f}/s sample_rate={seen/elapsed:.1f}/s")
     metrics = acc.finish(auprc=0.0, rank_good=0, rank_total=0, witness_threshold=0.0)
     metrics.update({
         "baseline": baseline,
@@ -79,10 +112,12 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
         "future_len": future_len,
         "require_conventional_safe": bool(args.require_conventional_safe),
     })
+    _log(f"learned_offline {baseline} done samples={seen}")
     return {"mode": "learned_offline", baseline: metrics, "selections_preview": selected_rows}
 
 
 def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
+    _log(f"building Waymax policy checkpoint={args.checkpoint}")
     policy = make_external_waymax_policy(
         args.checkpoint,
         cfg,
@@ -91,6 +126,11 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         require_conventional_safe=args.require_conventional_safe,
     )
     horizon = int(args.rollout_horizon_steps or cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
+    _log(
+        f"waymax {policy.baseline} start split={args.waymax_split} tfexample_glob={args.tfexample_glob} "
+        f"num_scenarios={args.num_scenarios} horizon={horizon} progress={not args.no_progress} standard_metrics={args.waymax_standard_metrics}"
+    )
+    t0 = time.time()
     rollouts = waymax_closed_loop_rollout(
         cfg,
         policy,
@@ -106,6 +146,7 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         shard_index=args.shard_index,
         num_shards=args.num_shards,
     )
+    _log(f"waymax {policy.baseline} rollout done episodes={len(rollouts)} seconds={time.time()-t0:.1f}")
     payload: dict[str, Any] = {
         "mode": "waymax",
         "baseline": policy.baseline,
@@ -156,7 +197,10 @@ def main() -> None:
     ap.add_argument("--clear-accelerator-cache", action="store_true")
     ap.add_argument("--output", required=True)
     ap.add_argument("--no-progress", action="store_true")
+    ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
     args = ap.parse_args()
+    _log(f"external eval entry mode={args.mode} pid={os.getpid()} python={sys.executable} torch={torch.__version__}")
+    _log(f"args={json.dumps(vars(args), sort_keys=True)}")
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
     if args.mode == "learned_offline":
@@ -169,7 +213,8 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, default=_json_safe)
-    print(json.dumps(payload, indent=2, default=_json_safe))
+    _log(f"wrote output {out}")
+    print(json.dumps(payload, indent=2, default=_json_safe), flush=True)
 
 
 if __name__ == "__main__":
