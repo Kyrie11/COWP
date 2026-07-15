@@ -166,6 +166,28 @@ def _candidate_certificate_risk(ncf_prob, false_safe_prob, quality_prob, cfg: di
             + w_fs * false_safe_prob.clamp(0.0, 1.0)
             + w_q * (1.0 - quality_prob.clamp(0.0, 1.0)))
 
+def _scene_normalized_risk_torch(x, mask, cfg: dict | None = None):
+    """Normalize risk per scene and zero out flat/uninformative certificates."""
+    import torch
+    x = torch.nan_to_num(x.float(), nan=0.0, posinf=1.0, neginf=0.0)
+    mask = mask.bool()
+    out = torch.zeros_like(x)
+    pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+    min_spread = float(pcfg.get("decision_risk_min_spread", 1e-3))
+    min_std = float(pcfg.get("decision_risk_min_std", 1e-3))
+    for b in range(int(x.shape[0])):
+        if not bool(mask[b].any()):
+            continue
+        vals = x[b, mask[b]]
+        lo = vals.min()
+        hi = vals.quantile(0.90) if vals.numel() > 1 else vals.max()
+        span = (hi - lo).clamp_min(min_spread)
+        y = ((x[b] - lo) / span).clamp(0.0, 1.0)
+        spread = vals.std(unbiased=False) if vals.numel() > 1 else torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        out[b] = torch.where(spread >= min_std, y, torch.zeros_like(y))
+    return out
+
+
 def _candidate_pressure_prior_torch(batch, cfg: dict | None, scores):
     """Torch offline counterpart of the online mechanism-aware pressure prior.
 
@@ -291,6 +313,14 @@ def _select_from_learned(
     cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores)
     candidate_cert_risk = _candidate_certificate_risk(cand_ncf_prob, cand_false_safe_prob, cand_quality_prob, cfg)
     pressure_prior = _candidate_pressure_prior_torch(batch, cfg, scores)
+    rule_risk = batch.get("cowp/candidates/rule_risk")
+    if rule_risk is not None:
+        rule_risk = torch.nan_to_num(rule_risk.float(), nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    else:
+        rule_risk = torch.zeros_like(scores)
+    cert_decision_risk = _scene_normalized_risk_torch(candidate_cert_risk, cand_valid, cfg)
+    pressure_decision_risk = _scene_normalized_risk_torch(pressure_prior, cand_valid, cfg)
+    rule_decision_risk = _scene_normalized_risk_torch(rule_risk, cand_valid, cfg)
     outcome = pred.get("outcome", {})
     if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
         col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
@@ -367,13 +397,15 @@ def _select_from_learned(
             option_bad = ((opr < float(alpha_opr)) & priority_claim).any(dim=-1)
             severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
             penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
-            cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.5))
+            cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.0))
             pressure_penalty = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
+            rule_penalty = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_penalty", 1.25))
             adjusted_scores = (
                 scores
                 + float(soft_ncf_penalty) * penalty
-                + cert_penalty * candidate_cert_risk
-                + pressure_penalty * pressure_prior
+                + cert_penalty * cert_decision_risk
+                + pressure_penalty * pressure_decision_risk
+                + rule_penalty * rule_decision_risk
                 + float(outcome_risk_penalty) * outcome_risk
             )
             if gate_mode == "soft":
@@ -390,7 +422,8 @@ def _select_from_learned(
         pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
         pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.10))
         pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
-        risk = candidate_cert_risk + pair_mix * pair_risk + pressure_mix * pressure_prior
+        rule_mix = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_mix", 1.25))
+        risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk + rule_mix * rule_decision_risk
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         min_ncf = float(pcfg.get("candidate_min_ncf_prob", 0.05))
         max_fs = float(pcfg.get("candidate_max_false_safe_prob", 0.95))
@@ -811,11 +844,15 @@ def _learned_offline_candidate_eval_many(
             cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"])
             cert_risk_t = _candidate_certificate_risk(cert_ncf_t, cert_fs_t, cert_q_t, cfg)
             pressure_prior_t = _candidate_pressure_prior_torch(batch, cfg, pred["planner_score"].detach().float())
+            rule_risk_t = batch.get("cowp/candidates/rule_risk")
+            if rule_risk_t is None:
+                rule_risk_t = torch.zeros_like(pred["planner_score"].detach().float())
             cert_ncf_np = cert_ncf_t.detach().cpu().numpy()
             cert_fs_np = cert_fs_t.detach().cpu().numpy()
             cert_q_np = cert_q_t.detach().cpu().numpy()
             cert_risk_np = cert_risk_t.detach().cpu().numpy()
             pressure_prior_np = pressure_prior_t.detach().cpu().numpy()
+            rule_risk_np = rule_risk_t.detach().cpu().numpy()
             if valid_np.any():
                 cert_ncf_scores.append(cert_ncf_np[valid_np])
                 cert_ncf_targets.append(ncf_np[valid_np])
@@ -859,6 +896,7 @@ def _learned_offline_candidate_eval_many(
                         "quality_prob": cert_q_np[i],
                         "risk": cert_risk_np[i],
                         "pressure_prior": pressure_prior_np[i],
+                        "rule_risk": rule_risk_np[i],
                     }
                     acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
                     acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))

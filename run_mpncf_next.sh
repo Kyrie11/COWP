@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mechanism-aware P-NCF/COWP next experiment.
+# Robust risk-calibrated Mechanism-aware P-NCF/COWP next experiment.
 # Key fixes vs run_verify_modified_cowp_no_replay.sh:
 # 1) never calls pytest through a Python that cannot parse `from __future__ import annotations`;
 # 2) trains/evaluates with label.yaml loaded into the model checkpoint, so planning/ncf semantics match eval;
@@ -20,7 +20,7 @@ export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
 VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
 WAYMAX_VAL="${WAYMAX_VAL:-$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
-OUT_ROOT="${OUT_ROOT:-outputs/mpncf_next}"
+OUT_ROOT="${OUT_ROOT:-outputs/rc_mpncf_next}"
 LOG_DIR="$OUT_ROOT/logs"
 
 mkdir -p "$OUT_ROOT" "$LOG_DIR" "$OUT_ROOT/configs" "$OUT_ROOT/checkpoints" \
@@ -195,6 +195,10 @@ RUN_ONLINE_EVAL="${RUN_ONLINE_EVAL:-1}"
 FORCE_TRAIN="${FORCE_TRAIN:-0}"
 FORCE_EVAL="${FORCE_EVAL:-0}"
 STRICT_GATES="${STRICT_GATES:-0}"
+CLEAR_ACCELERATOR_CACHE="${CLEAR_ACCELERATOR_CACHE:-0}"
+WAYMAX_STANDARD_METRICS="${WAYMAX_STANDARD_METRICS:-1}"
+NO_PROGRESS="${NO_PROGRESS:-0}"
+ROLLOUT_HORIZON_STEPS="${ROLLOUT_HORIZON_STEPS:-80}"
 
 TRAIN_WORKERS="${TRAIN_WORKERS:-6}"
 PREFETCH="${PREFETCH:-1}"
@@ -226,8 +230,8 @@ PER_GPU_BATCH_NATURAL="${PER_GPU_BATCH_NATURAL:-24}"
 PER_GPU_BATCH_RESPONSE="${PER_GPU_BATCH_RESPONSE:-12}"
 
 # Runtime config: preserve current labels, but make witness certificate logit-calibrated and disable missing logdiv.
-TRAIN_CFG="$OUT_ROOT/configs/train_mpncf_no_logdiv.yaml"
-LABEL_CFG="$OUT_ROOT/configs/label_mpncf.yaml"
+TRAIN_CFG="$OUT_ROOT/configs/train_rc_mpncf_no_logdiv.yaml"
+LABEL_CFG="$OUT_ROOT/configs/label_rc_mpncf.yaml"
 run_logged make_runtime_configs "$PYTHON_BIN" - "configs/train.yaml" "$TRAIN_CFG" "configs/label.yaml" "$LABEL_CFG" <<'PY'
 import sys, yaml
 train_src, train_dst, label_src, label_dst = sys.argv[1:5]
@@ -288,7 +292,23 @@ pcfg["online_terminal_speed_offsets_mps"] = pcfg.get("online_terminal_speed_offs
 pcfg["online_terminal_s_offsets_m"] = pcfg.get("online_terminal_s_offsets_m", [-16.0, -8.0, 0.0, 8.0, 16.0])
 pcfg["online_terminal_lateral_offsets_m"] = pcfg.get("online_terminal_lateral_offsets_m", [])
 pcfg["candidate_pressure_prior_penalty"] = float(pcfg.get("candidate_pressure_prior_penalty", 0.75))
-pcfg["candidate_pressure_prior_mix"] = float(pcfg.get("candidate_pressure_prior_mix", 0.75))
+pcfg["candidate_pressure_prior_mix"] = float(pcfg.get("candidate_pressure_prior_mix", 0.60))
+pcfg["candidate_rule_risk_penalty"] = float(pcfg.get("candidate_rule_risk_penalty", 2.0))
+pcfg["candidate_rule_risk_mix"] = float(pcfg.get("candidate_rule_risk_mix", 2.0))
+pcfg["candidate_action_risk_penalty"] = float(pcfg.get("candidate_action_risk_penalty", 1.5))
+pcfg["candidate_action_risk_mix"] = float(pcfg.get("candidate_action_risk_mix", 1.5))
+pcfg["decision_risk_min_std"] = float(pcfg.get("decision_risk_min_std", 1e-3))
+pcfg["decision_risk_min_spread"] = float(pcfg.get("decision_risk_min_spread", 1e-3))
+pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.35))
+pcfg["candidate_frontier_min_keep"] = int(pcfg.get("candidate_frontier_min_keep", 2))
+pcfg["candidate_frontier_max_keep"] = int(pcfg.get("candidate_frontier_max_keep", 6))
+pcfg["online_collision_check_stride"] = int(pcfg.get("online_collision_check_stride", 4))
+pcfg["online_collision_check_horizon_steps"] = int(pcfg.get("online_collision_check_horizon_steps", 50))
+pcfg["online_rule_risk_stride"] = int(pcfg.get("online_rule_risk_stride", 4))
+pcfg["online_rule_risk_horizon_steps"] = int(pcfg.get("online_rule_risk_horizon_steps", 50))
+pcfg["online_require_cv_for_priority_agents"] = bool(pcfg.get("online_require_cv_for_priority_agents", True))
+pcfg["online_logged_collision_buffer_m"] = float(pcfg.get("online_logged_collision_buffer_m", -0.10))
+pcfg["online_priority_cv_collision_buffer_m"] = float(pcfg.get("online_priority_cv_collision_buffer_m", -0.20))
 ccfg = label.setdefault("candidate", {})
 ccfg["ignore_initial_jerk_steps"] = int(ccfg.get("ignore_initial_jerk_steps", 3))
 ccfg["jerk_check_percentile"] = float(ccfg.get("jerk_check_percentile", 99.0))
@@ -488,20 +508,24 @@ run_waymax_method() {
       echo "[waymax/$method] keep shard $shard"
       continue
     fi
+    local metric_args=() clear_args=() progress_args=()
+    [[ "$WAYMAX_STANDARD_METRICS" == 1 ]] && metric_args+=(--waymax-standard-metrics)
+    [[ "$CLEAR_ACCELERATOR_CACHE" == 1 ]] && clear_args+=(--clear-accelerator-cache)
+    [[ "$NO_PROGRESS" == 1 ]] && progress_args+=(--no-progress)
     run_bg_logged "waymax_${method}_shard${shard}" env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_PREALLOCATE=false "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
       --data-config configs/data.yaml --label-config "$LABEL_CFG" --eval-config configs/eval.yaml \
       --mode waymax --waymax-split validation --tfexample-glob "$WAYMAX_VAL" \
       --method "$method" --checkpoint "$CKPT" \
       --num-scenarios "$per_shard" --num-shards "$NUM_GPUS" --shard-index "$shard" \
-      --rollout-horizon-steps 80 --waymax-standard-metrics \
+      --rollout-horizon-steps "$ROLLOUT_HORIZON_STEPS" "${metric_args[@]}" \
       --waymax-device gpu --jax-visible-devices 0 --jax-preallocate false \
       --waymax-action-mode absolute_xy_yaw --device cuda \
       --witness-threshold "$WITNESS_THRESHOLD" --ncf-gate-mode priority \
       --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
       --secondary-opr-alpha 0.10 --soft-ncf-penalty 2.0 \
       --adaptive-frontier-margin 0.25 \
-      --outcome-risk-penalty 0.0 \
-      --clear-accelerator-cache --output "$out"
+      --outcome-risk-penalty 0.0 "${clear_args[@]}" "${progress_args[@]}" \
+      --output "$out"
     pids+=("$RUN_BG_PID")
     shards+=("$out")
   done
@@ -592,11 +616,11 @@ for m in methods:
         v=x.get(k)
         return "-" if v is None else f"{float(v):.4f}"
     lines.append(f"| {m} | {f('FSR')} | {f('EP')} | {f('CBS')} | {f('OPR')} | {f('HBCR')} | {f('SelectedFalseSafeRate')} | {f('FallbackRate')} | {f('WitnessQuality/AUPRC')} | {f('CandidateCertificate/FalseSafe_AUPRC')} | {f('CandidateCertificate/NCF_AUPRC')} | {f('CandidateCertificate/RiskRankingPairAccuracy')} | {f('CandidateCertificate/SelectedRiskMean')} | {f('CandidateCertificate/SelectedPressurePriorMean')} |")
-lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kin infeasible | Valid cand | Conv cand | Accepted | Fallback step | Sel cert risk | Sel pressure |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kin infeasible | Valid cand | Conv cand | Accepted | Fallback step | Sel cert risk | Sel pressure | Rule risk | Action risk |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
 for m in ("planner_score_only","conventional_safety","cowp"):
     x=report["online"].get(m,{}); s=x.get("standard",{}); d=x.get("diagnostic",{})
     def g(v): return "-" if v is None else f"{float(v):.4f}"
-    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/valid_candidates'))} | {g(d.get('ClosedLoopMean/conventional_candidates'))} | {g(d.get('ClosedLoopMean/accepted_candidates'))} | {g(d.get('ClosedLoopFallbackStepRate'))} | {g(d.get('ClosedLoopMean/selected_candidate_cert_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_pressure_prior'))} |")
+    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/valid_candidates'))} | {g(d.get('ClosedLoopMean/conventional_candidates'))} | {g(d.get('ClosedLoopMean/accepted_candidates'))} | {g(d.get('ClosedLoopFallbackStepRate'))} | {g(d.get('ClosedLoopMean/selected_candidate_cert_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_pressure_prior'))} | {g(d.get('ClosedLoopMean/selected_candidate_rule_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_action_risk'))} |")
 lines += ["", "## Gates", ""]
 for k,v in report["gates"].items():
     passed=v.get("pass")
