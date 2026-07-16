@@ -634,6 +634,28 @@ class _LabelMetricAccumulator:
         }
 
 
+def _align_candidate_vector(values: np.ndarray, length: int, *, fill_value=False, dtype=None) -> np.ndarray:
+    """Return a 1-D candidate vector with exactly ``length`` entries.
+
+    Learned external baselines may score only the first ``max_candidates``
+    candidates (for example 30), while cached COWP labels keep the full padded
+    candidate table (typically 64 slots).  Metric accumulation must therefore
+    treat unscored tail candidates as not accepted instead of relying on numpy
+    broadcasting.  If a vector is longer than the label support, truncate it to
+    the support used by the labels.
+    """
+    arr = np.asarray(values, dtype=dtype).reshape(-1)
+    length = int(length)
+    if length <= 0:
+        return np.asarray([], dtype=arr.dtype if dtype is None else dtype)
+    if arr.size == length:
+        return arr
+    if arr.size > length:
+        return arr[:length]
+    pad = np.full(length - arr.size, fill_value, dtype=arr.dtype if dtype is None else dtype)
+    return np.concatenate([arr, pad], axis=0)
+
+
 class _LearnedMetricsAccumulator:
     def __init__(self, *, beta_default: float = 0.65) -> None:
         self.label_metrics = _LabelMetricAccumulator(beta_default=beta_default)
@@ -653,6 +675,7 @@ class _LearnedMetricsAccumulator:
         self.selected_waymax_collision = 0
         self.selected_waymax_offroad = 0
         self.selected_waymax_logdiv_sum = 0.0
+        self.selected_waymax_logdiv_count = 0
         self.cert_selected_count = 0
         self.cert_selected_ncf_sum = 0.0
         self.cert_selected_fs_sum = 0.0
@@ -672,7 +695,7 @@ class _LearnedMetricsAccumulator:
         ncf = np.asarray(label.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool) & valid
         fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & valid
         conv = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool) & valid
-        accepted = np.asarray(accepted_mask, dtype=bool) & valid
+        accepted = _align_candidate_vector(accepted_mask, len(valid), fill_value=False, dtype=bool) & valid
         if selected_idx >= 0 and selected_idx < len(valid):
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
@@ -690,10 +713,12 @@ class _LearnedMetricsAccumulator:
                     pass
         if cert is not None and accepted.any():
             try:
+                risk = _align_candidate_vector(cert.get("risk"), len(valid), fill_value=0.0, dtype=np.float32)
                 self.cert_accepted_count += int(accepted.sum())
-                self.cert_accepted_risk_sum += float(np.asarray(cert.get("risk"))[accepted].sum())
+                self.cert_accepted_risk_sum += float(risk[accepted].sum())
                 if cert.get("pressure_prior") is not None:
-                    self.cert_accepted_pressure_sum += float(np.asarray(cert.get("pressure_prior"))[accepted].sum())
+                    pressure = _align_candidate_vector(cert.get("pressure_prior"), len(valid), fill_value=0.0, dtype=np.float32)
+                    self.cert_accepted_pressure_sum += float(pressure[accepted].sum())
             except Exception:
                 pass
         self.accepted_total += int(accepted.sum())
@@ -714,6 +739,7 @@ class _LearnedMetricsAccumulator:
                 self.selected_waymax_offroad += int(selected_idx < len(offroad) and bool(offroad[selected_idx]))
                 if selected_idx < len(logdiv) and np.isfinite(logdiv[selected_idx]):
                     self.selected_waymax_logdiv_sum += float(logdiv[selected_idx])
+                    self.selected_waymax_logdiv_count += 1
 
     def add_witness_quality(self, row: dict[str, float]) -> None:
         self.witness_count += 1
@@ -738,7 +764,13 @@ class _LearnedMetricsAccumulator:
             metrics["SelectedWaymaxCollisionRate"] = float(self.selected_waymax_collision / max(self.selected_waymax_valid, 1))
             metrics["SelectedWaymaxOffroadRate"] = float(self.selected_waymax_offroad / max(self.selected_waymax_valid, 1))
             metrics["SelectedWaymaxUnsafeRate"] = float((self.selected_waymax_collision + self.selected_waymax_offroad) / max(self.selected_waymax_valid, 1))
-            metrics["SelectedWaymaxMeanLogDivergence"] = float(self.selected_waymax_logdiv_sum / max(self.selected_waymax_valid, 1))
+            metrics["SelectedWaymaxOutcomeCoverage"] = float(self.selected_waymax_valid / max(self.selected_total, 1))
+            metrics["SelectedWaymaxFiniteLogDivergenceCount"] = int(self.selected_waymax_logdiv_count)
+            metrics["SelectedWaymaxMeanLogDivergence"] = (
+                float(self.selected_waymax_logdiv_sum / self.selected_waymax_logdiv_count)
+                if self.selected_waymax_logdiv_count > 0
+                else None
+            )
         if self.cert_selected_count > 0:
             metrics["CandidateCertificate/SelectedNcfProbMean"] = float(self.cert_selected_ncf_sum / max(self.cert_selected_count, 1))
             metrics["CandidateCertificate/SelectedFalseSafeProbMean"] = float(self.cert_selected_fs_sum / max(self.cert_selected_count, 1))

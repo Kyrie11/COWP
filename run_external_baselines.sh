@@ -23,6 +23,8 @@ BASELINES="${BASELINES:-gameformer dtpp idm_lattice frenet_optimal state_lattice
 NO_PROGRESS="${NO_PROGRESS:-0}"
 LOG_EVERY="${LOG_EVERY:-0}"
 RUN_STREAMED_LOGS="${RUN_STREAMED_LOGS:-1}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
+FORCE_RERUN="${FORCE_RERUN:-0}"
 
 # Speed/resource defaults for learned baselines.
 AMP="${AMP:-1}"
@@ -117,6 +119,71 @@ baseline_max_candidates() {
   esac
 }
 
+json_valid() {
+  local path="$1"
+  [[ -s "$path" ]] || return 1
+  "$PYTHON_BIN" - "$path" <<'PY' >/dev/null 2>&1
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    json.load(f)
+PY
+}
+
+train_done() {
+  local b="$1"
+  local epochs="$2"
+  local dir="$OUT_ROOT/checkpoints/$b"
+  local best="$dir/external_${b}_best.pt"
+  local hist="$dir/external_${b}_history.json"
+  local final_epoch="$dir/external_${b}_epoch${epochs}.pt"
+  [[ "$SKIP_COMPLETED" == "1" && "$FORCE_RERUN" != "1" ]] || return 1
+  [[ -s "$best" && -s "$hist" && -s "$final_epoch" ]] || return 1
+  "$PYTHON_BIN" - "$hist" "$epochs" <<'PY'
+import json, sys
+hist_path, target = sys.argv[1], int(sys.argv[2])
+try:
+    with open(hist_path, 'r', encoding='utf-8') as f:
+        hist = json.load(f)
+    max_epoch = max((int(r.get('epoch', 0)) for r in hist), default=0)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if max_epoch >= target else 1)
+PY
+}
+
+eval_done() {
+  local output="$1"
+  local mode="$2"
+  local b="$3"
+  local expected_rollouts="${4:-}"
+  [[ "$SKIP_COMPLETED" == "1" && "$FORCE_RERUN" != "1" ]] || return 1
+  [[ -s "$output" ]] || return 1
+  "$PYTHON_BIN" - "$output" "$mode" "$b" "$expected_rollouts" <<'PY'
+import json, sys
+path, mode, baseline, expected = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(path, 'r', encoding='utf-8') as f:
+        payload = json.load(f)
+except Exception:
+    sys.exit(1)
+if payload.get('mode') != mode:
+    sys.exit(1)
+if mode == 'learned_offline':
+    metrics = payload.get(baseline)
+    if not isinstance(metrics, dict) or int(metrics.get('num_scenes', 0) or 0) <= 0:
+        sys.exit(1)
+elif mode == 'waymax':
+    if payload.get('baseline') != baseline:
+        sys.exit(1)
+    n = int(payload.get('num_rollouts', 0) or 0)
+    if n <= 0:
+        sys.exit(1)
+    if expected and expected not in ('None', '0') and n < int(expected):
+        sys.exit(1)
+sys.exit(0)
+PY
+}
+
 run_logged_env() {
   local name="$1"; shift
   local gpu="$1"; shift
@@ -170,6 +237,10 @@ train_one() {
   pos="$(baseline_position "$b")"
   dev="$(baseline_device "$b")"
   max_candidates="$(baseline_max_candidates "$b")"
+  if train_done "$b" "$epochs"; then
+    echo "[train_${b}] skip: checkpoint/history already reached ${epochs} epochs"
+    return 0
+  fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.20_train_external_baseline
     --baseline "$b"
     --data-config configs/data.yaml
@@ -200,6 +271,11 @@ eval_one_offline_learned() {
     echo "Missing learned-baseline checkpoint: $ckpt" >&2
     exit 2
   fi
+  local output="$OUT_ROOT/eval/learned_offline/${b}.json"
+  if eval_done "$output" "learned_offline" "$b"; then
+    echo "[eval_offline_${b}] skip: valid output already exists at $output"
+    return 0
+  fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.21_eval_external_baseline
     --mode learned_offline
     --data-config configs/data.yaml
@@ -212,7 +288,7 @@ eval_one_offline_learned() {
     --device "$dev"
     --max-neighbors "$MAX_NEIGHBORS"
     --max-candidates "$max_candidates"
-    --output "$OUT_ROOT/eval/learned_offline/${b}.json"
+    --output "$output"
     --log-every "$LOG_EVERY")
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(progress_args)
   run_logged_env "eval_offline_${b}" "$gpu" "$pos" "${cmd[@]}"
@@ -226,6 +302,11 @@ eval_one_waymax_learned() {
   if [[ ! -s "$ckpt" ]]; then
     echo "Missing learned-baseline checkpoint: $ckpt" >&2
     exit 2
+  fi
+  local output="$OUT_ROOT/eval/waymax/${b}.json"
+  if eval_done "$output" "waymax" "$b" "$ONLINE_SCENARIOS"; then
+    echo "[eval_waymax_${b}] skip: valid output already exists at $output"
+    return 0
   fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.21_eval_external_baseline
     --mode waymax
@@ -242,7 +323,7 @@ eval_one_waymax_learned() {
     --jax-preallocate false
     --waymax-standard-metrics
     --device "$dev"
-    --output "$OUT_ROOT/eval/waymax/${b}.json"
+    --output "$output"
     --log-every "$LOG_EVERY")
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(progress_args)
   run_logged_env "eval_waymax_${b}" "$gpu" "$pos" "${cmd[@]}"
@@ -250,6 +331,11 @@ eval_one_waymax_learned() {
 
 eval_one_offline_rule() {
   local b="$1"
+  local output="$OUT_ROOT/eval/learned_offline/${b}.json"
+  if eval_done "$output" "learned_offline" "$b"; then
+    echo "[eval_offline_${b}] skip: valid output already exists at $output"
+    return 0
+  fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.22_eval_rule_baseline
     --mode learned_offline
     --baseline "$b"
@@ -259,7 +345,7 @@ eval_one_offline_rule() {
     --cache-dir "$VAL_CACHE"
     --batch-size "${EVAL_BATCH:-64}"
     --num-workers "$NUM_WORKERS"
-    --output "$OUT_ROOT/eval/learned_offline/${b}.json"
+    --output "$output"
     --log-every "$LOG_EVERY")
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(progress_args)
   run_logged_env "eval_offline_${b}" "" "2" "${cmd[@]}"
@@ -267,6 +353,11 @@ eval_one_offline_rule() {
 
 eval_one_waymax_rule() {
   local b="$1"
+  local output="$OUT_ROOT/eval/waymax/${b}.json"
+  if eval_done "$output" "waymax" "$b" "$ONLINE_SCENARIOS"; then
+    echo "[eval_waymax_${b}] skip: valid output already exists at $output"
+    return 0
+  fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.22_eval_rule_baseline
     --mode waymax
     --baseline "$b"
@@ -281,7 +372,7 @@ eval_one_waymax_rule() {
     --waymax-device "${WAYMAX_DEVICE:-gpu}"
     --jax-preallocate false
     --waymax-standard-metrics
-    --output "$OUT_ROOT/eval/waymax/${b}.json"
+    --output "$output"
     --log-every "$LOG_EVERY")
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(progress_args)
   run_logged_env "eval_waymax_${b}" "$WAYMAX_GPU" "2" "${cmd[@]}"
