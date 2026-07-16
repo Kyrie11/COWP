@@ -63,6 +63,11 @@ def _wrap_angle(x: np.ndarray | float) -> np.ndarray | float:
     return (np.asarray(x) + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
+    x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
+    return 1.0 / (1.0 + np.exp(x_arr))
+
+
 def _traj_arrays(state: Any) -> tuple[Any, int]:
     traj = _get_field(state, ("sim_trajectory", "trajectory", "log_trajectory"))
     timestep = _get_field(state, ("timestep", "time_index", "current_timestep"))
@@ -497,6 +502,8 @@ def _collision_free_against_constant_velocity(
     if idx.size == 0:
         idx = np.asarray([0], dtype=np.int64)
     traj_xy = np.asarray(traj[idx, :2], dtype=np.float32)
+    if not np.isfinite(traj_xy).all():
+        return False
     ego = agent_state[sdc_index]
     ego_radius = max(float(ego[7]), float(ego[8]), 4.0) * 0.5
     valid = agent_state[:, 10] > 0.5
@@ -504,16 +511,35 @@ def _collision_free_against_constant_velocity(
     ego_yaw = float(ego[6])
     ego_dir = np.asarray([np.cos(ego_yaw), np.sin(ego_yaw)], dtype=np.float32)
     ego_lat = np.asarray([-ego_dir[1], ego_dir[0]], dtype=np.float32)
-    logged_buffer = float(pcfg.get("online_logged_collision_buffer_m", -0.15))
-    cv_buffer = float(pcfg.get("online_priority_cv_collision_buffer_m", -0.45))
+    ego_speed = max(float(ego[5]), float(np.linalg.norm(ego[3:5])))
+    logged_buffer = float(pcfg.get("online_logged_collision_buffer_m", 0.10))
+    cv_buffer = float(pcfg.get("online_priority_cv_collision_buffer_m", 0.35))
     require_cv = bool(pcfg.get("online_require_cv_for_priority_agents", True))
-    max_dist = float(pcfg.get("online_collision_agent_radius_m", 65.0))
+    max_dist = float(pcfg.get("online_collision_agent_radius_m", 60.0))
+    max_agents = int(pcfg.get("online_collision_max_agents", 24))
+
+    ranked: list[tuple[int, float, bool, float, float, float]] = []
     for j in range(agent_state.shape[0]):
         if j == sdc_index or not valid[j]:
             continue
         rel = agent_state[j, :2].astype(np.float32) - ego_xy
-        if float(np.linalg.norm(rel)) > max_dist:
+        dist = float(np.linalg.norm(rel))
+        if dist > max_dist:
             continue
+        longitudinal = float(np.dot(rel, ego_dir))
+        lateral = abs(float(np.dot(rel, ego_lat)))
+        rel_speed = float(max(0.0, ego_speed - np.dot(agent_state[j, 3:5], ego_dir)))
+        ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
+        priority_like = (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or (ttc <= float(pcfg.get("online_priority_ttc_s", 5.0)))
+        # Check priority/front agents first, then nearest agents.  Limiting the
+        # tail prevents pathological 128-agent scenes from dominating online COWP.
+        rank = (0 if priority_like else 1, dist)
+        ranked.append((j, float(rank[0]) * 1000.0 + rank[1], priority_like, longitudinal, lateral, ttc))
+    ranked.sort(key=lambda x: x[1])
+    if max_agents > 0:
+        ranked = ranked[:max_agents]
+
+    for j, _key, priority_like, _longitudinal, _lateral, _ttc in ranked:
         other_radius = max(float(agent_state[j, 7]), float(agent_state[j, 8]), 4.0) * 0.5
         radius = ego_radius + other_radius + 0.5
         logged, cv = _agent_future_xy(agent_state, j, H_full, dt, other_future_trajs)
@@ -521,15 +547,12 @@ def _collision_free_against_constant_velocity(
         cv_xy = cv[idx]
         if not np.isfinite(logged_xy).all():
             logged_xy = cv_xy
+        if not np.isfinite(logged_xy).all():
+            continue
         min_logged = float(np.min(np.linalg.norm(traj_xy - logged_xy, axis=-1)))
         if min_logged < radius + logged_buffer:
             return False
-        longitudinal = float(np.dot(rel, ego_dir))
-        lateral = abs(float(np.dot(rel, ego_lat)))
-        rel_speed = float(max(0.0, max(float(ego[5]), float(np.linalg.norm(ego[3:5]))) - np.dot(agent_state[j, 3:5], ego_dir)))
-        ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
-        priority_like = (-8.0 <= longitudinal <= 50.0 and lateral <= 7.0) or (ttc <= float(pcfg.get("online_priority_ttc_s", 5.0)))
-        if require_cv and priority_like:
+        if require_cv and priority_like and np.isfinite(cv_xy).all():
             min_cv = float(np.min(np.linalg.norm(traj_xy - cv_xy, axis=-1)))
             if min_cv < radius + cv_buffer:
                 return False
@@ -927,14 +950,25 @@ def _candidate_pressure_prior_np(
     cfg: dict,
     other_future_trajs: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Mechanism-aware coercion pressure prior for online P-NCF selection."""
+    """Mechanism-aware coercion pressure prior for online P-NCF selection.
+
+    Vectorized over candidates.  The previous K x A Python loop was not the main
+    theory issue, but it made COWP Waymax rollout too slow for diagnosis.
+    """
     K = int(candidates.shape[0])
     out = np.zeros(K, dtype=np.float32)
-    if not (0 <= int(sdc_index) < int(agent_state.shape[0])):
+    if K == 0 or not (0 <= int(sdc_index) < int(agent_state.shape[0])):
         return out
-    H = int(candidates.shape[1]) if candidates.ndim >= 3 else int(cfg.get("time", {}).get("future_steps", 80))
+    pcfg = cfg.get("planning", {})
+    H_full = int(candidates.shape[1]) if candidates.ndim >= 3 else int(cfg.get("time", {}).get("future_steps", 80))
+    H = min(H_full, int(pcfg.get("online_pressure_prior_horizon_steps", H_full)))
+    stride = max(1, int(pcfg.get("online_pressure_prior_stride", pcfg.get("online_rule_risk_stride", 2))))
+    idx = np.arange(0, H, stride, dtype=np.int64)
+    if idx.size == 0:
+        idx = np.asarray([0], dtype=np.int64)
     dt = float(cfg.get("time", {}).get("dt", 0.1))
-    ts = (np.arange(H, dtype=np.float32) + 1.0)[:, None] * max(dt, 1e-3)
+    cand_xy = np.asarray(candidates[:, idx, :2], dtype=np.float32)
+    finite_k = cand_valid.astype(bool) & np.isfinite(cand_xy).all(axis=(1, 2))
     pressure_macros = {
         int(MacroType.ACCELERATE_CROSS): 0.75,
         int(MacroType.MERGE_AHEAD): 0.90,
@@ -948,53 +982,53 @@ def _candidate_pressure_prior_np(
         int(MacroType.CREEP): -0.10,
         int(MacroType.MERGE_BEHIND): -0.15,
     }
+    macro_bias = np.zeros(K, dtype=np.float32)
+    for k in range(K):
+        mk = int(macro[k]) if k < len(macro) else int(MacroType.KEEP_LANE)
+        macro_bias[k] = float(pressure_macros.get(mk, 0.05) + relief_macros.get(mk, 0.0))
+    worst = np.maximum(macro_bias, 0.0).astype(np.float32)
     ego = agent_state[int(sdc_index)]
     ego_xy = ego[:2].astype(np.float32)
     ego_yaw = float(ego[6])
     ego_dir = np.asarray([np.cos(ego_yaw), np.sin(ego_yaw)], dtype=np.float32)
     ego_lat = np.asarray([-np.sin(ego_yaw), np.cos(ego_yaw)], dtype=np.float32)
     ego_speed = float(max(ego[5], np.linalg.norm(ego[3:5]), 0.0))
-    for k in range(K):
-        if not bool(cand_valid[k]):
+    max_agents = int(pcfg.get("online_pressure_prior_max_agents", 8))
+    active: list[tuple[int, float]] = []
+    for a, raw_j in enumerate(critical_idx):
+        if not bool(critical_valid[a]):
             continue
-        mk = int(macro[k]) if k < len(macro) else int(MacroType.KEEP_LANE)
-        macro_bias = float(pressure_macros.get(mk, 0.05) + relief_macros.get(mk, 0.0))
-        cand_xy = np.asarray(candidates[k, :, :2], dtype=np.float32)
-        finite = np.isfinite(cand_xy).all(axis=-1)
-        if not finite.any():
+        j = int(raw_j)
+        if j < 0 or j >= agent_state.shape[0] or j == sdc_index or agent_state[j, 10] <= 0.5:
             continue
-        worst = max(macro_bias, 0.0)
-        for a, raw_j in enumerate(critical_idx):
-            if not bool(critical_valid[a]):
-                continue
-            j = int(raw_j)
-            if j < 0 or j >= agent_state.shape[0] or j == sdc_index or agent_state[j, 10] <= 0.5:
-                continue
-            aj = agent_state[j]
-            if other_future_trajs is not None and j < int(other_future_trajs.shape[0]) and other_future_trajs.shape[1] > 0:
-                pred = np.asarray(other_future_trajs[j, :H, :2], dtype=np.float32)
-                if pred.shape[0] < H:
-                    tail = aj[:2][None, :] + aj[3:5][None, :] * ts[pred.shape[0]:]
-                    pred = np.concatenate([pred, tail.astype(np.float32)], axis=0)
-            else:
-                pred = aj[:2][None, :] + aj[3:5][None, :] * ts
-            m = finite & np.isfinite(pred).all(axis=-1)
-            if not m.any():
-                continue
-            min_d = float(np.min(np.linalg.norm(cand_xy[m] - pred[m], axis=-1)))
-            close = float(np.exp(-max(min_d, 0.0) / 6.5))
-            rel = aj[:2].astype(np.float32) - ego_xy
-            longitudinal = float(np.dot(rel, ego_dir))
-            lateral = abs(float(np.dot(rel, ego_lat)))
-            rel_speed = ego_speed - float(np.dot(aj[3:5], ego_dir))
-            ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
-            priority = 0.0
-            priority += 0.35 if -6.0 <= longitudinal <= 45.0 and lateral <= 5.5 else 0.0
-            priority += 0.25 if ttc <= 5.0 else 0.0
-            priority += 0.20 if min_d <= 6.0 else 0.0
-            worst = max(worst, macro_bias + 0.55 * close + priority)
-        out[k] = np.float32(np.clip(worst, 0.0, 1.0))
+        active.append((j, float(np.linalg.norm(agent_state[j, :2].astype(np.float32) - ego_xy))))
+    active.sort(key=lambda x: x[1])
+    if max_agents > 0:
+        active = active[:max_agents]
+    for j, _dist in active:
+        aj = agent_state[j]
+        pred, _cv = _agent_future_xy(agent_state, j, H_full, dt, other_future_trajs)
+        pred = np.asarray(pred[idx, :2], dtype=np.float32)
+        tmask = np.isfinite(pred).all(axis=-1)
+        if not bool(tmask.any()):
+            continue
+        d = np.full(K, 99.0, dtype=np.float32)
+        diff = cand_xy[:, tmask, :] - pred[None, tmask, :]
+        d[finite_k] = np.sqrt(np.min(np.sum(diff[finite_k] * diff[finite_k], axis=-1), axis=-1))
+        close = np.exp(-np.maximum(d, 0.0) / 6.5)
+        rel = aj[:2].astype(np.float32) - ego_xy
+        longitudinal = float(np.dot(rel, ego_dir))
+        lateral = abs(float(np.dot(rel, ego_lat)))
+        rel_speed = ego_speed - float(np.dot(aj[3:5], ego_dir))
+        ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
+        priority = 0.0
+        priority += 0.35 if -6.0 <= longitudinal <= 45.0 and lateral <= 5.5 else 0.0
+        priority += 0.25 if ttc <= 5.0 else 0.0
+        priority += 0.20 if (bool(finite_k.any()) and float(np.min(d[finite_k])) <= 6.0) else 0.0
+        worst = np.maximum(worst, macro_bias + 0.55 * close.astype(np.float32) + float(priority))
+    out[finite_k] = np.clip(worst[finite_k], 0.0, 1.0)
     return out
+
 
 
 def _candidate_rule_risk_np(
@@ -1008,6 +1042,13 @@ def _candidate_rule_risk_np(
     cfg: dict,
     other_future_trajs: np.ndarray | None = None,
 ) -> np.ndarray:
+    """Fast counterfactual rule risk for online candidate selection.
+
+    This is intentionally low-capacity: it should calibrate obvious logged-future
+    false-safety without becoming a hand-coded closed-loop planner.  The
+    implementation is vectorized over candidates and clips the sigmoid argument
+    to avoid log-spam from exp overflow.
+    """
     K = int(candidates.shape[0])
     out = np.ones(K, dtype=np.float32)
     if K == 0 or not (0 <= int(sdc_index) < int(agent_state.shape[0])):
@@ -1028,48 +1069,56 @@ def _candidate_rule_risk_np(
     ego_lat = np.asarray([-ego_dir[1], ego_dir[0]], dtype=np.float32)
     ego_speed = float(max(ego[5], np.linalg.norm(ego[3:5]), 0.0))
     valid_agents = agent_state[:, 10] > 0.5
-    active_agents: list[int] = []
+    active_agents: list[tuple[int, float]] = []
     for raw_j, ok in zip(critical_idx, critical_valid):
         if not bool(ok):
             continue
         j = int(raw_j)
         if j != sdc_index and 0 <= j < agent_state.shape[0] and bool(valid_agents[j]):
-            active_agents.append(j)
+            active_agents.append((j, float(np.linalg.norm(agent_state[j, :2].astype(np.float32) - ego_xy))))
     if not active_agents:
         near = np.argsort(np.linalg.norm(agent_state[:, :2] - ego_xy[None, :], axis=-1))[:8]
-        active_agents = [int(j) for j in near if int(j) != int(sdc_index) and bool(valid_agents[int(j)])]
-    for k in range(K):
-        if not bool(cand_valid[k]):
-            out[k] = 1.0
+        active_agents = [(int(j), float(np.linalg.norm(agent_state[int(j), :2] - ego_xy))) for j in near if int(j) != int(sdc_index) and bool(valid_agents[int(j)])]
+    active_agents.sort(key=lambda x: x[1])
+    max_agents = int(pcfg.get("online_rule_risk_max_agents", 8))
+    if max_agents > 0:
+        active_agents = active_agents[:max_agents]
+
+    cand_xy = np.asarray(candidates[:, idx, :2], dtype=np.float32)
+    finite_k = cand_valid.astype(bool) & np.isfinite(cand_xy).all(axis=(1, 2))
+    worst = np.where(conventional_safe.astype(bool), 0.0, 0.25).astype(np.float32)
+    for j, dist0 in active_agents:
+        if dist0 > float(pcfg.get("online_rule_risk_agent_radius_m", 60.0)):
             continue
-        cand_xy = np.asarray(candidates[k, idx, :2], dtype=np.float32)
-        if not np.isfinite(cand_xy).all():
-            out[k] = 1.0
-            continue
-        worst = 0.0 if bool(conventional_safe[k]) else 0.25
-        for j in active_agents:
-            aj = agent_state[j]
-            rel = aj[:2].astype(np.float32) - ego_xy
-            if float(np.linalg.norm(rel)) > float(pcfg.get("online_rule_risk_agent_radius_m", 65.0)):
-                continue
-            other_radius = max(float(aj[7]), float(aj[8]), 4.0) * 0.5
-            radius = ego_radius + other_radius + 0.5
-            logged, cv = _agent_future_xy(agent_state, j, H_full, dt, other_future_trajs)
-            logged_xy = logged[idx]
-            cv_xy = cv[idx]
-            d_logged = float(np.min(np.linalg.norm(cand_xy - logged_xy, axis=-1))) if np.isfinite(logged_xy).all() else 99.0
-            d_cv = float(np.min(np.linalg.norm(cand_xy - cv_xy, axis=-1))) if np.isfinite(cv_xy).all() else 99.0
-            longitudinal = float(np.dot(rel, ego_dir))
-            lateral = abs(float(np.dot(rel, ego_lat)))
-            rel_speed = ego_speed - float(np.dot(aj[3:5], ego_dir))
-            ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
-            priority = 1.0 if (-8.0 <= longitudinal <= 50.0 and lateral <= 7.0) or ttc <= 5.0 else 0.0
-            clearance = min(d_logged, d_cv if priority > 0.0 else max(d_cv, d_logged)) - radius
-            close_risk = 1.0 / (1.0 + np.exp((clearance - 1.0) / 1.5))
-            false_safe_risk = min(1.0, max(0.0, d_logged - d_cv) / 8.0) * priority
-            worst = max(worst, 0.70 * close_risk + 0.30 * false_safe_risk)
-        out[k] = np.float32(np.clip(worst, 0.0, 1.0))
+        aj = agent_state[j]
+        rel = aj[:2].astype(np.float32) - ego_xy
+        other_radius = max(float(aj[7]), float(aj[8]), 4.0) * 0.5
+        radius = ego_radius + other_radius + 0.5
+        logged, cv = _agent_future_xy(agent_state, j, H_full, dt, other_future_trajs)
+        logged_xy = np.asarray(logged[idx, :2], dtype=np.float32)
+        cv_xy = np.asarray(cv[idx, :2], dtype=np.float32)
+        logged_mask = np.isfinite(logged_xy).all(axis=-1)
+        cv_mask = np.isfinite(cv_xy).all(axis=-1)
+        d_logged = np.full(K, 99.0, dtype=np.float32)
+        d_cv = np.full(K, 99.0, dtype=np.float32)
+        if bool(logged_mask.any()):
+            diff = cand_xy[:, logged_mask, :] - logged_xy[None, logged_mask, :]
+            d_logged[finite_k] = np.sqrt(np.min(np.sum(diff[finite_k] * diff[finite_k], axis=-1), axis=-1))
+        if bool(cv_mask.any()):
+            diff = cand_xy[:, cv_mask, :] - cv_xy[None, cv_mask, :]
+            d_cv[finite_k] = np.sqrt(np.min(np.sum(diff[finite_k] * diff[finite_k], axis=-1), axis=-1))
+        longitudinal = float(np.dot(rel, ego_dir))
+        lateral = abs(float(np.dot(rel, ego_lat)))
+        rel_speed = ego_speed - float(np.dot(aj[3:5], ego_dir))
+        ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
+        priority = 1.0 if (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or ttc <= 5.0 else 0.0
+        clearance = np.minimum(d_logged, d_cv if priority > 0.0 else np.maximum(d_cv, d_logged)) - float(radius)
+        close_risk = _stable_logistic_np((clearance - 1.0) / 1.5).astype(np.float32)
+        false_safe_risk = np.minimum(1.0, np.maximum(0.0, d_logged - d_cv) / 8.0).astype(np.float32) * float(priority)
+        worst = np.maximum(worst, 0.70 * close_risk + 0.30 * false_safe_risk)
+    out[finite_k] = np.clip(worst[finite_k], 0.0, 1.0)
     return out
+
 
 
 def _one_step_action_risk_np(
@@ -1455,6 +1504,7 @@ class COWPWaymaxPolicy:
                 outcome_risk = self.torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
             else:
                 outcome_risk = self.torch.zeros_like(scores)
+            outcome_decision_risk = _scene_norm(outcome_risk)
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             witness_cert = self.torch.where(crit_mask[None, :], witness_cert, self.torch.zeros_like(witness_cert))
@@ -1539,7 +1589,7 @@ class COWPWaymaxPolicy:
                     + pressure_penalty * pressure_decision_risk
                     + rule_penalty * rule_decision_risk
                     + action_penalty * action_decision_risk
-                    + float(self.outcome_risk_penalty) * outcome_risk
+                    + float(self.outcome_risk_penalty) * outcome_decision_risk
                 )
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
@@ -1563,12 +1613,14 @@ class COWPWaymaxPolicy:
                     pressure_mix = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
                     rule_mix = float(self.cfg.get("planning", {}).get("candidate_rule_risk_mix", 1.25))
                     action_mix = float(self.cfg.get("planning", {}).get("candidate_action_risk_mix", 1.0))
+                    outcome_mix = float(self.cfg.get("planning", {}).get("candidate_outcome_risk_mix", float(self.outcome_risk_penalty)))
                     frontier_risk = (
                         cert_decision_risk
                         + pair_mix * pair_risk
                         + pressure_mix * pressure_decision_risk
                         + rule_mix * rule_decision_risk
                         + action_mix * action_decision_risk
+                        + outcome_mix * outcome_decision_risk
                     )
                     idx = self.torch.where(frontier_base)[0]
                     if idx.numel() > 0:
@@ -1650,6 +1702,7 @@ class COWPWaymaxPolicy:
                 "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
                 "selected_outcome_risk": float(outcome_risk[selected].detach().cpu().item()) if outcome_risk.numel() else 0.0,
+                "selected_outcome_decision_risk": float(outcome_decision_risk[selected].detach().cpu().item()) if outcome_decision_risk.numel() else 0.0,
                 "selected_candidate_ncf_prob": float(cand_ncf_prob[selected].detach().cpu().item()) if cand_ncf_prob.numel() else 0.0,
                 "selected_candidate_false_safe_prob": float(cand_false_safe_prob[selected].detach().cpu().item()) if cand_false_safe_prob.numel() else 0.0,
                 "selected_candidate_quality_prob": float(cand_quality_prob[selected].detach().cpu().item()) if cand_quality_prob.numel() else 0.0,

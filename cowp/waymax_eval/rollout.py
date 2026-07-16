@@ -329,6 +329,7 @@ def _select_from_learned(
         outcome_risk = torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
     else:
         outcome_risk = torch.zeros_like(scores)
+    outcome_decision_risk = _scene_normalized_risk_torch(outcome_risk, cand_valid, cfg)
     crit_mask = batch.get("cowp/critical/valid")
     if crit_mask is not None and witness_prob.ndim == 3:
         cm = crit_mask.bool()[:, None, :]
@@ -406,7 +407,7 @@ def _select_from_learned(
                 + cert_penalty * cert_decision_risk
                 + pressure_penalty * pressure_decision_risk
                 + rule_penalty * rule_decision_risk
-                + float(outcome_risk_penalty) * outcome_risk
+                + float(outcome_risk_penalty) * outcome_decision_risk
             )
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
@@ -423,7 +424,8 @@ def _select_from_learned(
         pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.10))
         pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
         rule_mix = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_mix", 1.25))
-        risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk + rule_mix * rule_decision_risk
+        outcome_mix = float((cfg or {}).get("planning", {}).get("candidate_outcome_risk_mix", outcome_risk_penalty))
+        risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk + rule_mix * rule_decision_risk + outcome_mix * outcome_decision_risk
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         min_ncf = float(pcfg.get("candidate_min_ncf_prob", 0.05))
         max_fs = float(pcfg.get("candidate_max_false_safe_prob", 0.95))

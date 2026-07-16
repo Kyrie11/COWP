@@ -199,6 +199,11 @@ CLEAR_ACCELERATOR_CACHE="${CLEAR_ACCELERATOR_CACHE:-0}"
 WAYMAX_STANDARD_METRICS="${WAYMAX_STANDARD_METRICS:-1}"
 NO_PROGRESS="${NO_PROGRESS:-0}"
 ROLLOUT_HORIZON_STEPS="${ROLLOUT_HORIZON_STEPS:-80}"
+OUTCOME_RISK_PENALTY="${OUTCOME_RISK_PENALTY:-0.75}"
+OUTCOME_RISK_THRESHOLD="${OUTCOME_RISK_THRESHOLD:-1.10}"
+COWP_FAST_DIAGNOSTICS="${COWP_FAST_DIAGNOSTICS:-0}"
+PLANNER_ONLY_RETRAIN="${PLANNER_ONLY_RETRAIN:-0}"
+WITNESS_CKPT="${WITNESS_CKPT:-}"
 
 TRAIN_WORKERS="${TRAIN_WORKERS:-6}"
 PREFETCH="${PREFETCH:-1}"
@@ -255,7 +260,13 @@ w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 2.0))
 w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 3.0))
 w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.5))
 w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 1.0))
-w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 2.0))
+w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 2.5))
+w["candidate_outcome_logdiv_unsafe_threshold"] = float(w.get("candidate_outcome_logdiv_unsafe_threshold", 8.0))
+w["candidate_outcome_safe_ncf_target"] = float(w.get("candidate_outcome_safe_ncf_target", 0.75))
+w["closed_loop"] = float(w.get("closed_loop", 2.0))
+w["outcome_cls"] = float(w.get("outcome_cls", 2.0))
+w["outcome_pair_rank"] = float(w.get("outcome_pair_rank", 2.0))
+w["outcome_expected_cost"] = float(w.get("outcome_expected_cost", 1.0))
 w["candidate_ncf_cls"] = float(w.get("candidate_ncf_cls", 2.0))
 w["candidate_false_safe_cls"] = float(w.get("candidate_false_safe_cls", 1.5))
 w["ranking"] = float(w.get("ranking", 1.0))
@@ -292,23 +303,29 @@ pcfg["online_terminal_speed_offsets_mps"] = pcfg.get("online_terminal_speed_offs
 pcfg["online_terminal_s_offsets_m"] = pcfg.get("online_terminal_s_offsets_m", [-16.0, -8.0, 0.0, 8.0, 16.0])
 pcfg["online_terminal_lateral_offsets_m"] = pcfg.get("online_terminal_lateral_offsets_m", [])
 pcfg["candidate_pressure_prior_penalty"] = float(pcfg.get("candidate_pressure_prior_penalty", 0.75))
-pcfg["candidate_pressure_prior_mix"] = float(pcfg.get("candidate_pressure_prior_mix", 0.60))
-pcfg["candidate_rule_risk_penalty"] = float(pcfg.get("candidate_rule_risk_penalty", 2.0))
-pcfg["candidate_rule_risk_mix"] = float(pcfg.get("candidate_rule_risk_mix", 2.0))
-pcfg["candidate_action_risk_penalty"] = float(pcfg.get("candidate_action_risk_penalty", 1.5))
-pcfg["candidate_action_risk_mix"] = float(pcfg.get("candidate_action_risk_mix", 1.5))
+pcfg["candidate_pressure_prior_mix"] = float(pcfg.get("candidate_pressure_prior_mix", 0.45))
+pcfg["candidate_rule_risk_penalty"] = float(pcfg.get("candidate_rule_risk_penalty", 2.5))
+pcfg["candidate_rule_risk_mix"] = float(pcfg.get("candidate_rule_risk_mix", 2.5))
+pcfg["candidate_action_risk_penalty"] = float(pcfg.get("candidate_action_risk_penalty", 2.0))
+pcfg["candidate_action_risk_mix"] = float(pcfg.get("candidate_action_risk_mix", 2.0))
+pcfg["candidate_outcome_risk_mix"] = float(pcfg.get("candidate_outcome_risk_mix", 1.0))
 pcfg["decision_risk_min_std"] = float(pcfg.get("decision_risk_min_std", 1e-3))
 pcfg["decision_risk_min_spread"] = float(pcfg.get("decision_risk_min_spread", 1e-3))
-pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.35))
+pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.25))
 pcfg["candidate_frontier_min_keep"] = int(pcfg.get("candidate_frontier_min_keep", 2))
-pcfg["candidate_frontier_max_keep"] = int(pcfg.get("candidate_frontier_max_keep", 6))
+pcfg["candidate_frontier_max_keep"] = int(pcfg.get("candidate_frontier_max_keep", 4))
 pcfg["online_collision_check_stride"] = int(pcfg.get("online_collision_check_stride", 4))
-pcfg["online_collision_check_horizon_steps"] = int(pcfg.get("online_collision_check_horizon_steps", 50))
+pcfg["online_collision_check_horizon_steps"] = int(pcfg.get("online_collision_check_horizon_steps", 60))
 pcfg["online_rule_risk_stride"] = int(pcfg.get("online_rule_risk_stride", 4))
-pcfg["online_rule_risk_horizon_steps"] = int(pcfg.get("online_rule_risk_horizon_steps", 50))
+pcfg["online_rule_risk_horizon_steps"] = int(pcfg.get("online_rule_risk_horizon_steps", 60))
 pcfg["online_require_cv_for_priority_agents"] = bool(pcfg.get("online_require_cv_for_priority_agents", True))
-pcfg["online_logged_collision_buffer_m"] = float(pcfg.get("online_logged_collision_buffer_m", -0.10))
-pcfg["online_priority_cv_collision_buffer_m"] = float(pcfg.get("online_priority_cv_collision_buffer_m", -0.20))
+pcfg["online_logged_collision_buffer_m"] = float(pcfg.get("online_logged_collision_buffer_m", 0.15))
+pcfg["online_priority_cv_collision_buffer_m"] = float(pcfg.get("online_priority_cv_collision_buffer_m", 0.35))
+pcfg["online_collision_max_agents"] = int(pcfg.get("online_collision_max_agents", 24))
+pcfg["online_rule_risk_max_agents"] = int(pcfg.get("online_rule_risk_max_agents", 8))
+pcfg["online_pressure_prior_max_agents"] = int(pcfg.get("online_pressure_prior_max_agents", 8))
+pcfg["online_pressure_prior_stride"] = int(pcfg.get("online_pressure_prior_stride", 4))
+pcfg["online_pressure_prior_horizon_steps"] = int(pcfg.get("online_pressure_prior_horizon_steps", 60))
 ccfg = label.setdefault("candidate", {})
 ccfg["ignore_initial_jerk_steps"] = int(ccfg.get("ignore_initial_jerk_steps", 3))
 ccfg["jerk_check_percentile"] = float(ccfg.get("jerk_check_percentile", 99.0))
@@ -419,21 +436,27 @@ train_stage() {
 
 if [[ "$RUN_TRAIN" == 1 ]]; then
   echo "[3/8] Staged two-GPU training"
-  if [[ -s "$WARM_RESPONSE_CKPT" && "$FORCE_TRAIN" != 1 ]]; then
-    echo "Using warm response checkpoint: $WARM_RESPONSE_CKPT"
-    RESP="$WARM_RESPONSE_CKPT"
+  if [[ "$PLANNER_ONLY_RETRAIN" == 1 ]]; then
+    WIT="${WITNESS_CKPT:-$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt}"
+    require_file "$WIT"
+    train_stage planner "$EPOCH_PLANNER" 1.5e-4 "$PER_GPU_BATCH_PLANNER" "$OUT_ROOT/checkpoints/planner" "$WIT"
   else
-    train_stage natural "$NATURAL_EPOCHS" 3e-4 "$PER_GPU_BATCH_NATURAL" "$OUT_ROOT/checkpoints/natural"
-    NAT="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
-    require_file "$NAT"
-    train_stage response "$RESPONSE_EPOCHS" 2.5e-4 "$PER_GPU_BATCH_RESPONSE" "$OUT_ROOT/checkpoints/response" "$NAT"
-    RESP="$OUT_ROOT/checkpoints/response/cowp_response_best.pt"
-    require_file "$RESP"
+    if [[ -s "$WARM_RESPONSE_CKPT" && "$FORCE_TRAIN" != 1 ]]; then
+      echo "Using warm response checkpoint: $WARM_RESPONSE_CKPT"
+      RESP="$WARM_RESPONSE_CKPT"
+    else
+      train_stage natural "$NATURAL_EPOCHS" 3e-4 "$PER_GPU_BATCH_NATURAL" "$OUT_ROOT/checkpoints/natural"
+      NAT="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+      require_file "$NAT"
+      train_stage response "$RESPONSE_EPOCHS" 2.5e-4 "$PER_GPU_BATCH_RESPONSE" "$OUT_ROOT/checkpoints/response" "$NAT"
+      RESP="$OUT_ROOT/checkpoints/response/cowp_response_best.pt"
+      require_file "$RESP"
+    fi
+    train_stage witness "$EPOCH_WITNESS" 2e-4 "$PER_GPU_BATCH_WITNESS" "$OUT_ROOT/checkpoints/witness" "$RESP"
+    WIT="$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
+    require_file "$WIT"
+    train_stage planner "$EPOCH_PLANNER" 1.5e-4 "$PER_GPU_BATCH_PLANNER" "$OUT_ROOT/checkpoints/planner" "$WIT"
   fi
-  train_stage witness "$EPOCH_WITNESS" 2e-4 "$PER_GPU_BATCH_WITNESS" "$OUT_ROOT/checkpoints/witness" "$RESP"
-  WIT="$OUT_ROOT/checkpoints/witness/cowp_witness_best.pt"
-  require_file "$WIT"
-  train_stage planner "$EPOCH_PLANNER" 1.5e-4 "$PER_GPU_BATCH_PLANNER" "$OUT_ROOT/checkpoints/planner" "$WIT"
 fi
 
 CKPT="${CKPT:-$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt}"
@@ -453,7 +476,7 @@ if [[ "$RUN_OFFLINE_EVAL" == 1 ]]; then
       --ncf-gate-mode priority --priority-hard-threshold 0.55 \
       --secondary-witness-threshold 0.85 --secondary-opr-alpha 0.10 \
       --offline-fallback stop_like --adaptive-frontier-margin 0.25 \
-      --soft-ncf-penalty 2.0 --outcome-risk-penalty 0.0 \
+      --soft-ncf-penalty 2.0 --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
       --output "$CAL_SWEEP"
   fi
   run_logged select_threshold "$PYTHON_BIN" -m cowp.scripts.18_calibrate_witness_threshold \
@@ -478,7 +501,7 @@ run_learned_eval() {
     --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
     --secondary-opr-alpha 0.10 --soft-ncf-penalty 2.0 \
     --offline-fallback stop_like --adaptive-frontier-margin 0.25 \
-    --outcome-risk-penalty 0.0 \
+    --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
     --output "$output"
 }
 
@@ -524,7 +547,7 @@ run_waymax_method() {
       --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
       --secondary-opr-alpha 0.10 --soft-ncf-penalty 2.0 \
       --adaptive-frontier-margin 0.25 \
-      --outcome-risk-penalty 0.0 "${clear_args[@]}" "${progress_args[@]}" \
+      --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" "${clear_args[@]}" "${progress_args[@]}" \
       --output "$out"
     pids+=("$RUN_BG_PID")
     shards+=("$out")
@@ -616,11 +639,11 @@ for m in methods:
         v=x.get(k)
         return "-" if v is None else f"{float(v):.4f}"
     lines.append(f"| {m} | {f('FSR')} | {f('EP')} | {f('CBS')} | {f('OPR')} | {f('HBCR')} | {f('SelectedFalseSafeRate')} | {f('FallbackRate')} | {f('WitnessQuality/AUPRC')} | {f('CandidateCertificate/FalseSafe_AUPRC')} | {f('CandidateCertificate/NCF_AUPRC')} | {f('CandidateCertificate/RiskRankingPairAccuracy')} | {f('CandidateCertificate/SelectedRiskMean')} | {f('CandidateCertificate/SelectedPressurePriorMean')} |")
-lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kin infeasible | Valid cand | Conv cand | Accepted | Fallback step | Sel cert risk | Sel pressure | Rule risk | Action risk |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+lines += ["", "## Real Waymax closed loop", "", "| Method | N | CR | Collision | Offroad | EP | Kin infeasible | Valid cand | Conv cand | Accepted | Fallback step | Sel cert risk | Sel pressure | Rule risk | Action risk | Outcome risk |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
 for m in ("planner_score_only","conventional_safety","cowp"):
     x=report["online"].get(m,{}); s=x.get("standard",{}); d=x.get("diagnostic",{})
     def g(v): return "-" if v is None else f"{float(v):.4f}"
-    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/valid_candidates'))} | {g(d.get('ClosedLoopMean/conventional_candidates'))} | {g(d.get('ClosedLoopMean/accepted_candidates'))} | {g(d.get('ClosedLoopFallbackStepRate'))} | {g(d.get('ClosedLoopMean/selected_candidate_cert_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_pressure_prior'))} | {g(d.get('ClosedLoopMean/selected_candidate_rule_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_action_risk'))} |")
+    lines.append(f"| {m} | {x.get('num_rollouts','-')} | {g(s.get('CR'))} | {g(s.get('CollisionRate'))} | {g(s.get('OffroadRate'))} | {g(s.get('EP'))} | {g(s.get('KinematicsInfeasibilityRate'))} | {g(d.get('ClosedLoopMean/valid_candidates'))} | {g(d.get('ClosedLoopMean/conventional_candidates'))} | {g(d.get('ClosedLoopMean/accepted_candidates'))} | {g(d.get('ClosedLoopFallbackStepRate'))} | {g(d.get('ClosedLoopMean/selected_candidate_cert_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_pressure_prior'))} | {g(d.get('ClosedLoopMean/selected_candidate_rule_risk'))} | {g(d.get('ClosedLoopMean/selected_candidate_action_risk'))} | {g(d.get('ClosedLoopMean/selected_outcome_decision_risk'))} |")
 lines += ["", "## Gates", ""]
 for k,v in report["gates"].items():
     passed=v.get("pass")

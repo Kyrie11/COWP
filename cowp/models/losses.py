@@ -664,6 +664,38 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     fs_logits = _safe_float(pred["candidate_false_safe_logit"])
     quality_logits = _safe_float(pred.get("candidate_quality_logit", -fs_logits + ncf_logits))
 
+    # Outcome-contrastive certificate upgrade.  The old certificate only learned
+    # pseudo NCF/false-safe labels and collapsed to 0.5/0.5 on the current run.
+    # When replayed Waymax candidate outcomes are attached, treat collision,
+    # offroad, or high log-divergence as direct negative evidence and collision-
+    # free/offroad-free rollouts as direct positive safety evidence.  This keeps
+    # the explanatory P-NCF labels, but grounds the candidate head in the same
+    # closed-loop outcome distribution used for Waymax evaluation.
+    rollout_valid = batch.get("waymax/candidate_rollout_valid")
+    outcome_safe = torch.zeros_like(mask)
+    outcome_unsafe = torch.zeros_like(mask)
+    if rollout_valid is not None:
+        rv = rollout_valid.bool() & mask
+        unsafe = torch.zeros_like(mask)
+        col = batch.get("waymax/candidate_collision")
+        off = batch.get("waymax/candidate_offroad")
+        ld = batch.get("waymax/candidate_log_divergence")
+        if col is not None:
+            unsafe = unsafe | (_binary_target(col) > 0.5)
+        if off is not None:
+            unsafe = unsafe | (_binary_target(off) > 0.5)
+        if ld is not None:
+            ld_target = _safe_float(ld).clamp_min(0.0)
+            unsafe = unsafe | (ld_target > float(weights.get("candidate_outcome_logdiv_unsafe_threshold", weights.get("outcome_logdiv_unsafe_threshold", 8.0))))
+        outcome_unsafe = rv & unsafe
+        outcome_safe = rv & ~unsafe
+        # Outcome unsafe candidates should not receive high NCF probability, even
+        # when pseudo-labels are ambiguous.  Outcome safe candidates get a weak NCF
+        # target; false_safe remains available for P-NCF semantics.
+        ncf = torch.where(outcome_unsafe, torch.zeros_like(ncf), ncf)
+        ncf = torch.where(outcome_safe & (ncf <= 0.5) & (false_safe <= 0.5), torch.full_like(ncf, float(weights.get("candidate_outcome_safe_ncf_target", 0.75))), ncf)
+        false_safe = torch.where(outcome_unsafe, torch.ones_like(false_safe), false_safe)
+
     # Label imbalance is strong but scene-dependent; use bounded dynamic weights.
     pos_n = ((ncf > 0.5) & mask).float().sum()
     neg_n = ((ncf <= 0.5) & mask).float().sum()
@@ -677,11 +709,12 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     ncf_loss = masked_mean(ncf_loss_raw, mask)
     fs_loss = masked_mean(fs_loss_raw, mask)
 
-    # Quality logit is positive for NCF candidates and negative for false-safe
-    # candidates; ambiguous candidates are ignored to avoid contradictory targets.
-    disc = mask & ((ncf > 0.5) | (false_safe > 0.5))
+    # Quality logit is positive for NCF/outcome-safe candidates and negative for
+    # false-safe/outcome-unsafe candidates; ambiguous candidates are ignored.
+    disc = mask & ((ncf > 0.5) | (false_safe > 0.5) | outcome_safe | outcome_unsafe)
     if disc.any():
-        q_target = (ncf > 0.5).float()
+        q_target = ((ncf > 0.5) | outcome_safe).float()
+        q_target = torch.where(outcome_unsafe, torch.zeros_like(q_target), q_target)
         q_loss = masked_mean(F.binary_cross_entropy_with_logits(quality_logits, q_target, reduction="none"), disc)
     else:
         q_loss = _zero_like_loss(quality_logits)
@@ -701,8 +734,8 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     rank_terms = []
     margin = float(weights.get("candidate_cert_pair_margin", 1.0))
     for b in range(mask.shape[0]):
-        pos = torch.where(mask[b] & (ncf[b] > 0.5))[0]
-        neg = torch.where(mask[b] & (false_safe[b] > 0.5))[0]
+        pos = torch.where(mask[b] & ((ncf[b] > 0.5) | outcome_safe[b]))[0]
+        neg = torch.where(mask[b] & ((false_safe[b] > 0.5) | outcome_unsafe[b]))[0]
         if pos.numel() and neg.numel():
             rank_terms.append(torch.relu(margin - quality_logits[b, pos[:, None]] + quality_logits[b, neg[None, :]]).mean())
     rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(quality_logits)
