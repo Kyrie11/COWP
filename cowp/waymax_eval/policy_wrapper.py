@@ -1652,6 +1652,33 @@ class COWPWaymaxPolicy:
             else:
                 outcome_risk = self.torch.zeros_like(scores)
             outcome_decision_risk = _scene_norm(outcome_risk)
+
+            # Hybrid outcome-calibrated certificate for online COWP.  If the newly
+            # added candidate certificate head is still flat after a resumed run,
+            # using it directly makes all certificate risks identical and COWP
+            # degenerates to conventional_safety.  In that case, replace most of
+            # the certificate with a calibrated fallback from the outcome head plus
+            # rule/action/pressure priors.  When the certificate head has spread,
+            # keep it as the primary signal and only add a small stabilizing mix.
+            fallback_cert_risk = (
+                float(pcfg_runtime.get("candidate_cert_fallback_outcome_mix", 0.55)) * outcome_decision_risk
+                + float(pcfg_runtime.get("candidate_cert_fallback_action_mix", 0.20)) * action_decision_risk
+                + float(pcfg_runtime.get("candidate_cert_fallback_rule_mix", 0.15)) * rule_decision_risk
+                + float(pcfg_runtime.get("candidate_cert_fallback_pressure_mix", 0.10)) * pressure_decision_risk
+            ).clamp(0.0, 1.0)
+            raw_vals = candidate_cert_risk[cand_valid] if bool(cand_valid.any().detach().cpu().item()) else candidate_cert_risk[:0]
+            raw_spread = raw_vals.float().std(unbiased=False) if raw_vals.numel() > 1 else self.torch.tensor(0.0, device=self.dev, dtype=scores.dtype)
+            flat_cert = bool((raw_spread < float(pcfg_runtime.get("candidate_cert_fallback_min_std", 2.0e-3))).detach().cpu().item())
+            mix_value = float(pcfg_runtime.get("candidate_cert_flat_fallback_mix", 0.90) if flat_cert else pcfg_runtime.get("candidate_cert_hybrid_fallback_mix", 0.25))
+            cert_decision_risk = ((1.0 - mix_value) * cert_decision_risk + mix_value * fallback_cert_risk).clamp(0.0, 1.0)
+            fb_ncf = (1.0 - fallback_cert_risk).clamp(0.02, 0.98)
+            fb_fs = fallback_cert_risk.clamp(0.02, 0.98)
+            fb_q = (1.0 - fallback_cert_risk).clamp(0.02, 0.98)
+            cand_ncf_prob = ((1.0 - mix_value) * cand_ncf_prob + mix_value * fb_ncf).clamp(0.0, 1.0)
+            cand_false_safe_prob = ((1.0 - mix_value) * cand_false_safe_prob + mix_value * fb_fs).clamp(0.0, 1.0)
+            cand_quality_prob = ((1.0 - mix_value) * cand_quality_prob + mix_value * fb_q).clamp(0.0, 1.0)
+            candidate_cert_risk = cert_decision_risk
+
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             witness_cert = self.torch.where(crit_mask[None, :], witness_cert, self.torch.zeros_like(witness_cert))

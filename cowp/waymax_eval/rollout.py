@@ -128,24 +128,80 @@ def _witness_probability_and_certificate(pred_witness, cfg=None):
 
 
 
-def _candidate_certificate_scores(pred, scores):
+def _candidate_certificate_scores(pred, scores, cfg: dict | None = None, mask=None):
+    """Return calibrated candidate certificate probabilities.
+
+    A newly added certificate head can be missing or effectively flat when a run
+    resumes from an older planner/witness checkpoint.  In that failure mode the
+    raw head emits 0.5/0.5/0.5 and the COWP frontier becomes indistinguishable
+    from conventional_safety.  Use the learned head when it has within-scene
+    spread; otherwise blend in an outcome-calibrated fallback constructed from
+    the planner score and the learned Waymax outcome head.  This keeps the
+    frontier outcome-calibrated while the dedicated certificate head is still
+    being learned, rather than silently dropping the certificate from selection.
+    """
     import torch
+    pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+    scores_f = torch.nan_to_num(scores.detach().float(), nan=0.0, posinf=1e6, neginf=-1e6)
+    if mask is None:
+        mask_t = torch.isfinite(scores_f)
+    else:
+        mask_t = mask.bool()
+
     ncf_logit = pred.get("candidate_ncf_logit")
     fs_logit = pred.get("candidate_false_safe_logit")
     q_logit = pred.get("candidate_quality_logit")
+    has_head = torch.is_tensor(ncf_logit) and torch.is_tensor(fs_logit)
     if torch.is_tensor(ncf_logit):
         ncf_prob = torch.sigmoid(torch.nan_to_num(ncf_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
     else:
-        # Fallback for legacy checkpoints: lower planner score means better NCF.
-        ncf_prob = torch.sigmoid(torch.nan_to_num(-scores.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+        ncf_prob = torch.sigmoid(torch.nan_to_num(-scores_f, nan=0.0, posinf=20.0, neginf=-20.0))
     if torch.is_tensor(fs_logit):
         false_safe_prob = torch.sigmoid(torch.nan_to_num(fs_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
     else:
-        false_safe_prob = torch.sigmoid(torch.nan_to_num(scores.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+        false_safe_prob = torch.sigmoid(torch.nan_to_num(scores_f, nan=0.0, posinf=20.0, neginf=-20.0))
     if torch.is_tensor(q_logit):
         quality_prob = torch.sigmoid(torch.nan_to_num(q_logit.detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
     else:
         quality_prob = ncf_prob * (1.0 - false_safe_prob)
+
+    # Outcome-calibrated fallback risk.  Lower planner score is better, while
+    # collision/offroad/log-divergence probabilities from the outcome head are
+    # direct closed-loop risk predictions.  Normalize within each scene so the
+    # fallback is a ranking certificate, not an absolute probability claim.
+    planner_risk = _scene_normalized_risk_torch(scores_f, mask_t, cfg)
+    outcome = pred.get("outcome", {})
+    if isinstance(outcome, dict) and ("collision_logit" in outcome or "offroad_logit" in outcome or "logdiv" in outcome):
+        col_r = torch.sigmoid(torch.nan_to_num(outcome.get("collision_logit", torch.zeros_like(scores_f)).detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+        off_r = torch.sigmoid(torch.nan_to_num(outcome.get("offroad_logit", torch.zeros_like(scores_f)).detach().float(), nan=0.0, posinf=20.0, neginf=-20.0))
+        ld_r = torch.nan_to_num(outcome.get("logdiv", torch.zeros_like(scores_f)).detach().float(), nan=0.0, posinf=50.0, neginf=0.0).clamp_min(0.0) / 10.0
+        outcome_risk = _scene_normalized_risk_torch(col_r + off_r + ld_r, mask_t, cfg)
+        outcome_mix = float(pcfg.get("candidate_cert_fallback_outcome_mix", 0.70))
+        fallback_risk = (outcome_mix * outcome_risk + (1.0 - outcome_mix) * planner_risk).clamp(0.0, 1.0)
+    else:
+        fallback_risk = planner_risk.clamp(0.0, 1.0)
+    fb_ncf = (1.0 - fallback_risk).clamp(0.02, 0.98)
+    fb_fs = fallback_risk.clamp(0.02, 0.98)
+    fb_q = (1.0 - fallback_risk).clamp(0.02, 0.98)
+
+    if has_head:
+        raw_risk = _candidate_certificate_risk(ncf_prob, false_safe_prob, quality_prob, cfg)
+        raw_spread = torch.zeros(raw_risk.shape[0], device=raw_risk.device, dtype=raw_risk.dtype)
+        for b in range(int(raw_risk.shape[0])):
+            vals = raw_risk[b, mask_t[b]] if mask_t.ndim == raw_risk.ndim else raw_risk[b]
+            if vals.numel() > 1:
+                raw_spread[b] = vals.float().std(unbiased=False)
+        flat = raw_spread < float(pcfg.get("candidate_cert_fallback_min_std", 2.0e-3))
+        base_mix = float(pcfg.get("candidate_cert_hybrid_fallback_mix", 0.25))
+        flat_mix = float(pcfg.get("candidate_cert_flat_fallback_mix", 0.90))
+        mix = torch.where(flat, raw_spread.new_full(raw_spread.shape, flat_mix), raw_spread.new_full(raw_spread.shape, base_mix))
+        while mix.ndim < ncf_prob.ndim:
+            mix = mix.unsqueeze(-1)
+        ncf_prob = (1.0 - mix) * ncf_prob + mix * fb_ncf
+        false_safe_prob = (1.0 - mix) * false_safe_prob + mix * fb_fs
+        quality_prob = (1.0 - mix) * quality_prob + mix * fb_q
+    else:
+        ncf_prob, false_safe_prob, quality_prob = fb_ncf, fb_fs, fb_q
     return ncf_prob.clamp(0.0, 1.0), false_safe_prob.clamp(0.0, 1.0), quality_prob.clamp(0.0, 1.0)
 
 
@@ -311,7 +367,7 @@ def _select_from_learned(
         utility_scores = torch.nan_to_num(utility.detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
     else:
         utility_scores = scores
-    cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores)
+    cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores, cfg, cand_valid)
     candidate_cert_risk = _candidate_certificate_risk(cand_ncf_prob, cand_false_safe_prob, cand_quality_prob, cfg)
     pressure_prior = _candidate_pressure_prior_torch(batch, cfg, scores)
     rule_risk = batch.get("cowp/candidates/rule_risk")
@@ -876,7 +932,7 @@ def _learned_offline_candidate_eval_many(
             ncf_np = batch["cowp/candidates/noncoercive_feasible"].bool().detach().cpu().numpy()
             fs_np = batch["cowp/candidates/false_safe"].bool().detach().cpu().numpy()
             valid_np = cand_mask.detach().cpu().numpy()
-            cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"])
+            cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"], cfg, cand_mask)
             cert_risk_t = _candidate_certificate_risk(cert_ncf_t, cert_fs_t, cert_q_t, cfg)
             pressure_prior_t = _candidate_pressure_prior_torch(batch, cfg, pred["planner_score"].detach().float())
             rule_risk_t = batch.get("cowp/candidates/rule_risk")

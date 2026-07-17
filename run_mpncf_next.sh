@@ -73,6 +73,29 @@ json.load(open(sys.argv[1], encoding="utf-8"))
 PY
 }
 
+json_matches_ckpt() {
+  local f="$1" ckpt="$2" method="${3:-}" mode="${4:-}"
+  [[ -s "$f" ]] || return 1
+  "$PYTHON_BIN" - "$f" "$ckpt" "$method" "$mode" <<'PY' >/dev/null 2>&1
+import json, sys
+path, ckpt, method, mode = sys.argv[1:5]
+try:
+    d = json.load(open(path, encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if ckpt and str(d.get("checkpoint", "")) != ckpt:
+    raise SystemExit(1)
+if mode and str(d.get("mode", "")) != mode:
+    raise SystemExit(1)
+if method:
+    if mode == "waymax" and str(d.get("method", d.get("baseline", ""))) != method:
+        raise SystemExit(1)
+    if mode == "learned_offline" and method not in d:
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
 wait_all() {
   local status=0 pid
   for pid in "$@"; do
@@ -263,16 +286,17 @@ w["witness_balanced_fraction"] = float(w.get("witness_balanced_fraction", 0.75))
 # dominated by the saturated pair certificate.  Shift the planner stage toward
 # candidate-level NCF/false-safe discrimination.
 w["planner_witness_scale"] = float(w.get("planner_witness_scale", 0.005))
-w["candidate_certificate"] = float(w.get("candidate_certificate", 3.0))
-w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 2.0))
-w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 3.0))
-w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.5))
-w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 1.0))
-w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 2.5))
-w["candidate_certificate_risk_bce"] = float(w.get("candidate_certificate_risk_bce", 2.0))
-w["candidate_certificate_risk_rank"] = float(w.get("candidate_certificate_risk_rank", 2.0))
-w["candidate_certificate_spread"] = float(w.get("candidate_certificate_spread", 0.25))
-w["candidate_cert_min_logit_spread"] = float(w.get("candidate_cert_min_logit_spread", 0.35))
+w["candidate_certificate"] = float(w.get("candidate_certificate", 4.0))
+w["candidate_certificate_ncf"] = float(w.get("candidate_certificate_ncf", 2.5))
+w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false_safe", 3.5))
+w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 2.0))
+w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 1.25))
+w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 3.0))
+w["candidate_certificate_risk_bce"] = float(w.get("candidate_certificate_risk_bce", 3.0))
+w["candidate_certificate_risk_rank"] = float(w.get("candidate_certificate_risk_rank", 3.0))
+w["candidate_certificate_spread"] = float(w.get("candidate_certificate_spread", 0.50))
+w["candidate_cert_min_logit_spread"] = float(w.get("candidate_cert_min_logit_spread", 0.50))
+w["candidate_cert_pair_margin"] = float(w.get("candidate_cert_pair_margin", 1.25))
 w["candidate_outcome_logdiv_unsafe_threshold"] = float(w.get("candidate_outcome_logdiv_unsafe_threshold", 8.0))
 w["candidate_outcome_safe_ncf_target"] = float(w.get("candidate_outcome_safe_ncf_target", 0.75))
 w["closed_loop"] = float(w.get("closed_loop", 2.0))
@@ -300,6 +324,15 @@ pcfg["candidate_max_false_safe_prob"] = float(pcfg.get("candidate_max_false_safe
 pcfg["candidate_risk_ncf_weight"] = float(pcfg.get("candidate_risk_ncf_weight", 1.0))
 pcfg["candidate_risk_false_safe_weight"] = float(pcfg.get("candidate_risk_false_safe_weight", 2.0))
 pcfg["candidate_risk_quality_weight"] = float(pcfg.get("candidate_risk_quality_weight", 0.75))
+# Hybrid certificate fallback: if the learned candidate head is flat, make
+# outcome-risk ranking the certificate used by the COWP frontier.
+pcfg["candidate_cert_fallback_min_std"] = float(pcfg.get("candidate_cert_fallback_min_std", 2.0e-3))
+pcfg["candidate_cert_flat_fallback_mix"] = float(pcfg.get("candidate_cert_flat_fallback_mix", 0.90))
+pcfg["candidate_cert_hybrid_fallback_mix"] = float(pcfg.get("candidate_cert_hybrid_fallback_mix", 0.25))
+pcfg["candidate_cert_fallback_outcome_mix"] = float(pcfg.get("candidate_cert_fallback_outcome_mix", 0.55))
+pcfg["candidate_cert_fallback_action_mix"] = float(pcfg.get("candidate_cert_fallback_action_mix", 0.20))
+pcfg["candidate_cert_fallback_rule_mix"] = float(pcfg.get("candidate_cert_fallback_rule_mix", 0.15))
+pcfg["candidate_cert_fallback_pressure_mix"] = float(pcfg.get("candidate_cert_fallback_pressure_mix", 0.10))
 pcfg["candidate_pair_risk_mix"] = float(pcfg.get("candidate_pair_risk_mix", 0.08))
 pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.50))
 pcfg["candidate_frontier_min_keep"] = int(pcfg.get("candidate_frontier_min_keep", 2))
@@ -492,7 +525,7 @@ CAL_SWEEP="$OUT_ROOT/eval/learned_offline/calibration_sweep.json"
 CAL_JSON="$OUT_ROOT/eval/witness_calibration.json"
 if [[ "$RUN_OFFLINE_EVAL" == 1 ]]; then
   echo "[4/8] Witness threshold calibration on calibration split"
-  if [[ "$FORCE_EVAL" == 1 ]] || ! json_ok "$CAL_SWEEP"; then
+  if [[ "$FORCE_EVAL" == 1 ]] || ! json_matches_ckpt "$CAL_SWEEP" "$CKPT" "cowp" "learned_offline"; then
     run_logged calibrate_sweep env CUDA_VISIBLE_DEVICES=0 "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
       --data-config configs/data.yaml --label-config "$LABEL_CFG" --eval-config configs/eval.yaml \
       --cache-dir "$CALIB_CACHE" --mode learned_offline --method cowp \
@@ -515,8 +548,8 @@ echo "Calibrated witness threshold: $WITNESS_THRESHOLD"
 
 run_learned_eval() {
   local method="$1" gpu="$2" output="$3"
-  if [[ "$FORCE_EVAL" != 1 ]] && json_ok "$output"; then
-    echo "[learned/$method] keep existing"
+  if [[ "$FORCE_EVAL" != 1 ]] && json_matches_ckpt "$output" "$CKPT" "$method" "learned_offline"; then
+    echo "[learned/$method] keep existing for checkpoint $CKPT"
     return
   fi
   env CUDA_VISIBLE_DEVICES="$gpu" "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
@@ -553,8 +586,8 @@ run_waymax_method() {
   local shards=()
   for shard in $(seq 0 $((NUM_GPUS-1))); do
     out="$OUT_ROOT/eval/waymax/${method}_shard${shard}.json"
-    if [[ "$FORCE_EVAL" != 1 ]] && json_ok "$out"; then
-      echo "[waymax/$method] keep shard $shard"
+    if [[ "$FORCE_EVAL" != 1 ]] && json_matches_ckpt "$out" "$CKPT" "$method" "waymax"; then
+      echo "[waymax/$method] keep shard $shard for checkpoint $CKPT"
       continue
     fi
     local metric_args=() clear_args=() progress_args=() env_reuse_args=()
