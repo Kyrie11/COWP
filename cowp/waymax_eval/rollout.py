@@ -334,6 +334,39 @@ def _candidate_pressure_prior_torch(batch, cfg: dict | None, scores):
     return torch.nan_to_num(out, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
 
 
+
+def _topk_frontier_mask_torch(base_mask, risk, tie_breaker=None, *, keep_frac=0.40, keep_min=1, keep_max=4, eps=1.0e-3):
+    """Return an exact-cardinality low-risk frontier.
+
+    Quantile cutoffs select every tied candidate.  When certificate/outcome risk
+    is flat, that expands the frontier back to the full conventional set and
+    makes COWP indistinguishable from conventional_safety.  This helper always
+    returns exactly top-k candidates per scene, with a deterministic tie-breaker.
+    """
+    import torch
+
+    base = base_mask.bool()
+    frontier = torch.zeros_like(base)
+    if not bool(base.any().detach().cpu().item()):
+        return frontier
+    idx = torch.where(base)[0]
+    n = int(idx.numel())
+    k = max(int(keep_min), int(torch.ceil(torch.tensor(float(n) * float(keep_frac), device=risk.device)).item()))
+    k = min(max(k, 1), n, max(int(keep_max), 1))
+    r = torch.nan_to_num(risk[idx].float(), nan=1.0, posinf=1.0, neginf=0.0)
+    if tie_breaker is None:
+        tb = torch.arange(n, device=risk.device, dtype=r.dtype) / max(float(n), 1.0)
+    else:
+        tb = torch.nan_to_num(tie_breaker[idx].float(), nan=0.0, posinf=1.0, neginf=0.0)
+        if tb.numel() > 1:
+            lo = tb.min(); hi = tb.max(); span = (hi - lo).clamp_min(1.0e-6)
+            tb = ((tb - lo) / span).clamp(0.0, 1.0)
+        else:
+            tb = torch.zeros_like(tb)
+    order = torch.argsort(r + float(eps) * tb, stable=True)
+    frontier[idx[order[:k]]] = True
+    return frontier
+
 def _select_from_learned(
     batch,
     pred,
@@ -497,10 +530,17 @@ def _select_from_learned(
             risk_b = risk[b, idx]
             k = max(keep_min, int(torch.ceil(torch.tensor(float(idx.numel()) * keep_frac)).item()))
             k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
-            cutoff = torch.kthvalue(risk_b, k).values
-            frontier = base_b & (risk[b] <= cutoff + 1e-6)
+            # Exact-cardinality frontier.  Do not use a threshold cutoff here:
+            # if risk is flat, ``risk <= kth_value`` selects every conventional
+            # candidate and COWP collapses to conventional_safety.
+            tie = adjusted_scores[b] + 0.25 * outcome_decision_risk[b] + 0.10 * pressure_decision_risk[b]
+            frontier = _topk_frontier_mask_torch(
+                base_b, risk[b], tie,
+                keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,
+                eps=float(pcfg.get("candidate_frontier_tie_eps", 1.0e-3)),
+            )
             # Use absolute probabilities only as a weak sanity screen.  If the
-            # screen would remove everything, fall back to the relative quantile
+            # screen would remove everything, fall back to the exact top-k
             # frontier; otherwise early probability miscalibration cannot collapse
             # the controller into all-fallback.
             screened = frontier & (cand_ncf_prob[b] >= min_ncf) & (cand_false_safe_prob[b] <= max_fs)

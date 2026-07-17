@@ -660,6 +660,12 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
         return {"loss": z, "ncf": z, "false_safe": z, "quality": z, "prior": z, "rank": z}
     ncf = _binary_target(batch.get("cowp/candidates/noncoercive_feasible", torch.zeros_like(pred["candidate_ncf_logit"])))
     false_safe = _binary_target(batch.get("cowp/candidates/false_safe", torch.zeros_like(pred["candidate_false_safe_logit"])))
+    # The certificate is a feasibility certificate, not two independent labels.
+    # If a noisy cache marks a candidate as both noncoercive_feasible and
+    # false_safe, let false_safe dominate for the ranking head.  Otherwise the
+    # head can satisfy BCE by predicting high NCF and ambiguous/low risk for
+    # false-safe candidates, keeping RiskRankingPairAccuracy at zero.
+    ncf = torch.where(false_safe > 0.5, torch.zeros_like(ncf), ncf)
     ncf_logits = _safe_float(pred["candidate_ncf_logit"])
     fs_logits = _safe_float(pred["candidate_false_safe_logit"])
     quality_logits = _safe_float(pred.get("candidate_quality_logit", -fs_logits + ncf_logits))

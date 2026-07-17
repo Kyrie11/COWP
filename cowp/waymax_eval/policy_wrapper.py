@@ -1355,6 +1355,38 @@ def _consistent_one_step_target(
     return target, accel
 
 
+
+def _topk_frontier_mask_1d(base_mask, risk, tie_breaker=None, *, keep_frac=0.40, keep_min=1, keep_max=4, eps=1.0e-3):
+    """Exact top-k frontier for one online scene.
+
+    A quantile threshold keeps every tied candidate when certificate risk is
+    flat, so COWP becomes conventional_safety.  Exact top-k preserves the
+    intended set-valued feasibility layer.
+    """
+    import torch
+
+    base = base_mask.bool()
+    frontier = torch.zeros_like(base)
+    if not bool(base.any().detach().cpu().item()):
+        return frontier
+    idx = torch.where(base)[0]
+    n = int(idx.numel())
+    k = max(int(keep_min), int(torch.ceil(torch.tensor(float(n) * float(keep_frac), device=risk.device)).item()))
+    k = min(max(k, 1), n, max(int(keep_max), 1))
+    r = torch.nan_to_num(risk[idx].float(), nan=1.0, posinf=1.0, neginf=0.0)
+    if tie_breaker is None:
+        tb = torch.arange(n, device=risk.device, dtype=r.dtype) / max(float(n), 1.0)
+    else:
+        tb = torch.nan_to_num(tie_breaker[idx].float(), nan=0.0, posinf=1.0, neginf=0.0)
+        if tb.numel() > 1:
+            lo = tb.min(); hi = tb.max(); span = (hi - lo).clamp_min(1.0e-6)
+            tb = ((tb - lo) / span).clamp(0.0, 1.0)
+        else:
+            tb = torch.zeros_like(tb)
+    order = torch.argsort(r + float(eps) * tb, stable=True)
+    frontier[idx[order[:k]]] = True
+    return frontier
+
 @dataclass
 class COWPWaymaxPolicy:
     checkpoint: str
@@ -1778,20 +1810,22 @@ class COWPWaymaxPolicy:
                         keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
                         k = max(keep_min, int(self.torch.ceil(self.torch.tensor(float(idx.numel()) * keep_frac, device=self.dev)).item()))
                         k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
-                        cutoff = self.torch.kthvalue(frontier_risk[idx], k).values
-                        frontier = frontier_base & (frontier_risk <= cutoff + 1e-6)
+                        # Exact-cardinality frontier.  A threshold cutoff would
+                        # keep every tied candidate when certificate/outcome risk is
+                        # flat, which is exactly how COWP collapsed to
+                        # conventional_safety in v2.
+                        tie = adjusted_scores + 0.25 * outcome_decision_risk + 0.10 * action_decision_risk
+                        frontier = _topk_frontier_mask_1d(
+                            frontier_base, frontier_risk, tie,
+                            keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,
+                            eps=float(self.cfg.get("planning", {}).get("candidate_frontier_tie_eps", 1.0e-3)),
+                        )
                         min_ncf = float(self.cfg.get("planning", {}).get("candidate_min_ncf_prob", 0.05))
                         max_fs = float(self.cfg.get("planning", {}).get("candidate_max_false_safe_prob", 0.95))
                         screened = frontier & (cand_ncf_prob >= min_ncf) & (cand_false_safe_prob <= max_fs)
                         if bool(screened.any().detach().cpu().item()):
                             frontier = screened
                         if bool(frontier.any().detach().cpu().item()):
-                            # Make the P-NCF frontier an actual feasibility layer.
-                            # In the previous run COWP often degenerated to the
-                            # full conventional set, making its closed-loop output
-                            # identical to conventional_safety.  For method=cowp,
-                            # once a least-coercive frontier exists, select inside
-                            # it rather than merely using it as a weak score hint.
                             accepted = frontier
                             adjusted_scores = adjusted_scores + frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
