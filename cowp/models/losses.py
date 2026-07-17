@@ -732,13 +732,46 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     # Pair ranking inside each scene: NCF candidates should have higher quality
     # and lower false-safe score than false-safe candidates.
     rank_terms = []
+    risk_rank_terms = []
+    spread_terms = []
     margin = float(weights.get("candidate_cert_pair_margin", 1.0))
+    risk_logit = fs_logits - ncf_logits - 0.5 * quality_logits
+    safe_disc = mask & ((ncf > 0.5) | outcome_safe)
+    unsafe_disc = mask & ((false_safe > 0.5) | outcome_unsafe)
+    risk_disc = safe_disc | unsafe_disc
     for b in range(mask.shape[0]):
-        pos = torch.where(mask[b] & ((ncf[b] > 0.5) | outcome_safe[b]))[0]
-        neg = torch.where(mask[b] & ((false_safe[b] > 0.5) | outcome_unsafe[b]))[0]
+        pos = torch.where(safe_disc[b])[0]
+        neg = torch.where(unsafe_disc[b])[0]
         if pos.numel() and neg.numel():
             rank_terms.append(torch.relu(margin - quality_logits[b, pos[:, None]] + quality_logits[b, neg[None, :]]).mean())
+            # Outcome-calibrated risk should be lower on NCF/outcome-safe
+            # candidates than on false-safe/outcome-unsafe candidates.  This
+            # gives the certificate a directly usable scene-level ordering, not
+            # only three independent probabilities.
+            risk_rank_terms.append(torch.relu(margin + risk_logit[b, pos[:, None]] - risk_logit[b, neg[None, :]]).mean())
+            # Prevent the 0.5/0.5/0.5 collapse observed in closed-loop runs by
+            # requiring some within-scene risk spread only when both classes are
+            # actually present.  The term is bounded and inactive on one-class
+            # scenes, so it does not create artificial separation where labels do
+            # not support it.
+            vals = risk_logit[b, torch.cat([pos, neg])].float()
+            if vals.numel() > 2:
+                min_spread = float(weights.get("candidate_cert_min_logit_spread", 0.35))
+                spread_terms.append(torch.relu(vals.new_tensor(min_spread) - vals.std(unbiased=False)))
     rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(quality_logits)
+    risk_rank = torch.stack(risk_rank_terms).mean() if risk_rank_terms else _zero_like_loss(quality_logits)
+    spread = torch.stack(spread_terms).mean() if spread_terms else _zero_like_loss(quality_logits)
+
+    if risk_disc.any():
+        risk_target = torch.where(unsafe_disc, torch.ones_like(risk_logit), torch.zeros_like(risk_logit))
+        # Unsafe candidates are rarer and more important for closed-loop safety;
+        # use the same bounded dynamic positive weighting as the false-safe head.
+        pos_r = unsafe_disc.float().sum()
+        neg_r = safe_disc.float().sum()
+        risk_pw = (neg_r / pos_r.clamp_min(1.0)).clamp(1.0, float(weights.get("candidate_cert_max_pos_weight", 6.0)))
+        risk_bce = masked_mean(F.binary_cross_entropy_with_logits(risk_logit, risk_target, reduction="none", pos_weight=risk_pw), risk_disc)
+    else:
+        risk_bce = _zero_like_loss(quality_logits)
 
     total = (
         float(weights.get("candidate_certificate_ncf", 1.0)) * ncf_loss
@@ -746,8 +779,14 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
         + float(weights.get("candidate_certificate_quality", 1.0)) * q_loss
         + float(weights.get("candidate_certificate_prior", 0.5)) * prior
         + float(weights.get("candidate_certificate_rank", 0.5)) * rank
+        + float(weights.get("candidate_certificate_risk_bce", 1.0)) * risk_bce
+        + float(weights.get("candidate_certificate_risk_rank", 1.0)) * risk_rank
+        + float(weights.get("candidate_certificate_spread", 0.0)) * spread
     )
-    return {"loss": total, "ncf": ncf_loss, "false_safe": fs_loss, "quality": q_loss, "prior": prior, "rank": rank}
+    return {
+        "loss": total, "ncf": ncf_loss, "false_safe": fs_loss, "quality": q_loss,
+        "prior": prior, "rank": rank, "risk_bce": risk_bce, "risk_rank": risk_rank, "spread": spread,
+    }
 
 
 def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:

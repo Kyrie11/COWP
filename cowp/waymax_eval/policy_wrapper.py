@@ -1129,36 +1129,61 @@ def _one_step_action_risk_np(
     cfg: dict,
     previous_longitudinal_accel: float = 0.0,
 ) -> np.ndarray:
+    """Kinematic-action risk used by the online frontier.
+
+    The previous version only inspected the first commanded waypoint.  Waymax
+    kinematic infeasibility can also be triggered by short-horizon acceleration,
+    yaw-rate, or jerk spikes after the first step.  This diagnostic therefore
+    scores the first few waypoints and uses the maximum violation as a
+    hard-to-game selection penalty while still returning a compact [K] risk.
+    """
     K = int(candidates.shape[0])
     out = np.zeros(K, dtype=np.float32)
     if not (0 <= int(sdc_index) < int(agent_state.shape[0])):
         return out
     dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1e-3)
     cand_cfg = cfg.get("candidate", {})
+    pcfg = cfg.get("planning", {})
     cur = agent_state[int(sdc_index)]
     cur_speed = float(max(np.linalg.norm(cur[3:5]), cur[5] if cur.shape[0] > 5 else 0.0, 0.0))
     cur_yaw = float(cur[6])
-    max_accel = float(cand_cfg.get("max_accel_mps2", 4.0))
-    max_decel = float(cand_cfg.get("max_decel_mps2", 6.0))
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 1e-3)
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 1e-3)
     max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1e-3)
     max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1e-3)
+    horizon = int(pcfg.get("online_action_risk_horizon_steps", 8))
+    horizon = max(1, min(horizon, int(candidates.shape[1]) if candidates.ndim >= 3 else 1))
     for k in range(K):
         if not bool(cand_valid[k]):
             out[k] = 1.0
             continue
-        desired = candidates[k, 0]
-        desired_speed = float(np.linalg.norm(desired[3:5]))
-        if desired_speed < 1e-3:
-            desired_speed = float(np.linalg.norm(desired[:2] - cur[:2]) / dt)
-        raw_accel = (desired_speed - cur_speed) / dt
-        jerk_need = abs(raw_accel - float(previous_longitudinal_accel)) / (max_jerk * dt)
-        accel_excess = max(0.0, raw_accel - max_accel) / max(max_accel, 1e-3) + max(0.0, -raw_accel - max_decel) / max(max_decel, 1e-3)
-        if desired_speed > 0.25:
-            desired_yaw = float(np.arctan2(desired[4], desired[3]))
-        else:
-            desired_yaw = float(desired[2])
-        yaw_need = abs(float(_wrap_angle(desired_yaw - cur_yaw))) / (max_yaw_rate * dt)
-        out[k] = np.float32(np.clip(0.45 * max(0.0, jerk_need - 1.0) + 0.35 * max(0.0, yaw_need - 1.0) + 0.20 * accel_excess, 0.0, 1.0))
+        prev_speed = cur_speed
+        prev_yaw = cur_yaw
+        prev_accel = float(previous_longitudinal_accel)
+        worst = 0.0
+        for t in range(horizon):
+            desired = candidates[k, t]
+            desired_speed = float(np.linalg.norm(desired[3:5]))
+            if desired_speed < 1e-3:
+                base_xy = cur[:2] if t == 0 else candidates[k, t - 1, :2]
+                desired_speed = float(np.linalg.norm(desired[:2] - base_xy) / dt)
+            raw_accel = (desired_speed - prev_speed) / dt
+            jerk_need = abs(raw_accel - prev_accel) / (max_jerk * dt)
+            accel_excess = max(0.0, raw_accel - max_accel) / max_accel + max(0.0, -raw_accel - max_decel) / max_decel
+            if desired_speed > 0.25:
+                desired_yaw = float(np.arctan2(desired[4], desired[3]))
+            else:
+                desired_yaw = float(desired[2])
+            yaw_need = abs(float(_wrap_angle(desired_yaw - prev_yaw))) / (max_yaw_rate * dt)
+            # Early violations are most damaging because only the first action is
+            # executed, but later spikes still indicate an inconsistent candidate.
+            decay = 1.0 / (1.0 + 0.25 * float(t))
+            step_risk = decay * (0.42 * max(0.0, jerk_need - 1.0) + 0.34 * max(0.0, yaw_need - 1.0) + 0.24 * accel_excess)
+            worst = max(worst, step_risk)
+            prev_speed = desired_speed
+            prev_yaw = desired_yaw
+            prev_accel = raw_accel
+        out[k] = np.float32(np.clip(worst, 0.0, 1.0))
     return out
 
 
@@ -1637,7 +1662,13 @@ class COWPWaymaxPolicy:
                         if bool(screened.any().detach().cpu().item()):
                             frontier = screened
                         if bool(frontier.any().detach().cpu().item()):
-                            accepted = (accepted & frontier) if bool(accepted.any().detach().cpu().item()) else frontier
+                            # Make the P-NCF frontier an actual feasibility layer.
+                            # In the previous run COWP often degenerated to the
+                            # full conventional set, making its closed-loop output
+                            # identical to conventional_safety.  For method=cowp,
+                            # once a least-coercive frontier exists, select inside
+                            # it rather than merely using it as a weak score hint.
+                            accepted = frontier
                             adjusted_scores = adjusted_scores + frontier_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
@@ -1678,6 +1709,7 @@ class COWPWaymaxPolicy:
                 "step": int(step) if step is not None else -1,
                 "selected_candidate": int(selected),
                 "accepted_candidates": int(accepted.sum().detach().cpu().item()),
+                "frontier_candidates": int(frontier.sum().detach().cpu().item()) if 'frontier' in locals() and self.torch.is_tensor(frontier) else -1,
                 "valid_candidates": int(cand_valid.sum().detach().cpu().item()),
                 "conventional_candidates": int((cand_valid & conventional).sum().detach().cpu().item()),
                 "critical_agents": int(crit_mask.sum().detach().cpu().item()),

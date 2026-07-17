@@ -204,6 +204,11 @@ OUTCOME_RISK_THRESHOLD="${OUTCOME_RISK_THRESHOLD:-1.10}"
 COWP_FAST_DIAGNOSTICS="${COWP_FAST_DIAGNOSTICS:-0}"
 PLANNER_ONLY_RETRAIN="${PLANNER_ONLY_RETRAIN:-0}"
 WITNESS_CKPT="${WITNESS_CKPT:-}"
+# Use latest planner checkpoint after planner-only retrain.  Best-by-val can
+# silently keep an old checkpoint when the validation loss is dominated by
+# saturated witness terms; this was the main reason retraining appeared to have
+# no effect. Set CKPT_SELECTION=best to recover the old behavior.
+CKPT_SELECTION="${CKPT_SELECTION:-latest}"
 
 TRAIN_WORKERS="${TRAIN_WORKERS:-6}"
 PREFETCH="${PREFETCH:-1}"
@@ -261,6 +266,10 @@ w["candidate_certificate_false_safe"] = float(w.get("candidate_certificate_false
 w["candidate_certificate_quality"] = float(w.get("candidate_certificate_quality", 1.5))
 w["candidate_certificate_prior"] = float(w.get("candidate_certificate_prior", 1.0))
 w["candidate_certificate_rank"] = float(w.get("candidate_certificate_rank", 2.5))
+w["candidate_certificate_risk_bce"] = float(w.get("candidate_certificate_risk_bce", 2.0))
+w["candidate_certificate_risk_rank"] = float(w.get("candidate_certificate_risk_rank", 2.0))
+w["candidate_certificate_spread"] = float(w.get("candidate_certificate_spread", 0.25))
+w["candidate_cert_min_logit_spread"] = float(w.get("candidate_cert_min_logit_spread", 0.35))
 w["candidate_outcome_logdiv_unsafe_threshold"] = float(w.get("candidate_outcome_logdiv_unsafe_threshold", 8.0))
 w["candidate_outcome_safe_ncf_target"] = float(w.get("candidate_outcome_safe_ncf_target", 0.75))
 w["closed_loop"] = float(w.get("closed_loop", 2.0))
@@ -306,9 +315,10 @@ pcfg["candidate_pressure_prior_penalty"] = float(pcfg.get("candidate_pressure_pr
 pcfg["candidate_pressure_prior_mix"] = float(pcfg.get("candidate_pressure_prior_mix", 0.45))
 pcfg["candidate_rule_risk_penalty"] = float(pcfg.get("candidate_rule_risk_penalty", 2.5))
 pcfg["candidate_rule_risk_mix"] = float(pcfg.get("candidate_rule_risk_mix", 2.5))
-pcfg["candidate_action_risk_penalty"] = float(pcfg.get("candidate_action_risk_penalty", 2.0))
-pcfg["candidate_action_risk_mix"] = float(pcfg.get("candidate_action_risk_mix", 2.0))
-pcfg["candidate_outcome_risk_mix"] = float(pcfg.get("candidate_outcome_risk_mix", 1.0))
+pcfg["candidate_action_risk_penalty"] = float(pcfg.get("candidate_action_risk_penalty", 3.0))
+pcfg["candidate_action_risk_mix"] = float(pcfg.get("candidate_action_risk_mix", 3.0))
+pcfg["online_action_risk_horizon_steps"] = int(pcfg.get("online_action_risk_horizon_steps", 8))
+pcfg["candidate_outcome_risk_mix"] = float(pcfg.get("candidate_outcome_risk_mix", 1.25))
 pcfg["decision_risk_min_std"] = float(pcfg.get("decision_risk_min_std", 1e-3))
 pcfg["decision_risk_min_spread"] = float(pcfg.get("decision_risk_min_spread", 1e-3))
 pcfg["candidate_frontier_keep_fraction"] = float(pcfg.get("candidate_frontier_keep_fraction", 0.25))
@@ -459,7 +469,20 @@ if [[ "$RUN_TRAIN" == 1 ]]; then
   fi
 fi
 
-CKPT="${CKPT:-$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt}"
+if [[ -z "${CKPT:-}" ]]; then
+  if [[ "$CKPT_SELECTION" == "latest" ]]; then
+    latest_info="$(latest_valid_stage_checkpoint "$OUT_ROOT/checkpoints/planner" planner)"
+    IFS=$'\t' read -r latest_ckpt latest_epoch <<< "$latest_info"
+    if [[ -n "${latest_ckpt:-}" && -s "$latest_ckpt" ]]; then
+      CKPT="$latest_ckpt"
+      echo "Using latest planner checkpoint for eval: $CKPT (epoch=$latest_epoch)"
+    else
+      CKPT="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
+    fi
+  else
+    CKPT="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
+  fi
+fi
 require_file "$CKPT"
 
 CAL_SWEEP="$OUT_ROOT/eval/learned_offline/calibration_sweep.json"
