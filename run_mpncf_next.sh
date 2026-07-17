@@ -197,6 +197,9 @@ FORCE_EVAL="${FORCE_EVAL:-0}"
 STRICT_GATES="${STRICT_GATES:-0}"
 CLEAR_ACCELERATOR_CACHE="${CLEAR_ACCELERATOR_CACHE:-0}"
 WAYMAX_STANDARD_METRICS="${WAYMAX_STANDARD_METRICS:-1}"
+WAYMAX_STANDARD_METRIC_NAMES="${WAYMAX_STANDARD_METRIC_NAMES:-}"
+WAYMAX_STATUS_EVERY="${WAYMAX_STATUS_EVERY:-10}"
+REUSE_WAYMAX_ENV="${REUSE_WAYMAX_ENV:-1}"
 NO_PROGRESS="${NO_PROGRESS:-0}"
 ROLLOUT_HORIZON_STEPS="${ROLLOUT_HORIZON_STEPS:-80}"
 OUTCOME_RISK_PENALTY="${OUTCOME_RISK_PENALTY:-0.75}"
@@ -554,10 +557,12 @@ run_waymax_method() {
       echo "[waymax/$method] keep shard $shard"
       continue
     fi
-    local metric_args=() clear_args=() progress_args=()
+    local metric_args=() clear_args=() progress_args=() env_reuse_args=()
     [[ "$WAYMAX_STANDARD_METRICS" == 1 ]] && metric_args+=(--waymax-standard-metrics)
+    [[ -z "$WAYMAX_STANDARD_METRIC_NAMES" ]] || metric_args+=(--waymax-standard-metric-names "$WAYMAX_STANDARD_METRIC_NAMES")
     [[ "$CLEAR_ACCELERATOR_CACHE" == 1 ]] && clear_args+=(--clear-accelerator-cache)
-    [[ "$NO_PROGRESS" == 1 ]] && progress_args+=(--no-progress)
+    [[ "$NO_PROGRESS" == 1 ]] && progress_args+=(--no-progress --status-every "$WAYMAX_STATUS_EVERY")
+    [[ "$REUSE_WAYMAX_ENV" == 1 ]] && env_reuse_args+=(--reuse-waymax-env) || env_reuse_args+=(--no-reuse-waymax-env)
     run_bg_logged "waymax_${method}_shard${shard}" env CUDA_VISIBLE_DEVICES="$shard" XLA_PYTHON_CLIENT_PREALLOCATE=false "$PYTHON_BIN" -m cowp.scripts.04_eval_closed_loop \
       --data-config configs/data.yaml --label-config "$LABEL_CFG" --eval-config configs/eval.yaml \
       --mode waymax --waymax-split validation --tfexample-glob "$WAYMAX_VAL" \
@@ -570,7 +575,7 @@ run_waymax_method() {
       --priority-hard-threshold 0.55 --secondary-witness-threshold 0.85 \
       --secondary-opr-alpha 0.10 --soft-ncf-penalty 2.0 \
       --adaptive-frontier-margin 0.25 \
-      --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" "${clear_args[@]}" "${progress_args[@]}" \
+      --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" "${clear_args[@]}" "${progress_args[@]}" "${env_reuse_args[@]}" \
       --output "$out"
     pids+=("$RUN_BG_PID")
     shards+=("$out")

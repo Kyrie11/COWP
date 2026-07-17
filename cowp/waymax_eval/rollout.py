@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import gc
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -1052,6 +1053,8 @@ def import_policy_fn(spec: str) -> Callable:
 
 
 def _call_policy(policy_fn: Callable, state, step: int, scenario_index: int):
+    # Backward-compatible slow path; production rollout uses _make_policy_caller
+    # below so inspect.signature is not repeated at every simulator step.
     try:
         sig = inspect.signature(policy_fn)
         kwargs = {}
@@ -1062,6 +1065,31 @@ def _call_policy(policy_fn: Callable, state, step: int, scenario_index: int):
         return policy_fn(state, **kwargs)
     except (TypeError, ValueError):
         return policy_fn(state)
+
+
+def _make_policy_caller(policy_fn: Callable):
+    """Return a fast per-step caller with the policy signature inspected once."""
+    try:
+        sig = inspect.signature(policy_fn)
+        has_step = "step" in sig.parameters
+        has_scenario = "scenario_index" in sig.parameters
+    except (TypeError, ValueError):
+        has_step = False
+        has_scenario = False
+
+    if has_step and has_scenario:
+        def call(state, step: int, scenario_index: int):
+            return policy_fn(state, step=step, scenario_index=scenario_index)
+    elif has_step:
+        def call(state, step: int, scenario_index: int):
+            return policy_fn(state, step=step)
+    elif has_scenario:
+        def call(state, step: int, scenario_index: int):
+            return policy_fn(state, scenario_index=scenario_index)
+    else:
+        def call(state, step: int, scenario_index: int):
+            return policy_fn(state)
+    return call
 
 
 def _make_waymax_environment(max_num_objects: int | None = None, action_mode: str = "delta_xy_yaw"):
@@ -1196,6 +1224,9 @@ def waymax_closed_loop_rollout(
     tfexample_glob: str | None = None,
     shard_index: int = 0,
     num_shards: int = 1,
+    reuse_env: bool = True,
+    status_every: int = 10,
+    standard_metric_names: set[str] | list[str] | tuple[str, ...] | None = None,
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -1212,6 +1243,19 @@ def waymax_closed_loop_rollout(
     shard_index = int(shard_index) % num_shards
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
+    env_cache: dict[tuple[int | None, str], object] = {}
+    call_policy = _make_policy_caller(policy_fn)
+    started_at = time.time()
+    last_status_at = started_at
+    standard_metric_objects = None
+    standard_metric_errors = {}
+    if compute_standard_metrics:
+        # Instantiate the metric objects once per rollout process.  They are used
+        # as stateless compute helpers; episode aggregation state remains inside
+        # each WaymaxStandardMetricAccumulator below.
+        from cowp.waymax_eval.metrics_standard import build_waymax_metric_objects
+
+        standard_metric_objects, standard_metric_errors = build_waymax_metric_objects(standard_metric_names)
     for raw_index, init_state in enumerate(iterator):
         if num_shards > 1 and (raw_index % num_shards) != shard_index:
             continue
@@ -1219,13 +1263,23 @@ def waymax_closed_loop_rollout(
         max_objects = getattr(init_state, "num_objects", None)
         if max_objects is None and hasattr(init_state, "log_trajectory"):
             max_objects = getattr(init_state.log_trajectory, "num_objects", None)
-        env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
+        env_key = (int(max_objects) if max_objects is not None else None, str(action_mode))
+        if reuse_env and env_key in env_cache:
+            env = env_cache[env_key]
+        else:
+            env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
+            if reuse_env:
+                env_cache[env_key] = env
         state = env.reset(init_state)
         steps = 0
         policy_diagnostics = []
-        metric_acc = WaymaxStandardMetricAccumulator() if compute_standard_metrics else None
+        metric_acc = (
+            WaymaxStandardMetricAccumulator(metric_objects=standard_metric_objects, init_errors=dict(standard_metric_errors))
+            if compute_standard_metrics
+            else None
+        )
         for step in range(horizon):
-            action = _call_policy(policy_fn, state, step=step, scenario_index=scenario_index)
+            action = call_policy(state, step=step, scenario_index=scenario_index)
             diag = _consume_policy_diagnostics(policy_fn)
             if diag is not None:
                 policy_diagnostics.append(diag)
@@ -1254,6 +1308,17 @@ def waymax_closed_loop_rollout(
             _clear_accelerator_caches()
         if hasattr(iterator, "set_postfix"):
             iterator.set_postfix(done=len(outputs), steps=steps, refresh=True)
+        if (not progress) and int(status_every or 0) > 0:
+            now = time.time()
+            if len(outputs) == 1 or len(outputs) % int(status_every) == 0 or now - last_status_at >= 120.0:
+                elapsed = max(now - started_at, 1e-6)
+                rate = len(outputs) / elapsed
+                print(
+                    f"[waymax] shard={shard_index}/{num_shards} done={len(outputs)}"
+                    f" raw_index={raw_index} last_steps={steps} rate={rate:.3f} scen/s elapsed={elapsed:.1f}s",
+                    flush=True,
+                )
+                last_status_at = now
         if num_scenarios is not None and len(outputs) >= num_scenarios:
             break
     return outputs

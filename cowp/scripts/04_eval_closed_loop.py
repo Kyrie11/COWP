@@ -30,6 +30,15 @@ def _configure_waymax_runtime(args) -> None:
         os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = str(float(args.jax_mem_fraction))
 
 
+def _parse_metric_names(value: str | None):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"all", "default", "none"}:
+        return None if text.lower() != "none" else []
+    return {x.strip() for x in text.split(",") if x.strip()}
+
+
 def _json_safe(obj):
     try:
         import numpy as np
@@ -80,6 +89,9 @@ def main() -> None:
     ap.add_argument("--num-scenarios", type=int, default=None)
     ap.add_argument("--rollout-horizon-steps", type=int, default=None)
     ap.add_argument("--waymax-standard-metrics", action="store_true")
+    ap.add_argument("--waymax-standard-metric-names", default=None, help="Comma-separated Waymax metric class names to compute, or 'all'. Example: OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric")
+    ap.add_argument("--reuse-waymax-env", action=argparse.BooleanOptionalAction, default=True, help="Reuse a compatible Waymax environment object across scenarios. Does not change rollout logic; avoids per-scenario construction overhead.")
+    ap.add_argument("--status-every", type=int, default=10, help="When --no-progress is used, print one compact rollout heartbeat every N completed scenarios.")
     ap.add_argument("--output", default="outputs/eval_metrics.json")
     ap.add_argument("--no-progress", action="store_true")
     args = ap.parse_args()
@@ -174,6 +186,9 @@ def main() -> None:
             tfexample_glob=args.tfexample_glob,
             shard_index=args.shard_index,
             num_shards=args.num_shards,
+            reuse_env=bool(args.reuse_waymax_env),
+            status_every=int(args.status_every),
+            standard_metric_names=_parse_metric_names(args.waymax_standard_metric_names),
         )
         payload = {
             "mode": "waymax",
@@ -183,6 +198,8 @@ def main() -> None:
             "ncf_gate_mode": args.ncf_gate_mode,
             "waymax_split": args.waymax_split,
             "tfexample_glob": args.tfexample_glob,
+            "waymax_standard_metric_names": sorted(_parse_metric_names(args.waymax_standard_metric_names)) if isinstance(_parse_metric_names(args.waymax_standard_metric_names), set) else args.waymax_standard_metric_names,
+            "reuse_waymax_env": bool(args.reuse_waymax_env),
             "shard_index": int(args.shard_index),
             "num_shards": int(args.num_shards),
             "num_rollouts": len(rollouts),

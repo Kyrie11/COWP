@@ -63,6 +63,34 @@ def _wrap_angle(x: np.ndarray | float) -> np.ndarray | float:
     return (np.asarray(x) + np.pi) % (2.0 * np.pi) - np.pi
 
 
+def _canonical_online_method(method: str | None, gate_mode: str | None = None) -> tuple[str, str]:
+    """Normalize online method aliases before expensive policy branches run."""
+    m = str(method or "cowp").lower()
+    alias = {
+        "cowp_priority": "cowp",
+        "priority_ncf": "cowp",
+        "p_ncf": "cowp",
+        "cowp_universal": "universal_ncf",
+        "hard_ncf": "universal_ncf",
+        "ego_utility": "idm_lattice",
+        "utility_lattice": "idm_lattice",
+        "planner_only": "planner_score_only",
+        "no_ncf": "planner_score_only",
+        "safety_only": "conventional_safety",
+    }
+    m = alias.get(m, m)
+    g = str(gate_mode or "priority").lower()
+    if m == "cowp" and g == "hard":
+        g = "priority"
+    if m == "universal_ncf":
+        g = "hard"
+    elif m == "soft_burden_cost_only":
+        g = "soft"
+    elif m in {"idm_lattice", "conventional_safety", "planner_score_only"}:
+        g = "none"
+    return m, g
+
+
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
     return 1.0 / (1.0 + np.exp(x_arr))
@@ -1195,6 +1223,8 @@ def build_online_batch(
     history_model_state: np.ndarray | None = None,
     roadgraph: dict[str, np.ndarray] | None = None,
     other_future_trajs: np.ndarray | None = None,
+    compute_rule_risk: bool = True,
+    include_training_targets: bool = False,
 ) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
     A = int(cfg.get("limits", {}).get("max_critical_agents", 8))
@@ -1226,10 +1256,13 @@ def build_online_batch(
         agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
     )
     crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
-    rule_risk = _candidate_rule_risk_np(
-        agent_state, sdc_index, cand_traj, cand_valid, conventional_safe, crit_idx, crit_valid, cfg,
-        other_future_trajs=other_future_trajs,
-    )
+    if compute_rule_risk:
+        rule_risk = _candidate_rule_risk_np(
+            agent_state, sdc_index, cand_traj, cand_valid, conventional_safe, crit_idx, crit_valid, cfg,
+            other_future_trajs=other_future_trajs,
+        )
+    else:
+        rule_risk = np.zeros(K, dtype=np.float32)
     conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
     batch = {
         "state/history": hist[None],
@@ -1244,28 +1277,32 @@ def build_online_batch(
         "cowp/critical/track_index": crit_idx[None],
         "cowp/critical/input_index": crit_idx[None],
         "cowp/critical/valid": crit_valid[None],
-        # Targets below are not copied to GPU in online inference; they are kept
-        # for schema/debug compatibility and to avoid legacy callers failing.
-        "cowp/natural/traj": np.zeros((1, A, M, H, 7), dtype=np.float32),
-        "cowp/natural/valid": np.zeros((1, A, M), dtype=bool),
-        "cowp/natural/weight": np.zeros((1, A, M), dtype=np.float32),
-        "cowp/natural/source": np.zeros((1, A, M), dtype=np.int64),
-        "cowp/natural/priority_preserved": np.zeros((1, A, M), dtype=bool),
-        "cowp/response/valid": np.zeros((1, K, A, R), dtype=bool),
-        "cowp/response/is_safe": np.zeros((1, K, A, R), dtype=bool),
-        "cowp/response/is_low_burden": np.zeros((1, K, A, R), dtype=bool),
-        "cowp/response/burden_total": np.zeros((1, K, A, R), dtype=np.float32),
-        "cowp/response/burden_components": np.zeros((1, K, A, R, 6), dtype=np.float32),
-        "cowp/witness/exists": np.zeros((1, K, A), dtype=bool),
-        "cowp/witness/token": np.zeros((1, K, A), dtype=np.int64),
-        "cowp/witness/burden_total": np.zeros((1, K, A), dtype=np.float32),
-        "cowp/witness/burden_components": np.zeros((1, K, A, 6), dtype=np.float32),
-        "cowp/witness/opr": np.ones((1, K, A), dtype=np.float32),
-        "cowp/witness/c_i": np.zeros((1, K, A), dtype=np.float32),
-        "cowp/witness/conflict_interval": np.zeros((1, K, A, 2), dtype=np.int64),
         "map/conflict_regions": conflict[None],
         "map/conflict_region_valid": conflict_valid[None],
     }
+    if include_training_targets:
+        # Compatibility/debug-only targets.  They are intentionally omitted in the
+        # default online path because the model inference keys above do not consume
+        # them and allocating them at every Waymax step adds avoidable CPU work.
+        batch.update({
+            "cowp/natural/traj": np.zeros((1, A, M, H, 7), dtype=np.float32),
+            "cowp/natural/valid": np.zeros((1, A, M), dtype=bool),
+            "cowp/natural/weight": np.zeros((1, A, M), dtype=np.float32),
+            "cowp/natural/source": np.zeros((1, A, M), dtype=np.int64),
+            "cowp/natural/priority_preserved": np.zeros((1, A, M), dtype=bool),
+            "cowp/response/valid": np.zeros((1, K, A, R), dtype=bool),
+            "cowp/response/is_safe": np.zeros((1, K, A, R), dtype=bool),
+            "cowp/response/is_low_burden": np.zeros((1, K, A, R), dtype=bool),
+            "cowp/response/burden_total": np.zeros((1, K, A, R), dtype=np.float32),
+            "cowp/response/burden_components": np.zeros((1, K, A, R, 6), dtype=np.float32),
+            "cowp/witness/exists": np.zeros((1, K, A), dtype=bool),
+            "cowp/witness/token": np.zeros((1, K, A), dtype=np.int64),
+            "cowp/witness/burden_total": np.zeros((1, K, A), dtype=np.float32),
+            "cowp/witness/burden_components": np.zeros((1, K, A, 6), dtype=np.float32),
+            "cowp/witness/opr": np.ones((1, K, A), dtype=np.float32),
+            "cowp/witness/c_i": np.zeros((1, K, A), dtype=np.float32),
+            "cowp/witness/conflict_interval": np.zeros((1, K, A, 2), dtype=np.int64),
+        })
     return batch
 
 
@@ -1397,6 +1434,8 @@ class COWPWaymaxPolicy:
         if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
             self._previous_longitudinal_accel = 0.0
         self._previous_scenario_index = scenario_index
+        method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
+        needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
         history, agent_state, sdc_index = extract_agent_history_model_state(state, self.cfg)
         if scenario_index is not None and self._cached_roadgraph_scenario_index == int(scenario_index) and self._cached_roadgraph is not None:
             roadgraph = self._cached_roadgraph
@@ -1408,7 +1447,7 @@ class COWPWaymaxPolicy:
         other_future_trajs = _extract_logged_future_agent_trajs(state, sdc_index, self.cfg)
         batch_np = build_online_batch(
             agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
-            other_future_trajs=other_future_trajs,
+            other_future_trajs=other_future_trajs, compute_rule_risk=needs_cowp_risk,
         )
         online_keys = (
             "state/history",
@@ -1432,6 +1471,89 @@ class COWPWaymaxPolicy:
             scores = self.torch.nan_to_num(pred["planner_score"][0].float(), nan=1e6, posinf=1e6, neginf=-1e6)
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
+            utility = batch.get("cowp/candidates/ego_utility_prior", None)
+            utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
+
+            if not needs_cowp_risk:
+                # Fast exact-equivalent path for internal baselines.  These methods
+                # do not use witness, priority, pressure, rule, action, or outcome
+                # risk in selection, so skip those expensive online computations.
+                if method == "idm_lattice":
+                    select_mask = cand_valid & conventional
+                    adjusted_scores = utility_scores
+                elif method == "conventional_safety":
+                    select_mask = cand_valid & conventional
+                    adjusted_scores = scores
+                else:  # planner_score_only
+                    select_mask = cand_valid
+                    adjusted_scores = scores
+                fallback_used = False
+                fallback_reason = "accepted_baseline"
+                macro_t = batch["cowp/candidates/macro_type"][0].long()
+                stop_ids = self.torch.as_tensor(
+                    [int(MacroType.STOP_BEFORE_CONFLICT), int(MacroType.YIELD), int(MacroType.CREEP), int(MacroType.NEUTRAL_EGO)],
+                    device=self.dev, dtype=macro_t.dtype,
+                )
+                stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
+                if not bool(select_mask.any().detach().cpu().item()):
+                    fallback_used = True
+                    if (cand_valid & stop_like).any():
+                        select_mask = cand_valid & stop_like
+                        fallback_reason = "baseline_use_stop_like"
+                    else:
+                        select_mask = cand_valid
+                        fallback_reason = "baseline_use_valid"
+                selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if bool(select_mask.any().detach().cpu().item()) else 0
+                diag = {
+                    "scenario_index": int(scenario_index) if scenario_index is not None else -1,
+                    "step": int(step) if step is not None else -1,
+                    "selected_candidate": int(selected),
+                    "accepted_candidates": int(select_mask.sum().detach().cpu().item()),
+                    "frontier_candidates": -1,
+                    "valid_candidates": int(cand_valid.sum().detach().cpu().item()),
+                    "conventional_candidates": int((cand_valid & conventional).sum().detach().cpu().item()),
+                    "critical_agents": int(batch["cowp/critical/valid"][0].bool().sum().detach().cpu().item()),
+                    "conflict_tokens": int(batch["map/conflict_region_valid"][0].bool().sum().detach().cpu().item()),
+                    "fallback_used": bool(fallback_used),
+                    "fallback_reason": fallback_reason,
+                    "max_witness_prob": 0.0,
+                    "mean_witness_prob": 0.0,
+                    "mean_witness_uncertainty": 0.0,
+                    "max_witness_certificate": 0.0,
+                    "min_opr": 1.0,
+                    "mean_opr": 1.0,
+                    "score": float(scores[selected].detach().cpu().item()),
+                    "witness_threshold": float(self.witness_threshold),
+                    "alpha_opr": float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
+                    "gate_mode": str(gate_mode),
+                    "method": str(method),
+                    "priority_hard_threshold": float(self.priority_hard_threshold),
+                    "accepted_primary_bad_candidates": 0,
+                    "severe_bad_candidates": 0,
+                    "option_bad_candidates": 0,
+                    "selected_priority_max": 0.0,
+                    "selected_priority_mean": 0.0,
+                    "selected_outcome_risk": 0.0,
+                    "selected_outcome_decision_risk": 0.0,
+                    "selected_candidate_ncf_prob": 0.0,
+                    "selected_candidate_false_safe_prob": 0.0,
+                    "selected_candidate_quality_prob": 0.0,
+                    "selected_candidate_cert_risk": 0.0,
+                    "selected_candidate_pressure_prior": 0.0,
+                    "selected_candidate_rule_risk": 0.0,
+                    "selected_candidate_action_risk": 0.0,
+                    "min_candidate_cert_risk": 0.0,
+                    "mean_candidate_cert_risk": 0.0,
+                    "mean_candidate_pressure_prior": 0.0,
+                    "mean_candidate_rule_risk": 0.0,
+                    "mean_candidate_action_risk": 0.0,
+                    "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
+                }
+                self._last_diagnostics = diag
+                self._diagnostics_log.append(diag)
+                traj = batch_np["cowp/candidates/trajectory"][0, selected]
+                return self._trajectory_to_action(state, agent_state, sdc_index, traj)
+
             pcfg = self.cfg.get("planning", {})
             temp = max(float(pcfg.get("witness_temperature", 1.0)), 1e-3)
             bias = float(pcfg.get("witness_logit_bias", 0.0))
@@ -1536,36 +1658,11 @@ class COWPWaymaxPolicy:
             uncertainty = self.torch.where(crit_mask[None, :], uncertainty, self.torch.zeros_like(uncertainty))
             opr = self.torch.where(crit_mask[None, :], opr, self.torch.ones_like(opr))
             alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
-            method = str(getattr(self, "method", "cowp") or "cowp").lower()
-            alias = {
-                "cowp_priority": "cowp",
-                "priority_ncf": "cowp",
-                "p_ncf": "cowp",
-                "cowp_universal": "universal_ncf",
-                "hard_ncf": "universal_ncf",
-                "ego_utility": "idm_lattice",
-                "utility_lattice": "idm_lattice",
-                "planner_only": "planner_score_only",
-                "no_ncf": "planner_score_only",
-                "safety_only": "conventional_safety",
-            }
-            method = alias.get(method, method)
-            gate_mode = str(self.ncf_gate_mode or "priority").lower()
-            if method == "cowp" and gate_mode == "hard":
-                gate_mode = "priority"
-            if method == "universal_ncf":
-                gate_mode = "hard"
-            elif method == "soft_burden_cost_only":
-                gate_mode = "soft"
-            elif method in {"idm_lattice", "conventional_safety", "planner_score_only"}:
-                gate_mode = "none"
             adjusted_scores = scores
             priority = self.torch.zeros_like(witness)
             primary_bad = self.torch.zeros_like(cand_valid)
             severe_bad = self.torch.zeros_like(cand_valid)
             option_bad = self.torch.zeros_like(cand_valid)
-            utility = batch.get("cowp/candidates/ego_utility_prior", None)
-            utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
             if method == "idm_lattice":
                 accepted = cand_valid & conventional
                 adjusted_scores = utility_scores

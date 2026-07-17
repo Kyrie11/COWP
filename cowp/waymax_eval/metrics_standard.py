@@ -214,6 +214,7 @@ class WaymaxStandardMetricAccumulator:
     # None means "use every installed Waymax standard metric".  An empty list
     # intentionally means "compute no Waymax metrics"; this distinction is
     # needed by candidate replay when --metric-set none/off is requested.
+    metric_names: set[str] | list[str] | tuple[str, ...] | None = None
     metric_objects: list[tuple[str, Any]] | None = None
     init_errors: dict[str, str] = field(default_factory=dict)
     max_values: dict[str, float] = field(default_factory=dict)
@@ -224,7 +225,7 @@ class WaymaxStandardMetricAccumulator:
 
     def __post_init__(self) -> None:
         if self.metric_objects is None:
-            self.metric_objects, self.init_errors = build_waymax_metric_objects()
+            self.metric_objects, self.init_errors = build_waymax_metric_objects(self.metric_names)
 
     def update(self, state: Any) -> None:
         self.step_count += 1
