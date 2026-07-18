@@ -367,6 +367,81 @@ def _topk_frontier_mask_torch(base_mask, risk, tie_breaker=None, *, keep_frac=0.
     frontier[idx[order[:k]]] = True
     return frontier
 
+def _candidate_progress_torch(batch, cand_valid):
+    """Approximate ego progress for guarding the least-coercive frontier.
+
+    Pure coercion minimization tends to prefer stopped/yielding plans, which can
+    make the universal NCF ablation look safe but unusable.  The progress guard
+    preserves the paper idea--choose among non-coercive plans--while requiring
+    those plans to remain behaviorally useful unless no useful candidate exists.
+    """
+    import torch
+
+    traj = batch.get("cowp/candidates/trajectory")
+    if traj is None or not torch.is_tensor(traj) or traj.ndim < 4:
+        return torch.zeros_like(cand_valid, dtype=torch.float32)
+    xy0 = traj[:, :, 0, :2].float()
+    xy1 = traj[:, :, -1, :2].float()
+    progress = torch.linalg.norm(torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0), dim=-1)
+    return torch.where(cand_valid.bool(), progress, torch.zeros_like(progress))
+
+
+def _guard_frontier_base_torch(base, score_risk, progress, action_risk=None, *, keep_min=2, pcfg=None):
+    """Keep the frontier least-coercive without collapsing progress/safety.
+
+    The guard is intentionally relaxable: it only applies a progress, score, or
+    action-risk screen when enough candidates remain for the exact-cardinality
+    frontier.  This gives COWP a utility-regret bounded non-coercive frontier
+    instead of a pure stop-like veto.
+    """
+    import torch
+
+    pcfg = pcfg or {}
+    base = base.bool()
+    if not bool(base.any()):
+        return base
+    min_keep = max(int(keep_min), 1)
+    idx = torch.where(base)[0]
+    need = min(min_keep, int(idx.numel()))
+    guarded = base.clone()
+
+    # Progress guard: avoid selecting only stop/yield plans when a meaningful
+    # conventional candidate exists.  If the scene itself has no progress option,
+    # the guard is inactive.
+    if torch.is_tensor(progress) and progress.numel() == base.numel():
+        vals = torch.nan_to_num(progress.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        p_ref = vals[idx].max() if idx.numel() else vals.new_tensor(0.0)
+        min_abs = float(pcfg.get("candidate_frontier_min_progress_m", 1.0))
+        ratio = float(pcfg.get("candidate_frontier_min_progress_ratio", 0.12))
+        if float(p_ref.detach().cpu().item()) > min_abs:
+            p_min = max(min_abs, ratio * float(p_ref.detach().cpu().item()))
+            pg = base & (vals >= p_min)
+            if int(pg.sum().detach().cpu().item()) >= need:
+                guarded = pg
+
+    # Utility-regret guard in scene-normalized score space.  It prevents a very
+    # low-coercion but implausible candidate from replacing all planner-preferred
+    # feasible actions.  The default is loose; COWP still changes choices.
+    if torch.is_tensor(score_risk) and score_risk.numel() == base.numel():
+        sr = torch.nan_to_num(score_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+        slack = float(pcfg.get("candidate_frontier_score_slack", 0.85))
+        best = sr[idx].min() if idx.numel() else sr.new_tensor(0.0)
+        sg = base & (sr <= best + slack)
+        joint = guarded & sg
+        if int(joint.sum().detach().cpu().item()) >= need:
+            guarded = joint
+
+    # Kinematic guard: only active when it does not empty the frontier.
+    if torch.is_tensor(action_risk) and action_risk.numel() == base.numel():
+        ar = torch.nan_to_num(action_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+        max_ar = float(pcfg.get("candidate_frontier_max_action_risk", 0.90))
+        ag = guarded & (ar <= max_ar)
+        if int(ag.sum().detach().cpu().item()) >= need:
+            guarded = ag
+
+    return guarded
+
+
 def _select_from_learned(
     batch,
     pred,
@@ -517,13 +592,20 @@ def _select_from_learned(
         outcome_mix = float((cfg or {}).get("planning", {}).get("candidate_outcome_risk_mix", outcome_risk_penalty))
         risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk + rule_mix * rule_decision_risk + outcome_mix * outcome_decision_risk
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+        progress = _candidate_progress_torch(batch, cand_valid)
+        score_decision_risk = _scene_normalized_risk_torch(scores, cand_valid, cfg)
+        prog_ref = progress.max(dim=1, keepdim=True).values.clamp_min(1.0e-6)
+        progress_shortfall = (1.0 - (progress / prog_ref).clamp(0.0, 1.0)).clamp(0.0, 1.0)
         min_ncf = float(pcfg.get("candidate_min_ncf_prob", 0.05))
         max_fs = float(pcfg.get("candidate_max_false_safe_prob", 0.95))
         keep_frac = float(pcfg.get("candidate_frontier_keep_fraction", 0.40))
         keep_min = int(pcfg.get("candidate_frontier_min_keep", 1))
         keep_max = int(pcfg.get("candidate_frontier_max_keep", 4))
         for b in range(int(scores.shape[0])):
-            base_b = frontier_base[b]
+            base_b = _guard_frontier_base_torch(
+                frontier_base[b], score_decision_risk[b], progress[b], None,
+                keep_min=keep_min, pcfg=pcfg,
+            )
             if not base_b.any():
                 continue
             idx = torch.where(base_b)[0]
@@ -533,7 +615,12 @@ def _select_from_learned(
             # Exact-cardinality frontier.  Do not use a threshold cutoff here:
             # if risk is flat, ``risk <= kth_value`` selects every conventional
             # candidate and COWP collapses to conventional_safety.
-            tie = adjusted_scores[b] + 0.25 * outcome_decision_risk[b] + 0.10 * pressure_decision_risk[b]
+            tie = (
+                0.70 * score_decision_risk[b]
+                + 0.20 * progress_shortfall[b]
+                + 0.25 * outcome_decision_risk[b]
+                + 0.10 * pressure_decision_risk[b]
+            )
             frontier = _topk_frontier_mask_torch(
                 base_b, risk[b], tie,
                 keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,

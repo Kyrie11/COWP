@@ -626,6 +626,11 @@ def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, to
     mask = batch["cowp/candidates/valid"].bool()
     ncf = _binary_target(batch["cowp/candidates/noncoercive_feasible"])
     false_safe = _binary_target(batch["cowp/candidates/false_safe"])
+    # A collision-free but coercive/false-safe candidate is not a positive NCF
+    # example for the planner ranking scalar.  Keeping the raw overlap here made
+    # the auxiliary NCF/false-safe losses fight over the same score and produced
+    # weak separation in v3.
+    ncf = torch.where(false_safe > 0.5, torch.zeros_like(ncf), ncf)
     pred_scores = _safe_float(pred_scores)
     # Lower planner score is better.  Only use the scalar planner score as a
     # binary logit on discriminative candidate labels (NCF or false-safe).  On
@@ -695,12 +700,14 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
             unsafe = unsafe | (ld_target > float(weights.get("candidate_outcome_logdiv_unsafe_threshold", weights.get("outcome_logdiv_unsafe_threshold", 8.0))))
         outcome_unsafe = rv & unsafe
         outcome_safe = rv & ~unsafe
-        # Outcome unsafe candidates should not receive high NCF probability, even
-        # when pseudo-labels are ambiguous.  Outcome safe candidates get a weak NCF
-        # target; false_safe remains available for P-NCF semantics.
+        # Outcome-unsafe candidates should not receive high NCF probability, but
+        # they are not automatically false-safe.  False-safe is the paper's
+        # coercion concept: conventionally safe for ego but forcing another agent
+        # into high-burden/low-option responses.  Conflating all collisions/offroad
+        # with false-safe made the certificate less interpretable and hurt the
+        # core claim.  Outcome unsafety is still used below by quality/risk targets.
         ncf = torch.where(outcome_unsafe, torch.zeros_like(ncf), ncf)
         ncf = torch.where(outcome_safe & (ncf <= 0.5) & (false_safe <= 0.5), torch.full_like(ncf, float(weights.get("candidate_outcome_safe_ncf_target", 0.75))), ncf)
-        false_safe = torch.where(outcome_unsafe, torch.ones_like(false_safe), false_safe)
 
     # Label imbalance is strong but scene-dependent; use bounded dynamic weights.
     pos_n = ((ncf > 0.5) & mask).float().sum()

@@ -1387,6 +1387,39 @@ def _topk_frontier_mask_1d(base_mask, risk, tie_breaker=None, *, keep_frac=0.40,
     frontier[idx[order[:k]]] = True
     return frontier
 
+def _guard_frontier_base_1d(base, score_risk, progress, action_risk=None, *, keep_min=2, pcfg=None):
+    import torch
+    pcfg = pcfg or {}
+    base = base.bool()
+    if not bool(base.any().detach().cpu().item()):
+        return base
+    idx = torch.where(base)[0]
+    need = min(max(int(keep_min), 1), int(idx.numel()))
+    guarded = base.clone()
+    if torch.is_tensor(progress) and progress.numel() == base.numel():
+        vals = torch.nan_to_num(progress.float(), nan=0.0, posinf=0.0, neginf=0.0)
+        p_ref = vals[idx].max() if idx.numel() else vals.new_tensor(0.0)
+        min_abs = float(pcfg.get("candidate_frontier_min_progress_m", 1.0))
+        ratio = float(pcfg.get("candidate_frontier_min_progress_ratio", 0.12))
+        if float(p_ref.detach().cpu().item()) > min_abs:
+            pg = base & (vals >= max(min_abs, ratio * float(p_ref.detach().cpu().item())))
+            if int(pg.sum().detach().cpu().item()) >= need:
+                guarded = pg
+    if torch.is_tensor(score_risk) and score_risk.numel() == base.numel():
+        sr = torch.nan_to_num(score_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+        best = sr[idx].min() if idx.numel() else sr.new_tensor(0.0)
+        sg = base & (sr <= best + float(pcfg.get("candidate_frontier_score_slack", 0.85)))
+        joint = guarded & sg
+        if int(joint.sum().detach().cpu().item()) >= need:
+            guarded = joint
+    if torch.is_tensor(action_risk) and action_risk.numel() == base.numel():
+        ar = torch.nan_to_num(action_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+        ag = guarded & (ar <= float(pcfg.get("candidate_frontier_max_action_risk", 0.90)))
+        if int(ag.sum().detach().cpu().item()) >= need:
+            guarded = ag
+    return guarded
+
+
 @dataclass
 class COWPWaymaxPolicy:
     checkpoint: str
@@ -1676,6 +1709,17 @@ class COWPWaymaxPolicy:
             pressure_decision_risk = _scene_norm(pressure_prior)
             rule_decision_risk = _scene_norm(rule_risk)
             action_decision_risk = _scene_norm(action_risk)
+            score_decision_risk = _scene_norm(scores)
+            traj_t = batch.get("cowp/candidates/trajectory")
+            if self.torch.is_tensor(traj_t) and traj_t.ndim >= 4:
+                xy0 = traj_t[0, :, 0, :2].float()
+                xy1 = traj_t[0, :, -1, :2].float()
+                candidate_progress = self.torch.linalg.norm(self.torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0), dim=-1)
+                candidate_progress = self.torch.where(cand_valid, candidate_progress, self.torch.zeros_like(candidate_progress))
+            else:
+                candidate_progress = self.torch.zeros_like(scores)
+            progress_ref = candidate_progress[cand_valid].max().clamp_min(1.0e-6) if bool(cand_valid.any().detach().cpu().item()) else self.torch.tensor(1.0, device=self.dev, dtype=scores.dtype)
+            progress_shortfall = (1.0 - (candidate_progress / progress_ref).clamp(0.0, 1.0)).clamp(0.0, 1.0)
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
                 off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
@@ -1803,20 +1847,29 @@ class COWPWaymaxPolicy:
                         + action_mix * action_decision_risk
                         + outcome_mix * outcome_decision_risk
                     )
-                    idx = self.torch.where(frontier_base)[0]
+                    keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
+                    keep_min = int(self.cfg.get("planning", {}).get("candidate_frontier_min_keep", 1))
+                    keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
+                    guarded_base = _guard_frontier_base_1d(
+                        frontier_base, score_decision_risk, candidate_progress, action_decision_risk,
+                        keep_min=keep_min, pcfg=self.cfg.get("planning", {}),
+                    )
+                    idx = self.torch.where(guarded_base)[0]
                     if idx.numel() > 0:
-                        keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
-                        keep_min = int(self.cfg.get("planning", {}).get("candidate_frontier_min_keep", 1))
-                        keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
                         k = max(keep_min, int(self.torch.ceil(self.torch.tensor(float(idx.numel()) * keep_frac, device=self.dev)).item()))
                         k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
                         # Exact-cardinality frontier.  A threshold cutoff would
                         # keep every tied candidate when certificate/outcome risk is
                         # flat, which is exactly how COWP collapsed to
                         # conventional_safety in v2.
-                        tie = adjusted_scores + 0.25 * outcome_decision_risk + 0.10 * action_decision_risk
+                        tie = (
+                            0.70 * score_decision_risk
+                            + 0.20 * progress_shortfall
+                            + 0.25 * outcome_decision_risk
+                            + 0.10 * action_decision_risk
+                        )
                         frontier = _topk_frontier_mask_1d(
-                            frontier_base, frontier_risk, tie,
+                            guarded_base, frontier_risk, tie,
                             keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,
                             eps=float(self.cfg.get("planning", {}).get("candidate_frontier_tie_eps", 1.0e-3)),
                         )

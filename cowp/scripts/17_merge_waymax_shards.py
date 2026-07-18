@@ -65,9 +65,11 @@ def merge_payloads(paths: list[Path]) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Merge COWP Waymax shard JSONs without losing per-episode metrics.")
     ap.add_argument("--output", required=True)
-    ap.add_argument("shards", nargs="+")
+    ap.add_argument("--inputs", nargs="+", default=None, help="Shard JSONs to merge. Backward-compatible with older run scripts.")
+    ap.add_argument("shards", nargs="*", help="Shard JSONs to merge as positional arguments.")
     args = ap.parse_args()
-    paths = [Path(x) for x in args.shards]
+    shard_args = args.inputs if args.inputs is not None else args.shards
+    paths = [Path(x) for x in shard_args]
     missing = [str(p) for p in paths if not p.is_file() or p.stat().st_size == 0]
     if missing:
         raise FileNotFoundError(f"Missing/empty shard files: {missing}")
