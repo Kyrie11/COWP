@@ -1535,6 +1535,11 @@ class COWPWaymaxPolicy:
             pred = self.model(batch, stage="planner")
             scores = self.torch.nan_to_num(pred["planner_score"][0].float(), nan=1e6, posinf=1e6, neginf=-1e6)
             cand_valid = batch["cowp/candidates/valid"][0].bool()
+            # One host synchronization for a predicate reused throughout the
+            # decision path.  The previous implementation queried any(valid)
+            # repeatedly inside normalization and diagnostics, forcing the CUDA
+            # stream to synchronize many times per simulator step.
+            has_valid = bool(cand_valid.any().detach().cpu().item())
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
             utility = batch.get("cowp/candidates/ego_utility_prior", None)
             utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
@@ -1560,25 +1565,35 @@ class COWPWaymaxPolicy:
                     device=self.dev, dtype=macro_t.dtype,
                 )
                 stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
-                if not bool(select_mask.any().detach().cpu().item()):
+                has_select = bool(select_mask.any().detach().cpu().item())
+                if not has_select:
                     fallback_used = True
-                    if (cand_valid & stop_like).any():
+                    if bool((cand_valid & stop_like).any().detach().cpu().item()):
                         select_mask = cand_valid & stop_like
                         fallback_reason = "baseline_use_stop_like"
                     else:
                         select_mask = cand_valid
                         fallback_reason = "baseline_use_valid"
-                selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if bool(select_mask.any().detach().cpu().item()) else 0
+                    has_select = has_valid
+                selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if has_select else 0
+                baseline_host = self.torch.stack([
+                    select_mask.sum().float(),
+                    cand_valid.sum().float(),
+                    (cand_valid & conventional).sum().float(),
+                    batch["cowp/critical/valid"][0].bool().sum().float(),
+                    batch["map/conflict_region_valid"][0].bool().sum().float(),
+                    scores[selected].float(),
+                ]).detach().cpu().tolist()
                 diag = {
                     "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                     "step": int(step) if step is not None else -1,
                     "selected_candidate": int(selected),
-                    "accepted_candidates": int(select_mask.sum().detach().cpu().item()),
+                    "accepted_candidates": int(baseline_host[0]),
                     "frontier_candidates": -1,
-                    "valid_candidates": int(cand_valid.sum().detach().cpu().item()),
-                    "conventional_candidates": int((cand_valid & conventional).sum().detach().cpu().item()),
-                    "critical_agents": int(batch["cowp/critical/valid"][0].bool().sum().detach().cpu().item()),
-                    "conflict_tokens": int(batch["map/conflict_region_valid"][0].bool().sum().detach().cpu().item()),
+                    "valid_candidates": int(baseline_host[1]),
+                    "conventional_candidates": int(baseline_host[2]),
+                    "critical_agents": int(baseline_host[3]),
+                    "conflict_tokens": int(baseline_host[4]),
                     "fallback_used": bool(fallback_used),
                     "fallback_reason": fallback_reason,
                     "max_witness_prob": 0.0,
@@ -1587,7 +1602,7 @@ class COWPWaymaxPolicy:
                     "max_witness_certificate": 0.0,
                     "min_opr": 1.0,
                     "mean_opr": 1.0,
-                    "score": float(scores[selected].detach().cpu().item()),
+                    "score": float(baseline_host[5]),
                     "witness_threshold": float(self.witness_threshold),
                     "alpha_opr": float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     "gate_mode": str(gate_mode),
@@ -1695,7 +1710,7 @@ class COWPWaymaxPolicy:
 
             def _scene_norm(x):
                 x = self.torch.nan_to_num(x.float(), nan=0.0, posinf=1.0, neginf=0.0)
-                if not bool(cand_valid.any().detach().cpu().item()):
+                if not has_valid:
                     return self.torch.zeros_like(x)
                 vals = x[cand_valid]
                 lo = vals.min()
@@ -1718,7 +1733,7 @@ class COWPWaymaxPolicy:
                 candidate_progress = self.torch.where(cand_valid, candidate_progress, self.torch.zeros_like(candidate_progress))
             else:
                 candidate_progress = self.torch.zeros_like(scores)
-            progress_ref = candidate_progress[cand_valid].max().clamp_min(1.0e-6) if bool(cand_valid.any().detach().cpu().item()) else self.torch.tensor(1.0, device=self.dev, dtype=scores.dtype)
+            progress_ref = candidate_progress[cand_valid].max().clamp_min(1.0e-6) if has_valid else self.torch.tensor(1.0, device=self.dev, dtype=scores.dtype)
             progress_shortfall = (1.0 - (candidate_progress / progress_ref).clamp(0.0, 1.0)).clamp(0.0, 1.0)
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
@@ -1742,7 +1757,7 @@ class COWPWaymaxPolicy:
                 + float(pcfg_runtime.get("candidate_cert_fallback_rule_mix", 0.15)) * rule_decision_risk
                 + float(pcfg_runtime.get("candidate_cert_fallback_pressure_mix", 0.10)) * pressure_decision_risk
             ).clamp(0.0, 1.0)
-            raw_vals = candidate_cert_risk[cand_valid] if bool(cand_valid.any().detach().cpu().item()) else candidate_cert_risk[:0]
+            raw_vals = candidate_cert_risk[cand_valid] if has_valid else candidate_cert_risk[:0]
             raw_spread = raw_vals.float().std(unbiased=False) if raw_vals.numel() > 1 else self.torch.tensor(0.0, device=self.dev, dtype=scores.dtype)
             flat_cert = bool((raw_spread < float(pcfg_runtime.get("candidate_cert_fallback_min_std", 2.0e-3))).detach().cpu().item())
             mix_value = float(pcfg_runtime.get("candidate_cert_flat_fallback_mix", 0.90) if flat_cert else pcfg_runtime.get("candidate_cert_hybrid_fallback_mix", 0.25))
@@ -1892,19 +1907,25 @@ class COWPWaymaxPolicy:
                 dtype=macro_t.dtype,
             )
             stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
-            if accepted.any():
+            fallback_flags = self.torch.stack([
+                accepted.any(),
+                (cand_valid & conventional & stop_like).any(),
+                (cand_valid & stop_like).any(),
+                (cand_valid & conventional).any(),
+            ]).detach().cpu().tolist()
+            if bool(fallback_flags[0]):
                 select_mask = accepted
                 fallback_used = False
                 fallback_reason = "accepted_ncf" if gate_mode == "hard" else ("accepted_baseline" if gate_mode in {"none", "off"} else "accepted_priority_ncf")
-            elif (cand_valid & conventional & stop_like).any():
+            elif bool(fallback_flags[1]):
                 select_mask = cand_valid & conventional & stop_like
                 fallback_used = True
                 fallback_reason = "no_ncf_use_stop_like"
-            elif (cand_valid & stop_like).any():
+            elif bool(fallback_flags[2]):
                 select_mask = cand_valid & stop_like
                 fallback_used = True
                 fallback_reason = "no_conventional_use_neutral"
-            elif (cand_valid & conventional).any():
+            elif bool(fallback_flags[3]):
                 select_mask = cand_valid & conventional
                 fallback_used = True
                 fallback_reason = "no_stop_like_use_conventional"
@@ -1912,60 +1933,105 @@ class COWPWaymaxPolicy:
                 select_mask = cand_valid
                 fallback_used = True
                 fallback_reason = "no_conventional_use_valid"
-            selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if bool(select_mask.any().detach().cpu().item()) else 0
+            selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if has_valid else 0
             selected_witness = witness[selected]
             selected_opr = opr[selected]
+            has_crit = bool(crit_mask.any().detach().cpu().item())
+            zero = scores.new_tensor(0.0)
+            one = scores.new_tensor(1.0)
+            frontier_count = frontier.sum().float() if "frontier" in locals() and self.torch.is_tensor(frontier) else scores.new_tensor(-1.0)
+            valid_cert = candidate_cert_risk[cand_valid] if has_valid else candidate_cert_risk[:0]
+            valid_pressure = pressure_prior[cand_valid] if has_valid else pressure_prior[:0]
+            valid_rule = rule_risk[cand_valid] if has_valid else rule_risk[:0]
+            valid_action = action_risk[cand_valid] if has_valid else action_risk[:0]
+            bsel = self.torch.nan_to_num(burden[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if burden is not None else None
+            csel = self.torch.nan_to_num(c_i[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if c_i is not None else None
+            diagnostic_tensors = [
+                accepted.sum().float(),
+                frontier_count,
+                cand_valid.sum().float(),
+                (cand_valid & conventional).sum().float(),
+                crit_mask.sum().float(),
+                batch["map/conflict_region_valid"][0].bool().sum().float(),
+                selected_witness.max() if selected_witness.numel() else zero,
+                selected_witness.mean() if selected_witness.numel() else zero,
+                uncertainty[selected].mean() if uncertainty[selected].numel() else zero,
+                witness_cert[selected].max() if witness_cert[selected].numel() else zero,
+                selected_opr.min() if selected_opr.numel() else one,
+                selected_opr.mean() if selected_opr.numel() else one,
+                scores[selected],
+                primary_bad.sum().float() if primary_bad.numel() else zero,
+                severe_bad.sum().float() if severe_bad.numel() else zero,
+                option_bad.sum().float() if option_bad.numel() else zero,
+                priority[selected].max() if priority.numel() else zero,
+                priority[selected].mean() if priority.numel() else zero,
+                outcome_risk[selected] if outcome_risk.numel() else zero,
+                outcome_decision_risk[selected] if outcome_decision_risk.numel() else zero,
+                cand_ncf_prob[selected] if cand_ncf_prob.numel() else zero,
+                cand_false_safe_prob[selected] if cand_false_safe_prob.numel() else zero,
+                cand_quality_prob[selected] if cand_quality_prob.numel() else zero,
+                candidate_cert_risk[selected] if candidate_cert_risk.numel() else zero,
+                pressure_prior[selected] if pressure_prior.numel() else zero,
+                rule_risk[selected] if rule_risk.numel() else zero,
+                action_risk[selected] if action_risk.numel() else zero,
+                valid_cert.min() if valid_cert.numel() else zero,
+                valid_cert.mean() if valid_cert.numel() else zero,
+                valid_pressure.mean() if valid_pressure.numel() else zero,
+                valid_rule.mean() if valid_rule.numel() else zero,
+                valid_action.mean() if valid_action.numel() else zero,
+                bsel[crit_mask].max() if bsel is not None and has_crit else zero,
+                csel[crit_mask].max() if csel is not None and has_crit else zero,
+            ]
+            host = self.torch.stack([x.float() for x in diagnostic_tensors]).detach().cpu().tolist()
             diag = {
                 "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                 "step": int(step) if step is not None else -1,
                 "selected_candidate": int(selected),
-                "accepted_candidates": int(accepted.sum().detach().cpu().item()),
-                "frontier_candidates": int(frontier.sum().detach().cpu().item()) if 'frontier' in locals() and self.torch.is_tensor(frontier) else -1,
-                "valid_candidates": int(cand_valid.sum().detach().cpu().item()),
-                "conventional_candidates": int((cand_valid & conventional).sum().detach().cpu().item()),
-                "critical_agents": int(crit_mask.sum().detach().cpu().item()),
-                "conflict_tokens": int(batch["map/conflict_region_valid"][0].bool().sum().detach().cpu().item()),
+                "accepted_candidates": int(host[0]),
+                "frontier_candidates": int(host[1]),
+                "valid_candidates": int(host[2]),
+                "conventional_candidates": int(host[3]),
+                "critical_agents": int(host[4]),
+                "conflict_tokens": int(host[5]),
                 "fallback_used": bool(fallback_used),
                 "fallback_reason": fallback_reason,
-                "max_witness_prob": float(selected_witness.max().detach().cpu().item()) if selected_witness.numel() else 0.0,
-                "mean_witness_prob": float(selected_witness.mean().detach().cpu().item()) if selected_witness.numel() else 0.0,
-                "mean_witness_uncertainty": float(uncertainty[selected].mean().detach().cpu().item()) if uncertainty[selected].numel() else 0.0,
-                "max_witness_certificate": float(witness_cert[selected].max().detach().cpu().item()) if witness_cert[selected].numel() else 0.0,
-                "min_opr": float(selected_opr.min().detach().cpu().item()) if selected_opr.numel() else 1.0,
-                "mean_opr": float(selected_opr.mean().detach().cpu().item()) if selected_opr.numel() else 1.0,
-                "score": float(scores[selected].detach().cpu().item()),
+                "max_witness_prob": float(host[6]),
+                "mean_witness_prob": float(host[7]),
+                "mean_witness_uncertainty": float(host[8]),
+                "max_witness_certificate": float(host[9]),
+                "min_opr": float(host[10]),
+                "mean_opr": float(host[11]),
+                "score": float(host[12]),
                 "witness_threshold": float(self.witness_threshold),
                 "alpha_opr": float(alpha),
                 "gate_mode": str(gate_mode),
-                    "method": str(method),
+                "method": str(method),
                 "priority_hard_threshold": float(self.priority_hard_threshold),
-                "accepted_primary_bad_candidates": int(primary_bad.sum().detach().cpu().item()) if primary_bad.numel() else 0,
-                "severe_bad_candidates": int(severe_bad.sum().detach().cpu().item()) if severe_bad.numel() else 0,
-                    "option_bad_candidates": int(option_bad.sum().detach().cpu().item()) if option_bad.numel() else 0,
-                "selected_priority_max": float(priority[selected].max().detach().cpu().item()) if priority.numel() else 0.0,
-                "selected_priority_mean": float(priority[selected].mean().detach().cpu().item()) if priority.numel() else 0.0,
-                "selected_outcome_risk": float(outcome_risk[selected].detach().cpu().item()) if outcome_risk.numel() else 0.0,
-                "selected_outcome_decision_risk": float(outcome_decision_risk[selected].detach().cpu().item()) if outcome_decision_risk.numel() else 0.0,
-                "selected_candidate_ncf_prob": float(cand_ncf_prob[selected].detach().cpu().item()) if cand_ncf_prob.numel() else 0.0,
-                "selected_candidate_false_safe_prob": float(cand_false_safe_prob[selected].detach().cpu().item()) if cand_false_safe_prob.numel() else 0.0,
-                "selected_candidate_quality_prob": float(cand_quality_prob[selected].detach().cpu().item()) if cand_quality_prob.numel() else 0.0,
-                "selected_candidate_cert_risk": float(candidate_cert_risk[selected].detach().cpu().item()) if candidate_cert_risk.numel() else 0.0,
-                "selected_candidate_pressure_prior": float(pressure_prior[selected].detach().cpu().item()) if pressure_prior.numel() else 0.0,
-                "selected_candidate_rule_risk": float(rule_risk[selected].detach().cpu().item()) if rule_risk.numel() else 0.0,
-                "selected_candidate_action_risk": float(action_risk[selected].detach().cpu().item()) if action_risk.numel() else 0.0,
-                "min_candidate_cert_risk": float(candidate_cert_risk[cand_valid].min().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
-                "mean_candidate_cert_risk": float(candidate_cert_risk[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
-                "mean_candidate_pressure_prior": float(pressure_prior[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
-                "mean_candidate_rule_risk": float(rule_risk[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
-                "mean_candidate_action_risk": float(action_risk[cand_valid].mean().detach().cpu().item()) if bool(cand_valid.any().detach().cpu().item()) else 0.0,
+                "accepted_primary_bad_candidates": int(host[13]),
+                "severe_bad_candidates": int(host[14]),
+                "option_bad_candidates": int(host[15]),
+                "selected_priority_max": float(host[16]),
+                "selected_priority_mean": float(host[17]),
+                "selected_outcome_risk": float(host[18]),
+                "selected_outcome_decision_risk": float(host[19]),
+                "selected_candidate_ncf_prob": float(host[20]),
+                "selected_candidate_false_safe_prob": float(host[21]),
+                "selected_candidate_quality_prob": float(host[22]),
+                "selected_candidate_cert_risk": float(host[23]),
+                "selected_candidate_pressure_prior": float(host[24]),
+                "selected_candidate_rule_risk": float(host[25]),
+                "selected_candidate_action_risk": float(host[26]),
+                "min_candidate_cert_risk": float(host[27]),
+                "mean_candidate_cert_risk": float(host[28]),
+                "mean_candidate_pressure_prior": float(host[29]),
+                "mean_candidate_rule_risk": float(host[30]),
+                "mean_candidate_action_risk": float(host[31]),
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
             if burden is not None:
-                bsel = self.torch.nan_to_num(burden[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0)
-                diag["max_predicted_burden"] = float(bsel[crit_mask].max().detach().cpu().item()) if bool(crit_mask.any().detach().cpu().item()) else 0.0
+                diag["max_predicted_burden"] = float(host[32])
             if c_i is not None:
-                csel = self.torch.nan_to_num(c_i[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0)
-                diag["max_predicted_c_i"] = float(csel[crit_mask].max().detach().cpu().item()) if bool(crit_mask.any().detach().cpu().item()) else 0.0
+                diag["max_predicted_c_i"] = float(host[33])
         self._last_diagnostics = diag
         self._diagnostics_log.append(diag)
         traj = batch_np["cowp/candidates/trajectory"][0, selected]

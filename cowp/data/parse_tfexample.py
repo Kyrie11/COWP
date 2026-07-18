@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import glob
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -20,7 +21,18 @@ def resolve_glob_patterns(patterns: str | list[str]) -> list[str]:
         patterns = [patterns]
     files: list[str] = []
     for pat in patterns:
-        files.extend(sorted(glob.glob(pat)))
+        # Waymax accepts sharded TensorFlow paths such as
+        # ``validation_tfexample.tfrecord@150``.  Python's glob module does not,
+        # so expand that notation to the canonical TFRecord shard filenames.
+        # This keeps the lightweight/raw-record path aligned with the Waymax
+        # dataloader while allowing us to skip non-owned shards before expensive
+        # SimulatorState construction.
+        match = re.fullmatch(r"(.+)@(\d+)", str(pat))
+        if match:
+            base, count_text = match.groups()
+            count = int(count_text)
+            pat = f"{base}-{'?' * 5}-of-{count:05d}"
+        files.extend(sorted(glob.glob(str(pat))))
     if not files:
         raise FileNotFoundError(f"No tf.Example TFRecord files matched: {patterns}")
     return files
@@ -33,6 +45,32 @@ def iter_tfexample_records(patterns: str | list[str]) -> Iterator[bytes]:
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
     for rec in dataset:
         yield bytes(rec.numpy())
+
+
+def iter_tfexample_records_sharded(
+    patterns: str | list[str],
+    *,
+    shard_index: int,
+    num_shards: int,
+) -> Iterator[tuple[int, bytes]]:
+    """Yield ``(global_record_index, bytes)`` for one exact modulo shard.
+
+    ``enumerate`` is intentionally applied before ``Dataset.shard`` so the
+    returned indices and membership match the evaluator's historical rule:
+    ``global_index % num_shards == shard_index``.  Filtering inside tf.data
+    avoids converting skipped records to Python bytes.
+    """
+    tf = _import_tensorflow()
+    files = resolve_glob_patterns(patterns)
+    num_shards = max(int(num_shards), 1)
+    shard_index = int(shard_index) % num_shards
+    dataset = tf.data.TFRecordDataset(files, num_parallel_reads=tf.data.AUTOTUNE)
+    dataset = dataset.enumerate()
+    if num_shards > 1:
+        dataset = dataset.shard(num_shards=num_shards, index=shard_index)
+    dataset = dataset.prefetch(tf.data.AUTOTUNE)
+    for raw_index, rec in dataset:
+        yield int(raw_index.numpy()), bytes(rec.numpy())
 
 
 def iter_tfexample_records_by_file(patterns: str | list[str]) -> Iterator[tuple[str, int, bytes]]:

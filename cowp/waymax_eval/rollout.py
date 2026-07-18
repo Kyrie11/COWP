@@ -979,6 +979,9 @@ def _learned_offline_candidate_eval_many(
     *,
     batch_size: int = 8,
     device: str = "auto",
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
     progress: bool = True,
     gate_mode: str = "hard",
@@ -987,11 +990,12 @@ def _learned_offline_candidate_eval_many(
     priority_hard_threshold: float = 0.55,
     soft_ncf_penalty: float = 1.5,
     method: str = "cowp",
+    methods: list[str] | tuple[str, ...] | None = None,
     offline_fallback: str = "stop_like",
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
-) -> dict[float, dict[str, object]]:
+) -> dict[float, dict[str, object]] | dict[str, dict[float, dict[str, object]]]:
     import torch
     from torch.utils.data import DataLoader
 
@@ -1001,6 +1005,10 @@ def _learned_offline_candidate_eval_many(
     thresholds = sorted({float(t) for t in witness_thresholds})
     if not thresholds:
         thresholds = [0.5]
+    multi_method = methods is not None
+    method_list = list(dict.fromkeys(str(x).strip() for x in (methods or [method]) if str(x).strip()))
+    if not method_list:
+        method_list = [str(method or "cowp")]
     dev = torch.device("cuda" if device == "auto" and torch.cuda.is_available() else ("cpu" if device == "auto" else device))
     ckpt = torch.load(checkpoint, map_location=dev)
     model_cfg = ckpt.get("cfg", cfg)
@@ -1012,9 +1020,24 @@ def _learned_offline_candidate_eval_many(
     # Use the stage-filtered evaluation view.  This avoids reading dense response
     # targets and broad waymax/* tensors that are irrelevant for planner eval.
     ds = TorchCOWPDataset(cache_dir, stage="planner_eval")
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=collate_torch)
+    workers = max(int(num_workers), 0)
+    use_pin_memory = bool(dev.type == "cuda") if pin_memory is None else bool(pin_memory)
+    dl_kwargs = {
+        "batch_size": int(batch_size),
+        "shuffle": False,
+        "num_workers": workers,
+        "collate_fn": collate_torch,
+        "pin_memory": use_pin_memory,
+    }
+    if workers > 0:
+        dl_kwargs["prefetch_factor"] = max(int(prefetch_factor), 1)
+        dl_kwargs["persistent_workers"] = True
+    dl = DataLoader(ds, **dl_kwargs)
     beta_default = float(cfg.get("burden", {}).get("beta0_vehicle", 0.65))
-    accs = {th: _LearnedMetricsAccumulator(beta_default=beta_default) for th in thresholds}
+    accs = {
+        method_name: {th: _LearnedMetricsAccumulator(beta_default=beta_default) for th in thresholds}
+        for method_name in method_list
+    }
     pair_scores: list[np.ndarray] = []
     pair_targets: list[np.ndarray] = []
     cert_ncf_scores: list[np.ndarray] = []
@@ -1030,7 +1053,11 @@ def _learned_offline_candidate_eval_many(
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc="Learned offline COWP eval", unit="batch")
     with torch.inference_mode():
         for batch in iterator:
-            batch = {k: v.to(dev) for k, v in batch.items() if torch.is_tensor(v)}
+            batch = {
+                k: v.to(dev, non_blocking=use_pin_memory)
+                for k, v in batch.items()
+                if torch.is_tensor(v)
+            }
             if not batch:
                 continue
             pred = model(batch, stage="planner")
@@ -1087,59 +1114,82 @@ def _learned_offline_candidate_eval_many(
             cert_rank_good += cg
             cert_rank_total += ct
 
-            for th in thresholds:
-                batch_selected, batch_accepted_masks = _select_from_learned(
-                    batch,
-                    pred,
-                    witness_threshold=th,
-                    alpha_opr=alpha,
-                    gate_mode=gate_mode,
-                    secondary_witness_threshold=secondary_witness_threshold,
-                    secondary_opr_alpha=secondary_opr_alpha,
-                    priority_hard_threshold=priority_hard_threshold,
-                    soft_ncf_penalty=soft_ncf_penalty,
-                    method=method,
-                    offline_fallback=offline_fallback,
-                    adaptive_frontier_margin=adaptive_frontier_margin,
-                    outcome_risk_penalty=outcome_risk_penalty,
-                    outcome_risk_threshold=outcome_risk_threshold,
-                    cfg=cfg,
-                )
-                pred_exists = (pair_score_np >= float(th))
-                acc = accs[th]
-                for i, item in enumerate(batch_labels):
-                    cert_item = {
-                        "ncf_prob": cert_ncf_np[i],
-                        "false_safe_prob": cert_fs_np[i],
-                        "quality_prob": cert_q_np[i],
-                        "risk": cert_risk_np[i],
-                        "pressure_prior": pressure_prior_np[i],
-                        "rule_risk": rule_risk_np[i],
-                    }
-                    acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
-                    acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
+            # Model inference and all host transfers above are shared across
+            # methods.  Only the inexpensive candidate selection/aggregation is
+            # repeated, replacing N full checkpoint loads and N cache scans with
+            # one pass over the validation set.
+            for method_name in method_list:
+                for th in thresholds:
+                    batch_selected, batch_accepted_masks = _select_from_learned(
+                        batch,
+                        pred,
+                        witness_threshold=th,
+                        alpha_opr=alpha,
+                        gate_mode=gate_mode,
+                        secondary_witness_threshold=secondary_witness_threshold,
+                        secondary_opr_alpha=secondary_opr_alpha,
+                        priority_hard_threshold=priority_hard_threshold,
+                        soft_ncf_penalty=soft_ncf_penalty,
+                        method=method_name,
+                        offline_fallback=offline_fallback,
+                        adaptive_frontier_margin=adaptive_frontier_margin,
+                        outcome_risk_penalty=outcome_risk_penalty,
+                        outcome_risk_threshold=outcome_risk_threshold,
+                        cfg=cfg,
+                    )
+                    pred_exists = pair_score_np >= float(th)
+                    acc = accs[method_name][th]
+                    for i, item in enumerate(batch_labels):
+                        cert_item = {
+                            "ncf_prob": cert_ncf_np[i],
+                            "false_safe_prob": cert_fs_np[i],
+                            "quality_prob": cert_q_np[i],
+                            "risk": cert_risk_np[i],
+                            "pressure_prior": pressure_prior_np[i],
+                            "rule_risk": rule_risk_np[i],
+                        }
+                        acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
+                        acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(done=accs[thresholds[0]].selected_total, thresholds=len(thresholds), refresh=True)
+                iterator.set_postfix(
+                    done=accs[method_list[0]][thresholds[0]].selected_total,
+                    methods=len(method_list),
+                    thresholds=len(thresholds),
+                    refresh=True,
+                )
 
     all_pair_scores = np.concatenate(pair_scores) if pair_scores else np.asarray([], dtype=np.float32)
     auprc = _average_precision_binary(all_pair_scores, np.concatenate(pair_targets)) if pair_scores else 0.0
     cert_ncf_auprc = _average_precision_binary(np.concatenate(cert_ncf_scores), np.concatenate(cert_ncf_targets)) if cert_ncf_scores else 0.0
     cert_fs_auprc = _average_precision_binary(np.concatenate(cert_fs_scores), np.concatenate(cert_fs_targets)) if cert_fs_scores else 0.0
     cert_q_auprc = _average_precision_binary(np.concatenate(cert_q_scores), np.concatenate(cert_q_targets)) if cert_q_scores else 0.0
-    out = {th: accs[th].finish(auprc=auprc, rank_good=rank_good, rank_total=rank_total, witness_threshold=th) for th in thresholds}
-    for row in out.values():
-        row["CandidateCertificate/NCF_AUPRC"] = float(cert_ncf_auprc)
-        row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
-        row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
-        row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
+    out_by_method = {
+        method_name: {
+            th: accs[method_name][th].finish(
+                auprc=auprc,
+                rank_good=rank_good,
+                rank_total=rank_total,
+                witness_threshold=th,
+            )
+            for th in thresholds
+        }
+        for method_name in method_list
+    }
+    for method_out in out_by_method.values():
+        for row in method_out.values():
+            row["CandidateCertificate/NCF_AUPRC"] = float(cert_ncf_auprc)
+            row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
+            row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
+            row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
     if all_pair_scores.size:
         qs = np.quantile(all_pair_scores, [0.1, 0.5, 0.9, 0.99])
-        for row in out.values():
-            row["WitnessProb/p10"] = float(qs[0])
-            row["WitnessProb/p50"] = float(qs[1])
-            row["WitnessProb/p90"] = float(qs[2])
-            row["WitnessProb/p99"] = float(qs[3])
-    return out
+        for method_out in out_by_method.values():
+            for row in method_out.values():
+                row["WitnessProb/p10"] = float(qs[0])
+                row["WitnessProb/p50"] = float(qs[1])
+                row["WitnessProb/p90"] = float(qs[2])
+                row["WitnessProb/p99"] = float(qs[3])
+    return out_by_method if multi_method else out_by_method[method_list[0]]
 
 
 def learned_offline_candidate_eval(
@@ -1149,6 +1199,9 @@ def learned_offline_candidate_eval(
     *,
     batch_size: int = 8,
     device: str = "auto",
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
     witness_threshold: float = 0.5,
     progress: bool = True,
     gate_mode: str = "hard",
@@ -1168,6 +1221,9 @@ def learned_offline_candidate_eval(
         cfg,
         batch_size=batch_size,
         device=device,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
         witness_thresholds=[float(witness_threshold)],
         progress=progress,
         gate_mode=gate_mode,
@@ -1190,6 +1246,9 @@ def learned_offline_candidate_eval_sweep(
     *,
     batch_size: int = 8,
     device: str = "auto",
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
     progress: bool = True,
     gate_mode: str = "hard",
@@ -1209,6 +1268,9 @@ def learned_offline_candidate_eval_sweep(
         cfg,
         batch_size=batch_size,
         device=device,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
         witness_thresholds=list(witness_thresholds),
         progress=progress,
         gate_mode=gate_mode,
@@ -1223,6 +1285,58 @@ def learned_offline_candidate_eval_sweep(
         outcome_risk_threshold=outcome_risk_threshold,
     )
     return [out[th] for th in sorted(out)]
+
+
+def learned_offline_candidate_eval_methods(
+    cache_dir: str | Path,
+    checkpoint: str | Path,
+    cfg: dict,
+    *,
+    methods: list[str] | tuple[str, ...],
+    batch_size: int = 8,
+    device: str = "auto",
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
+    witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
+    progress: bool = True,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
+    soft_ncf_penalty: float = 1.5,
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
+) -> dict[str, list[dict[str, object]]]:
+    """Evaluate multiple internal methods from one shared model/cache pass."""
+    nested = _learned_offline_candidate_eval_many(
+        cache_dir,
+        checkpoint,
+        cfg,
+        batch_size=batch_size,
+        device=device,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        witness_thresholds=list(witness_thresholds),
+        progress=progress,
+        gate_mode=gate_mode,
+        secondary_witness_threshold=secondary_witness_threshold,
+        secondary_opr_alpha=secondary_opr_alpha,
+        priority_hard_threshold=priority_hard_threshold,
+        soft_ncf_penalty=soft_ncf_penalty,
+        methods=list(methods),
+        offline_fallback=offline_fallback,
+        adaptive_frontier_margin=adaptive_frontier_margin,
+        outcome_risk_penalty=outcome_risk_penalty,
+        outcome_risk_threshold=outcome_risk_threshold,
+    )
+    return {
+        method_name: [method_out[th] for th in sorted(method_out)]
+        for method_name, method_out in nested.items()
+    }
 
 def import_policy_fn(spec: str) -> Callable:
     if ":" not in spec:
@@ -1378,6 +1492,49 @@ def _env_step(env, state, action):
     return result
 
 
+class _WaymaxEnvOps:
+    """Cached reset/step callables with transparent JAX-JIT fallback."""
+
+    def __init__(self, env, *, use_jit: bool = True):
+        self.env = env
+        self.use_jit = bool(use_jit)
+        self._reset_fn = env.reset
+        self._step_fn = lambda state, action: _env_step(env, state, action)
+        self._reset_jitted = False
+        self._step_jitted = False
+        if self.use_jit:
+            try:
+                import jax  # type: ignore
+
+                self._reset_fn = jax.jit(env.reset)
+                self._step_fn = jax.jit(lambda state, action: _env_step(env, state, action))
+                self._reset_jitted = True
+                self._step_jitted = True
+            except Exception:
+                self._reset_fn = env.reset
+                self._step_fn = lambda state, action: _env_step(env, state, action)
+
+    def reset(self, init_state):
+        try:
+            return self._reset_fn(init_state)
+        except Exception:
+            if not self._reset_jitted:
+                raise
+            self._reset_jitted = False
+            self._reset_fn = self.env.reset
+            return self._reset_fn(init_state)
+
+    def step(self, state, action):
+        try:
+            return self._step_fn(state, action)
+        except Exception:
+            if not self._step_jitted:
+                raise
+            self._step_jitted = False
+            self._step_fn = lambda current_state, current_action: _env_step(self.env, current_state, current_action)
+            return self._step_fn(state, action)
+
+
 def _state_done(state) -> bool:
     for attr in ("is_done", "done"):
         val = getattr(state, attr, None)
@@ -1408,6 +1565,9 @@ def waymax_closed_loop_rollout(
     shard_index: int = 0,
     num_shards: int = 1,
     reuse_env: bool = True,
+    prefilter_shards: bool = True,
+    jit_env: bool = True,
+    jit_standard_metrics: bool = True,
     status_every: int = 10,
     standard_metric_names: set[str] | list[str] | tuple[str, ...] | None = None,
 ):
@@ -1417,16 +1577,26 @@ def waymax_closed_loop_rollout(
     SimulatorState.  This function intentionally does not use proto-derived COWP
     labels; it is the closed-loop path for validating a planner in Waymax.
     """
-    from cowp.waymax_eval.dataloader import waymax_state_generator
+    from cowp.waymax_eval.dataloader import waymax_state_generator, waymax_state_generator_sharded
 
     horizon = int(horizon_steps) if horizon_steps is not None else 80
-    gen = waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob)
-    total = num_scenarios
     num_shards = max(int(num_shards), 1)
     shard_index = int(shard_index) % num_shards
+    use_prefilter = bool(prefilter_shards) and num_shards > 1
+    if use_prefilter:
+        gen = waymax_state_generator_sharded(
+            data_config,
+            split=split,
+            tfexample_glob=tfexample_glob,
+            shard_index=shard_index,
+            num_shards=num_shards,
+        )
+    else:
+        gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
+    total = num_scenarios
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
-    env_cache: dict[tuple[int | None, str], object] = {}
+    env_cache: dict[tuple[int | None, str], tuple[object, _WaymaxEnvOps]] = {}
     call_policy = _make_policy_caller(policy_fn)
     started_at = time.time()
     last_status_at = started_at
@@ -1439,8 +1609,8 @@ def waymax_closed_loop_rollout(
         from cowp.waymax_eval.metrics_standard import build_waymax_metric_objects
 
         standard_metric_objects, standard_metric_errors = build_waymax_metric_objects(standard_metric_names)
-    for raw_index, init_state in enumerate(iterator):
-        if num_shards > 1 and (raw_index % num_shards) != shard_index:
+    for raw_index, init_state in iterator:
+        if (not use_prefilter) and num_shards > 1 and (raw_index % num_shards) != shard_index:
             continue
         scenario_index = raw_index
         max_objects = getattr(init_state, "num_objects", None)
@@ -1448,16 +1618,21 @@ def waymax_closed_loop_rollout(
             max_objects = getattr(init_state.log_trajectory, "num_objects", None)
         env_key = (int(max_objects) if max_objects is not None else None, str(action_mode))
         if reuse_env and env_key in env_cache:
-            env = env_cache[env_key]
+            env, env_ops = env_cache[env_key]
         else:
             env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
+            env_ops = _WaymaxEnvOps(env, use_jit=jit_env)
             if reuse_env:
-                env_cache[env_key] = env
-        state = env.reset(init_state)
+                env_cache[env_key] = (env, env_ops)
+        state = env_ops.reset(init_state)
         steps = 0
         policy_diagnostics = []
         metric_acc = (
-            WaymaxStandardMetricAccumulator(metric_objects=standard_metric_objects, init_errors=dict(standard_metric_errors))
+            WaymaxStandardMetricAccumulator(
+                metric_objects=standard_metric_objects,
+                init_errors=dict(standard_metric_errors),
+                jit_metrics=bool(jit_standard_metrics),
+            )
             if compute_standard_metrics
             else None
         )
@@ -1466,7 +1641,7 @@ def waymax_closed_loop_rollout(
             diag = _consume_policy_diagnostics(policy_fn)
             if diag is not None:
                 policy_diagnostics.append(diag)
-            state = _env_step(env, state, action)
+            state = env_ops.step(state, action)
             steps += 1
             if metric_acc is not None:
                 # Waymax's built-in metrics are per-current-timestep metrics.  Update

@@ -141,7 +141,7 @@ def _metric_value_and_valid(result: Any) -> tuple[np.ndarray, np.ndarray | None]
     return _to_numpy(result), None
 
 
-def metric_result_to_sdc_scalar(result: Any, state: Any | None = None) -> float | None:
+def metric_result_to_sdc_scalar(result: Any, state: Any | None = None, *, sdc_index: int | None = None) -> float | None:
     """Extract a JSON-safe scalar from a Waymax MetricResult.
 
     Waymax metrics usually return a MetricResult with shape (..., num_objects).
@@ -158,7 +158,8 @@ def metric_result_to_sdc_scalar(result: Any, state: Any | None = None) -> float 
         return _numeric_metric_value(result)
 
     # Remove leading singleton/batch dimensions in the common unbatched case.
-    sdc_index = _sdc_index_from_state(state) if state is not None else None
+    if sdc_index is None and state is not None:
+        sdc_index = _sdc_index_from_state(state)
     v = value
     m = valid
     while v.ndim > 1:
@@ -216,23 +217,68 @@ class WaymaxStandardMetricAccumulator:
     # needed by candidate replay when --metric-set none/off is requested.
     metric_names: set[str] | list[str] | tuple[str, ...] | None = None
     metric_objects: list[tuple[str, Any]] | None = None
+    jit_metrics: bool = True
     init_errors: dict[str, str] = field(default_factory=dict)
     max_values: dict[str, float] = field(default_factory=dict)
     final_values: dict[str, float] = field(default_factory=dict)
     mean_values: dict[str, list[float]] = field(default_factory=dict)
     step_count: int = 0
     errors: dict[str, str] = field(default_factory=dict)
+    _metric_compute_fns: list[tuple[str, Any, Any, bool]] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.metric_objects is None:
             self.metric_objects, self.init_errors = build_waymax_metric_objects(self.metric_names)
+        self._metric_compute_fns = []
+        for name, metric in self.metric_objects:
+            raw_fn = metric.compute
+            fn = raw_fn
+            is_jitted = False
+            if self.jit_metrics:
+                try:
+                    import jax  # type: ignore
+
+                    fn = jax.jit(raw_fn)
+                    is_jitted = True
+                except Exception:
+                    fn = raw_fn
+            self._metric_compute_fns.append((name, metric, fn, is_jitted))
 
     def update(self, state: Any) -> None:
         self.step_count += 1
-        for name, metric in self.metric_objects:
+        # SDC metadata is invariant within an episode.  Previously it was copied
+        # from device to host once per metric (up to seven synchronizations per
+        # simulator step).  Resolve it once and reuse it for every metric.
+        sdc_index = _sdc_index_from_state(state)
+        computed: list[tuple[str, Any]] = []
+        for idx, (name, metric, compute_fn, is_jitted) in enumerate(self._metric_compute_fns):
             try:
-                result = metric.compute(state)
-                scalar = metric_result_to_sdc_scalar(result, state)
+                result = compute_fn(state)
+            except Exception as exc:
+                if is_jitted:
+                    # Some Waymax releases expose metric implementations that are
+                    # not JIT compatible.  Fall back permanently after the first
+                    # failure; the raw compute path is the exact former behavior.
+                    try:
+                        result = metric.compute(state)
+                        self._metric_compute_fns[idx] = (name, metric, metric.compute, False)
+                    except Exception as raw_exc:
+                        self.errors.setdefault(name, str(raw_exc))
+                        continue
+                else:
+                    self.errors.setdefault(name, str(exc))
+                    continue
+            computed.append((name, result))
+
+        # JAX dispatch is asynchronous.  Fetch the metric pytree as one group so
+        # all metric kernels complete behind a single host synchronization.
+        try:
+            host_results = _device_get([result for _, result in computed])
+        except Exception:
+            host_results = [result for _, result in computed]
+        for (name, _), result in zip(computed, host_results):
+            try:
+                scalar = metric_result_to_sdc_scalar(result, sdc_index=sdc_index)
             except Exception as exc:
                 # Keep the first error per metric and continue.  Route metrics can
                 # legitimately fail if sdc_paths are missing from the dataset.

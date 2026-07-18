@@ -8,6 +8,7 @@ from cowp.data.parse_tfexample import (
     decode_parsed_tfexample,
     iter_tfexample_records,
     iter_tfexample_records_by_file,
+    iter_tfexample_records_sharded,
     parse_tfexample,
     scenario_id_from_parsed_tfexample,
 )
@@ -399,10 +400,9 @@ def _tfexample_path_from_cowp_config(data_config: dict, split: str | None = None
 def _raw_tfexample_path_from_cowp_config(data_config: dict, split: str | None = None) -> str | None:
     """Path pattern usable by TensorFlow TFRecordDataset/id scanning.
 
-    Waymax accepts shard syntax such as ``file@1000``; the lightweight parser in
-    cowp.data.parse_tfexample expects normal glob patterns.  Therefore the
-    cache-matched replay path should prefer ``tfexample_glob`` fields over
-    ``waymax_path`` fields when it scans scenario ids.
+    ``cowp.data.parse_tfexample`` accepts both normal globs and Waymax shard
+    syntax such as ``file@1000``.  Prefer explicit raw tf.Example fields because
+    they also work for provenance/index based scans.
     """
     womd_cfg = _womd_subconfig(data_config)
     if split == "validation":
@@ -433,6 +433,50 @@ def waymax_state_generator(data_config, split: str | None = None, tfexample_glob
     _, dataloader, _ = require_waymax()
     cfg = make_config_from_cowp_config(data_config, split=split, path_override=tfexample_glob)
     return dataloader.simulator_state_generator(config=cfg)
+
+
+def waymax_state_generator_sharded(
+    data_config: dict,
+    *,
+    shard_index: int = 0,
+    num_shards: int = 1,
+    tfexample_glob: str | None = None,
+    split: str | None = None,
+) -> Iterator[tuple[int, object]]:
+    """Yield only this process's ``(global_record_index, SimulatorState)`` rows.
+
+    The previous online evaluator enumerated Waymax's full state generator and
+    applied ``raw_index % num_shards`` *after* each SimulatorState had already
+    been parsed and materialized.  With N workers that repeats the most expensive
+    input conversion N times.  This generator applies the exact same modulo
+    assignment to serialized TFExample records first, and constructs a Waymax
+    state only for records owned by the current process.
+
+    Record ordering and the modulo rule are unchanged.  Therefore scenario
+    membership, scenario_index values, policy calls, environment stepping, and
+    metrics are identical to the original sharded evaluation path.
+    """
+    num_shards = max(int(num_shards), 1)
+    shard_index = int(shard_index) % num_shards
+    if num_shards == 1:
+        for raw_index, state in enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob)):
+            yield raw_index, state
+        return
+
+    path = tfexample_glob or _raw_tfexample_path_from_cowp_config(data_config, split=split)
+    if path is None:
+        raise ValueError("A WOMD tf.Example glob/path is required for sharded Waymax rollout.")
+    womd_cfg = _womd_subconfig(data_config)
+    include_sdc_paths = bool(womd_cfg.get("include_sdc_paths", True))
+    for raw_index, raw in iter_tfexample_records_sharded(
+        path,
+        shard_index=shard_index,
+        num_shards=num_shards,
+    ):
+        parsed = parse_tfexample(raw)
+        example = decode_parsed_tfexample(parsed)
+        state = simulator_state_from_womd_dict(example, include_sdc_paths=include_sdc_paths, time_key="all")
+        yield raw_index, state
 
 
 def waymax_state_generator_with_ids(data_config: dict, tfexample_glob: str | None = None, split: str | None = None) -> Iterator[tuple[str, object]]:

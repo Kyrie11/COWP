@@ -6,7 +6,14 @@ import os
 from pathlib import Path
 
 from cowp.core.config import load_config
-from cowp.waymax_eval.rollout import import_policy_fn, learned_offline_candidate_eval, learned_offline_candidate_eval_sweep, offline_candidate_eval, waymax_closed_loop_rollout
+from cowp.waymax_eval.rollout import (
+    import_policy_fn,
+    learned_offline_candidate_eval,
+    learned_offline_candidate_eval_methods,
+    learned_offline_candidate_eval_sweep,
+    offline_candidate_eval,
+    waymax_closed_loop_rollout,
+)
 from cowp.waymax_eval.policy_wrapper import make_cowp_policy
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
@@ -65,6 +72,9 @@ def main() -> None:
     ap.add_argument("--shard-index", type=int, default=0, help="Shard id in [0, num_shards) for --mode waymax.")
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--num-workers", type=int, default=0, help="DataLoader workers for learned_offline cache loading.")
+    ap.add_argument("--prefetch-factor", type=int, default=2, help="Batches prefetched per learned_offline DataLoader worker.")
+    ap.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=None, help="Pin learned_offline host tensors. Default: enabled only for CUDA evaluation.")
     ap.add_argument("--witness-threshold", type=float, default=0.5)
     ap.add_argument("--witness-threshold-sweep", default=None, help="Comma-separated thresholds for learned_offline diagnostic sweep, e.g. 0.1,0.2,0.3,0.5,0.7.")
     ap.add_argument("--ncf-gate-mode", choices=["hard", "priority", "soft", "none"], default="priority", help="Candidate acceptance gate. priority is the default COWP gate; hard/universal vetoes any predicted witness; soft uses witness only as a score penalty; none disables witness gating.")
@@ -73,6 +83,7 @@ def main() -> None:
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
     ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
     ap.add_argument("--outcome-risk-penalty", type=float, default=0.0, help="Penalty weight for learned Waymax outcome risk. Keep 0 for checkpoints trained without outcome labels.")
@@ -91,6 +102,9 @@ def main() -> None:
     ap.add_argument("--waymax-standard-metrics", action="store_true")
     ap.add_argument("--waymax-standard-metric-names", default=None, help="Comma-separated Waymax metric class names to compute, or 'all'. Example: OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric")
     ap.add_argument("--reuse-waymax-env", action=argparse.BooleanOptionalAction, default=True, help="Reuse a compatible Waymax environment object across scenarios. Does not change rollout logic; avoids per-scenario construction overhead.")
+    ap.add_argument("--prefilter-waymax-shards", action=argparse.BooleanOptionalAction, default=True, help="Apply modulo sharding before SimulatorState construction. Scenario assignment and metrics are unchanged.")
+    ap.add_argument("--jit-waymax-env", action=argparse.BooleanOptionalAction, default=True, help="JIT cached Waymax reset/step functions, with automatic fallback to the original eager path.")
+    ap.add_argument("--jit-waymax-metrics", action=argparse.BooleanOptionalAction, default=True, help="JIT Waymax metric compute functions, with automatic per-metric fallback.")
     ap.add_argument("--status-every", type=int, default=10, help="When --no-progress is used, print one compact rollout heartbeat every N completed scenarios.")
     ap.add_argument("--output", default="outputs/eval_metrics.json")
     ap.add_argument("--no-progress", action="store_true")
@@ -104,7 +118,49 @@ def main() -> None:
     elif args.mode == "learned_offline":
         if not args.checkpoint:
             raise ValueError("--mode learned_offline requires --checkpoint")
-        if args.witness_threshold_sweep:
+        method_list = [x.strip() for x in str(args.methods or "").split(",") if x.strip()]
+        if method_list:
+            thresholds = [float(args.witness_threshold)]
+            if args.witness_threshold_sweep:
+                thresholds.extend(float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip())
+            multi_sweep = learned_offline_candidate_eval_methods(
+                args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+                args.checkpoint,
+                cfg,
+                methods=method_list,
+                batch_size=args.batch_size,
+                device=args.device,
+                num_workers=args.num_workers,
+                prefetch_factor=args.prefetch_factor,
+                pin_memory=args.pin_memory,
+                witness_thresholds=thresholds,
+                progress=not args.no_progress,
+                gate_mode=args.ncf_gate_mode,
+                secondary_witness_threshold=args.secondary_witness_threshold,
+                secondary_opr_alpha=args.secondary_opr_alpha,
+                priority_hard_threshold=args.priority_hard_threshold,
+                soft_ncf_penalty=args.soft_ncf_penalty,
+                offline_fallback=args.offline_fallback,
+                adaptive_frontier_margin=args.adaptive_frontier_margin,
+                outcome_risk_penalty=args.outcome_risk_penalty,
+                outcome_risk_threshold=args.outcome_risk_threshold,
+            )
+            payload = {
+                method_name: min(rows, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
+                for method_name, rows in multi_sweep.items()
+            }
+            payload.update({
+                "mode": "learned_offline",
+                "checkpoint": args.checkpoint,
+                "ncf_gate_mode": args.ncf_gate_mode,
+                "priority_hard_threshold": args.priority_hard_threshold,
+                "offline_fallback": args.offline_fallback,
+                "methods": method_list,
+                "shared_model_pass": True,
+            })
+            if args.witness_threshold_sweep:
+                payload["witness_threshold_sweep"] = multi_sweep
+        elif args.witness_threshold_sweep:
             thresholds = [float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip()]
             thresholds.append(float(args.witness_threshold))
             sweep = learned_offline_candidate_eval_sweep(
@@ -113,6 +169,9 @@ def main() -> None:
                 cfg,
                 batch_size=args.batch_size,
                 device=args.device,
+                num_workers=args.num_workers,
+                prefetch_factor=args.prefetch_factor,
+                pin_memory=args.pin_memory,
                 witness_thresholds=thresholds,
                 progress=not args.no_progress,
                 gate_mode=args.ncf_gate_mode,
@@ -135,6 +194,9 @@ def main() -> None:
                 cfg,
                 batch_size=args.batch_size,
                 device=args.device,
+                num_workers=args.num_workers,
+                prefetch_factor=args.prefetch_factor,
+                pin_memory=args.pin_memory,
                 witness_threshold=args.witness_threshold,
                 progress=not args.no_progress,
                 gate_mode=args.ncf_gate_mode,
@@ -187,6 +249,9 @@ def main() -> None:
             shard_index=args.shard_index,
             num_shards=args.num_shards,
             reuse_env=bool(args.reuse_waymax_env),
+            prefilter_shards=bool(args.prefilter_waymax_shards),
+            jit_env=bool(args.jit_waymax_env),
+            jit_standard_metrics=bool(args.jit_waymax_metrics),
             status_every=int(args.status_every),
             standard_metric_names=_parse_metric_names(args.waymax_standard_metric_names),
         )
@@ -200,6 +265,9 @@ def main() -> None:
             "tfexample_glob": args.tfexample_glob,
             "waymax_standard_metric_names": sorted(_parse_metric_names(args.waymax_standard_metric_names)) if isinstance(_parse_metric_names(args.waymax_standard_metric_names), set) else args.waymax_standard_metric_names,
             "reuse_waymax_env": bool(args.reuse_waymax_env),
+            "prefilter_waymax_shards": bool(args.prefilter_waymax_shards),
+            "jit_waymax_env": bool(args.jit_waymax_env),
+            "jit_waymax_metrics": bool(args.jit_waymax_metrics),
             "shard_index": int(args.shard_index),
             "num_shards": int(args.num_shards),
             "num_rollouts": len(rollouts),

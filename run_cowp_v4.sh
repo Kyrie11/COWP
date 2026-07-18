@@ -26,19 +26,27 @@ RUN_ONLINE_EVAL="${RUN_ONLINE_EVAL:-1}"
 LEARNED_METHODS="${LEARNED_METHODS:-planner_score_only conventional_safety soft_burden_cost_only universal_ncf cowp}"
 ONLINE_METHODS="${ONLINE_METHODS:-planner_score_only conventional_safety cowp}"
 LEARNED_EVAL_DEVICE="${LEARNED_EVAL_DEVICE:-cpu}"
-LEARNED_EVAL_BATCH="${LEARNED_EVAL_BATCH:-1}"
+LEARNED_EVAL_BATCH="${LEARNED_EVAL_BATCH:-32}"
+LEARNED_EVAL_WORKERS="${LEARNED_EVAL_WORKERS:-4}"
+LEARNED_EVAL_PREFETCH="${LEARNED_EVAL_PREFETCH:-2}"
 TOTAL_ONLINE_SCENARIOS="${TOTAL_ONLINE_SCENARIOS:-300}"
 NUM_WAYMAX_SHARDS="${NUM_WAYMAX_SHARDS:-2}"
 WAYMAX_GPUS="${WAYMAX_GPUS:-0 1}"
 WAYMAX_DEVICE="${WAYMAX_DEVICE:-gpu}"
 POLICY_DEVICE="${POLICY_DEVICE:-auto}"
+CLEAR_ACCELERATOR_CACHE="${CLEAR_ACCELERATOR_CACHE:-0}"
+PREFILTER_WAYMAX_SHARDS="${PREFILTER_WAYMAX_SHARDS:-1}"
+JIT_WAYMAX_ENV="${JIT_WAYMAX_ENV:-1}"
+JIT_WAYMAX_METRICS="${JIT_WAYMAX_METRICS:-1}"
+JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$OUT_ROOT/jax_compilation_cache}"
 WITNESS_THRESHOLD="${WITNESS_THRESHOLD:-0.05}"
 NCF_GATE_MODE="${NCF_GATE_MODE:-priority}"
 OUTCOME_RISK_PENALTY="${OUTCOME_RISK_PENALTY:-1.0}"
 OUTCOME_RISK_THRESHOLD="${OUTCOME_RISK_THRESHOLD:-1.10}"
 DETACH="${DETACH:-0}"
 
-mkdir -p "$OUT_ROOT" "$OUT_ROOT/logs" "$OUT_ROOT/checkpoints/planner" "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax" "$OUT_ROOT/configs"
+mkdir -p "$OUT_ROOT" "$OUT_ROOT/logs" "$OUT_ROOT/checkpoints/planner" "$OUT_ROOT/eval/learned_offline" "$OUT_ROOT/eval/waymax" "$OUT_ROOT/configs" "$JAX_COMPILATION_CACHE_DIR"
+export JAX_COMPILATION_CACHE_DIR
 
 if [[ "$DETACH" == "1" && "${COWP_V4_DETACHED:-0}" != "1" ]]; then
   export COWP_V4_DETACHED=1
@@ -158,18 +166,23 @@ PY
 }
 
 if [[ "$RUN_LEARNED_EVAL" == "1" ]]; then
+  pending_methods=()
   for method in $LEARNED_METHODS; do
     out="$OUT_ROOT/eval/learned_offline/${method}.json"
     if eval_done "$out" "$method" learned_offline; then
       echo "[learned/$method] keep existing $out"
       continue
     fi
-    # Run learned-offline sequentially and default to CPU to avoid CUDA OOM from
-    # concurrent Waymax/JAX/PyTorch processes.  This is slower but makes the
-    # mechanism diagnostics complete and reproducible.
-    logrun "learned_${method}" "$PYTHON_BIN" -u -m cowp.scripts.04_eval_closed_loop \
+    pending_methods+=("$method")
+  done
+  if (( ${#pending_methods[@]} > 0 )); then
+    methods_csv="$(IFS=,; echo "${pending_methods[*]}")"
+    combined_out="$OUT_ROOT/eval/learned_offline/_shared_model_pass.json"
+    # Load the checkpoint and scan the validation cache once.  All methods reuse
+    # the same network predictions; only their cheap selection rules differ.
+    logrun "learned_shared_model_pass" "$PYTHON_BIN" -u -m cowp.scripts.04_eval_closed_loop \
       --mode learned_offline \
-      --method "$method" \
+      --methods "$methods_csv" \
       --checkpoint "$ckpt" \
       --cache-dir "$VAL_CACHE" \
       --data-config configs/data.yaml \
@@ -177,16 +190,49 @@ if [[ "$RUN_LEARNED_EVAL" == "1" ]]; then
       --eval-config configs/eval.yaml \
       --device "$LEARNED_EVAL_DEVICE" \
       --batch-size "$LEARNED_EVAL_BATCH" \
+      --num-workers "$LEARNED_EVAL_WORKERS" \
+      --prefetch-factor "$LEARNED_EVAL_PREFETCH" \
       --witness-threshold "$WITNESS_THRESHOLD" \
       --ncf-gate-mode "$NCF_GATE_MODE" \
       --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" \
       --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
-      --output "$out" \
+      --output "$combined_out" \
       --no-progress
-  done
+    "$PYTHON_BIN" - "$combined_out" "$OUT_ROOT/eval/learned_offline" "${pending_methods[@]}" <<'PY'
+import json, pathlib, sys
+
+combined_path = pathlib.Path(sys.argv[1])
+out_dir = pathlib.Path(sys.argv[2])
+methods = sys.argv[3:]
+with combined_path.open("r", encoding="utf-8") as f:
+    data = json.load(f)
+common_keys = (
+    "mode", "checkpoint", "ncf_gate_mode", "priority_hard_threshold",
+    "offline_fallback", "shared_model_pass",
+)
+for method in methods:
+    if method not in data:
+        raise KeyError(f"missing learned-offline method in shared output: {method}")
+    payload = {method: data[method]}
+    for key in common_keys:
+        if key in data:
+            payload[key] = data[key]
+    sweep = data.get("witness_threshold_sweep")
+    if isinstance(sweep, dict) and method in sweep:
+        payload["witness_threshold_sweep"] = sweep[method]
+    out = out_dir / f"{method}.json"
+    with out.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+PY
+  fi
 fi
 
 if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then
+  online_perf_args=()
+  [[ "$CLEAR_ACCELERATOR_CACHE" == "1" ]] && online_perf_args+=(--clear-accelerator-cache)
+  [[ "$PREFILTER_WAYMAX_SHARDS" == "1" ]] || online_perf_args+=(--no-prefilter-waymax-shards)
+  [[ "$JIT_WAYMAX_ENV" == "1" ]] || online_perf_args+=(--no-jit-waymax-env)
+  [[ "$JIT_WAYMAX_METRICS" == "1" ]] || online_perf_args+=(--no-jit-waymax-metrics)
   scenarios_per_shard=$(( (TOTAL_ONLINE_SCENARIOS + NUM_WAYMAX_SHARDS - 1) / NUM_WAYMAX_SHARDS ))
   read -r -a gpu_arr <<< "$WAYMAX_GPUS"
   for method in $ONLINE_METHODS; do
@@ -218,14 +264,14 @@ if [[ "$RUN_ONLINE_EVAL" == "1" ]]; then
           --waymax-device "$WAYMAX_DEVICE" \
           --jax-visible-devices 0 \
           --jax-preallocate false \
-          --clear-accelerator-cache \
           --waymax-standard-metrics \
           --witness-threshold "$WITNESS_THRESHOLD" \
           --ncf-gate-mode "$NCF_GATE_MODE" \
           --outcome-risk-penalty "$OUTCOME_RISK_PENALTY" \
           --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
           --output "$out" \
-          --no-progress
+          --no-progress \
+          "${online_perf_args[@]}"
       ) > >(tee "$log") 2> >(tee -a "$log" >&2) &
       pids+=("$!")
     done
