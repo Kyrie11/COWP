@@ -442,6 +442,78 @@ def _guard_frontier_base_torch(base, score_risk, progress, action_risk=None, *, 
     return guarded
 
 
+
+def _risk_budgeted_selection_scores_torch(
+    scores,
+    base_mask,
+    frontier_mask,
+    noncoercive_risk,
+    score_risk,
+    progress_shortfall,
+    action_risk=None,
+    rule_risk=None,
+    outcome_risk=None,
+    *,
+    pcfg=None,
+):
+    """Lexicographic score for utility-regret bounded P-NCF selection.
+
+    The v4 selector correctly made COWP different from conventional_safety, but
+    it added the P-NCF risk to raw planner scores.  Raw scores can dominate the
+    certificate and select the highest-utility candidate inside the frontier even
+    when that candidate is still predicted coercive.  This helper makes the
+    selection order explicit:
+
+    1. build a small low-coercion frontier;
+    2. keep enough utility/progress through the guard;
+    3. select primarily by calibrated non-coercion risk, with planner utility only
+       as a bounded tie-breaker.
+
+    The output is still a scalar because the existing evaluator uses argmin, but
+    its units are normalized decision risks rather than uncalibrated raw logits.
+    """
+    import torch
+
+    pcfg = pcfg or {}
+    inf = torch.full_like(scores, float("inf"))
+    select = frontier_mask.bool()
+    if not bool(select.any().detach().cpu().item()):
+        select = base_mask.bool()
+    if not bool(select.any().detach().cpu().item()):
+        return torch.where(base_mask.bool(), scores, inf)
+
+    nr = torch.nan_to_num(noncoercive_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    sr = torch.nan_to_num(score_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    ps = torch.nan_to_num(progress_shortfall.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    ar = torch.zeros_like(nr) if action_risk is None else torch.nan_to_num(action_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    rr = torch.zeros_like(nr) if rule_risk is None else torch.nan_to_num(rule_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    orr = torch.zeros_like(nr) if outcome_risk is None else torch.nan_to_num(outcome_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+
+    # Risk budget: if the frontier contains an obviously low-coercion subset, do
+    # not let a high-utility but high-coercion member win.  If the subset would be
+    # empty, keep the whole frontier so COWP does not collapse to fallback.
+    budget = float(pcfg.get("candidate_selection_risk_budget", 0.18))
+    min_keep = max(int(pcfg.get("candidate_selection_min_keep", 1)), 1)
+    vals = nr[select]
+    low = vals.min() if vals.numel() else nr.new_tensor(0.0)
+    budget_mask = select & (nr <= low + budget)
+    if int(budget_mask.sum().detach().cpu().item()) >= min_keep:
+        select = budget_mask
+
+    # Normalized final objective.  Certificate risk is primary; score/progress are
+    # only bounded utility-regret terms.  Action/outcome/rule are shields that
+    # suppress kinematic or closed-loop unsafe plans without replacing the
+    # non-coercion certificate itself.
+    obj = (
+        nr
+        + float(pcfg.get("candidate_selection_score_weight", 0.18)) * sr
+        + float(pcfg.get("candidate_selection_progress_weight", 0.10)) * ps
+        + float(pcfg.get("candidate_selection_action_weight", 0.80)) * ar
+        + float(pcfg.get("candidate_selection_rule_weight", 0.20)) * rr
+        + float(pcfg.get("candidate_selection_outcome_weight", 0.45)) * orr
+    )
+    return torch.where(select, obj, inf)
+
 def _select_from_learned(
     batch,
     pred,
@@ -586,11 +658,17 @@ def _select_from_learned(
         # labels.  This avoids the max-pair saturation observed in the current run.
         frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
         pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
-        pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.10))
-        pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
-        rule_mix = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_mix", 1.25))
+        pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.20))
+        pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.35))
+        rule_mix = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_mix", 1.0))
         outcome_mix = float((cfg or {}).get("planning", {}).get("candidate_outcome_risk_mix", outcome_risk_penalty))
-        risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk + rule_mix * rule_decision_risk + outcome_mix * outcome_decision_risk
+        shield_mix = float((cfg or {}).get("planning", {}).get("candidate_frontier_shield_tie_mix", 0.08))
+        # Two-level frontier: the frontier itself is a non-coercion certificate
+        # layer.  Closed-loop rule/outcome risks act as a weak shield/tie-breaker
+        # instead of replacing the paper's P-NCF risk.
+        noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+        shield_risk = rule_mix * rule_decision_risk + outcome_mix * outcome_decision_risk
+        risk = noncoercive_risk + shield_mix * shield_risk
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         progress = _candidate_progress_torch(batch, cand_valid)
         score_decision_risk = _scene_normalized_risk_torch(scores, cand_valid, cfg)
@@ -635,7 +713,11 @@ def _select_from_learned(
                 frontier = screened
             if frontier.any():
                 accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
-                adjusted_scores[b] = adjusted_scores[b] + risk[b]
+                adjusted_scores[b] = _risk_budgeted_selection_scores_torch(
+                    scores[b], frontier_base[b], frontier, noncoercive_risk[b],
+                    score_decision_risk[b], progress_shortfall[b], None,
+                    rule_decision_risk[b], outcome_decision_risk[b], pcfg=pcfg,
+                )
 
     selected: list[int] = []
     masks: list[np.ndarray] = []

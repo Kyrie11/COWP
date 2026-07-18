@@ -289,6 +289,14 @@ planning:
   candidate_frontier_keep_fraction: 0.4
   candidate_frontier_min_keep: 1
   candidate_frontier_max_keep: 4
+  candidate_frontier_shield_tie_mix: 0.08
+  candidate_selection_risk_budget: 0.18
+  candidate_selection_min_keep: 1
+  candidate_selection_score_weight: 0.18
+  candidate_selection_progress_weight: 0.10
+  candidate_selection_action_weight: 1.15
+  candidate_selection_rule_weight: 0.25
+  candidate_selection_outcome_weight: 0.45
   online_ignore_initial_jerk_steps: 3
   online_extra_accel_values_mps2:
   - -4.0

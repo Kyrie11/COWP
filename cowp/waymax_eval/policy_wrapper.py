@@ -1420,6 +1420,61 @@ def _guard_frontier_base_1d(base, score_risk, progress, action_risk=None, *, kee
     return guarded
 
 
+
+def _risk_budgeted_selection_scores_1d(
+    scores,
+    base_mask,
+    frontier_mask,
+    noncoercive_risk,
+    score_risk,
+    progress_shortfall,
+    action_risk=None,
+    rule_risk=None,
+    outcome_risk=None,
+    *,
+    pcfg=None,
+):
+    """Online counterpart of the utility-regret bounded P-NCF selector.
+
+    COWP should not be a raw-score planner after the frontier is built.  The
+    final choice is primarily the least-coercive candidate inside a progress- and
+    utility-guarded frontier; score, progress, action and outcome terms only break
+    ties or shield obviously unstable actions.
+    """
+    import torch
+
+    pcfg = pcfg or {}
+    inf = torch.full_like(scores, float("inf"))
+    select = frontier_mask.bool()
+    if not bool(select.any().detach().cpu().item()):
+        select = base_mask.bool()
+    if not bool(select.any().detach().cpu().item()):
+        return torch.where(base_mask.bool(), scores, inf)
+    nr = torch.nan_to_num(noncoercive_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    sr = torch.nan_to_num(score_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    ps = torch.nan_to_num(progress_shortfall.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    ar = torch.zeros_like(nr) if action_risk is None else torch.nan_to_num(action_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    rr = torch.zeros_like(nr) if rule_risk is None else torch.nan_to_num(rule_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+    orr = torch.zeros_like(nr) if outcome_risk is None else torch.nan_to_num(outcome_risk.float(), nan=1.0, posinf=1.0, neginf=0.0)
+
+    budget = float(pcfg.get("candidate_selection_risk_budget", 0.18))
+    min_keep = max(int(pcfg.get("candidate_selection_min_keep", 1)), 1)
+    vals = nr[select]
+    low = vals.min() if vals.numel() else nr.new_tensor(0.0)
+    budget_mask = select & (nr <= low + budget)
+    if int(budget_mask.sum().detach().cpu().item()) >= min_keep:
+        select = budget_mask
+
+    obj = (
+        nr
+        + float(pcfg.get("candidate_selection_score_weight", 0.18)) * sr
+        + float(pcfg.get("candidate_selection_progress_weight", 0.10)) * ps
+        + float(pcfg.get("candidate_selection_action_weight", 1.15)) * ar
+        + float(pcfg.get("candidate_selection_rule_weight", 0.25)) * rr
+        + float(pcfg.get("candidate_selection_outcome_weight", 0.45)) * orr
+    )
+    return torch.where(select, obj, inf)
+
 @dataclass
 class COWPWaymaxPolicy:
     checkpoint: str
@@ -1849,19 +1904,19 @@ class COWPWaymaxPolicy:
                         pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                     else:
                         pair_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
-                    pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.10))
-                    pressure_mix = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_mix", 0.75))
-                    rule_mix = float(self.cfg.get("planning", {}).get("candidate_rule_risk_mix", 1.25))
-                    action_mix = float(self.cfg.get("planning", {}).get("candidate_action_risk_mix", 1.0))
+                    pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.20))
+                    pressure_mix = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_mix", 0.35))
+                    rule_mix = float(self.cfg.get("planning", {}).get("candidate_rule_risk_mix", 1.0))
+                    action_mix = float(self.cfg.get("planning", {}).get("candidate_action_risk_mix", 1.5))
                     outcome_mix = float(self.cfg.get("planning", {}).get("candidate_outcome_risk_mix", float(self.outcome_risk_penalty)))
-                    frontier_risk = (
-                        cert_decision_risk
-                        + pair_mix * pair_risk
-                        + pressure_mix * pressure_decision_risk
-                        + rule_mix * rule_decision_risk
-                        + action_mix * action_decision_risk
-                        + outcome_mix * outcome_decision_risk
-                    )
+                    shield_tie_mix = float(self.cfg.get("planning", {}).get("candidate_frontier_shield_tie_mix", 0.08))
+                    # P-NCF is the primary frontier variable; rule/action/outcome
+                    # risks are feasibility shields.  In v4 they were mixed directly
+                    # into the frontier with large weights, which improved standard
+                    # CR/EP but let the selected candidate become more coercive.
+                    noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+                    shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
+                    frontier_risk = noncoercive_risk + shield_tie_mix * shield_risk
                     keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
                     keep_min = int(self.cfg.get("planning", {}).get("candidate_frontier_min_keep", 1))
                     keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
@@ -1895,7 +1950,12 @@ class COWPWaymaxPolicy:
                             frontier = screened
                         if bool(frontier.any().detach().cpu().item()):
                             accepted = frontier
-                            adjusted_scores = adjusted_scores + frontier_risk
+                            adjusted_scores = _risk_budgeted_selection_scores_1d(
+                                scores, frontier_base, frontier, noncoercive_risk,
+                                score_decision_risk, progress_shortfall, action_decision_risk,
+                                rule_decision_risk, outcome_decision_risk,
+                                pcfg=self.cfg.get("planning", {}),
+                            )
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
