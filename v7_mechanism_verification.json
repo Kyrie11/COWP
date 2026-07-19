@@ -1,0 +1,10 @@
+{
+  "threshold_points": 9,
+  "unique_selection_points": 1,
+  "threshold_connected_to_selection": false,
+  "learned_accept_ncf_recall": 0.10891195959508752,
+  "ncf_recall_pass": false,
+  "witness_auprc": 0.3608762994333691,
+  "selected_false_safe_rate": 0.5838819070416916,
+  "pass": false
+}

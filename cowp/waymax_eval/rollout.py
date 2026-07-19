@@ -383,7 +383,15 @@ def _candidate_progress_torch(batch, cand_valid):
         return torch.zeros_like(cand_valid, dtype=torch.float32)
     xy0 = traj[:, :, 0, :2].float()
     xy1 = traj[:, :, -1, :2].float()
-    progress = torch.linalg.norm(torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0), dim=-1)
+    delta = torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0)
+    # Signed longitudinal progress avoids rewarding lateral drift, wrong-way and
+    # off-route candidates as the Euclidean endpoint distance did in v7.
+    if traj.shape[-1] >= 3:
+        yaw0 = torch.nan_to_num(traj[:, :, 0, 2].float(), nan=0.0)
+        heading = torch.stack([torch.cos(yaw0), torch.sin(yaw0)], dim=-1)
+        progress = (delta * heading).sum(dim=-1).clamp_min(0.0)
+    else:
+        progress = torch.linalg.norm(delta, dim=-1)
     return torch.where(cand_valid.bool(), progress, torch.zeros_like(progress))
 
 
@@ -699,7 +707,15 @@ def _select_from_learned(
         # explanatory evidence, but selection is anchored by a candidate-level NCF
         # certificate trained from the dataset's noncoercive_feasible/false_safe
         # labels.  This avoids the max-pair saturation observed in the current run.
-        frontier_base = cand_valid & conventional & (outcome_risk <= float(outcome_risk_threshold))
+        pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+        physical_ok = (
+            (action_risk <= float(pcfg.get("candidate_hard_max_action_risk", 0.45)))
+            & (rule_risk <= float(pcfg.get("candidate_hard_max_rule_risk", 0.70)))
+            & (outcome_risk <= float(outcome_risk_threshold))
+        )
+        # v7 overwrote the semantic hard gate here.  Preserve accepted so witness
+        # threshold / OPR / severe-witness vetoes actually constrain the frontier.
+        frontier_base = accepted & physical_ok
         pair_risk = penalty if "penalty" in locals() else witness_prob.amax(dim=-1) + torch.relu(float(alpha_opr) - opr).amax(dim=-1)
         pair_mix = float((cfg or {}).get("planning", {}).get("candidate_pair_risk_mix", 0.20))
         pressure_mix = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_mix", 0.35))
@@ -713,7 +729,6 @@ def _select_from_learned(
         action_mix = float((cfg or {}).get("planning", {}).get("candidate_action_risk_mix", 1.0))
         shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
         risk = noncoercive_risk + shield_mix * shield_risk
-        pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         progress = _candidate_progress_torch(batch, cand_valid)
         score_decision_risk = _scene_normalized_risk_torch(scores, cand_valid, cfg)
         prog_ref = progress.max(dim=1, keepdim=True).values.clamp_min(1.0e-6)

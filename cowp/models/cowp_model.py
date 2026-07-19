@@ -11,6 +11,7 @@ from cowp.models.priority_head import PriorityClaimHead
 from cowp.models.outcome_head import OutcomeRiskHead
 from cowp.models.response_decoder import ResponseDecoder
 from cowp.models.witness_decoder import WitnessDecoder
+from cowp.models.set_transport_head import SetTransportCertificateHead
 from cowp.data.womd_features import build_agent_history_from_womd, has_womd_state
 from cowp.models.coordinate import ego_centric_inputs, infer_sdc_index
 
@@ -42,6 +43,11 @@ class COWPModel(nn.Module):
         self.natural_decoder = NaturalDecoder(d_model=d_model, modes=int(m.get("max_natural_alternatives", 24)), future_steps=int(m.get("future_steps", 80)))
         self.response_decoder = ResponseDecoder(d_model=d_model, responses=int(m.get("max_safe_responses", 32)), future_steps=int(m.get("future_steps", 80)))
         self.witness_decoder = WitnessDecoder(d_model=d_model, token_count=int(m.get("token_count", 7)))
+        self.set_transport = SetTransportCertificateHead(
+            d_model=d_model,
+            hidden=int(m.get("set_transport_hidden", 64)),
+            source_count=4,
+        )
         self.planner = PlannerHead(d_model=d_model)
         # Candidate-level calibrated non-coercive feasibility certificate.
         # The pairwise witness decoder remains the explanation/localization module,
@@ -217,7 +223,9 @@ class COWPModel(nn.Module):
         # dedicated natural/all stages decode the dense 24x80 trajectory bank.
         need_natural = stage in ("natural", "representation", "witness", "planner", "all")
         decode_natural_traj = stage in ("natural", "representation", "all")
-        need_response = stage in ("response", "all")
+        # Planner/witness stages need the compact response bank (classification and
+        # burden heads) even when dense response trajectories are disabled.
+        need_response = stage in ("response", "witness", "planner", "all")
         need_witness = stage in ("witness", "planner", "all")
         need_planner = stage in ("planner", "all")
         need_candidate_context = need_response or need_witness or need_planner
@@ -298,7 +306,7 @@ class COWPModel(nn.Module):
                     z_cand,
                     enc_cond["z_graph"],
                     critical_idx,
-                    decode_traj=decode_response_traj,
+                    decode_traj=bool(decode_response_traj and stage in ("response", "all")),
                 ),
                 anchor7,
             )
@@ -309,6 +317,44 @@ class COWPModel(nn.Module):
                 enc_cond["z_agent"], z_cand, enc_cond["z_graph"], critical_idx,
                 natural_latent=natural_latent,
             )
+            out["witness_proxy"] = witness
+            response_out = out.get("response")
+            if isinstance(natural_out, dict) and isinstance(response_out, dict) and "mode_latent" in natural_out:
+                pcfg = self.cfg.get("planning", {})
+                beta = batch.get("cowp/natural/beta")
+                if beta is None:
+                    beta = torch.full(
+                        (z_cand.shape[0], critical_idx.shape[1]), 0.65,
+                        device=z_cand.device, dtype=z_cand.dtype,
+                    )
+                set_certificate = self.set_transport(
+                    z_agent=enc_cond["z_agent"],
+                    z_candidate=z_cand,
+                    z_graph=enc_cond["z_graph"],
+                    critical_indices=critical_idx,
+                    natural=natural_out,
+                    response=response_out,
+                    beta=beta,
+                    alpha_opr=float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
+                    gamma=float(pcfg.get("ncf_gamma_infer", self.cfg.get("ncf", {}).get("gamma", 0.10))),
+                    conflict_mass_floor=float(pcfg.get("set_transport_conflict_mass_floor", self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))),
+                    burden_temperature=float(pcfg.get("set_transport_burden_temperature", 0.08)),
+                    gate_temperature=float(pcfg.get("set_transport_gate_temperature", 0.06)),
+                    calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
+                )
+                out["set_certificate"] = set_certificate
+                # The selector consumes the mechanistic certificate.  The proxy
+                # decoder is retained for explanation-token supervision/ablation.
+                witness = dict(witness)
+                witness["proxy_exist_logits"] = witness["exist_logits"]
+                witness["proxy_opr"] = witness["opr"]
+                witness["proxy_burden_total"] = witness["burden_total"]
+                witness["exist_logits"] = set_certificate["exist_logits"]
+                witness["evidential_prob"] = set_certificate["witness_prob"]
+                witness["epistemic_uncertainty"] = set_certificate["uncertainty"]
+                witness["opr"] = set_certificate["opr"]
+                witness["burden_total"] = set_certificate["min_safe_burden"]
+                witness["c_i"] = set_certificate["natural_conflict_mass"]
             out["witness"] = witness
         if need_planner:
             assert z_cand is not None and cand_mask is not None
@@ -427,8 +473,8 @@ class COWPModel(nn.Module):
             base_ncf = (safe_aux * (1.0 - structured_risk)).clamp(eps, 1.0 - eps)
             base_fs_logit = torch.logit(base_fs)
             base_ncf_logit = torch.logit(base_ncf)
-            structured_weight = float(self.cfg.get("planning", {}).get("candidate_structured_logit_weight", 0.35))
-            residual_scale = float(self.cfg.get("planning", {}).get("candidate_certificate_residual_scale", 1.0))
+            structured_weight = float(self.cfg.get("planning", {}).get("candidate_structured_logit_weight", 1.0))
+            residual_scale = float(self.cfg.get("planning", {}).get("candidate_certificate_residual_scale", 0.15))
             out["candidate_ncf_logit"] = structured_weight * base_ncf_logit + residual_scale * cert_residual[..., 0]
             out["candidate_false_safe_logit"] = structured_weight * base_fs_logit + residual_scale * cert_residual[..., 1]
             out["candidate_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]

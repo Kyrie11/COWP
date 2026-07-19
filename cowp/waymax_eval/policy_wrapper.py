@@ -1927,7 +1927,13 @@ class COWPWaymaxPolicy:
             if self.torch.is_tensor(traj_t) and traj_t.ndim >= 4:
                 xy0 = traj_t[0, :, 0, :2].float()
                 xy1 = traj_t[0, :, -1, :2].float()
-                candidate_progress = self.torch.linalg.norm(self.torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0), dim=-1)
+                delta_xy = self.torch.nan_to_num(xy1 - xy0, nan=0.0, posinf=0.0, neginf=0.0)
+                if traj_t.shape[-1] >= 3:
+                    yaw0 = self.torch.nan_to_num(traj_t[0, :, 0, 2].float(), nan=0.0)
+                    heading0 = self.torch.stack([self.torch.cos(yaw0), self.torch.sin(yaw0)], dim=-1)
+                    candidate_progress = (delta_xy * heading0).sum(dim=-1).clamp_min(0.0)
+                else:
+                    candidate_progress = self.torch.linalg.norm(delta_xy, dim=-1)
                 candidate_progress = self.torch.where(cand_valid, candidate_progress, self.torch.zeros_like(candidate_progress))
             else:
                 candidate_progress = self.torch.zeros_like(scores)
@@ -2052,7 +2058,15 @@ class COWPWaymaxPolicy:
             # controller consistent with the set-valued NCF certificate used in
             # learned-offline evaluation.
             if method == "cowp" and gate_mode in {"priority", "soft"}:
-                frontier_base = cand_valid & conventional & (outcome_risk <= float(self.outcome_risk_threshold))
+                pcfg_selector = self.cfg.get("planning", {})
+                physical_ok = (
+                    (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
+                    & (rule_risk <= float(pcfg_selector.get("candidate_hard_max_rule_risk", 0.70)))
+                    & (outcome_risk <= float(self.outcome_risk_threshold))
+                )
+                # Preserve hard semantic feasibility; do not rebuild from generic
+                # conventional safety and silently resurrect rejected witnesses.
+                frontier_base = accepted & physical_ok
                 if frontier_base.any():
                     if 'priority' in locals() and priority.numel():
                         pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
@@ -2071,7 +2085,6 @@ class COWPWaymaxPolicy:
                     noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
                     shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
                     frontier_risk = noncoercive_risk + shield_tie_mix * shield_risk
-                    pcfg_selector = self.cfg.get("planning", {})
                     result = select_set_preservation_frontier_1d(
                         scores=scores,
                         base_mask=frontier_base,

@@ -590,6 +590,19 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     loss_safe = masked_mean(safe, mask)
     loss_low = masked_mean(low, mask)
     loss_b = masked_mean(b, mask)
+    valid_logits = pred.get("valid_logits")
+    if valid_logits is not None:
+        valid_loss = F.binary_cross_entropy_with_logits(_safe_float(valid_logits), mask.float(), reduction="none")
+        # valid supervision includes padded response slots for otherwise valid pairs.
+        pair_mask = batch["cowp/candidates/valid"].bool()[:, :, None, None] & batch["cowp/critical/valid"].bool()[:, None, :, None]
+        loss_valid = masked_mean(valid_loss, pair_mask)
+    else:
+        loss_valid = _zero_like_loss(pred["safe_logits"])
+    if "source_logits" in pred and "cowp/response/source" in batch and mask.any():
+        source_target = torch.nan_to_num(batch["cowp/response/source"].float(), nan=0.0).long().clamp(0, pred["source_logits"].shape[-1] - 1)
+        loss_source = F.cross_entropy(_safe_float(pred["source_logits"])[mask], source_target[mask], reduction="mean")
+    else:
+        loss_source = _zero_like_loss(pred["safe_logits"])
 
     # ``cowp/response/traj`` is the largest Stage-B target.  The original code
     # computed an L1 tensor for every padded candidate/agent/response slot and
@@ -615,10 +628,12 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
         weights.get("response_safe_bce", 1.0) * loss_safe
         + weights.get("response_low_bce", 1.0) * loss_low
         + weights.get("response_burden_l1", 0.5) * loss_b
+        + weights.get("response_valid_bce", 0.5) * loss_valid
+        + weights.get("response_source_ce", 0.2) * loss_source
         + comps_w * loss_comps
         + traj_w * loss_traj
     )
-    return {"loss": total, "safe": loss_safe, "low": loss_low, "burden": loss_b, "components": loss_comps, "traj": loss_traj}
+    return {"loss": total, "safe": loss_safe, "low": loss_low, "valid": loss_valid, "source": loss_source, "burden": loss_b, "components": loss_comps, "traj": loss_traj}
 
 
 def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
@@ -977,3 +992,65 @@ def planner_ranking_loss(scores: torch.Tensor, ncf: torch.Tensor, false_safe: to
             # Lower score is better.
             losses.append(torch.relu(margin + scores[b, pos[:, None]] - scores[b, neg[None, :]]).mean())
     return torch.stack(losses).mean() if losses else _zero_like_loss(scores)
+
+
+def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
+    """Supervise the explicit set certificate with aggregate set statistics.
+
+    Existing caches already contain OPR, minimum burden and source-wise mass, so
+    v8 can be trained without rebuilding WOMD.  A later optional cache augmentation
+    can add mode-level labels, but the aggregate objective already prevents the
+    certificate from degenerating into a candidate classifier.
+    """
+    cand = batch["cowp/candidates/valid"].bool()
+    crit = batch["cowp/critical/valid"].bool()
+    pair = cand[:, :, None] & crit[:, None, :]
+    if not pair.any():
+        z = _zero_like_loss(pred)
+        return {"loss": z, "witness": z, "opr": z, "burden": z, "conflict": z, "source": z, "response": z}
+
+    y = _binary_target(batch["cowp/witness/exists"])
+    witness = focal_bce_with_logits(
+        pred["exist_logits"], y, pair,
+        gamma=float(weights.get("set_transport_focal_gamma", 2.0)),
+        alpha=float(weights.get("set_transport_focal_alpha", 0.5)),
+    )
+    opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair)
+    burden_target = _safe_float(batch["cowp/witness/burden_total"]).clamp(0.0, 2.0)
+    burden = masked_mean(torch.abs(_safe_float(pred["min_safe_burden"]).clamp(0.0, 2.0) - burden_target), pair)
+
+    conflict_target = batch.get("cowp/witness/natural_conflict_mass")
+    if conflict_target is None:
+        conflict_target = batch.get("cowp/witness/c_i", torch.zeros_like(pred["natural_conflict_mass"]))
+    conflict = masked_mean(torch.abs(_safe_float(pred["natural_conflict_mass"]) - _safe_float(conflict_target).clamp(0.0, 1.0)), pair)
+
+    src_terms = []
+    src_mask = pair[..., None]
+    for key, pkey in (
+        ("cowp/witness/natural_conflict_mass_by_source", "conflict_mass_by_source"),
+        ("cowp/witness/low_safe_mass_by_source", "low_safe_mass_by_source"),
+    ):
+        target = batch.get(key)
+        if target is not None and pkey in pred:
+            src_terms.append(masked_mean(torch.abs(_safe_float(pred[pkey]) - _safe_float(target).clamp(0.0, 1.0)), src_mask))
+    source = torch.stack(src_terms).mean() if src_terms else _zero_like_loss(pred)
+
+    if all(k in batch for k in ("cowp/response/is_safe", "cowp/response/is_low_burden", "cowp/response/valid")):
+        low_exists_target = ((batch["cowp/response/is_safe"].bool() & batch["cowp/response/is_low_burden"].bool() & batch["cowp/response/valid"].bool()).any(dim=-1)).float()
+        response_prob = _safe_float(pred["response_exist_low_safe"]).clamp(1.0e-5, 1.0 - 1.0e-5)
+        response_logit = torch.logit(response_prob)
+        response = masked_mean(
+            F.binary_cross_entropy_with_logits(response_logit, low_exists_target, reduction="none"),
+            pair,
+        )
+    else:
+        response = _zero_like_loss(pred)
+    total = (
+        float(weights.get("set_transport_witness", 2.0)) * witness
+        + float(weights.get("set_transport_opr", 1.0)) * opr
+        + float(weights.get("set_transport_burden", 0.75)) * burden
+        + float(weights.get("set_transport_conflict", 1.0)) * conflict
+        + float(weights.get("set_transport_source", 0.75)) * source
+        + float(weights.get("set_transport_response_exist", 0.5)) * response
+    )
+    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response}

@@ -13,6 +13,9 @@ class ResponseDecoder(nn.Module):
         self.traj_head = nn.Linear(d_model, responses * future_steps * 7)
         self.safe_head = nn.Linear(d_model, responses)
         self.low_head = nn.Linear(d_model, responses)
+        self.valid_head = nn.Linear(d_model, responses)
+        self.mode_head = nn.Linear(d_model, responses)
+        self.source_head = nn.Linear(d_model, responses * 4)
         self.burden_head = nn.Linear(d_model, responses * 7)  # total + 6 components
 
     def forward(
@@ -36,6 +39,9 @@ class ResponseDecoder(nn.Module):
         out = {
             "safe_logits": self.safe_head(pair),
             "low_logits": self.low_head(pair),
+            "valid_logits": self.valid_head(pair),
+            "mode_logits": self.mode_head(pair),
+            "source_logits": self.source_head(pair).reshape(B, K, A, self.responses, 4),
             "burden_total": burden[..., 0].relu(),
             "burden_components": burden[..., 1:].relu().clamp(max=2.0),
         }

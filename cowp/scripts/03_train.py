@@ -47,7 +47,7 @@ from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
-from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, witness_loss
+from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -366,13 +366,42 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         out.update({f"response/{k}": v for k, v in rl.items() if k != "loss"})
         losses.append(rl["loss"])
     if stage in ("witness", "planner", "all"):
-        wl = witness_loss(pred["witness"], batch, loss_weights)
+        # Keep the proxy witness for token/interval explanation, while training the
+        # mechanistic Set-Transport certificate as the decision certificate.
+        witness_pred = pred.get("witness_proxy", pred["witness"])
+        wl = witness_loss(witness_pred, batch, loss_weights)
         out.update({f"witness/{k}": v for k, v in wl.items() if k != "loss"})
         # Planner fine-tuning should not erase witness calibration learned in the
         # dedicated stage.  Keep a small consistency gradient instead of adding
         # the full witness objective a second time.
         witness_scale = 1.0 if stage in {"witness", "all"} else float(loss_weights.get("planner_witness_scale", 0.20))
         losses.append(witness_scale * wl["loss"])
+        st = pred.get("set_certificate")
+        if isinstance(st, dict):
+            stl = set_transport_loss(st, batch, loss_weights)
+            out.update({f"set_transport/{k}": v for k, v in stl.items() if k != "loss"})
+            losses.append(float(loss_weights.get("set_transport", 1.0)) * stl["loss"])
+        response_targets_available = all(
+            key in batch for key in (
+                "cowp/response/valid", "cowp/response/is_safe",
+                "cowp/response/is_low_burden", "cowp/response/burden_total",
+            )
+        )
+        if (
+            stage in {"witness", "planner", "all"}
+            and isinstance(pred.get("response"), dict)
+            and response_targets_available
+        ):
+            # Keep each response branch physically and semantically identifiable
+            # while the aggregate Set-Transport objective is optimized.  Without
+            # this auxiliary supervision the response bank can satisfy only the
+            # aggregate existence/burden targets and drift into arbitrary slots.
+            scale_key = "planner_response_scale" if stage == "planner" else "witness_response_scale"
+            response_scale = float(loss_weights.get(scale_key, 0.25))
+            if response_scale > 0.0:
+                rl = response_loss(pred["response"], batch, loss_weights)
+                out.update({f"response_aux/{k}": v for k, v in rl.items() if k != "loss"})
+                losses.append(response_scale * rl["loss"])
     if stage in ("planner", "all"):
         rank = planner_ranking_loss(
             pred["planner_score"],
@@ -571,6 +600,10 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         + 0.35 * g("candidate_cert/rank", 2.0)
         + 0.20 * g("candidate_cert/ncf", 2.0)
         + 0.20 * g("candidate_cert/false_safe", 2.0)
+        + 0.35 * g("set_transport/witness", 1.0)
+        + 0.25 * g("set_transport/opr", 1.0)
+        + 0.20 * g("set_transport/conflict", 1.0)
+        + 0.15 * g("set_transport/burden", 1.0)
         + 0.10 * g("planner/outcome_cls", 1.0)
         + 0.10 * g("planner/ranking", 1.0)
     )
@@ -580,6 +613,7 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
 def _set_planner_backbone_frozen(model: torch.nn.Module, frozen: bool) -> None:
     core = model.module if hasattr(model, "module") else model
     for module_name in ("graph", "candidate_encoder", "natural_decoder", "witness_decoder"):
+        # set_transport and response_decoder intentionally remain trainable in v8
         module = getattr(core, module_name, None)
         if module is None:
             continue
