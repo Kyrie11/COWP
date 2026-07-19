@@ -36,6 +36,21 @@ def _weighted_dict(payloads: list[dict], key: str, weight_key: str) -> dict[str,
     return out
 
 
+
+def _sum_count_fields(merged: dict[str, float], payloads: list[dict], key: str, fields: tuple[str, ...]) -> dict[str, float]:
+    out = dict(merged)
+    for field in fields:
+        total = 0.0
+        seen = False
+        for payload in payloads:
+            value = _numeric((payload.get(key, {}) or {}).get(field))
+            if value is not None:
+                total += value
+                seen = True
+        if seen:
+            out[field] = float(total)
+    return out
+
 def merge_payloads(paths: list[Path]) -> dict:
     payloads = [json.loads(p.read_text(encoding="utf-8")) for p in paths]
     if not payloads:
@@ -58,6 +73,12 @@ def merge_payloads(paths: list[Path]) -> dict:
     )
     merged["closed_loop_cowp_metric_summary"] = _weighted_dict(
         payloads, "closed_loop_cowp_metric_summary", "EpisodesWithDiagnostics"
+    )
+    # Counts must be summed.  v5 averaged EpisodesWithDiagnostics across two shards,
+    # reporting 150 even though 300 rollouts were merged.
+    merged["closed_loop_cowp_metric_summary"] = _sum_count_fields(
+        merged["closed_loop_cowp_metric_summary"], payloads,
+        "closed_loop_cowp_metric_summary", ("EpisodesWithDiagnostics",),
     )
     return merged
 

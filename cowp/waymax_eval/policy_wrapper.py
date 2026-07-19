@@ -1791,38 +1791,49 @@ class COWPWaymaxPolicy:
             progress_ref = candidate_progress[cand_valid].max().clamp_min(1.0e-6) if has_valid else self.torch.tensor(1.0, device=self.dev, dtype=scores.dtype)
             progress_shortfall = (1.0 - (candidate_progress / progress_ref).clamp(0.0, 1.0)).clamp(0.0, 1.0)
             if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
-                col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float())
-                off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float())
-                ld_r = outcome.get("logdiv", self.torch.zeros_like(scores))[0].float().clamp_min(0.0) / 10.0
-                outcome_risk = self.torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
+                col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float()).clamp(0.0, 1.0)
+                off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float()).clamp(0.0, 1.0)
+                outcome_risk = self.torch.nan_to_num(1.0 - (1.0 - col_r) * (1.0 - off_r), nan=1.0, posinf=1.0, neginf=0.0)
             else:
                 outcome_risk = self.torch.zeros_like(scores)
             outcome_decision_risk = _scene_norm(outcome_risk)
 
-            # Hybrid outcome-calibrated certificate for online COWP.  If the newly
-            # added candidate certificate head is still flat after a resumed run,
-            # using it directly makes all certificate risks identical and COWP
-            # degenerates to conventional_safety.  In that case, replace most of
-            # the certificate with a calibrated fallback from the outcome head plus
-            # rule/action/pressure priors.  When the certificate head has spread,
-            # keep it as the primary signal and only add a small stabilizing mix.
-            fallback_cert_risk = (
-                float(pcfg_runtime.get("candidate_cert_fallback_outcome_mix", 0.55)) * outcome_decision_risk
-                + float(pcfg_runtime.get("candidate_cert_fallback_action_mix", 0.20)) * action_decision_risk
-                + float(pcfg_runtime.get("candidate_cert_fallback_rule_mix", 0.15)) * rule_decision_risk
-                + float(pcfg_runtime.get("candidate_cert_fallback_pressure_mix", 0.10)) * pressure_decision_risk
-            ).clamp(0.0, 1.0)
+            # The main COWP result must remain a non-coercion certificate.  v5
+            # silently replaced a flat certificate with a 90% blend of outcome,
+            # action, rule, and pressure heuristics.  That can improve conventional
+            # closed-loop metrics, but it invalidates the paper's mechanism claim.
+            structured = pred.get("candidate_structured_coercion_risk")
+            if self.torch.is_tensor(structured):
+                structured_risk = self.torch.nan_to_num(structured[0].float(), nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+                structured_decision_risk = _scene_norm(structured_risk)
+            else:
+                structured_risk = (1.0 - cand_ncf_prob).clamp(0.0, 1.0)
+                structured_decision_risk = cert_decision_risk
+            structured_mix = float(pcfg_runtime.get("candidate_structured_decision_mix", 0.35))
+            cert_decision_risk = ((1.0 - structured_mix) * cert_decision_risk + structured_mix * structured_decision_risk).clamp(0.0, 1.0)
             raw_vals = candidate_cert_risk[cand_valid] if has_valid else candidate_cert_risk[:0]
             raw_spread = raw_vals.float().std(unbiased=False) if raw_vals.numel() > 1 else self.torch.tensor(0.0, device=self.dev, dtype=scores.dtype)
             flat_cert = bool((raw_spread < float(pcfg_runtime.get("candidate_cert_fallback_min_std", 2.0e-3))).detach().cpu().item())
-            mix_value = float(pcfg_runtime.get("candidate_cert_flat_fallback_mix", 0.90) if flat_cert else pcfg_runtime.get("candidate_cert_hybrid_fallback_mix", 0.25))
-            cert_decision_risk = ((1.0 - mix_value) * cert_decision_risk + mix_value * fallback_cert_risk).clamp(0.0, 1.0)
-            fb_ncf = (1.0 - fallback_cert_risk).clamp(0.02, 0.98)
-            fb_fs = fallback_cert_risk.clamp(0.02, 0.98)
-            fb_q = (1.0 - fallback_cert_risk).clamp(0.02, 0.98)
-            cand_ncf_prob = ((1.0 - mix_value) * cand_ncf_prob + mix_value * fb_ncf).clamp(0.0, 1.0)
-            cand_false_safe_prob = ((1.0 - mix_value) * cand_false_safe_prob + mix_value * fb_fs).clamp(0.0, 1.0)
-            cand_quality_prob = ((1.0 - mix_value) * cand_quality_prob + mix_value * fb_q).clamp(0.0, 1.0)
+            allow_hybrid = bool(pcfg_runtime.get("candidate_cert_allow_hybrid_fallback", False))
+            if flat_cert and not allow_hybrid:
+                # A deterministic, paper-aligned fallback: use the analytic response-
+                # set preservation certificate, never planner/outcome score.
+                cert_decision_risk = structured_decision_risk
+                cand_ncf_prob = (1.0 - structured_risk).clamp(0.0, 1.0)
+                cand_false_safe_prob = structured_risk
+                cand_quality_prob = (1.0 - structured_risk).clamp(0.0, 1.0)
+            elif allow_hybrid:
+                fallback_cert_risk = (
+                    float(pcfg_runtime.get("candidate_cert_fallback_outcome_mix", 0.55)) * outcome_decision_risk
+                    + float(pcfg_runtime.get("candidate_cert_fallback_action_mix", 0.20)) * action_decision_risk
+                    + float(pcfg_runtime.get("candidate_cert_fallback_rule_mix", 0.15)) * rule_decision_risk
+                    + float(pcfg_runtime.get("candidate_cert_fallback_pressure_mix", 0.10)) * pressure_decision_risk
+                ).clamp(0.0, 1.0)
+                mix_value = float(pcfg_runtime.get("candidate_cert_flat_fallback_mix", 0.90) if flat_cert else pcfg_runtime.get("candidate_cert_hybrid_fallback_mix", 0.0))
+                cert_decision_risk = ((1.0 - mix_value) * cert_decision_risk + mix_value * fallback_cert_risk).clamp(0.0, 1.0)
+                cand_ncf_prob = ((1.0 - mix_value) * cand_ncf_prob + mix_value * (1.0 - fallback_cert_risk)).clamp(0.0, 1.0)
+                cand_false_safe_prob = ((1.0 - mix_value) * cand_false_safe_prob + mix_value * fallback_cert_risk).clamp(0.0, 1.0)
+                cand_quality_prob = ((1.0 - mix_value) * cand_quality_prob + mix_value * (1.0 - fallback_cert_risk)).clamp(0.0, 1.0)
             candidate_cert_risk = cert_decision_risk
 
             crit_mask = batch["cowp/critical/valid"][0].bool()

@@ -386,6 +386,45 @@ def _candidate_progress_torch(batch, cand_valid):
     return torch.where(cand_valid.bool(), progress, torch.zeros_like(progress))
 
 
+
+def _candidate_action_risk_torch(batch, cand_valid, cfg=None):
+    """Trajectory-level kinematic risk available in both offline and online data.
+
+    The v5 offline path passed ``None`` to the action guard, so the advertised
+    ``candidate_frontier_max_action_risk`` and final action weight were dead knobs.
+    This estimate uses acceleration, jerk, and yaw-rate excess from the candidate
+    trajectory itself and requires no live simulator state.
+    """
+    import torch
+
+    traj = batch.get("cowp/candidates/trajectory")
+    if traj is None or not torch.is_tensor(traj) or traj.ndim < 4 or traj.shape[2] < 3:
+        return torch.zeros_like(cand_valid, dtype=torch.float32)
+    pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+    dt = max(float((cfg or {}).get("time", {}).get("dt", 0.1)) if isinstance(cfg, dict) else 0.1, 1e-3)
+    xy = torch.nan_to_num(traj[..., :2].float(), nan=0.0, posinf=0.0, neginf=0.0)
+    speed = torch.linalg.norm(torch.diff(xy, dim=2), dim=-1) / dt
+    accel = torch.abs(torch.diff(speed, dim=2)) / dt if speed.shape[2] > 1 else torch.zeros_like(speed)
+    jerk = torch.abs(torch.diff(accel, dim=2)) / dt if accel.shape[2] > 1 else torch.zeros_like(accel)
+    if traj.shape[-1] > 2:
+        yaw = torch.nan_to_num(traj[..., 2].float(), nan=0.0, posinf=0.0, neginf=0.0)
+        dyaw = torch.atan2(torch.sin(torch.diff(yaw, dim=2)), torch.cos(torch.diff(yaw, dim=2)))
+        yaw_rate = torch.abs(dyaw) / dt
+    else:
+        yaw_rate = torch.zeros_like(speed)
+
+    def excess(x, soft, hard):
+        if x.numel() == 0:
+            return torch.zeros_like(cand_valid, dtype=torch.float32)
+        vmax = x.amax(dim=2)
+        return ((vmax - float(soft)) / max(float(hard) - float(soft), 1e-3)).clamp(0.0, 1.0)
+
+    a = excess(accel, pcfg.get("candidate_action_accel_soft_mps2", 3.0), pcfg.get("candidate_action_accel_hard_mps2", 7.0))
+    j = excess(jerk, pcfg.get("candidate_action_jerk_soft_mps3", 5.0), pcfg.get("candidate_action_jerk_hard_mps3", 15.0))
+    y = excess(yaw_rate, pcfg.get("candidate_action_yaw_rate_soft_rps", 0.5), pcfg.get("candidate_action_yaw_rate_hard_rps", 1.5))
+    risk = torch.maximum(a, torch.maximum(j, y))
+    return torch.where(cand_valid.bool(), torch.nan_to_num(risk, nan=1.0, posinf=1.0, neginf=0.0), torch.zeros_like(risk))
+
 def _guard_frontier_base_torch(base, score_risk, progress, action_risk=None, *, keep_min=2, pcfg=None):
     """Keep the frontier least-coercive without collapsing progress/safety.
 
@@ -558,12 +597,15 @@ def _select_from_learned(
     cert_decision_risk = _scene_normalized_risk_torch(candidate_cert_risk, cand_valid, cfg)
     pressure_decision_risk = _scene_normalized_risk_torch(pressure_prior, cand_valid, cfg)
     rule_decision_risk = _scene_normalized_risk_torch(rule_risk, cand_valid, cfg)
+    action_risk = _candidate_action_risk_torch(batch, cand_valid, cfg)
+    action_decision_risk = _scene_normalized_risk_torch(action_risk, cand_valid, cfg)
     outcome = pred.get("outcome", {})
     if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
-        col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float())
-        off_r = torch.sigmoid(outcome.get("offroad_logit", torch.zeros_like(scores)).detach().float())
-        ld_r = outcome.get("logdiv", torch.zeros_like(scores)).detach().float().clamp_min(0.0) / 10.0
-        outcome_risk = torch.nan_to_num(col_r + off_r + ld_r, nan=1.0, posinf=10.0, neginf=0.0)
+        col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float()).clamp(0.0, 1.0)
+        off_r = torch.sigmoid(outcome.get("offroad_logit", torch.zeros_like(scores)).detach().float()).clamp(0.0, 1.0)
+        # Probability union stays in [0,1].  Do not use log-divergence here: the
+        # attached v5 caches contain no finite/non-zero log-divergence labels.
+        outcome_risk = torch.nan_to_num(1.0 - (1.0 - col_r) * (1.0 - off_r), nan=1.0, posinf=1.0, neginf=0.0)
     else:
         outcome_risk = torch.zeros_like(scores)
     outcome_decision_risk = _scene_normalized_risk_torch(outcome_risk, cand_valid, cfg)
@@ -667,7 +709,8 @@ def _select_from_learned(
         # layer.  Closed-loop rule/outcome risks act as a weak shield/tie-breaker
         # instead of replacing the paper's P-NCF risk.
         noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
-        shield_risk = rule_mix * rule_decision_risk + outcome_mix * outcome_decision_risk
+        action_mix = float((cfg or {}).get("planning", {}).get("candidate_action_risk_mix", 1.0))
+        shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
         risk = noncoercive_risk + shield_mix * shield_risk
         pcfg = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
         progress = _candidate_progress_torch(batch, cand_valid)
@@ -681,7 +724,7 @@ def _select_from_learned(
         keep_max = int(pcfg.get("candidate_frontier_max_keep", 4))
         for b in range(int(scores.shape[0])):
             base_b = _guard_frontier_base_torch(
-                frontier_base[b], score_decision_risk[b], progress[b], None,
+                frontier_base[b], score_decision_risk[b], progress[b], action_decision_risk[b],
                 keep_min=keep_min, pcfg=pcfg,
             )
             if not base_b.any():
@@ -697,7 +740,7 @@ def _select_from_learned(
                 0.70 * score_decision_risk[b]
                 + 0.20 * progress_shortfall[b]
                 + 0.25 * outcome_decision_risk[b]
-                + 0.10 * pressure_decision_risk[b]
+                + 0.20 * action_decision_risk[b]
             )
             frontier = _topk_frontier_mask_torch(
                 base_b, risk[b], tie,
@@ -715,7 +758,7 @@ def _select_from_learned(
                 accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
                 adjusted_scores[b] = _risk_budgeted_selection_scores_torch(
                     scores[b], frontier_base[b], frontier, noncoercive_risk[b],
-                    score_decision_risk[b], progress_shortfall[b], None,
+                    score_decision_risk[b], progress_shortfall[b], action_decision_risk[b],
                     rule_decision_risk[b], outcome_decision_risk[b], pcfg=pcfg,
                 )
 

@@ -650,157 +650,164 @@ def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, to
 
 
 def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
-    """Direct candidate-level supervision for calibrated P-NCF selection.
+    """Train a *coercion* certificate without conflating it with physical safety.
 
-    Pairwise coercion witnesses are useful for explanations, but the current
-    pseudo-labels can make the max-over-pairs certificate saturate.  This loss
-    gives the planner a scene-comparable candidate certificate: probability of
-    non-coercive feasibility, probability of false-safety, and a quality logit
-    that separates NCF candidates from false-safe candidates.  The head is trained
-    from existing dataset labels, so no Waymax replay is required.
+    ``false_safe`` means that an ego candidate is conventionally collision-free but
+    shifts the conflict burden to another road user.  Such a candidate can therefore
+    be physically collision-free in a Waymax replay.  Treating every replay-safe
+    candidate as an NCF positive creates contradictory within-scene ranking pairs:
+    the same false-safe candidate becomes both a positive and a negative.  The v5
+    objective did exactly that and the certificate collapsed after a few epochs.
+
+    This objective uses two disjoint semantic classes only:
+      * positive: label-level non-coercive feasible and not false-safe;
+      * negative: label-level false-safe.
+
+    Collision/offroad supervision remains in ``planner_outcome_supervision`` and is
+    used only by the physical feasibility shield at inference.  Ambiguous candidates
+    are excluded rather than silently treated as negatives for both concepts.
     """
     mask = batch["cowp/candidates/valid"].bool()
     if not mask.any() or "candidate_ncf_logit" not in pred or "candidate_false_safe_logit" not in pred:
         z = _zero_like_loss(batch["cowp/candidates/valid"])
-        return {"loss": z, "ncf": z, "false_safe": z, "quality": z, "prior": z, "rank": z}
-    ncf = _binary_target(batch.get("cowp/candidates/noncoercive_feasible", torch.zeros_like(pred["candidate_ncf_logit"])))
-    false_safe = _binary_target(batch.get("cowp/candidates/false_safe", torch.zeros_like(pred["candidate_false_safe_logit"])))
-    # The certificate is a feasibility certificate, not two independent labels.
-    # If a noisy cache marks a candidate as both noncoercive_feasible and
-    # false_safe, let false_safe dominate for the ranking head.  Otherwise the
-    # head can satisfy BCE by predicting high NCF and ambiguous/low risk for
-    # false-safe candidates, keeping RiskRankingPairAccuracy at zero.
-    ncf = torch.where(false_safe > 0.5, torch.zeros_like(ncf), ncf)
+        return {
+            "loss": z, "ncf": z, "false_safe": z, "quality": z,
+            "prior": z, "rank": z, "risk_bce": z, "risk_rank": z,
+            "spread": z, "overlap_rate": z,
+        }
+
+    raw_ncf = _binary_target(batch.get(
+        "cowp/candidates/noncoercive_feasible",
+        torch.zeros_like(pred["candidate_ncf_logit"]),
+    )) > 0.5
+    raw_fs = _binary_target(batch.get(
+        "cowp/candidates/false_safe",
+        torch.zeros_like(pred["candidate_false_safe_logit"]),
+    )) > 0.5
+
+    # False-safe dominates only to repair noisy legacy caches.  In correctly built
+    # labels the two classes are already mutually exclusive.
+    overlap = mask & raw_ncf & raw_fs
+    ncf_pos = mask & raw_ncf & ~raw_fs
+    fs_pos = mask & raw_fs
+    disc = ncf_pos | fs_pos
+
     ncf_logits = _safe_float(pred["candidate_ncf_logit"])
     fs_logits = _safe_float(pred["candidate_false_safe_logit"])
-    quality_logits = _safe_float(pred.get("candidate_quality_logit", -fs_logits + ncf_logits))
+    quality_logits = _safe_float(pred.get("candidate_quality_logit", ncf_logits - fs_logits))
 
-    # Outcome-contrastive certificate upgrade.  The old certificate only learned
-    # pseudo NCF/false-safe labels and collapsed to 0.5/0.5 on the current run.
-    # When replayed Waymax candidate outcomes are attached, treat collision,
-    # offroad, or high log-divergence as direct negative evidence and collision-
-    # free/offroad-free rollouts as direct positive safety evidence.  This keeps
-    # the explanatory P-NCF labels, but grounds the candidate head in the same
-    # closed-loop outcome distribution used for Waymax evaluation.
-    rollout_valid = batch.get("waymax/candidate_rollout_valid")
-    outcome_safe = torch.zeros_like(mask)
-    outcome_unsafe = torch.zeros_like(mask)
-    if rollout_valid is not None:
-        rv = rollout_valid.bool() & mask
-        unsafe = torch.zeros_like(mask)
-        col = batch.get("waymax/candidate_collision")
-        off = batch.get("waymax/candidate_offroad")
-        ld = batch.get("waymax/candidate_log_divergence")
-        if col is not None:
-            unsafe = unsafe | (_binary_target(col) > 0.5)
-        if off is not None:
-            unsafe = unsafe | (_binary_target(off) > 0.5)
-        if ld is not None:
-            ld_target = _safe_float(ld).clamp_min(0.0)
-            unsafe = unsafe | (ld_target > float(weights.get("candidate_outcome_logdiv_unsafe_threshold", weights.get("outcome_logdiv_unsafe_threshold", 8.0))))
-        outcome_unsafe = rv & unsafe
-        outcome_safe = rv & ~unsafe
-        # Outcome-unsafe candidates should not receive high NCF probability, but
-        # they are not automatically false-safe.  False-safe is the paper's
-        # coercion concept: conventionally safe for ego but forcing another agent
-        # into high-burden/low-option responses.  Conflating all collisions/offroad
-        # with false-safe made the certificate less interpretable and hurt the
-        # core claim.  Outcome unsafety is still used below by quality/risk targets.
-        ncf = torch.where(outcome_unsafe, torch.zeros_like(ncf), ncf)
-        ncf = torch.where(outcome_safe & (ncf <= 0.5) & (false_safe <= 0.5), torch.full_like(ncf, float(weights.get("candidate_outcome_safe_ncf_target", 0.75))), ncf)
+    if not disc.any():
+        z = _zero_like_loss(ncf_logits)
+        return {
+            "loss": z, "ncf": z, "false_safe": z, "quality": z,
+            "prior": z, "rank": z, "risk_bce": z, "risk_rank": z,
+            "spread": z, "overlap_rate": overlap.float().mean(),
+        }
 
-    # Label imbalance is strong but scene-dependent; use bounded dynamic weights.
-    pos_n = ((ncf > 0.5) & mask).float().sum()
-    neg_n = ((ncf <= 0.5) & mask).float().sum()
-    pos_f = ((false_safe > 0.5) & mask).float().sum()
-    neg_f = ((false_safe <= 0.5) & mask).float().sum()
-    max_pw = float(weights.get("candidate_cert_max_pos_weight", 6.0))
-    ncf_pw = (neg_n / pos_n.clamp_min(1.0)).clamp(1.0, max_pw)
-    fs_pw = (neg_f / pos_f.clamp_min(1.0)).clamp(1.0, max_pw)
-    ncf_loss_raw = F.binary_cross_entropy_with_logits(ncf_logits, ncf, reduction="none", pos_weight=ncf_pw)
-    fs_loss_raw = F.binary_cross_entropy_with_logits(fs_logits, false_safe, reduction="none", pos_weight=fs_pw)
-    ncf_loss = masked_mean(ncf_loss_raw, mask)
-    fs_loss = masked_mean(fs_loss_raw, mask)
+    ncf_target = ncf_pos.float()
+    fs_target = fs_pos.float()
+    max_pw = float(weights.get("candidate_cert_max_pos_weight", 4.0))
 
-    # Quality logit is positive for NCF/outcome-safe candidates and negative for
-    # false-safe/outcome-unsafe candidates; ambiguous candidates are ignored.
-    disc = mask & ((ncf > 0.5) | (false_safe > 0.5) | outcome_safe | outcome_unsafe)
-    if disc.any():
-        q_target = ((ncf > 0.5) | outcome_safe).float()
-        q_target = torch.where(outcome_unsafe, torch.zeros_like(q_target), q_target)
-        q_loss = masked_mean(F.binary_cross_entropy_with_logits(quality_logits, q_target, reduction="none"), disc)
+    ncf_pos_n = ncf_pos.float().sum()
+    ncf_neg_n = fs_pos.float().sum()
+    fs_pos_n = fs_pos.float().sum()
+    fs_neg_n = ncf_pos.float().sum()
+    ncf_pw = (ncf_neg_n / ncf_pos_n.clamp_min(1.0)).clamp(1.0, max_pw)
+    fs_pw = (fs_neg_n / fs_pos_n.clamp_min(1.0)).clamp(1.0, max_pw)
+
+    ncf_loss = masked_mean(
+        F.binary_cross_entropy_with_logits(ncf_logits, ncf_target, reduction="none", pos_weight=ncf_pw),
+        disc,
+    )
+    fs_loss = masked_mean(
+        F.binary_cross_entropy_with_logits(fs_logits, fs_target, reduction="none", pos_weight=fs_pw),
+        disc,
+    )
+    q_loss = masked_mean(
+        F.binary_cross_entropy_with_logits(quality_logits, ncf_target, reduction="none"),
+        disc,
+    )
+
+    # Scene-level class-mass calibration is computed over discriminative candidates,
+    # not all padded/ambiguous candidates.  This avoids an all-low solution caused by
+    # the large ambiguous class.
+    disc_count = disc.float().sum(dim=1).clamp_min(1.0)
+    gt_ncf_rate = ncf_pos.float().sum(dim=1) / disc_count
+    gt_fs_rate = fs_pos.float().sum(dim=1) / disc_count
+    pred_ncf_rate = (torch.sigmoid(ncf_logits) * disc.float()).sum(dim=1) / disc_count
+    pred_fs_rate = (torch.sigmoid(fs_logits) * disc.float()).sum(dim=1) / disc_count
+    scene_has_disc = disc.any(dim=1)
+    if scene_has_disc.any():
+        prior = (
+            F.smooth_l1_loss(pred_ncf_rate[scene_has_disc], gt_ncf_rate[scene_has_disc], reduction="mean")
+            + F.smooth_l1_loss(pred_fs_rate[scene_has_disc], gt_fs_rate[scene_has_disc], reduction="mean")
+        )
     else:
-        q_loss = _zero_like_loss(quality_logits)
+        prior = _zero_like_loss(ncf_logits)
 
-    # Scene prior calibration prevents all-candidate high NCF or all-candidate high
-    # false-safe solutions.  This is the candidate-level analogue of the witness
-    # scene prior, but it is less brittle than pair max-pooling.
-    counts = mask.float().sum(dim=1).clamp_min(1.0)
-    ncf_rate = (ncf * mask.float()).sum(dim=1) / counts
-    fs_rate = (false_safe * mask.float()).sum(dim=1) / counts
-    pred_ncf_rate = (torch.sigmoid(ncf_logits) * mask.float()).sum(dim=1) / counts
-    pred_fs_rate = (torch.sigmoid(fs_logits) * mask.float()).sum(dim=1) / counts
-    prior = F.smooth_l1_loss(pred_ncf_rate, ncf_rate, reduction="mean") + F.smooth_l1_loss(pred_fs_rate, fs_rate, reduction="mean")
-
-    # Pair ranking inside each scene: NCF candidates should have higher quality
-    # and lower false-safe score than false-safe candidates.
-    rank_terms = []
-    risk_rank_terms = []
-    spread_terms = []
-    margin = float(weights.get("candidate_cert_pair_margin", 1.0))
+    # A single semantic risk logit is used by the selector.  Positive values mean
+    # more likely coercive.  All ranking masks are explicitly disjoint.
     risk_logit = fs_logits - ncf_logits - 0.5 * quality_logits
-    safe_disc = mask & ((ncf > 0.5) | outcome_safe)
-    unsafe_disc = mask & ((false_safe > 0.5) | outcome_unsafe)
-    risk_disc = safe_disc | unsafe_disc
+    margin = float(weights.get("candidate_cert_pair_margin", 0.5))
+    rank_terms: list[torch.Tensor] = []
+    risk_rank_terms: list[torch.Tensor] = []
+    spread_terms: list[torch.Tensor] = []
+    max_pairs = int(weights.get("candidate_cert_max_pairs_per_scene", 256))
     for b in range(mask.shape[0]):
-        pos = torch.where(safe_disc[b])[0]
-        neg = torch.where(unsafe_disc[b])[0]
-        if pos.numel() and neg.numel():
-            rank_terms.append(torch.relu(margin - quality_logits[b, pos[:, None]] + quality_logits[b, neg[None, :]]).mean())
-            # Outcome-calibrated risk should be lower on NCF/outcome-safe
-            # candidates than on false-safe/outcome-unsafe candidates.  This
-            # gives the certificate a directly usable scene-level ordering, not
-            # only three independent probabilities.
-            risk_rank_terms.append(torch.relu(margin + risk_logit[b, pos[:, None]] - risk_logit[b, neg[None, :]]).mean())
-            # Prevent the 0.5/0.5/0.5 collapse observed in closed-loop runs by
-            # requiring some within-scene risk spread only when both classes are
-            # actually present.  The term is bounded and inactive on one-class
-            # scenes, so it does not create artificial separation where labels do
-            # not support it.
-            vals = risk_logit[b, torch.cat([pos, neg])].float()
-            if vals.numel() > 2:
-                min_spread = float(weights.get("candidate_cert_min_logit_spread", 0.35))
-                spread_terms.append(torch.relu(vals.new_tensor(min_spread) - vals.std(unbiased=False)))
+        pos = torch.where(ncf_pos[b])[0]
+        neg = torch.where(fs_pos[b])[0]
+        if not (pos.numel() and neg.numel()):
+            continue
+        # Bound O(K^2) memory while keeping deterministic class coverage.
+        if pos.numel() * neg.numel() > max_pairs:
+            p_keep = max(1, int(max_pairs ** 0.5))
+            n_keep = max(1, max_pairs // p_keep)
+            pos = pos[:p_keep]
+            neg = neg[:n_keep]
+        rank_terms.append(
+            torch.relu(margin - quality_logits[b, pos[:, None]] + quality_logits[b, neg[None, :]]).mean()
+        )
+        risk_rank_terms.append(
+            torch.relu(margin + risk_logit[b, pos[:, None]] - risk_logit[b, neg[None, :]]).mean()
+        )
+        vals = risk_logit[b, torch.cat([pos, neg])].float()
+        if vals.numel() > 2:
+            min_spread = float(weights.get("candidate_cert_min_logit_spread", 0.20))
+            spread_terms.append(torch.relu(vals.new_tensor(min_spread) - vals.std(unbiased=False)))
+
     rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(quality_logits)
     risk_rank = torch.stack(risk_rank_terms).mean() if risk_rank_terms else _zero_like_loss(quality_logits)
     spread = torch.stack(spread_terms).mean() if spread_terms else _zero_like_loss(quality_logits)
 
-    if risk_disc.any():
-        risk_target = torch.where(unsafe_disc, torch.ones_like(risk_logit), torch.zeros_like(risk_logit))
-        # Unsafe candidates are rarer and more important for closed-loop safety;
-        # use the same bounded dynamic positive weighting as the false-safe head.
-        pos_r = unsafe_disc.float().sum()
-        neg_r = safe_disc.float().sum()
-        risk_pw = (neg_r / pos_r.clamp_min(1.0)).clamp(1.0, float(weights.get("candidate_cert_max_pos_weight", 6.0)))
-        risk_bce = masked_mean(F.binary_cross_entropy_with_logits(risk_logit, risk_target, reduction="none", pos_weight=risk_pw), risk_disc)
-    else:
-        risk_bce = _zero_like_loss(quality_logits)
+    risk_target = fs_pos.float()
+    risk_pw = (ncf_pos.float().sum() / fs_pos.float().sum().clamp_min(1.0)).clamp(1.0, max_pw)
+    risk_bce = masked_mean(
+        F.binary_cross_entropy_with_logits(risk_logit, risk_target, reduction="none", pos_weight=risk_pw),
+        disc,
+    )
 
     total = (
         float(weights.get("candidate_certificate_ncf", 1.0)) * ncf_loss
         + float(weights.get("candidate_certificate_false_safe", 1.0)) * fs_loss
         + float(weights.get("candidate_certificate_quality", 1.0)) * q_loss
-        + float(weights.get("candidate_certificate_prior", 0.5)) * prior
-        + float(weights.get("candidate_certificate_rank", 0.5)) * rank
+        + float(weights.get("candidate_certificate_prior", 0.25)) * prior
+        + float(weights.get("candidate_certificate_rank", 1.0)) * rank
         + float(weights.get("candidate_certificate_risk_bce", 1.0)) * risk_bce
         + float(weights.get("candidate_certificate_risk_rank", 1.0)) * risk_rank
-        + float(weights.get("candidate_certificate_spread", 0.0)) * spread
+        + float(weights.get("candidate_certificate_spread", 0.05)) * spread
     )
     return {
-        "loss": total, "ncf": ncf_loss, "false_safe": fs_loss, "quality": q_loss,
-        "prior": prior, "rank": rank, "risk_bce": risk_bce, "risk_rank": risk_rank, "spread": spread,
+        "loss": total,
+        "ncf": ncf_loss,
+        "false_safe": fs_loss,
+        "quality": q_loss,
+        "prior": prior,
+        "rank": rank,
+        "risk_bce": risk_bce,
+        "risk_rank": risk_rank,
+        "spread": spread,
+        "overlap_rate": overlap.float().sum() / mask.float().sum().clamp_min(1.0),
     }
-
 
 def planner_imitation_loss(scores: torch.Tensor, batch: dict[str, torch.Tensor]) -> torch.Tensor:
     """Imitation term using the logged ego candidate when available."""

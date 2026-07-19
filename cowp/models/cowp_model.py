@@ -50,7 +50,7 @@ class COWPModel(nn.Module):
         # probabilities directly from the same candidate embedding and aggregate
         # witness features.
         self.candidate_certificate = nn.Sequential(
-            nn.Linear(d_model + 4, d_model),
+            nn.Linear(d_model + 10, d_model),
             nn.GELU(),
             nn.LayerNorm(d_model),
             nn.Linear(d_model, 3),
@@ -327,12 +327,20 @@ class COWPModel(nn.Module):
             else:
                 evidence_mix = float(pcfg.get("evidential_probability_mix", 0.5))
                 witness_prob = (1.0 - evidence_mix) * logit_prob + evidence_mix * evidence_prob
+            # Planner/certificate objectives must not backpropagate through the
+            # staged witness decoder.  In v5 the very large candidate-certificate
+            # loss reached witness_prob through this path and pushed nearly every
+            # pair probability to one, despite planner_witness_scale being small.
+            # The witness head still receives its own explicitly scaled witness loss.
+            detach_witness = bool(pcfg.get("planner_detach_witness_features", True))
+            witness_for_planner = witness_prob.detach() if detach_witness else witness_prob
+            opr_for_planner = witness["opr"].detach() if detach_witness else witness["opr"]
             out["priority_claim_logits"] = self.priority_claim(
                 enc_cond["z_agent"],
                 z_cand,
                 critical_idx,
-                witness_prob,
-                witness["opr"],
+                witness_for_planner,
+                opr_for_planner,
             )
             out["outcome"] = self.outcome_risk(z_cand)
             ego_utility = batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float()
@@ -340,27 +348,86 @@ class COWPModel(nn.Module):
             if witness_prob.ndim == 3:
                 if critical_mask is not None:
                     cm = critical_mask.bool()[:, None, :]
-                    wp_aux = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
-                    opr_aux = torch.where(cm, witness["opr"], torch.ones_like(witness["opr"]))
                 else:
-                    wp_aux = witness_prob
-                    opr_aux = witness["opr"]
+                    cm = torch.ones_like(witness_prob, dtype=torch.bool)
+                wp_aux = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
+                opr_aux = torch.where(cm, witness["opr"], torch.ones_like(witness["opr"]))
+                uncertainty = witness.get("epistemic_uncertainty")
+                if uncertainty is None:
+                    uncertainty = torch.zeros_like(witness_for_planner)
+                uncertainty = uncertainty.detach() if detach_witness else uncertainty
+                uncertainty = torch.where(cm, uncertainty, torch.zeros_like(uncertainty))
+                burden = witness.get("burden_total", torch.zeros_like(witness_for_planner)).float()
+                ci = witness.get("c_i", torch.zeros_like(witness_for_planner)).float()
+                if detach_witness:
+                    burden = burden.detach()
+                    ci = ci.detach()
+                beta = batch.get("cowp/natural/beta")
+                if beta is None:
+                    beta_pair = torch.full_like(witness_for_planner, 0.65)
+                else:
+                    beta_pair = beta.float()[:, None, :].expand_as(witness_prob)
+                burden_excess = torch.where(cm, torch.relu(burden - beta_pair), torch.zeros_like(burden))
+                ci_excess = torch.where(cm, torch.relu(ci), torch.zeros_like(ci))
+                alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
+                option_collapse = torch.where(
+                    cm,
+                    (torch.relu(torch.as_tensor(alpha, device=opr_aux.device, dtype=opr_aux.dtype) - opr_aux) / max(alpha, 1e-6)).clamp(0.0, 1.0),
+                    torch.zeros_like(opr_aux),
+                )
+                denom = cm.float().sum(dim=-1).clamp_min(1.0)
                 max_wit = wp_aux.max(dim=-1).values
+                mean_wit = wp_aux.sum(dim=-1) / denom
                 min_opr = opr_aux.min(dim=-1).values
+                mean_opr = (torch.where(cm, opr_aux, torch.zeros_like(opr_aux)).sum(dim=-1) / denom).clamp(0.0, 1.0)
+                max_burden_excess = burden_excess.max(dim=-1).values.clamp(0.0, 2.0) / 2.0
+                max_ci_excess = ci_excess.max(dim=-1).values.clamp(0.0, 2.0) / 2.0
+                collapse_fraction = option_collapse.sum(dim=-1) / denom
+                max_uncertainty = uncertainty.max(dim=-1).values.clamp(0.0, 1.0)
+                # Analytic set-preservation risk.  It is interpretable and cannot be
+                # replaced by a generic outcome/planner-score fallback.  The learned
+                # head predicts a residual calibration on top of this certificate.
+                pair_set_risk = (
+                    0.50 * wp_aux
+                    + 0.25 * option_collapse
+                    + 0.15 * burden_excess.clamp(0.0, 1.0)
+                    + 0.10 * ci_excess.clamp(0.0, 1.0)
+                ).clamp(0.0, 1.0)
+                structured_risk = torch.where(cm, pair_set_risk, torch.zeros_like(pair_set_risk)).max(dim=-1).values
             else:
-                max_wit = witness_prob
-                min_opr = witness["opr"]
+                max_wit = witness_for_planner
+                mean_wit = witness_for_planner
+                min_opr = opr_for_planner
+                mean_opr = opr_for_planner
+                max_burden_excess = torch.zeros_like(max_wit)
+                max_ci_excess = torch.zeros_like(max_wit)
+                collapse_fraction = torch.relu(0.35 - min_opr).clamp(0.0, 1.0)
+                max_uncertainty = torch.zeros_like(max_wit)
+                structured_risk = (0.65 * max_wit + 0.35 * collapse_fraction).clamp(0.0, 1.0)
             safe_aux = torch.ones_like(max_wit) if conventional_safe is None else conventional_safe.float()
-            cert_aux = torch.stack([ego_utility.float(), max_wit.float(), min_opr.float(), safe_aux], dim=-1)
-            cert_logits = self.candidate_certificate(torch.cat([z_cand, cert_aux], dim=-1))
-            out["candidate_ncf_logit"] = cert_logits[..., 0]
-            out["candidate_false_safe_logit"] = cert_logits[..., 1]
-            out["candidate_quality_logit"] = cert_logits[..., 2]
+            cert_aux = torch.stack([
+                ego_utility.float(), safe_aux,
+                max_wit.float(), mean_wit.float(), min_opr.float(), mean_opr.float(),
+                max_burden_excess.float(), max_ci_excess.float(),
+                collapse_fraction.float(), max_uncertainty.float(),
+            ], dim=-1)
+            cert_residual = self.candidate_certificate(torch.cat([z_cand, cert_aux], dim=-1))
+            eps = 1.0e-4
+            base_fs = (safe_aux * structured_risk).clamp(eps, 1.0 - eps)
+            base_ncf = (safe_aux * (1.0 - structured_risk)).clamp(eps, 1.0 - eps)
+            base_fs_logit = torch.logit(base_fs)
+            base_ncf_logit = torch.logit(base_ncf)
+            structured_weight = float(self.cfg.get("planning", {}).get("candidate_structured_logit_weight", 0.35))
+            residual_scale = float(self.cfg.get("planning", {}).get("candidate_certificate_residual_scale", 1.0))
+            out["candidate_ncf_logit"] = structured_weight * base_ncf_logit + residual_scale * cert_residual[..., 0]
+            out["candidate_false_safe_logit"] = structured_weight * base_fs_logit + residual_scale * cert_residual[..., 1]
+            out["candidate_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]
+            out["candidate_structured_coercion_risk"] = structured_risk
             out["planner_score"] = self.planner(
                 z_cand,
                 ego_utility,
-                witness_prob,
-                witness["opr"],
+                witness_for_planner,
+                opr_for_planner,
                 conventional_safe,
                 critical_mask=critical_mask,
             )

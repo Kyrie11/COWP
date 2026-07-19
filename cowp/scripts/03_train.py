@@ -538,11 +538,53 @@ def _load_model_state_robust(model: torch.nn.Module, state: dict[str, torch.Tens
 
 def _score_from_history_row(row: dict[str, Any]) -> float:
     """Return the scalar used for best-checkpoint selection for a history row."""
+    if "checkpoint/score" in row:
+        return float(row.get("checkpoint/score", float("inf")))
     if "val/loss" in row:
         return float(row.get("val/loss", float("inf")))
     if "train/loss" in row:
         return float(row.get("train/loss", float("inf")))
     return float("inf")
+
+
+def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[float, str]:
+    """Choose planner checkpoints by certificate separation, not only total loss.
+
+    v5's total loss was dominated by large certificate coefficients and the launch
+    script then evaluated the final epoch.  A collapsed constant head can still have
+    a deceptively ordinary BCE.  The composite below heavily penalizes ranking and
+    risk-calibration collapse while retaining a small total/outcome term.
+    """
+    total = float(metrics.get("loss", float("inf")))
+    if stage != "planner":
+        return total, "loss"
+    def g(name: str, default: float = 0.0) -> float:
+        try:
+            value = float(metrics.get(name, default))
+            return value if math.isfinite(value) else default
+        except Exception:
+            return default
+    score = (
+        0.10 * total
+        + 1.00 * g("candidate_cert/risk_rank", 2.0)
+        + 0.75 * g("candidate_cert/risk_bce", 2.0)
+        + 0.35 * g("candidate_cert/rank", 2.0)
+        + 0.20 * g("candidate_cert/ncf", 2.0)
+        + 0.20 * g("candidate_cert/false_safe", 2.0)
+        + 0.10 * g("planner/outcome_cls", 1.0)
+        + 0.10 * g("planner/ranking", 1.0)
+    )
+    return float(score), "planner_certificate_composite"
+
+
+def _set_planner_backbone_frozen(model: torch.nn.Module, frozen: bool) -> None:
+    core = model.module if hasattr(model, "module") else model
+    for module_name in ("graph", "candidate_encoder", "natural_decoder", "witness_decoder"):
+        module = getattr(core, module_name, None)
+        if module is None:
+            continue
+        for param in module.parameters():
+            param.requires_grad_(not frozen)
 
 
 def _load_existing_history(path: Path, *, before_epoch: int | None = None) -> list[dict[str, Any]]:
@@ -687,6 +729,7 @@ def main() -> None:
     ap.add_argument("--no-response-components", action="store_true", help="Do not load/supervise cowp/response/burden_components during response training.")
     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
+    ap.add_argument("--freeze-backbone-epochs", type=int, default=0, help="For planner training, freeze graph/candidate/witness backbones for the first N epochs so new certificate/outcome heads warm up without erasing pretrained representations.")
     args = ap.parse_args()
 
     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
@@ -878,6 +921,10 @@ def main() -> None:
         return
     try:
         for epoch in range(start_epoch, epochs):
+            freeze_now = stage == "planner" and epoch < max(int(args.freeze_backbone_epochs), 0)
+            _set_planner_backbone_frozen(model, freeze_now)
+            if _is_main_process() and stage == "planner" and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
+                _rank0_print(f"Planner backbone frozen={freeze_now} at epoch={epoch}")
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,
@@ -912,13 +959,21 @@ def main() -> None:
                 )
                 val_metrics = _distributed_mean_metrics(val_metrics, device)
                 row.update({f"val/{k}": v for k, v in val_metrics.items()})
-                score_loss = float(val_metrics.get("loss", float("inf")))
-                score_name = "val_loss"
+                score_loss, score_kind = _checkpoint_selection_score(val_metrics, stage)
+                score_name = "val_" + score_kind
+                row["checkpoint/score"] = float(score_loss)
+                row["checkpoint/kind"] = score_kind
             else:
                 # If validation is intentionally disabled for smoke training, still
                 # produce cowp_<stage>_best.pt so downstream stage commands can resume.
-                score_loss = float(train_metrics.get("loss", float("inf"))) if (val_dl is None or int(args.val_every) == 0) else float("inf")
-                score_name = "train_loss"
+                if val_dl is None or int(args.val_every) == 0:
+                    score_loss, score_kind = _checkpoint_selection_score(train_metrics, stage)
+                    score_name = "train_" + score_kind
+                    row["checkpoint/score"] = float(score_loss)
+                    row["checkpoint/kind"] = score_kind
+                else:
+                    score_loss = float("inf")
+                    score_name = "train_unavailable"
             if _is_main_process():
                 if math.isfinite(score_loss) and score_loss < best_val:
                     best_val = score_loss
