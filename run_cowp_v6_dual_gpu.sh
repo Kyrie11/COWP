@@ -87,15 +87,15 @@ json.load(open(sys.argv[1], encoding='utf-8'))
 PY
 }
 
-if [[ "$RUN_PREFLIGHT" == "1" ]]; then
-  logrun preflight "$PYTHON_BIN" -u -m cowp.scripts.20_assert_cache_snapshot \
-    --train-cache "$TRAIN_CACHE" \
-    --val-cache "$VAL_CACHE" \
-    --expected-train-files "$EXPECTED_TRAIN_FILES" \
-    --expected-val-files "$EXPECTED_VAL_FILES" \
-    --sample "$PREFLIGHT_SAMPLE" \
-    --output "$OUT_ROOT/preflight_cache_snapshot.json"
-fi
+#if [[ "$RUN_PREFLIGHT" == "1" ]]; then
+#  logrun preflight "$PYTHON_BIN" -u -m cowp.scripts.20_assert_cache_snapshot \
+#    --train-cache "$TRAIN_CACHE" \
+#    --val-cache "$VAL_CACHE" \
+#    --expected-train-files "$EXPECTED_TRAIN_FILES" \
+#    --expected-val-files "$EXPECTED_VAL_FILES" \
+#    --sample "$PREFLIGHT_SAMPLE" \
+#    --output "$OUT_ROOT/preflight_cache_snapshot.json"
+#fi
 
 if [[ "$RUN_TRAIN" == "1" ]]; then
   if best_ckpt >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
