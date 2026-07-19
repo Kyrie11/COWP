@@ -333,16 +333,26 @@ class COWPModel(nn.Module):
             # pair probability to one, despite planner_witness_scale being small.
             # The witness head still receives its own explicitly scaled witness loss.
             detach_witness = bool(pcfg.get("planner_detach_witness_features", True))
+            detach_backbone = bool(pcfg.get("planner_detach_backbone_features", True))
             witness_for_planner = witness_prob.detach() if detach_witness else witness_prob
             opr_for_planner = witness["opr"].detach() if detach_witness else witness["opr"]
+            # Strong gradient firewall: candidate certificate, physical outcome,
+            # priority, and planner heads may calibrate pretrained representations,
+            # but their losses must not rewrite the shared graph/candidate features
+            # consumed by the pairwise witness decoder.  v6 detached witness output
+            # tensors but still allowed all candidate/planner losses to reach the
+            # witness indirectly through z_agent/z_graph/z_cand.
+            z_cand_planner = z_cand.detach() if detach_backbone else z_cand
+            z_agent_planner = enc_cond["z_agent"].detach() if detach_backbone else enc_cond["z_agent"]
+            z_graph_planner = enc_cond["z_graph"].detach() if detach_backbone else enc_cond["z_graph"]
             out["priority_claim_logits"] = self.priority_claim(
-                enc_cond["z_agent"],
-                z_cand,
+                z_agent_planner,
+                z_cand_planner,
                 critical_idx,
                 witness_for_planner,
                 opr_for_planner,
             )
-            out["outcome"] = self.outcome_risk(z_cand)
+            out["outcome"] = self.outcome_risk(z_cand_planner)
             ego_utility = batch.get("cowp/candidates/ego_utility_prior", torch.zeros_like(cand_mask, dtype=torch.float32)).float()
             conventional_safe = batch.get("cowp/candidates/conventional_safe")
             if witness_prob.ndim == 3:
@@ -350,8 +360,8 @@ class COWPModel(nn.Module):
                     cm = critical_mask.bool()[:, None, :]
                 else:
                     cm = torch.ones_like(witness_prob, dtype=torch.bool)
-                wp_aux = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
-                opr_aux = torch.where(cm, witness["opr"], torch.ones_like(witness["opr"]))
+                wp_aux = torch.where(cm, witness_for_planner, torch.zeros_like(witness_for_planner))
+                opr_aux = torch.where(cm, opr_for_planner, torch.ones_like(opr_for_planner))
                 uncertainty = witness.get("epistemic_uncertainty")
                 if uncertainty is None:
                     uncertainty = torch.zeros_like(witness_for_planner)
@@ -411,7 +421,7 @@ class COWPModel(nn.Module):
                 max_burden_excess.float(), max_ci_excess.float(),
                 collapse_fraction.float(), max_uncertainty.float(),
             ], dim=-1)
-            cert_residual = self.candidate_certificate(torch.cat([z_cand, cert_aux], dim=-1))
+            cert_residual = self.candidate_certificate(torch.cat([z_cand_planner, cert_aux.detach() if detach_backbone else cert_aux], dim=-1))
             eps = 1.0e-4
             base_fs = (safe_aux * structured_risk).clamp(eps, 1.0 - eps)
             base_ncf = (safe_aux * (1.0 - structured_risk)).clamp(eps, 1.0 - eps)
@@ -424,7 +434,7 @@ class COWPModel(nn.Module):
             out["candidate_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]
             out["candidate_structured_coercion_risk"] = structured_risk
             out["planner_score"] = self.planner(
-                z_cand,
+                z_cand_planner,
                 ego_utility,
                 witness_for_planner,
                 opr_for_planner,

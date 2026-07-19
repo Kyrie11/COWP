@@ -10,6 +10,7 @@ from typing import Callable
 import numpy as np
 
 from cowp.core.constants import MacroType
+from cowp.planning.set_preservation_selector import select_set_preservation_frontier_batch
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, _progress_reference_m, _trajectory_progress_m
@@ -722,45 +723,23 @@ def _select_from_learned(
         keep_frac = float(pcfg.get("candidate_frontier_keep_fraction", 0.40))
         keep_min = int(pcfg.get("candidate_frontier_min_keep", 1))
         keep_max = int(pcfg.get("candidate_frontier_max_keep", 4))
-        for b in range(int(scores.shape[0])):
-            base_b = _guard_frontier_base_torch(
-                frontier_base[b], score_decision_risk[b], progress[b], action_decision_risk[b],
-                keep_min=keep_min, pcfg=pcfg,
-            )
-            if not base_b.any():
-                continue
-            idx = torch.where(base_b)[0]
-            risk_b = risk[b, idx]
-            k = max(keep_min, int(torch.ceil(torch.tensor(float(idx.numel()) * keep_frac)).item()))
-            k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
-            # Exact-cardinality frontier.  Do not use a threshold cutoff here:
-            # if risk is flat, ``risk <= kth_value`` selects every conventional
-            # candidate and COWP collapses to conventional_safety.
-            tie = (
-                0.70 * score_decision_risk[b]
-                + 0.20 * progress_shortfall[b]
-                + 0.25 * outcome_decision_risk[b]
-                + 0.20 * action_decision_risk[b]
-            )
-            frontier = _topk_frontier_mask_torch(
-                base_b, risk[b], tie,
-                keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,
-                eps=float(pcfg.get("candidate_frontier_tie_eps", 1.0e-3)),
-            )
-            # Use absolute probabilities only as a weak sanity screen.  If the
-            # screen would remove everything, fall back to the exact top-k
-            # frontier; otherwise early probability miscalibration cannot collapse
-            # the controller into all-fallback.
-            screened = frontier & (cand_ncf_prob[b] >= min_ncf) & (cand_false_safe_prob[b] <= max_fs)
-            if screened.any():
-                frontier = screened
-            if frontier.any():
-                accepted[b] = (accepted[b] & frontier) if accepted[b].any() else frontier
-                adjusted_scores[b] = _risk_budgeted_selection_scores_torch(
-                    scores[b], frontier_base[b], frontier, noncoercive_risk[b],
-                    score_decision_risk[b], progress_shortfall[b], action_decision_risk[b],
-                    rule_decision_risk[b], outcome_decision_risk[b], pcfg=pcfg,
-                )
+        frontier, frontier_scores, _pareto_counts = select_set_preservation_frontier_batch(
+            scores=scores,
+            base_mask=frontier_base,
+            noncoercive_risk=noncoercive_risk,
+            score_risk=score_decision_risk,
+            progress=progress,
+            progress_shortfall=progress_shortfall,
+            action_risk=action_decision_risk,
+            rule_risk=rule_decision_risk,
+            outcome_risk=outcome_decision_risk,
+            ncf_probability=cand_ncf_prob,
+            false_safe_probability=cand_false_safe_prob,
+            cfg=pcfg,
+        )
+        has_frontier = frontier.any(dim=1)
+        accepted = torch.where(has_frontier[:, None], frontier, accepted)
+        adjusted_scores = torch.where(has_frontier[:, None], frontier_scores, adjusted_scores)
 
     selected: list[int] = []
     masks: list[np.ndarray] = []

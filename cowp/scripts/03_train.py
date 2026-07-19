@@ -730,6 +730,11 @@ def main() -> None:
     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     ap.add_argument("--freeze-backbone-epochs", type=int, default=0, help="For planner training, freeze graph/candidate/witness backbones for the first N epochs so new certificate/outcome heads warm up without erasing pretrained representations.")
+    ap.add_argument("--early-stop-patience", type=int, default=0, help="Stop after this many validation checks without composite-score improvement. 0 disables early stopping.")
+    ap.add_argument("--early-stop-min-delta", type=float, default=1.0e-4, help="Minimum checkpoint-score decrease counted as an improvement.")
+    ap.add_argument("--lr-scheduler", choices=["none", "plateau", "cosine"], default="none", help="Learning-rate scheduler for stable planner fine-tuning.")
+    ap.add_argument("--min-lr", type=float, default=1.0e-6, help="Minimum learning rate used by plateau/cosine scheduling.")
+    ap.add_argument("--save-every", type=int, default=1, help="Save epoch checkpoints every N epochs. Best checkpoint is always saved.")
     args = ap.parse_args()
 
     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
@@ -879,6 +884,17 @@ def main() -> None:
         weight_decay=float(tcfg.get("weight_decay", 1e-4)),
         fused=bool(args.fused_adamw or tcfg.get("fused_adamw", False)),
     )
+    scheduler = None
+    scheduler_mode = str(args.lr_scheduler).lower()
+    if scheduler_mode == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", factor=0.5, patience=max(1, int(args.early_stop_patience) // 2),
+            min_lr=float(args.min_lr), threshold=float(args.early_stop_min_delta),
+        )
+    elif scheduler_mode == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(int(args.epochs or tcfg.get("epochs", 10)), 1), eta_min=float(args.min_lr)
+        )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     epochs = args.epochs or int(tcfg.get("epochs", 10))
@@ -919,6 +935,9 @@ def main() -> None:
         _rank0_print(f"Stage {stage} already reached target epochs: checkpoint next_epoch={start_epoch}, target_epochs={epochs}")
         _cleanup_distributed()
         return
+    no_improve_checks = 0
+    early_stop_patience = max(int(args.early_stop_patience), 0)
+    min_delta = max(float(args.early_stop_min_delta), 0.0)
     try:
         for epoch in range(start_epoch, epochs):
             freeze_now = stage == "planner" and epoch < max(int(args.freeze_backbone_epochs), 0)
@@ -974,9 +993,12 @@ def main() -> None:
                 else:
                     score_loss = float("inf")
                     score_name = "train_unavailable"
+            improved = False
             if _is_main_process():
-                if math.isfinite(score_loss) and score_loss < best_val:
+                improved = math.isfinite(score_loss) and score_loss < (best_val - min_delta)
+                if improved:
                     best_val = score_loss
+                    no_improve_checks = 0
                     torch.save(
                         _make_checkpoint_payload(
                             model,
@@ -990,20 +1012,43 @@ def main() -> None:
                         ),
                         output_dir / f"cowp_{stage}_best.pt",
                     )
+                elif math.isfinite(score_loss):
+                    no_improve_checks += 1
+                row["train/lr"] = float(opt.param_groups[0]["lr"])
+                row["checkpoint/improved"] = bool(improved)
+                row["checkpoint/no_improve_checks"] = int(no_improve_checks)
                 history.append(row)
                 print(json.dumps(row, ensure_ascii=False))
-                torch.save(
-                    _make_checkpoint_payload(
-                        model,
-                        cfg,
-                        opt,
-                        epoch=epoch,
-                        stage=stage,
-                        best_val=best_val,
-                        save_optimizer=not args.no_save_optimizer,
-                    ),
-                    output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt",
+                save_every = max(int(args.save_every), 1)
+                if ((epoch + 1) % save_every == 0) or epoch == epochs - 1:
+                    torch.save(
+                        _make_checkpoint_payload(
+                            model,
+                            cfg,
+                            opt,
+                            epoch=epoch,
+                            stage=stage,
+                            best_val=best_val,
+                            save_optimizer=not args.no_save_optimizer,
+                        ),
+                        output_dir / f"cowp_{stage}_epoch{epoch:03d}.pt",
+                    )
+            if scheduler is not None:
+                if scheduler_mode == "plateau":
+                    scheduler.step(float(score_loss) if math.isfinite(score_loss) else float(best_val))
+                else:
+                    scheduler.step()
+            stop_now = bool(early_stop_patience > 0 and no_improve_checks >= early_stop_patience) if _is_main_process() else False
+            if dist.is_available() and dist.is_initialized():
+                stop_tensor = torch.tensor([1 if stop_now else 0], device=device, dtype=torch.int32)
+                dist.broadcast(stop_tensor, src=0)
+                stop_now = bool(int(stop_tensor.item()))
+            if stop_now:
+                _rank0_print(
+                    f"Early stopping stage={stage} at epoch={epoch}: "
+                    f"no improvement for {no_improve_checks} validation checks; best={best_val:.6f}"
                 )
+                break
         if _is_main_process():
             with history_path.open("w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2)

@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from cowp.core.constants import MacroType
+from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
 from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory, repair_planar_kinematics
 
 
@@ -174,22 +175,83 @@ def extract_current_agent_state(state: Any) -> tuple[np.ndarray, int]:
     return _state11_at(comps, t), _extract_sdc_index(state)
 
 
-def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) -> np.ndarray | None:
-    """Best-effort logged/simulator future for online conventional checks."""
-    try:
-        _, t = _traj_arrays(state)
-        comps = _extract_traj_components(state)
-    except Exception:
-        return None
+def _history_from_components(
+    comps: dict[str, np.ndarray],
+    t: int,
+    cfg: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build current and history tensors from one host copy of the trajectory tree.
+
+    The v6 online path copied the full Waymax trajectory tree once for history and
+    a second time for logged-future checks.  It also called ``_state11_at`` in a
+    Python loop for every history frame.  This vectorized helper preserves exactly
+    the same history values while doing one trajectory extraction and one indexed
+    gather per field.
+    """
+    cur11 = _state11_at(comps, t)
+    hist_steps = int(cfg.get("model", cfg).get("history_steps", cfg.get("time", {}).get("history_steps", 11)))
+    max_agents = int(cfg.get("limits", {}).get("max_agents", cfg.get("model", cfg).get("max_agents", 128)))
+    d_state = int(cfg.get("model", cfg).get("d_state", 11))
+    n = min(max_agents, cur11.shape[0])
+    hist = np.zeros((max_agents, hist_steps, d_state), dtype=np.float32)
+    temporal = np.asarray(comps["x"]).ndim == 2
+    if temporal:
+        total_t = int(comps["x"].shape[1])
+        idx = np.clip(np.arange(t - hist_steps + 1, t + 1), 0, total_t - 1).astype(np.int64)
+        def gather(name: str, default: float = 0.0) -> np.ndarray:
+            arr = np.asarray(comps.get(name))
+            if arr.ndim == 2:
+                return np.asarray(arr[:n, idx], dtype=np.float32)
+            if arr.ndim == 1:
+                return np.repeat(np.asarray(arr[:n, None], dtype=np.float32), hist_steps, axis=1)
+            return np.full((n, hist_steps), default, dtype=np.float32)
+        x = gather("x"); y = gather("y"); yaw = gather("yaw")
+        vx = gather("vx"); vy = gather("vy")
+        length = gather("length", 4.8); width = gather("width", 1.9); height = gather("height", 1.6)
+        valid = gather("valid", 1.0) > 0.5
+    else:
+        s11 = cur11[:n]
+        x = np.repeat(s11[:, 0:1], hist_steps, axis=1)
+        y = np.repeat(s11[:, 1:2], hist_steps, axis=1)
+        yaw = np.repeat(s11[:, 6:7], hist_steps, axis=1)
+        vx = np.repeat(s11[:, 3:4], hist_steps, axis=1)
+        vy = np.repeat(s11[:, 4:5], hist_steps, axis=1)
+        length = np.repeat(s11[:, 7:8], hist_steps, axis=1)
+        width = np.repeat(s11[:, 8:9], hist_steps, axis=1)
+        height = np.repeat(s11[:, 9:10], hist_steps, axis=1)
+        valid = np.repeat((s11[:, 10:11] > 0.5), hist_steps, axis=1)
+    hist[:n, :, 0] = np.nan_to_num(x, nan=0.0)
+    hist[:n, :, 1] = np.nan_to_num(y, nan=0.0)
+    hist[:n, :, 2] = 0.0
+    hist[:n, :, 3] = np.where(length > 0.0, length, 4.8)
+    hist[:n, :, 4] = np.where(width > 0.0, width, 1.9)
+    hist[:n, :, 5] = np.where(height > 0.0, height, 1.6)
+    hist[:n, :, 6] = np.nan_to_num(yaw, nan=0.0)
+    hist[:n, :, 7] = np.nan_to_num(vx, nan=0.0)
+    hist[:n, :, 8] = np.nan_to_num(vy, nan=0.0)
+    hist[:n, :, 9] = np.sqrt(hist[:n, :, 7] ** 2 + hist[:n, :, 8] ** 2)
+    hist[:n, :, 10] = valid.astype(np.float32)
+    return hist, cur11
+
+
+def _extract_logged_future_from_components(
+    comps: dict[str, np.ndarray], t: int, sdc_index: int, cfg: dict
+) -> np.ndarray | None:
+    """Extract privileged logged future from an already materialized state tree.
+
+    This is intentionally an *oracle ablation* only.  Main closed-loop evaluation
+    must be causal and therefore uses current/history state plus constant-velocity
+    fallback or the learned response model, never future simulator/log states.
+    """
     H = int(cfg.get("time", {}).get("future_steps", cfg.get("eval", {}).get("rollout_horizon_steps", 80)))
     cur = _state11_at(comps, t)
-    N = int(cur.shape[0])
-    out = np.zeros((N, H, 7), dtype=np.float32)
+    n = int(cur.shape[0])
+    out = np.zeros((n, H, 7), dtype=np.float32)
     dt = float(cfg.get("time", {}).get("dt", 0.1))
-    has_temporal = np.asarray(comps.get("x", np.zeros(0))).ndim == 2
-    T = int(comps["x"].shape[1]) if has_temporal else 0
+    temporal = np.asarray(comps.get("x", np.zeros(0))).ndim == 2
+    total_t = int(comps["x"].shape[1]) if temporal else 0
     for h in range(H):
-        if has_temporal and t + 1 + h < T:
+        if temporal and t + 1 + h < total_t:
             s11 = _state11_at(comps, t + 1 + h)
         else:
             s11 = cur.copy()
@@ -200,47 +262,39 @@ def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) ->
         out[:, h, 3:5] = s11[:, 3:5]
         out[:, h, 5] = s11[:, 7]
         out[:, h, 6] = s11[:, 8]
-    if 0 <= int(sdc_index) < N:
+    if 0 <= int(sdc_index) < n:
         out[int(sdc_index), :, :] = 0.0
     return out
 
 
-def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray, np.ndarray, int]:
-    """Extract model-format history and current ScenarioData-format states.
+def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) -> np.ndarray | None:
+    """Compatibility wrapper for explicit ``logged_oracle`` ablations only."""
+    source = str(cfg.get("planning", {}).get("online_other_future_source", "constant_velocity")).lower()
+    if source not in {"logged", "logged_oracle", "oracle"}:
+        return None
+    try:
+        _, t = _traj_arrays(state)
+        comps = _extract_traj_components(state)
+    except Exception:
+        return None
+    return _extract_logged_future_from_components(comps, t, sdc_index, cfg)
 
-    Training cache uses [x,y,z,length,width,height,heading,vx,vy,speed,valid].
-    The first online wrapper only supplied a single current frame, which made the
-    encoder distribution much narrower than training.  This helper pads the last
-    ``history_steps`` frames from Waymax, reusing the earliest available frame at
-    the beginning of an episode.
-    """
+
+def extract_online_state_bundle(
+    state: Any, cfg: dict
+) -> tuple[np.ndarray, np.ndarray, int, dict[str, np.ndarray], int]:
+    """Extract history/current state once for the causal online policy."""
     _, t = _traj_arrays(state)
     comps = _extract_traj_components(state)
-    cur11 = _state11_at(comps, t)
+    hist, cur11 = _history_from_components(comps, t, cfg)
     sdc = _extract_sdc_index(state)
-    hist_steps = int(cfg.get("model", cfg).get("history_steps", cfg.get("time", {}).get("history_steps", 11)))
-    max_agents = int(cfg.get("limits", {}).get("max_agents", cfg.get("model", cfg).get("max_agents", 128)))
-    d_state = int(cfg.get("model", cfg).get("d_state", 11))
-    n = min(max_agents, cur11.shape[0])
-    hist = np.zeros((max_agents, hist_steps, d_state), dtype=np.float32)
-    if comps["x"].ndim == 2:
-        indices = [int(np.clip(t - hist_steps + 1 + h, 0, comps["x"].shape[1] - 1)) for h in range(hist_steps)]
-    else:
-        indices = [t for _ in range(hist_steps)]
-    for h, tt in enumerate(indices):
-        s11 = _state11_at(comps, tt)[:n]
-        hist[:n, h, 0:3] = s11[:, 0:3]
-        hist[:n, h, 3:6] = s11[:, 7:10]
-        hist[:n, h, 6] = s11[:, 6]
-        hist[:n, h, 7:9] = s11[:, 3:5]
-        hist[:n, h, 9] = s11[:, 5]
-        hist[:n, h, 10] = s11[:, 10]
-    mask = np.zeros(max_agents, dtype=bool)
-    mask[:n] = cur11[:n, 10] > 0.5
-    if 0 <= sdc < max_agents:
-        mask[sdc] = True
-    return hist, cur11, sdc
+    return hist, cur11, sdc, comps, t
 
+
+def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray, np.ndarray, int]:
+    """Backward-compatible history extractor implemented through one vectorized pass."""
+    hist, cur11, sdc, _, _ = extract_online_state_bundle(state, cfg)
+    return hist, cur11, sdc
 
 def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
     """Return best-effort roadgraph point tokens from Waymax state.
@@ -1149,6 +1203,62 @@ def _candidate_rule_risk_np(
 
 
 
+def _consistent_one_step_targets_np(
+    current: np.ndarray,
+    desired: np.ndarray,
+    cfg: dict,
+    previous_longitudinal_accel: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized counterpart of ``_consistent_one_step_target`` for all K candidates.
+
+    Returns dynamically consistent emitted targets, clipped accelerations, and a
+    projection-risk score measuring how strongly each raw candidate had to be
+    corrected before it could be issued to Waymax.
+    """
+    desired = np.asarray(desired, dtype=np.float64)
+    k = int(desired.shape[0])
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1e-6)
+    cand_cfg = cfg.get("candidate", {})
+    wm_cfg = cfg.get("waymax", {})
+    cur_xy = np.asarray(current[:2], dtype=np.float64)
+    cur_yaw = float(current[6])
+    cur_vel = np.asarray(current[3:5], dtype=np.float64)
+    cur_speed = float(max(np.linalg.norm(cur_vel), float(current[5]) if current.shape[0] > 5 else 0.0, 0.0))
+    desired_vel = desired[:, 3:5] if desired.shape[1] >= 5 else np.zeros((k, 2), dtype=np.float64)
+    desired_speed = np.linalg.norm(desired_vel, axis=-1)
+    position_speed = np.linalg.norm(desired[:, :2] - cur_xy[None, :], axis=-1) / dt
+    desired_speed = np.where(desired_speed < 1e-3, position_speed, desired_speed)
+    raw_accel_unclipped = (desired_speed - cur_speed) / dt
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 1e-3)
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 1e-3)
+    max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1e-3)
+    raw_accel = np.clip(raw_accel_unclipped, -max_decel, max_accel)
+    accel = np.clip(
+        raw_accel,
+        float(previous_longitudinal_accel) - max_jerk * dt,
+        float(previous_longitudinal_accel) + max_jerk * dt,
+    )
+    next_speed = np.maximum(0.0, cur_speed + accel * dt)
+    desired_yaw_from_vel = np.arctan2(desired_vel[:, 1], desired_vel[:, 0])
+    desired_yaw = np.where(desired_speed > 0.25, desired_yaw_from_vel, desired[:, 2] if desired.shape[1] > 2 else cur_yaw)
+    max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1e-3)
+    max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
+    requested_dyaw = np.asarray(_wrap_angle(desired_yaw - cur_yaw), dtype=np.float64)
+    dyaw = np.clip(requested_dyaw, -max_dyaw, max_dyaw)
+    next_yaw = np.asarray(_wrap_angle(cur_yaw + dyaw), dtype=np.float64)
+    v0 = cur_speed * np.asarray([np.cos(cur_yaw), np.sin(cur_yaw)], dtype=np.float64)
+    v1 = next_speed[:, None] * np.stack([np.cos(next_yaw), np.sin(next_yaw)], axis=-1)
+    next_xy = cur_xy[None, :] + 0.5 * (v0[None, :] + v1) * dt
+    target = np.concatenate([next_xy, next_yaw[:, None], v1], axis=-1).astype(np.float32)
+
+    accel_clip = np.abs(raw_accel_unclipped - accel) / max(max_accel, max_decel)
+    yaw_clip = np.abs(requested_dyaw - dyaw) / max(max_dyaw, 1e-6)
+    desired_xy = desired[:, :2]
+    projection_error = np.linalg.norm(desired_xy - next_xy, axis=-1) / max(float(cfg.get("planning", {}).get("action_projection_error_scale_m", 1.5)), 1e-3)
+    projection_risk = np.clip(0.40 * accel_clip + 0.30 * yaw_clip + 0.30 * projection_error, 0.0, 1.0).astype(np.float32)
+    return target, accel.astype(np.float32), projection_risk
+
+
 def _one_step_action_risk_np(
     agent_state: np.ndarray,
     sdc_index: int,
@@ -1156,64 +1266,73 @@ def _one_step_action_risk_np(
     cand_valid: np.ndarray,
     cfg: dict,
     previous_longitudinal_accel: float = 0.0,
-) -> np.ndarray:
-    """Kinematic-action risk used by the online frontier.
+    *,
+    return_targets: bool = False,
+):
+    """Vectorized candidate/action consistency risk.
 
-    The previous version only inspected the first commanded waypoint.  Waymax
-    kinematic infeasibility can also be triggered by short-horizon acceleration,
-    yaw-rate, or jerk spikes after the first step.  This diagnostic therefore
-    scores the first few waypoints and uses the maximum violation as a
-    hard-to-game selection penalty while still returning a compact [K] risk.
+    The v6 implementation executed nested Python loops over K candidates and the
+    short horizon, then recomputed the selected candidate's one-step controller.
+    This version performs the same horizon acceleration/jerk/yaw checks with
+    NumPy broadcasting, adds the exact emitted-action projection risk, and can
+    return all precomputed action targets for reuse by the selected candidate.
     """
-    K = int(candidates.shape[0])
-    out = np.zeros(K, dtype=np.float32)
-    if not (0 <= int(sdc_index) < int(agent_state.shape[0])):
-        return out
+    k = int(candidates.shape[0])
+    out = np.ones(k, dtype=np.float32)
+    empty_targets = np.zeros((k, 5), dtype=np.float32)
+    empty_accel = np.zeros(k, dtype=np.float32)
+    if not (0 <= int(sdc_index) < int(agent_state.shape[0])) or candidates.ndim < 3:
+        return (out, empty_targets, empty_accel) if return_targets else out
     dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1e-3)
     cand_cfg = cfg.get("candidate", {})
     pcfg = cfg.get("planning", {})
-    cur = agent_state[int(sdc_index)]
+    cur = np.asarray(agent_state[int(sdc_index)], dtype=np.float64)
     cur_speed = float(max(np.linalg.norm(cur[3:5]), cur[5] if cur.shape[0] > 5 else 0.0, 0.0))
     cur_yaw = float(cur[6])
     max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 1e-3)
     max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 1e-3)
     max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1e-3)
     max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1e-3)
-    horizon = int(pcfg.get("online_action_risk_horizon_steps", 8))
-    horizon = max(1, min(horizon, int(candidates.shape[1]) if candidates.ndim >= 3 else 1))
-    for k in range(K):
-        if not bool(cand_valid[k]):
-            out[k] = 1.0
-            continue
-        prev_speed = cur_speed
-        prev_yaw = cur_yaw
-        prev_accel = float(previous_longitudinal_accel)
-        worst = 0.0
-        for t in range(horizon):
-            desired = candidates[k, t]
-            desired_speed = float(np.linalg.norm(desired[3:5]))
-            if desired_speed < 1e-3:
-                base_xy = cur[:2] if t == 0 else candidates[k, t - 1, :2]
-                desired_speed = float(np.linalg.norm(desired[:2] - base_xy) / dt)
-            raw_accel = (desired_speed - prev_speed) / dt
-            jerk_need = abs(raw_accel - prev_accel) / (max_jerk * dt)
-            accel_excess = max(0.0, raw_accel - max_accel) / max_accel + max(0.0, -raw_accel - max_decel) / max_decel
-            if desired_speed > 0.25:
-                desired_yaw = float(np.arctan2(desired[4], desired[3]))
-            else:
-                desired_yaw = float(desired[2])
-            yaw_need = abs(float(_wrap_angle(desired_yaw - prev_yaw))) / (max_yaw_rate * dt)
-            # Early violations are most damaging because only the first action is
-            # executed, but later spikes still indicate an inconsistent candidate.
-            decay = 1.0 / (1.0 + 0.25 * float(t))
-            step_risk = decay * (0.42 * max(0.0, jerk_need - 1.0) + 0.34 * max(0.0, yaw_need - 1.0) + 0.24 * accel_excess)
-            worst = max(worst, step_risk)
-            prev_speed = desired_speed
-            prev_yaw = desired_yaw
-            prev_accel = raw_accel
-        out[k] = np.float32(np.clip(worst, 0.0, 1.0))
+    horizon = max(1, min(int(pcfg.get("online_action_risk_horizon_steps", 8)), int(candidates.shape[1])))
+    traj = np.asarray(candidates[:, :horizon], dtype=np.float64)
+    vel = traj[..., 3:5]
+    speed = np.linalg.norm(vel, axis=-1)
+    prev_xy = np.concatenate([
+        np.broadcast_to(cur[:2], (k, 1, 2)), traj[:, :-1, :2]
+    ], axis=1)
+    pos_speed = np.linalg.norm(traj[..., :2] - prev_xy, axis=-1) / dt
+    speed = np.where(speed < 1e-3, pos_speed, speed)
+    prev_speed = np.concatenate([
+        np.full((k, 1), cur_speed, dtype=np.float64), speed[:, :-1]
+    ], axis=1)
+    raw_accel = (speed - prev_speed) / dt
+    prev_accel = np.concatenate([
+        np.full((k, 1), float(previous_longitudinal_accel), dtype=np.float64), raw_accel[:, :-1]
+    ], axis=1)
+    jerk_need = np.abs(raw_accel - prev_accel) / (max_jerk * dt)
+    accel_excess = np.maximum(0.0, raw_accel - max_accel) / max_accel + np.maximum(0.0, -raw_accel - max_decel) / max_decel
+    yaw_from_vel = np.arctan2(vel[..., 1], vel[..., 0])
+    desired_yaw = np.where(speed > 0.25, yaw_from_vel, traj[..., 2])
+    prev_yaw = np.concatenate([
+        np.full((k, 1), cur_yaw, dtype=np.float64), desired_yaw[:, :-1]
+    ], axis=1)
+    yaw_need = np.abs(np.asarray(_wrap_angle(desired_yaw - prev_yaw), dtype=np.float64)) / (max_yaw_rate * dt)
+    decay = 1.0 / (1.0 + 0.25 * np.arange(horizon, dtype=np.float64))[None, :]
+    step_risk = decay * (
+        0.42 * np.maximum(0.0, jerk_need - 1.0)
+        + 0.34 * np.maximum(0.0, yaw_need - 1.0)
+        + 0.24 * accel_excess
+    )
+    horizon_risk = np.max(step_risk, axis=1)
+    targets, clipped_accel, projection_risk = _consistent_one_step_targets_np(
+        cur, traj[:, 0], cfg, previous_longitudinal_accel
+    )
+    projection_mix = float(pcfg.get("candidate_action_projection_risk_mix", 0.65))
+    out = np.clip((1.0 - projection_mix) * horizon_risk + projection_mix * projection_risk, 0.0, 1.0).astype(np.float32)
+    out[~np.asarray(cand_valid, dtype=bool)] = 1.0
+    if return_targets:
+        return out, targets, clipped_accel
     return out
-
 
 def build_online_batch(
     agent_state: np.ndarray,
@@ -1481,7 +1600,7 @@ class COWPWaymaxPolicy:
     cfg: dict
     device: str = "auto"
     witness_threshold: float = 0.5
-    action_mode: str = "delta_xy_yaw"
+    action_mode: str = "absolute_xy_yaw"
     ncf_gate_mode: str = "hard"
     priority_hard_threshold: float = 0.55
     secondary_witness_threshold: float = 0.85
@@ -1519,7 +1638,16 @@ class COWPWaymaxPolicy:
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
 
-    def _trajectory_to_action(self, state: Any, agent_state: np.ndarray, sdc_index: int, traj: np.ndarray) -> Any:
+    def _trajectory_to_action(
+        self,
+        state: Any,
+        agent_state: np.ndarray,
+        sdc_index: int,
+        traj: np.ndarray,
+        *,
+        precomputed_target: np.ndarray | None = None,
+        precomputed_accel: float | None = None,
+    ) -> Any:
         try:
             from waymax import datatypes  # type: ignore
         except Exception as exc:  # pragma: no cover
@@ -1532,9 +1660,13 @@ class COWPWaymaxPolicy:
         valid = np.zeros((N, 1), dtype=bool)
         valid[sdc_index, 0] = True
         desired = traj[0]
-        target, accel = _consistent_one_step_target(
-            agent_state[sdc_index], desired, self.cfg, self._previous_longitudinal_accel
-        )
+        if precomputed_target is None or precomputed_accel is None:
+            target, accel = _consistent_one_step_target(
+                agent_state[sdc_index], desired, self.cfg, self._previous_longitudinal_accel
+            )
+        else:
+            target = np.asarray(precomputed_target, dtype=np.float32)
+            accel = float(precomputed_accel)
         self._previous_longitudinal_accel = float(accel)
         if self.action_mode == "absolute_xy_yaw":
             data[sdc_index, :5] = target
@@ -1556,7 +1688,7 @@ class COWPWaymaxPolicy:
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
-        history, agent_state, sdc_index = extract_agent_history_model_state(state, self.cfg)
+        history, agent_state, sdc_index, traj_components, current_t = extract_online_state_bundle(state, self.cfg)
         if scenario_index is not None and self._cached_roadgraph_scenario_index == int(scenario_index) and self._cached_roadgraph is not None:
             roadgraph = self._cached_roadgraph
         else:
@@ -1564,7 +1696,17 @@ class COWPWaymaxPolicy:
             if scenario_index is not None:
                 self._cached_roadgraph_scenario_index = int(scenario_index)
                 self._cached_roadgraph = roadgraph
-        other_future_trajs = _extract_logged_future_agent_trajs(state, sdc_index, self.cfg)
+        future_source = str(self.cfg.get("planning", {}).get("online_other_future_source", "constant_velocity")).lower()
+        if future_source in {"logged", "logged_oracle", "oracle"}:
+            other_future_trajs = _extract_logged_future_from_components(
+                traj_components, current_t, sdc_index, self.cfg
+            )
+        else:
+            # Causal main evaluation: no future state from sim/log trajectory is read.
+            # Candidate checks use the existing constant-velocity fallback and the
+            # learned response/certificate branch.  This also removes a second full
+            # device-to-host trajectory copy at every simulator step.
+            other_future_trajs = None
         batch_np = build_online_batch(
             agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
             other_future_trajs=other_future_trajs, compute_rule_risk=needs_cowp_risk,
@@ -1753,13 +1895,14 @@ class COWPWaymaxPolicy:
                 rule_risk = self.torch.nan_to_num(rule_risk_t[0].float(), nan=1.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
             else:
                 rule_risk = self.torch.zeros_like(scores)
-            action_risk_np = _one_step_action_risk_np(
+            action_risk_np, action_targets_np, action_accels_np = _one_step_action_risk_np(
                 agent_state,
                 sdc_index,
                 batch_np["cowp/candidates/trajectory"][0],
                 batch_np["cowp/candidates/valid"][0].astype(bool),
                 self.cfg,
                 self._previous_longitudinal_accel,
+                return_targets=True,
             )
             action_risk = self.torch.as_tensor(action_risk_np, device=self.dev, dtype=scores.dtype).clamp(0.0, 1.0)
 
@@ -1928,45 +2071,25 @@ class COWPWaymaxPolicy:
                     noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
                     shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
                     frontier_risk = noncoercive_risk + shield_tie_mix * shield_risk
-                    keep_frac = float(self.cfg.get("planning", {}).get("candidate_frontier_keep_fraction", 0.40))
-                    keep_min = int(self.cfg.get("planning", {}).get("candidate_frontier_min_keep", 1))
-                    keep_max = int(self.cfg.get("planning", {}).get("candidate_frontier_max_keep", 4))
-                    guarded_base = _guard_frontier_base_1d(
-                        frontier_base, score_decision_risk, candidate_progress, action_decision_risk,
-                        keep_min=keep_min, pcfg=self.cfg.get("planning", {}),
+                    pcfg_selector = self.cfg.get("planning", {})
+                    result = select_set_preservation_frontier_1d(
+                        scores=scores,
+                        base_mask=frontier_base,
+                        noncoercive_risk=noncoercive_risk,
+                        score_risk=score_decision_risk,
+                        progress=candidate_progress,
+                        progress_shortfall=progress_shortfall,
+                        action_risk=action_decision_risk,
+                        rule_risk=rule_decision_risk,
+                        outcome_risk=outcome_decision_risk,
+                        ncf_probability=cand_ncf_prob,
+                        false_safe_probability=cand_false_safe_prob,
+                        cfg=pcfg_selector,
                     )
-                    idx = self.torch.where(guarded_base)[0]
-                    if idx.numel() > 0:
-                        k = max(keep_min, int(self.torch.ceil(self.torch.tensor(float(idx.numel()) * keep_frac, device=self.dev)).item()))
-                        k = min(max(k, 1), int(idx.numel()), max(keep_max, 1))
-                        # Exact-cardinality frontier.  A threshold cutoff would
-                        # keep every tied candidate when certificate/outcome risk is
-                        # flat, which is exactly how COWP collapsed to
-                        # conventional_safety in v2.
-                        tie = (
-                            0.70 * score_decision_risk
-                            + 0.20 * progress_shortfall
-                            + 0.25 * outcome_decision_risk
-                            + 0.10 * action_decision_risk
-                        )
-                        frontier = _topk_frontier_mask_1d(
-                            guarded_base, frontier_risk, tie,
-                            keep_frac=keep_frac, keep_min=keep_min, keep_max=keep_max,
-                            eps=float(self.cfg.get("planning", {}).get("candidate_frontier_tie_eps", 1.0e-3)),
-                        )
-                        min_ncf = float(self.cfg.get("planning", {}).get("candidate_min_ncf_prob", 0.05))
-                        max_fs = float(self.cfg.get("planning", {}).get("candidate_max_false_safe_prob", 0.95))
-                        screened = frontier & (cand_ncf_prob >= min_ncf) & (cand_false_safe_prob <= max_fs)
-                        if bool(screened.any().detach().cpu().item()):
-                            frontier = screened
-                        if bool(frontier.any().detach().cpu().item()):
-                            accepted = frontier
-                            adjusted_scores = _risk_budgeted_selection_scores_1d(
-                                scores, frontier_base, frontier, noncoercive_risk,
-                                score_decision_risk, progress_shortfall, action_decision_risk,
-                                rule_decision_risk, outcome_decision_risk,
-                                pcfg=self.cfg.get("planning", {}),
-                            )
+                    frontier = result.frontier
+                    if bool(frontier.any().detach().cpu().item()):
+                        accepted = frontier
+                        adjusted_scores = result.adjusted_scores
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
@@ -2106,7 +2229,14 @@ class COWPWaymaxPolicy:
         self._last_diagnostics = diag
         self._diagnostics_log.append(diag)
         traj = batch_np["cowp/candidates/trajectory"][0, selected]
-        return self._trajectory_to_action(state, agent_state, sdc_index, traj)
+        return self._trajectory_to_action(
+            state,
+            agent_state,
+            sdc_index,
+            traj,
+            precomputed_target=action_targets_np[selected],
+            precomputed_accel=float(action_accels_np[selected]),
+        )
 
     def consume_diagnostics(self) -> dict[str, Any] | None:
         row = self._last_diagnostics
@@ -2123,7 +2253,7 @@ def make_cowp_policy(
     *,
     device: str = "auto",
     witness_threshold: float = 0.5,
-    action_mode: str = "delta_xy_yaw",
+    action_mode: str = "absolute_xy_yaw",
     ncf_gate_mode: str = "hard",
     priority_hard_threshold: float = 0.55,
     secondary_witness_threshold: float = 0.85,

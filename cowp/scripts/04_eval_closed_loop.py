@@ -90,7 +90,7 @@ def main() -> None:
     ap.add_argument("--outcome-risk-threshold", type=float, default=1.10, help="Maximum learned outcome risk allowed in the hard feasibility layer when outcome-risk-penalty > 0.")
     ap.add_argument("--mode", choices=["offline", "learned_offline", "waymax"], default="offline")
     ap.add_argument("--policy-fn", default=None, help="For --mode waymax: optional Python callable spec 'module:function' returning Waymax actions. If omitted with --checkpoint, a COWP checkpoint policy is used.")
-    ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="delta_xy_yaw")
+    ap.add_argument("--waymax-action-mode", choices=["delta_xy_yaw", "absolute_xy_yaw"], default="absolute_xy_yaw")
     ap.add_argument("--waymax-device", choices=["auto", "cpu", "gpu"], default="auto", help="Runtime device preference for Waymax/JAX. Use cpu to keep Waymax off CUDA and leave the GPU to PyTorch.")
     ap.add_argument("--jax-visible-devices", default=None, help="Comma-separated JAX device ids, relative to CUDA_VISIBLE_DEVICES. Example: 0 keeps Waymax/JAX on the first visible GPU.")
     ap.add_argument("--jax-preallocate", choices=["true", "false"], default="false", help="Set XLA_PYTHON_CLIENT_PREALLOCATE before importing JAX. Default false avoids JAX reserving most GPU memory.")

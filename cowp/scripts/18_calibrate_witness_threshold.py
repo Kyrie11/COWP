@@ -11,9 +11,12 @@ def main() -> None:
     ap.add_argument("--output", required=True)
     ap.add_argument("--min-ncf-recall", type=float, default=0.90)
     ap.add_argument("--max-fallback", type=float, default=0.25)
+    ap.add_argument("--method", default="cowp", help="Method key when the input was produced by --methods shared evaluation.")
     args = ap.parse_args()
     payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
     rows = payload.get("witness_threshold_sweep", [])
+    if isinstance(rows, dict):
+        rows = rows.get(args.method, [])
     if not rows:
         raise ValueError("No witness_threshold_sweep was found")
 
