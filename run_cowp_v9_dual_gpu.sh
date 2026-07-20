@@ -19,14 +19,18 @@ RUN_PLANNER="${RUN_PLANNER:-1}"
 RUN_OFFLINE="${RUN_OFFLINE:-1}"
 RUN_PROBE="${RUN_PROBE:-1}"
 RUN_PARETO_ABLATION="${RUN_PARETO_ABLATION:-1}"
+RUN_SEMANTIC_PROBE="${RUN_SEMANTIC_PROBE:-1}"
 RUN_FULL="${RUN_FULL:-0}"
 FORCE_AUGMENT="${FORCE_AUGMENT:-0}"
 FORCE_TRAIN="${FORCE_TRAIN:-0}"
 FORCE_EVAL="${FORCE_EVAL:-0}"
 DETACH="${DETACH:-0}"
 
-AUG_TRAIN_WORKERS="${AUG_TRAIN_WORKERS:-20}"
-AUG_VAL_WORKERS="${AUG_VAL_WORKERS:-10}"
+AUG_TRAIN_WORKERS="${AUG_TRAIN_WORKERS:-12}"
+AUG_VAL_WORKERS="${AUG_VAL_WORKERS:-6}"
+AUG_CHUNKSIZE="${AUG_CHUNKSIZE:-2}"
+AUG_STORAGE_MODE="${AUG_STORAGE_MODE:-overlay}"
+AUG_SIDECAR_SUBDIR="${AUG_SIDECAR_SUBDIR:-.transport_v9}"
 TRANSPORT_EPOCHS="${TRANSPORT_EPOCHS:-10}"
 PLANNER_EPOCHS="${PLANNER_EPOCHS:-12}"
 BATCH_PER_GPU="${BATCH_PER_GPU:-5}"
@@ -52,6 +56,7 @@ WAYMAX_ACTION_MODE="${WAYMAX_ACTION_MODE:-absolute_xy_yaw}"
 INIT_CKPT="${INIT_CKPT:-outputs/cowp_v8_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt}"
 TRANSPORT_CKPT="${TRANSPORT_CKPT:-}"
 CKPT="${CKPT:-}"
+REQUIRE_INIT_CKPT="${REQUIRE_INIT_CKPT:-1}"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
@@ -96,7 +101,14 @@ cache_ready() {
   [[ -s "$d/transport_augmentation_summary.json" ]] || return 1
   "$PYTHON_BIN" - "$d/transport_augmentation_summary.json" <<'PY' >/dev/null
 import json,sys
-x=json.load(open(sys.argv[1])); assert int(x.get("files_total",0)) > 0
+x=json.load(open(sys.argv[1], encoding="utf-8"))
+total=int(x.get("files_total",0))
+if "files_completed" in x:
+    done=int(x.get("files_completed",0))
+else:
+    done=int(x.get("files_written",0))+int(x.get("files_skipped",0))+int(x.get("files_skipped_sidecar",0))+int(x.get("files_skipped_materialized",0))
+assert total > 0 and done == total and int(x.get("error_count",0)) == 0
+assert bool(x.get("complete", True))
 PY
 }
 
@@ -107,20 +119,26 @@ if [[ "$RUN_AUGMENT" == "1" ]]; then
   if ! cache_ready "$TRAIN_CACHE" || [[ "$FORCE_AUGMENT" == "1" ]]; then
     mkdir -p "$TRAIN_CACHE"
     (
+      env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
       "$PYTHON_BIN" -u -m cowp.scripts.26_augment_transport_labels \
         --data-config configs/data.yaml --label-config "$LABEL_CFG" \
         --input-dir "$RAW_TRAIN_CACHE" --output-dir "$TRAIN_CACHE" \
-        --num-workers "$AUG_TRAIN_WORKERS" "${force_aug_args[@]}"
+        --num-workers "$AUG_TRAIN_WORKERS" --chunksize "$AUG_CHUNKSIZE" \
+        --storage-mode "$AUG_STORAGE_MODE" --sidecar-subdir "$AUG_SIDECAR_SUBDIR" \
+        "${force_aug_args[@]}"
     ) > >(tee "$OUT_ROOT/logs/augment_train.log") 2> >(tee -a "$OUT_ROOT/logs/augment_train.log" >&2) &
     pids+=("$!")
   fi
   if ! cache_ready "$VAL_CACHE" || [[ "$FORCE_AUGMENT" == "1" ]]; then
     mkdir -p "$VAL_CACHE"
     (
+      env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
       "$PYTHON_BIN" -u -m cowp.scripts.26_augment_transport_labels \
         --data-config configs/data.yaml --label-config "$LABEL_CFG" \
         --input-dir "$RAW_VAL_CACHE" --output-dir "$VAL_CACHE" \
-        --num-workers "$AUG_VAL_WORKERS" "${force_aug_args[@]}"
+        --num-workers "$AUG_VAL_WORKERS" --chunksize "$AUG_CHUNKSIZE" \
+        --storage-mode "$AUG_STORAGE_MODE" --sidecar-subdir "$AUG_SIDECAR_SUBDIR" \
+        "${force_aug_args[@]}"
     ) > >(tee "$OUT_ROOT/logs/augment_val.log") 2> >(tee -a "$OUT_ROOT/logs/augment_val.log" >&2) &
     pids+=("$!")
   fi
@@ -149,6 +167,11 @@ best_planner() {
 }
 
 # Stage 1: learn explicit mode conflict/retention and same-root response recovery.
+if [[ "$RUN_TRANSPORT" == "1" && "$REQUIRE_INIT_CKPT" == "1" && ! -s "$INIT_CKPT" ]]; then
+  echo "Required v8 initialization checkpoint is missing: $INIT_CKPT" >&2
+  echo "Set INIT_CKPT to the actual v8 planner checkpoint, or REQUIRE_INIT_CKPT=0 to train from scratch." >&2
+  exit 2
+fi
 if [[ "$RUN_TRANSPORT" == "1" ]]; then
   if best_transport >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
     echo "[transport] keep existing $(best_transport)"
@@ -239,7 +262,7 @@ fi
 echo "[witness threshold] $ONLINE_WITNESS_THRESHOLD"
 
 run_online_one() {
-  local method="$1" gpu="$2" scenarios="$3" out="$4" log="$5" label_cfg="$6" shard_count="${7:-1}" shard_index="${8:-0}"
+  local method="$1" gpu="$2" scenarios="$3" out="$4" log="$5" label_cfg="$6" shard_count="${7:-1}" shard_index="${8:-0}" outcome_penalty="${9:-$ONLINE_OUTCOME_RISK_PENALTY}"
   local cfg_tag cache
   cfg_tag="$(basename "$label_cfg" .yaml)"
   cache="$OUT_ROOT/jax_cache/${method}_${cfg_tag}_g${gpu}_s${shard_index}"
@@ -255,7 +278,7 @@ run_online_one() {
       --jax-visible-devices 0 --jax-preallocate false --waymax-standard-metrics \
       --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics \
       --witness-threshold "$ONLINE_WITNESS_THRESHOLD" --ncf-gate-mode "$NCF_GATE_MODE" \
-      --outcome-risk-penalty "$ONLINE_OUTCOME_RISK_PENALTY" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
+      --outcome-risk-penalty "$outcome_penalty" --outcome-risk-threshold "$OUTCOME_RISK_THRESHOLD" \
       --output "$out" --no-progress
   ) > >(tee "$log") 2> >(tee -a "$log" >&2)
 }
@@ -272,11 +295,32 @@ if [[ "$RUN_PROBE" == "1" ]]; then
     --reference "$probe_conv" --candidate "$probe_cowp" \
     --output "$OUT_ROOT/eval/probe/delta_conventional_vs_root_transport.json"
 
+  # A second two-GPU wave isolates the semantic certificate while testing the
+  # Pareto selector ablation.  These runs use the same checkpoint and can execute
+  # independently, so keeping them parallel avoids leaving either GPU idle.
+  second_wave_pids=()
+  if [[ "$RUN_SEMANTIC_PROBE" == "1" ]]; then
+    probe_semantic="$OUT_ROOT/eval/probe/cowp_semantic_only_${PROBE_SCENARIOS}.json"
+    if ! json_valid "$probe_semantic"; then
+      run_online_one cowp "$GPU0" "$PROBE_SCENARIOS" "$probe_semantic" "$OUT_ROOT/logs/probe_cowp_semantic_only.log" "$LABEL_CFG" 1 0 0.0 &
+      second_wave_pids+=("$!")
+    fi
+  fi
   if [[ "$RUN_PARETO_ABLATION" == "1" ]]; then
     probe_pareto="$OUT_ROOT/eval/probe/cowp_pareto_${PROBE_SCENARIOS}.json"
     if ! json_valid "$probe_pareto"; then
-      run_online_one cowp "$GPU1" "$PROBE_SCENARIOS" "$probe_pareto" "$OUT_ROOT/logs/probe_cowp_pareto.log" "$PARETO_CFG"
+      run_online_one cowp "$GPU1" "$PROBE_SCENARIOS" "$probe_pareto" "$OUT_ROOT/logs/probe_cowp_pareto.log" "$PARETO_CFG" &
+      second_wave_pids+=("$!")
     fi
+  fi
+  for pid in "${second_wave_pids[@]:-}"; do [[ -n "$pid" ]] && wait "$pid"; done
+
+  if [[ "$RUN_SEMANTIC_PROBE" == "1" ]]; then
+    logrun summarize_semantic_probe "$PYTHON_BIN" -u -m cowp.scripts.24_summarize_planner_delta \
+      --reference "$probe_conv" --candidate "$probe_semantic" \
+      --output "$OUT_ROOT/eval/probe/delta_conventional_vs_semantic_only.json"
+  fi
+  if [[ "$RUN_PARETO_ABLATION" == "1" ]]; then
     logrun summarize_frontier_ablation "$PYTHON_BIN" -u -m cowp.scripts.24_summarize_planner_delta \
       --reference "$probe_pareto" --candidate "$probe_cowp" \
       --output "$OUT_ROOT/eval/probe/delta_pareto_vs_root_transport.json"

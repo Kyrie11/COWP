@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -405,22 +406,60 @@ def _key_allowed(key: str, wanted: set[str] | None) -> bool:
 
 
 class COWPNpzDataset:
+    """NPZ dataset with optional transparent transport-label sidecars.
+
+    A v9 overlay cache contains symlinks to the original large NPZ files and a
+    hidden ``.transport_v9`` directory with small files that only store the new
+    ``cowp/transport/*`` tensors.  Loading both sources here keeps every existing
+    training/evaluation CLI unchanged while avoiding a full duplicate cache.
+    """
+
     def __init__(self, cache_dir: str | Path, pattern: str = "*.npz"):
         self.cache_dir = Path(cache_dir)
         self.paths = sorted(self.cache_dir.glob(pattern))
         if not self.paths:
             raise FileNotFoundError(f"No cache npz files found in {self.cache_dir} matching {pattern}")
+        sidecar_name = ".transport_v9"
+        summary = self.cache_dir / "transport_augmentation_summary.json"
+        if summary.is_file():
+            try:
+                meta = json.loads(summary.read_text(encoding="utf-8"))
+                if str(meta.get("storage_mode", "")) == "overlay" and meta.get("sidecar_subdir"):
+                    sidecar_name = str(meta["sidecar_subdir"])
+            except Exception:
+                pass
+        self.transport_sidecar_dir = self.cache_dir / sidecar_name
 
     def __len__(self) -> int:
         return len(self.paths)
 
-    def load(self, idx: int, wanted: set[str] | None = None) -> dict[str, np.ndarray]:
-        with np.load(self.paths[idx], allow_pickle=True) as data:
-            out: dict[str, np.ndarray] = {}
+    @staticmethod
+    def _load_into(path: Path, out: dict[str, np.ndarray], wanted: set[str] | None) -> None:
+        with np.load(path, allow_pickle=True) as data:
             for raw_key in data.files:
                 key = _restore_key(raw_key)
                 if _key_allowed(key, wanted):
                     out[key] = data[raw_key]
+
+    @staticmethod
+    def _wants_transport(wanted: set[str] | None) -> bool:
+        if wanted is None:
+            return True
+        return any(
+            item == "cowp/transport"
+            or item == "cowp/transport/"
+            or item.startswith("cowp/transport/")
+            for item in wanted
+        )
+
+    def load(self, idx: int, wanted: set[str] | None = None) -> dict[str, np.ndarray]:
+        path = self.paths[idx]
+        out: dict[str, np.ndarray] = {}
+        self._load_into(path, out, wanted)
+        if self._wants_transport(wanted):
+            sidecar = self.transport_sidecar_dir / path.name
+            if sidecar.is_file():
+                self._load_into(sidecar, out, wanted)
         _canonicalize_state_aliases(out)
         align_critical_agents_to_womd_input(out)
         return mask_out_of_range_critical_agents(out)
