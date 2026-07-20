@@ -50,6 +50,8 @@ def certify_witnesses(
     limits = cfg.get("limits", {})
     K = int(limits.get("max_candidates", 64))
     A = int(limits.get("max_critical_agents", 8))
+    M = int(limits.get("max_natural_alternatives", natural["valid"].shape[-1]))
+    R = int(limits.get("max_safe_responses", response["valid"].shape[-1]))
     exists = np.zeros((K, A), dtype=bool)
     token = np.zeros((K, A), dtype=np.int32)
     burden_total = np.zeros((K, A), dtype=np.float32)
@@ -67,6 +69,12 @@ def certify_witnesses(
     conventional_safe = np.zeros(K, dtype=bool)
     false_safe = np.zeros(K, dtype=bool)
     ncf = np.zeros(K, dtype=bool)
+    mode_valid = np.zeros((K, A, M), dtype=bool)
+    mode_conflict = np.zeros((K, A, M), dtype=bool)
+    mode_retained_low_safe = np.zeros((K, A, M), dtype=bool)
+    response_root_index = np.zeros((K, A, R), dtype=np.int32)
+    response_is_min_burden = np.zeros((K, A, R), dtype=bool)
+    root_recovery_mass = np.zeros((K, A), dtype=np.float32)
 
     cur = scene.current_time_index
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
@@ -104,6 +112,10 @@ def certify_witnesses(
                 low_neu = float(natural["burden_neutral"][a, m]) <= beta
                 unsafe = unsafe_between(ego, nat, cfg, agent_type=object_type)
                 b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
+                if m < M and low_neu:
+                    mode_valid[k, a, m] = True
+                    mode_conflict[k, a, m] = bool(unsafe.unsafe)
+                    mode_retained_low_safe[k, a, m] = bool((not unsafe.unsafe) and b_under <= beta)
                 src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, m])
                 src = src if 0 <= src < 4 else int(NaturalSource.PAD)
                 if low_neu:
@@ -126,6 +138,34 @@ def certify_witnesses(
             else:
                 opr[k, a] = 1.0
             option_loss = max(0.0, 1.0 - float(opr[k, a])) if use_option else 0.0
+
+            # Assign every ego-conditioned response to the nearest natural root.
+            # This produces explicit same-root transport supervision without
+            # changing the response generator or storing extra trajectories.
+            valid_roots = np.where(natural["valid"][a])[0]
+            valid_resp = np.where(response["valid"][k, a])[0]
+            root_low_safe = np.zeros(M, dtype=bool)
+            if len(valid_roots):
+                nat_xy = natural["traj"][a, valid_roots, :, :2]
+                for ridx in valid_resp:
+                    rxy = response["traj"][k, a, ridx, :, :2]
+                    d = np.mean(np.linalg.norm(nat_xy - rxy[None, :, :], axis=-1), axis=-1)
+                    root = int(valid_roots[int(np.argmin(d))])
+                    response_root_index[k, a, ridx] = root
+                    low_flag = response.get("is_low_burden")
+                    is_low = bool(low_flag[k, a, ridx]) if low_flag is not None else bool(response["burden_total"][k, a, ridx] <= beta)
+                    if response["is_safe"][k, a, ridx] and is_low:
+                        root_low_safe[root] = True
+                for root in valid_roots:
+                    rset = [int(r) for r in valid_resp if int(response_root_index[k, a, r]) == int(root) and response["is_safe"][k, a, r]]
+                    if rset:
+                        best = min(rset, key=lambda r: float(response["burden_total"][k, a, r]))
+                        response_is_min_burden[k, a, best] = True
+            conflict_weight = natural["weight"][a, :M] * mode_valid[k, a] * mode_conflict[k, a]
+            denom = float(np.sum(conflict_weight))
+            if denom > 1e-8:
+                root_recovery_mass[k, a] = float(np.sum(conflict_weight * root_low_safe) / denom)
+
             resp_mask = response["valid"][k, a] & response["is_safe"][k, a]
             if np.any(resp_mask):
                 bvals = response["burden_total"][k, a]
@@ -188,4 +228,10 @@ def certify_witnesses(
         "candidate_conventional_safe": conventional_safe,
         "candidate_false_safe": false_safe,
         "candidate_noncoercive_feasible": ncf,
+        "transport_mode_valid": mode_valid,
+        "transport_mode_conflict": mode_conflict,
+        "transport_mode_retained_low_safe": mode_retained_low_safe,
+        "transport_response_root_index": response_root_index,
+        "transport_response_is_min_burden": response_is_min_burden,
+        "transport_root_recovery_mass": root_recovery_mass,
     }

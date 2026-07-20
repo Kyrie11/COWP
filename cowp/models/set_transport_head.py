@@ -110,16 +110,38 @@ class SetTransportCertificateHead(nn.Module):
         response_low_safe = response_safe * response_low * response_valid
         response_low_safe_mass = (response_weight * response_low_safe).sum(dim=-1).clamp(0.0, 1.0)
         response_exist_low_safe = 1.0 - torch.prod((1.0 - response_low_safe).clamp(1.0e-5, 1.0), dim=-1)
+
+        # Root-coupled recovery: a low-burden response only preserves an option
+        # when it is assigned to the same natural root.  This is the compact
+        # implementation of same-root option-set transport and does not require
+        # decoding the large response trajectory tensor online.
+        root_logits = response.get("root_logits")
+        if root_logits is not None and root_logits.shape[-1] == M:
+            root_prob = torch.softmax(root_logits.float(), dim=-1)
+            root_low_safe = (root_prob * response_low_safe[..., None]).clamp(0.0, 1.0)
+            root_response_exist = 1.0 - torch.prod((1.0 - root_low_safe).clamp(1.0e-5, 1.0), dim=-2)
+        else:
+            root_response_exist = low_safe_option_prob
+        conflicted_mass = natural_weight * conflict_prob
+        conflict_denom = conflicted_mass.sum(dim=-1)
+        root_recovery_mass = (conflicted_mass * root_response_exist).sum(dim=-1) / conflict_denom.clamp_min(1.0e-6)
+        # With no displaced natural mass there is nothing to recover.  Treat the
+        # recovery certificate as vacuously satisfied rather than generating a
+        # response-absence witness.
+        root_recovery_mass = torch.where(conflict_denom > 1.0e-6, root_recovery_mass, torch.ones_like(root_recovery_mass)).clamp(0.0, 1.0)
         min_safe_burden = self._soft_min_burden(
             response["burden_total"].float(), response_safe, response_valid, response_weight, burden_temperature
         )
 
         beta_pair = beta.float()[:, None, :].expand(B, K, A)
         gt = max(float(gate_temperature), 1.0e-3)
-        conflict_gate = torch.sigmoid((natural_conflict_mass - float(conflict_mass_floor)) / gt)
+        floor = max(float(conflict_mass_floor), 1.0e-4)
+        conflict_support = (natural_conflict_mass / floor).clamp(0.0, 1.0)
+        conflict_gate = conflict_support * torch.sigmoid((natural_conflict_mass - floor) / gt)
         burden_gate = torch.sigmoid((min_safe_burden - (beta_pair + float(gamma))) / gt)
         option_gate = torch.sigmoid((float(alpha_opr) - opr) / gt)
-        response_absence_gate = 1.0 - response_exist_low_safe
+        # Only same-root recovery can discharge a conflict-induced option loss.
+        response_absence_gate = 1.0 - root_recovery_mass
         # Monotone union of failure causes, activated only when the ego candidate
         # intersects meaningful natural option mass.
         failure_union = 1.0 - (
@@ -139,11 +161,11 @@ class SetTransportCertificateHead(nn.Module):
         eps = 1.0e-5
         witness_logit = torch.logit(witness_prob.clamp(eps, 1.0 - eps))
 
-        entropy = -(natural_weight * natural_weight.clamp_min(1.0e-8).log()).sum(dim=-1)
-        entropy = entropy / max(float(torch.log(torch.tensor(float(max(M, 2)))).item()), 1.0e-6)
-        uncertainty = (
-            (natural_weight * mode_uncertainty).sum(dim=-1) + entropy
-        ).mul(0.5).clamp(0.0, 1.0)
+        # Natural-set entropy is intentional behavioral diversity, not epistemic
+        # uncertainty.  v8 mixed the two, so the richer option sets advocated by
+        # the paper looked less certifiable.  Use only learned mode-level error
+        # uncertainty, explicitly calibrated by set_transport_loss.
+        uncertainty = (natural_weight * mode_uncertainty).sum(dim=-1).clamp(0.0, 1.0)
 
         return {
             "exist_logits": witness_logit,
@@ -155,11 +177,14 @@ class SetTransportCertificateHead(nn.Module):
             "priority_conflict_mass": priority_conflict_mass,
             "response_low_safe_mass": response_low_safe_mass,
             "response_exist_low_safe": response_exist_low_safe,
+            "root_response_exist": root_response_exist,
+            "root_recovery_mass": root_recovery_mass,
             "natural_mass_by_source": natural_mass_by_source,
             "conflict_mass_by_source": conflict_mass_by_source,
             "low_safe_mass_by_source": low_safe_mass_by_source,
             "source_opr": source_opr,
             "mode_conflict_prob": conflict_prob,
             "mode_retain_prob": retain_prob,
+            "mode_uncertainty": mode_uncertainty,
             "uncertainty": uncertainty,
         }

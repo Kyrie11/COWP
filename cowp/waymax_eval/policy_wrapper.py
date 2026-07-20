@@ -2028,10 +2028,15 @@ class COWPWaymaxPolicy:
                 else:
                     priority = heuristic_priority
                 primary_claim = priority >= float(self.priority_hard_threshold)
-                primary_bad = ((witness_cert >= float(self.witness_threshold)) & primary_claim).any(dim=-1)
-                option_bad = ((opr < alpha) & primary_claim).any(dim=-1)
-                severe_bad = ((witness_cert >= float(self.secondary_witness_threshold)) & (opr <= float(self.secondary_opr_alpha)) & primary_claim).any(dim=-1)
-                burden_penalty = (witness * priority).amax(dim=-1)
+                hard_max_unc = float(pcfg_runtime.get("set_transport_hard_max_uncertainty", 0.40))
+                opr_ucb_scale = float(pcfg_runtime.get("set_transport_opr_ucb_scale", 0.50))
+                confident_pair = uncertainty <= hard_max_unc
+                opr_upper = (opr + opr_ucb_scale * uncertainty).clamp(0.0, 1.0)
+                primary_bad = ((witness_cert >= float(self.witness_threshold)) & primary_claim & confident_pair).any(dim=-1)
+                option_bad = ((opr_upper < alpha) & primary_claim & confident_pair).any(dim=-1)
+                severe_bad = ((witness_cert >= float(self.secondary_witness_threshold)) & (opr_upper <= float(self.secondary_opr_alpha)) & primary_claim & confident_pair).any(dim=-1)
+                uncertain_mix = float(pcfg_runtime.get("set_transport_uncertain_penalty", 0.25))
+                burden_penalty = ((witness + uncertain_mix * uncertainty) * priority).amax(dim=-1)
                 option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
                 cert_penalty = float(self.cfg.get("planning", {}).get("candidate_certificate_penalty", 1.0))
                 pressure_penalty = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))

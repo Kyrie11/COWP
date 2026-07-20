@@ -5,10 +5,11 @@ from torch import nn
 
 
 class ResponseDecoder(nn.Module):
-    def __init__(self, d_model: int = 128, responses: int = 32, future_steps: int = 80):
+    def __init__(self, d_model: int = 128, responses: int = 32, future_steps: int = 80, natural_modes: int = 24):
         super().__init__()
         self.responses = responses
         self.future_steps = future_steps
+        self.natural_modes = int(natural_modes)
         self.pair = nn.Sequential(nn.Linear(d_model * 3, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.traj_head = nn.Linear(d_model, responses * future_steps * 7)
         self.safe_head = nn.Linear(d_model, responses)
@@ -16,6 +17,11 @@ class ResponseDecoder(nn.Module):
         self.valid_head = nn.Linear(d_model, responses)
         self.mode_head = nn.Linear(d_model, responses)
         self.source_head = nn.Linear(d_model, responses * 4)
+        # Compact same-root transport assignment.  Each ego-conditioned response
+        # predicts the natural alternative from which it is transported.  This
+        # remains available when dense response trajectories are disabled.
+        self.root_head = nn.Linear(d_model, responses * self.natural_modes)
+        self.min_burden_head = nn.Linear(d_model, responses)
         self.burden_head = nn.Linear(d_model, responses * 7)  # total + 6 components
 
     def forward(
@@ -42,6 +48,8 @@ class ResponseDecoder(nn.Module):
             "valid_logits": self.valid_head(pair),
             "mode_logits": self.mode_head(pair),
             "source_logits": self.source_head(pair).reshape(B, K, A, self.responses, 4),
+            "root_logits": self.root_head(pair).reshape(B, K, A, self.responses, self.natural_modes),
+            "min_burden_logits": self.min_burden_head(pair),
             "burden_total": burden[..., 0].relu(),
             "burden_components": burden[..., 1:].relu().clamp(max=2.0),
         }

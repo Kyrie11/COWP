@@ -288,6 +288,36 @@ def witness_logit_l2_loss(logits: torch.Tensor, mask: torch.Tensor) -> torch.Ten
         return _zero_like_loss(logits)
     return masked_mean(_safe_float(logits).pow(2), mask_b)
 
+def _gt_to_pred_natural_assignment(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> torch.Tensor | None:
+    """Map each unordered GT natural mode to its nearest predicted mode.
+
+    Natural alternatives are trained as a set; raw mode indices have no semantic
+    correspondence.  Explicit transport labels must therefore be aligned before
+    per-mode BCE/root CE supervision.  The natural decoder is frozen during v9
+    transport/planner stages, so a hard nearest-ADE assignment is stable and does
+    not need gradients.
+    """
+    pred_traj = pred.get("_natural_pred_traj")
+    gt_traj = batch.get("cowp/natural/traj")
+    if pred_traj is None or gt_traj is None:
+        return None
+    with torch.no_grad():
+        d = _pairwise_ade(pred_traj, gt_traj)  # [B,A,M_pred,M_gt]
+        assignment = d.argmin(dim=2)
+        gt_valid = batch.get("cowp/natural/valid")
+        if gt_valid is not None:
+            assignment = torch.where(gt_valid.bool(), assignment, torch.zeros_like(assignment))
+    return assignment.long()
+
+
+def _align_pred_modes_to_gt(values: torch.Tensor, assignment: torch.Tensor | None) -> torch.Tensor:
+    if assignment is None:
+        return values
+    # values [B,K,A,M_pred], assignment [B,A,M_gt]
+    idx = assignment[:, None, :, :].expand(values.shape[0], values.shape[1], assignment.shape[1], assignment.shape[2])
+    return torch.gather(values, dim=-1, index=idx)
+
+
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
     for v in pred.values():
         if torch.is_tensor(v):
@@ -604,6 +634,32 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     else:
         loss_source = _zero_like_loss(pred["safe_logits"])
 
+    # Same-root response transport labels are produced by
+    # 26_augment_transport_labels.  Root assignment is supervised on every
+    # valid response and the minimum-burden marker focuses the bank on the
+    # response that actually certifies feasibility for a root option.
+    if "root_logits" in pred and "cowp/transport/response_root_index" in batch and mask.any():
+        root_target_gt = batch["cowp/transport/response_root_index"].long()
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        if assignment is not None:
+            gather_map = assignment[:, None, :, :].expand(
+                root_target_gt.shape[0], root_target_gt.shape[1], assignment.shape[1], assignment.shape[2]
+            )
+            safe_gt = root_target_gt.clamp(0, assignment.shape[-1] - 1)
+            root_target = torch.gather(gather_map, -1, safe_gt.unsqueeze(-1)).squeeze(-1)
+        else:
+            root_target = root_target_gt
+        root_target = root_target.clamp(0, pred["root_logits"].shape[-1] - 1)
+        loss_root = F.cross_entropy(_safe_float(pred["root_logits"])[mask], root_target[mask], reduction="mean")
+    else:
+        loss_root = _zero_like_loss(pred["safe_logits"])
+    if "min_burden_logits" in pred and "cowp/transport/response_is_min_burden" in batch:
+        min_target = _binary_target(batch["cowp/transport/response_is_min_burden"])
+        min_loss = F.binary_cross_entropy_with_logits(_safe_float(pred["min_burden_logits"]), min_target, reduction="none")
+        loss_min = masked_mean(min_loss, mask)
+    else:
+        loss_min = _zero_like_loss(pred["safe_logits"])
+
     # ``cowp/response/traj`` is the largest Stage-B target.  The original code
     # computed an L1 tensor for every padded candidate/agent/response slot and
     # masked it afterwards.  That is mathematically equivalent but can allocate
@@ -630,10 +686,12 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
         + weights.get("response_burden_l1", 0.5) * loss_b
         + weights.get("response_valid_bce", 0.5) * loss_valid
         + weights.get("response_source_ce", 0.2) * loss_source
+        + weights.get("response_root_ce", 0.5) * loss_root
+        + weights.get("response_min_burden_bce", 0.25) * loss_min
         + comps_w * loss_comps
         + traj_w * loss_traj
     )
-    return {"loss": total, "safe": loss_safe, "low": loss_low, "valid": loss_valid, "source": loss_source, "burden": loss_b, "components": loss_comps, "traj": loss_traj}
+    return {"loss": total, "safe": loss_safe, "low": loss_low, "valid": loss_valid, "source": loss_source, "root": loss_root, "min_burden": loss_min, "burden": loss_b, "components": loss_comps, "traj": loss_traj}
 
 
 def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
@@ -1045,6 +1103,51 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         )
     else:
         response = _zero_like_loss(pred)
+
+    # Explicit per-natural-mode transport supervision removes the aggregate
+    # identifiability failure of v8: many arbitrary conflict/retain mode
+    # decompositions can reproduce the same OPR and witness scalar.
+    mode_valid = batch.get("cowp/transport/mode_valid")
+    mode_conflict_target = batch.get("cowp/transport/mode_conflict")
+    mode_retain_target = batch.get("cowp/transport/mode_retained_low_safe")
+    if mode_valid is not None and mode_conflict_target is not None and "mode_conflict_prob" in pred:
+        mm = mode_valid.bool() & pair[..., None]
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        cp = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
+        cp_logit = torch.logit(cp)
+        mode_conflict = masked_mean(F.binary_cross_entropy_with_logits(cp_logit, _binary_target(mode_conflict_target), reduction="none"), mm)
+    else:
+        mode_conflict = _zero_like_loss(pred)
+    if mode_valid is not None and mode_retain_target is not None and "mode_retain_prob" in pred:
+        mm = mode_valid.bool() & pair[..., None]
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        rp = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
+        rp_logit = torch.logit(rp)
+        mode_retain = masked_mean(F.binary_cross_entropy_with_logits(rp_logit, _binary_target(mode_retain_target), reduction="none"), mm)
+    else:
+        mode_retain = _zero_like_loss(pred)
+    if (mode_valid is not None and mode_conflict_target is not None and mode_retain_target is not None
+            and "mode_uncertainty" in pred):
+        mm = mode_valid.bool() & pair[..., None]
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        cp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment)
+        rp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment)
+        u_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_uncertainty"]), assignment)
+        cp_err = torch.abs(cp_aligned.detach() - _binary_target(mode_conflict_target))
+        rp_err = torch.abs(rp_aligned.detach() - _binary_target(mode_retain_target))
+        error_target = (0.5 * (cp_err + rp_err)).clamp(0.0, 1.0)
+        mode_uncertainty = masked_mean(torch.abs(u_aligned - error_target), mm)
+    else:
+        mode_uncertainty = _zero_like_loss(pred)
+
+    # Supervise conflict-conditioned same-root recovery mass when augmented
+    # labels are available.
+    recovery_target = batch.get("cowp/transport/root_recovery_mass")
+    if recovery_target is not None and "root_recovery_mass" in pred:
+        root_recovery = masked_mean(torch.abs(_safe_float(pred["root_recovery_mass"]) - _safe_float(recovery_target).clamp(0.0, 1.0)), pair)
+    else:
+        root_recovery = _zero_like_loss(pred)
+
     total = (
         float(weights.get("set_transport_witness", 2.0)) * witness
         + float(weights.get("set_transport_opr", 1.0)) * opr
@@ -1052,5 +1155,9 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_conflict", 1.0)) * conflict
         + float(weights.get("set_transport_source", 0.75)) * source
         + float(weights.get("set_transport_response_exist", 0.5)) * response
+        + float(weights.get("set_transport_mode_conflict", 1.5)) * mode_conflict
+        + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
+        + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
+        + float(weights.get("set_transport_root_recovery", 0.75)) * root_recovery
     )
-    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response}
+    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response, "mode_conflict": mode_conflict, "mode_retain": mode_retain, "mode_uncertainty": mode_uncertainty, "root_recovery": root_recovery}

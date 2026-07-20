@@ -41,7 +41,12 @@ class COWPModel(nn.Module):
         )
         self.candidate_encoder = CandidateEncoder(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.natural_decoder = NaturalDecoder(d_model=d_model, modes=int(m.get("max_natural_alternatives", 24)), future_steps=int(m.get("future_steps", 80)))
-        self.response_decoder = ResponseDecoder(d_model=d_model, responses=int(m.get("max_safe_responses", 32)), future_steps=int(m.get("future_steps", 80)))
+        self.response_decoder = ResponseDecoder(
+            d_model=d_model,
+            responses=int(m.get("max_safe_responses", 32)),
+            future_steps=int(m.get("future_steps", 80)),
+            natural_modes=int(m.get("max_natural_alternatives", 24)),
+        )
         self.witness_decoder = WitnessDecoder(d_model=d_model, token_count=int(m.get("token_count", 7)))
         self.set_transport = SetTransportCertificateHead(
             d_model=d_model,
@@ -222,7 +227,11 @@ class COWPModel(nn.Module):
         # Witness/planner stages need the root-scene natural latent.  Only the
         # dedicated natural/all stages decode the dense 24x80 trajectory bank.
         need_natural = stage in ("natural", "representation", "witness", "planner", "all")
-        decode_natural_traj = stage in ("natural", "representation", "all")
+        # Explicit mode-level transport targets are indexed by the unordered GT
+        # natural set.  Decode the much smaller natural trajectory bank in
+        # witness/planner stages so losses can perform permutation-invariant
+        # nearest-mode alignment.  Dense response trajectories remain disabled.
+        decode_natural_traj = stage in ("natural", "representation", "witness", "planner", "all")
         # Planner/witness stages need the compact response bank (classification and
         # burden heads) even when dense response trajectories are disabled.
         need_response = stage in ("response", "witness", "planner", "all")

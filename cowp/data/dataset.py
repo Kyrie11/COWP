@@ -338,15 +338,22 @@ def _wanted_keys_for_stage(
     if stage in ("representation", "natural", "all"):
         wanted.add("cowp/natural/")
 
-    if stage in ("response", "all"):
+    # Response-set supervision is required not only by the dedicated response
+    # stage, but also by witness/planner training because the mechanistic
+    # Set-Transport certificate consumes the compact response bank.  v8 only
+    # loaded these keys for stage=response/all, so response_aux and
+    # set_transport/response silently stayed at zero during planner training.
+    if stage in ("response", "witness", "planner", "all"):
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
             "cowp/candidates/valid",
             "cowp/response/valid",
+            "cowp/response/source",
             "cowp/response/is_safe",
             "cowp/response/is_low_burden",
             "cowp/response/burden_total",
+            "cowp/transport/",
         })
         if include_response_components:
             wanted.add("cowp/response/burden_components")
@@ -354,6 +361,10 @@ def _wanted_keys_for_stage(
             wanted.add("cowp/response/traj")
 
     if stage in ("witness", "planner", "planner_eval", "all"):
+        # Natural trajectories are modest compared with the candidate-conditioned
+        # response bank and are needed to align unordered predicted natural modes
+        # with explicit per-mode transport labels.
+        wanted.add("cowp/natural/")
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",

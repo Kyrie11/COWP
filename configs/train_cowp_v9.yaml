@@ -1,8 +1,8 @@
 train:
   seed: 2026
-  batch_size: 12
+  batch_size: 8
   epochs: 12
-  lr: 2.0e-05
+  lr: 1.0e-05
   weight_decay: 0.0001
   num_workers: 4
   stage: all
@@ -86,26 +86,22 @@ loss_weights:
   candidate_cert_max_pairs_per_scene: 256
   response_valid_bce: 0.5
   response_source_ce: 0.2
-  witness_response_scale: 0.25
-  planner_response_scale: 0.50
-  set_transport: 1.0
+  witness_response_scale: 0.75
+  planner_response_scale: 0.5
+  set_transport: 1.25
   set_transport_witness: 2.0
   set_transport_opr: 1.25
-  set_transport_burden: 1.0
-  set_transport_increment: 0.75
+  set_transport_burden: 0.75
   set_transport_conflict: 1.0
-  set_transport_support: 0.75
   set_transport_source: 0.75
   set_transport_response_exist: 0.75
-  set_transport_mode_conflict: 1.0
-  set_transport_mode_retain: 1.0
-  set_transport_mode_support: 0.5
-  set_transport_mode_burden: 0.75
-  set_transport_matching: sinkhorn
-  set_transport_ot_epsilon: 1.0
-  set_transport_ot_iterations: 20
-  set_transport_match_source_cost: 1.5
   set_transport_focal_gamma: 2.0
   set_transport_focal_alpha: 0.5
+  response_root_ce: 0.6
+  response_min_burden_bce: 0.35
+  set_transport_mode_conflict: 1.75
+  set_transport_mode_retain: 1.75
+  set_transport_mode_uncertainty: 0.3
+  set_transport_root_recovery: 1.0
 model:
-  set_transport_hidden: 64
+  set_transport_hidden: 96

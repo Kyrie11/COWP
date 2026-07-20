@@ -623,6 +623,7 @@ def _select_from_learned(
         cm = crit_mask.bool()[:, None, :]
         witness_prob = torch.where(cm, witness_prob, torch.zeros_like(witness_prob))
         witness_cert = torch.where(cm, witness_cert, torch.zeros_like(witness_cert))
+        witness_uncertainty = torch.where(cm, witness_uncertainty, torch.ones_like(witness_uncertainty))
         opr = torch.where(cm, opr, torch.ones_like(opr))
 
     # Offline upper-bound baseline when attached Waymax candidate outcomes exist.
@@ -682,10 +683,20 @@ def _select_from_learned(
             opr_collapse = (torch.relu(float(alpha_opr) - opr) / max(float(alpha_opr), 1e-6)).clamp(0.0, 1.0)
             priority_proxy = (0.45 * learned_priority + 0.45 * rule_priority + 0.10 * opr_collapse).clamp(0.0, 1.0)
             priority_claim = priority_proxy >= float(priority_hard_threshold)
-            primary_bad = ((witness_cert >= witness_threshold) & priority_claim).any(dim=-1)
-            option_bad = ((opr < float(alpha_opr)) & priority_claim).any(dim=-1)
-            severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr <= float(secondary_opr_alpha)) & priority_claim).any(dim=-1)
-            penalty = (witness_prob * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
+            pcfg_gate = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+            hard_max_unc = float(pcfg_gate.get("set_transport_hard_max_uncertainty", 0.40))
+            opr_ucb_scale = float(pcfg_gate.get("set_transport_opr_ucb_scale", 0.50))
+            confident_pair = witness_uncertainty <= hard_max_unc
+            opr_upper = (opr + opr_ucb_scale * witness_uncertainty).clamp(0.0, 1.0)
+            # Hard-first remains exact for *certified* coercion.  Uncertain pairs
+            # are retained in the frontier with a soft penalty rather than being
+            # treated as proven infeasible.
+            primary_bad = ((witness_cert >= witness_threshold) & priority_claim & confident_pair).any(dim=-1)
+            option_bad = ((opr_upper < float(alpha_opr)) & priority_claim & confident_pair).any(dim=-1)
+            severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr_upper <= float(secondary_opr_alpha)) & priority_claim & confident_pair).any(dim=-1)
+            uncertain_mix = float(pcfg_gate.get("set_transport_uncertain_penalty", 0.25))
+            pair_soft = witness_prob + uncertain_mix * witness_uncertainty
+            penalty = (pair_soft * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
             cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.0))
             pressure_penalty = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
             rule_penalty = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_penalty", 1.25))

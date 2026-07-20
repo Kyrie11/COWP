@@ -377,8 +377,13 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         witness_scale = 1.0 if stage in {"witness", "all"} else float(loss_weights.get("planner_witness_scale", 0.20))
         losses.append(witness_scale * wl["loss"])
         st = pred.get("set_certificate")
+        natural_pred = pred.get("natural")
+        natural_pred_traj = natural_pred.get("traj") if isinstance(natural_pred, dict) else None
         if isinstance(st, dict):
-            stl = set_transport_loss(st, batch, loss_weights)
+            st_for_loss = dict(st)
+            if torch.is_tensor(natural_pred_traj):
+                st_for_loss["_natural_pred_traj"] = natural_pred_traj
+            stl = set_transport_loss(st_for_loss, batch, loss_weights)
             out.update({f"set_transport/{k}": v for k, v in stl.items() if k != "loss"})
             losses.append(float(loss_weights.get("set_transport", 1.0)) * stl["loss"])
         response_targets_available = all(
@@ -399,7 +404,10 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             scale_key = "planner_response_scale" if stage == "planner" else "witness_response_scale"
             response_scale = float(loss_weights.get(scale_key, 0.25))
             if response_scale > 0.0:
-                rl = response_loss(pred["response"], batch, loss_weights)
+                response_for_loss = dict(pred["response"])
+                if torch.is_tensor(natural_pred_traj):
+                    response_for_loss["_natural_pred_traj"] = natural_pred_traj
+                rl = response_loss(response_for_loss, batch, loss_weights)
                 out.update({f"response_aux/{k}": v for k, v in rl.items() if k != "loss"})
                 losses.append(response_scale * rl["loss"])
     if stage in ("planner", "all"):
@@ -585,6 +593,25 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
     risk-calibration collapse while retaining a small total/outcome term.
     """
     total = float(metrics.get("loss", float("inf")))
+    if stage == "witness":
+        def gw(name: str, default: float = 1.0) -> float:
+            try:
+                value = float(metrics.get(name, default))
+                return value if math.isfinite(value) else default
+            except Exception:
+                return default
+        score = (
+            0.10 * total
+            + 0.30 * gw("set_transport/witness")
+            + 0.20 * gw("set_transport/opr")
+            + 0.15 * gw("set_transport/burden")
+            + 0.35 * gw("set_transport/mode_conflict")
+            + 0.35 * gw("set_transport/mode_retain")
+            + 0.15 * gw("set_transport/root_recovery")
+            + 0.10 * gw("response_aux/root")
+            + 0.05 * gw("response_aux/min_burden")
+        )
+        return float(score), "transport_composite"
     if stage != "planner":
         return total, "loss"
     def g(name: str, default: float = 0.0) -> float:
@@ -604,6 +631,9 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         + 0.25 * g("set_transport/opr", 1.0)
         + 0.20 * g("set_transport/conflict", 1.0)
         + 0.15 * g("set_transport/burden", 1.0)
+        + 0.25 * g("set_transport/mode_conflict", 1.0)
+        + 0.25 * g("set_transport/mode_retain", 1.0)
+        + 0.10 * g("set_transport/root_recovery", 1.0)
         + 0.10 * g("planner/outcome_cls", 1.0)
         + 0.10 * g("planner/ranking", 1.0)
     )
@@ -613,7 +643,7 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
 def _set_planner_backbone_frozen(model: torch.nn.Module, frozen: bool) -> None:
     core = model.module if hasattr(model, "module") else model
     for module_name in ("graph", "candidate_encoder", "natural_decoder", "witness_decoder"):
-        # set_transport and response_decoder intentionally remain trainable in v8
+        # set_transport and response_decoder intentionally remain trainable in v9
         module = getattr(core, module_name, None)
         if module is None:
             continue
@@ -832,8 +862,13 @@ def main() -> None:
     # Respect response-head disabling flags in both response-only and all-head
     # training.  Without this, ``--stage all --response-traj-weight 0`` still
     # loaded ``cowp/response/traj`` and decoded the giant trajectory head.
-    include_response_traj = not (stage in {"response", "all"} and float(loss_weights.get("response_traj_l1", 0.1)) == 0.0)
-    include_response_components = not (stage in {"response", "all"} and float(loss_weights.get("response_components_l1", 0.25)) == 0.0)
+    # All stages that instantiate the response bank obey the dense-label flags.
+    # v8 restricted this check to response/all, which would make planner loading
+    # unexpectedly pull the huge trajectory tensor once response labels were
+    # correctly enabled for planner.
+    response_stage = stage in {"response", "witness", "planner", "all"}
+    include_response_traj = bool(response_stage and float(loss_weights.get("response_traj_l1", 0.1)) != 0.0)
+    include_response_components = bool(response_stage and float(loss_weights.get("response_components_l1", 0.25)) != 0.0)
     if distributed and compile_enabled:
         _rank0_print("Warning: disabling torch.compile under DDP for staged training stability.")
         compile_enabled = False
@@ -974,10 +1009,10 @@ def main() -> None:
     min_delta = max(float(args.early_stop_min_delta), 0.0)
     try:
         for epoch in range(start_epoch, epochs):
-            freeze_now = stage == "planner" and epoch < max(int(args.freeze_backbone_epochs), 0)
+            freeze_now = stage in {"witness", "planner"} and epoch < max(int(args.freeze_backbone_epochs), 0)
             _set_planner_backbone_frozen(model, freeze_now)
-            if _is_main_process() and stage == "planner" and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
-                _rank0_print(f"Planner backbone frozen={freeze_now} at epoch={epoch}")
+            if _is_main_process() and stage in {"witness", "planner"} and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
+                _rank0_print(f"{stage} backbone frozen={freeze_now} at epoch={epoch}")
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,

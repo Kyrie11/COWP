@@ -103,6 +103,12 @@ def build_labels_for_scene(
         "cowp/witness/conflict_region_id": witness["conflict_region_id"],
         "cowp/witness/critical_agent_track_index": witness["critical_agent_track_index"],
         "cowp/witness/rho": witness["rho"],
+        "cowp/transport/mode_valid": witness["transport_mode_valid"],
+        "cowp/transport/mode_conflict": witness["transport_mode_conflict"],
+        "cowp/transport/mode_retained_low_safe": witness["transport_mode_retained_low_safe"],
+        "cowp/transport/response_root_index": witness["transport_response_root_index"],
+        "cowp/transport/response_is_min_burden": witness["transport_response_is_min_burden"],
+        "cowp/transport/root_recovery_mass": witness["transport_root_recovery_mass"],
         "map/conflict_regions": conflict_tensor,
         "map/conflict_region_valid": conflict_valid,
     }
