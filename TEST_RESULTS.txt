@@ -1,2 +1,0 @@
-pytest -q
-32 passed in 15.91s
