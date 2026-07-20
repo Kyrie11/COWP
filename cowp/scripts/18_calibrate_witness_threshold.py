@@ -20,12 +20,9 @@ def main() -> None:
     if not rows:
         raise ValueError("No witness_threshold_sweep was found")
 
-    def semantic_recall(r: dict) -> float:
-        return float(r.get("SemanticAcceptNCFRecall", r.get("LearnedAcceptNCFRecall", 0.0)))
-
     feasible = [
         r for r in rows
-        if semantic_recall(r) >= args.min_ncf_recall
+        if float(r.get("LearnedAcceptNCFRecall", 0.0)) >= args.min_ncf_recall
         and float(r.get("FallbackRate", 1.0)) <= args.max_fallback
     ]
     if feasible:
@@ -42,7 +39,7 @@ def main() -> None:
         status = "constraints_satisfied"
     else:
         def score(r: dict) -> float:
-            recall_gap = max(0.0, args.min_ncf_recall - semantic_recall(r))
+            recall_gap = max(0.0, args.min_ncf_recall - float(r.get("LearnedAcceptNCFRecall", 0.0)))
             fallback_gap = max(0.0, float(r.get("FallbackRate", 1.0)) - args.max_fallback)
             return (
                 float(r.get("FSR", 1.0))

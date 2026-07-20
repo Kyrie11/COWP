@@ -604,11 +604,6 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         + 0.25 * g("set_transport/opr", 1.0)
         + 0.20 * g("set_transport/conflict", 1.0)
         + 0.15 * g("set_transport/burden", 1.0)
-        + 0.15 * g("set_transport/increment", 1.0)
-        + 0.15 * g("set_transport/support", 1.0)
-        + 0.20 * g("set_transport/mode_conflict", 1.0)
-        + 0.20 * g("set_transport/mode_retain", 1.0)
-        + 0.10 * g("set_transport/response", 1.0)
         + 0.10 * g("planner/outcome_cls", 1.0)
         + 0.10 * g("planner/ranking", 1.0)
     )
@@ -618,7 +613,7 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
 def _set_planner_backbone_frozen(model: torch.nn.Module, frozen: bool) -> None:
     core = model.module if hasattr(model, "module") else model
     for module_name in ("graph", "candidate_encoder", "natural_decoder", "witness_decoder"):
-        # set_transport and response_decoder intentionally remain trainable during the warm-up
+        # set_transport and response_decoder intentionally remain trainable in v8
         module = getattr(core, module_name, None)
         if module is None:
             continue

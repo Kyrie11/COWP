@@ -37,9 +37,6 @@ def test_witness_positive_for_cut_in_hard_brake(toy_scene, cfg):
     response["burden_components"][0,0,0] = comps
     wit = certify_witnesses(toy_scene, candidates, critical, natural, response, cfg)
     assert wit["exists"][0,0]
-    assert wit["transport_mode_support"][0,0]
-    assert wit["transport_mode_conflict"][0,0,0]
-    assert not wit["transport_mode_retained"][0,0,0]
 
 
 def test_collision_candidate_not_false_safe(toy_scene, cfg):

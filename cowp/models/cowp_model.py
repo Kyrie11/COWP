@@ -222,12 +222,7 @@ class COWPModel(nn.Module):
         # Witness/planner stages need the root-scene natural latent.  Only the
         # dedicated natural/all stages decode the dense 24x80 trajectory bank.
         need_natural = stage in ("natural", "representation", "witness", "planner", "all")
-        # During witness/planner training, decode the compact natural bank so
-        # per-mode transport labels can be aligned by trajectory/source. Evaluation
-        # uses stage=planner_eval and remains compact.
-        decode_natural_traj = stage in ("natural", "representation", "all") or (
-            self.training and stage in ("witness", "planner")
-        )
+        decode_natural_traj = stage in ("natural", "representation", "all")
         # Planner/witness stages need the compact response bank (classification and
         # burden heads) even when dense response trajectories are disabled.
         need_response = stage in ("response", "witness", "planner", "all")
@@ -347,11 +342,6 @@ class COWPModel(nn.Module):
                     gate_temperature=float(pcfg.get("set_transport_gate_temperature", 0.06)),
                     calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
                 )
-                if "traj" in natural_out:
-                    set_certificate["natural_pred_traj"] = natural_out["traj"]
-                    set_certificate["natural_pred_logits"] = natural_out["logits"]
-                    set_certificate["natural_pred_source_logits"] = natural_out["source_logits"]
-                    set_certificate["natural_pred_priority_logits"] = natural_out["priority_logits"]
                 out["set_certificate"] = set_certificate
                 # The selector consumes the mechanistic certificate.  The proxy
                 # decoder is retained for explanation-token supervision/ablation.
@@ -364,9 +354,7 @@ class COWPModel(nn.Module):
                 witness["epistemic_uncertainty"] = set_certificate["uncertainty"]
                 witness["opr"] = set_certificate["opr"]
                 witness["burden_total"] = set_certificate["min_safe_burden"]
-                # c_i is a burden increment, not conflict mass. Conflating the
-                # two double-counted conflict in the candidate certificate.
-                witness["c_i"] = set_certificate["coercion_increment"]
+                witness["c_i"] = set_certificate["natural_conflict_mass"]
             out["witness"] = witness
         if need_planner:
             assert z_cand is not None and cand_mask is not None
