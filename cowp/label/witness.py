@@ -50,6 +50,7 @@ def certify_witnesses(
     limits = cfg.get("limits", {})
     K = int(limits.get("max_candidates", 64))
     A = int(limits.get("max_critical_agents", 8))
+    M = int(limits.get("max_natural_alternatives", natural["valid"].shape[1]))
     exists = np.zeros((K, A), dtype=bool)
     token = np.zeros((K, A), dtype=np.int32)
     burden_total = np.zeros((K, A), dtype=np.float32)
@@ -67,6 +68,13 @@ def certify_witnesses(
     conventional_safe = np.zeros(K, dtype=bool)
     false_safe = np.zeros(K, dtype=bool)
     ncf = np.zeros(K, dtype=bool)
+    # Per-root-mode transport labels make the set certificate identifiable.
+    # They are generated in the same loop as the aggregate witness, so no extra
+    # simulator rollout is required.
+    transport_mode_support = np.zeros((A, M), dtype=bool)
+    transport_mode_conflict = np.zeros((K, A, M), dtype=bool)
+    transport_mode_retained = np.zeros((K, A, M), dtype=bool)
+    transport_mode_burden_under = np.full((K, A, M), 2.0, dtype=np.float32)
 
     cur = scene.current_time_index
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
@@ -102,8 +110,12 @@ def certify_witnesses(
                 if w < float(cfg.get("ncf", {}).get("min_alt_weight", 0.03)):
                     continue
                 low_neu = float(natural["burden_neutral"][a, m]) <= beta
+                transport_mode_support[a, m] = bool(low_neu)
                 unsafe = unsafe_between(ego, nat, cfg, agent_type=object_type)
                 b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
+                transport_mode_burden_under[k, a, m] = float(np.clip(b_under, 0.0, 2.0))
+                transport_mode_conflict[k, a, m] = bool(low_neu and unsafe.unsafe)
+                transport_mode_retained[k, a, m] = bool(low_neu and (not unsafe.unsafe) and b_under <= beta)
                 src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, m])
                 src = src if 0 <= src < 4 else int(NaturalSource.PAD)
                 if low_neu:
@@ -188,4 +200,8 @@ def certify_witnesses(
         "candidate_conventional_safe": conventional_safe,
         "candidate_false_safe": false_safe,
         "candidate_noncoercive_feasible": ncf,
+        "transport_mode_support": transport_mode_support,
+        "transport_mode_conflict": transport_mode_conflict,
+        "transport_mode_retained": transport_mode_retained,
+        "transport_mode_burden_under": transport_mode_burden_under,
     }

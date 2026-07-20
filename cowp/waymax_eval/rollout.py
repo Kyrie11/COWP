@@ -579,7 +579,7 @@ def _select_from_learned(
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
     cfg: dict | None = None,
-) -> tuple[list[int], list[np.ndarray]]:
+) -> tuple[list[int], list[np.ndarray], list[np.ndarray]]:
     import torch
 
     method, gate_mode = _method_gate_defaults(method, gate_mode)
@@ -702,6 +702,11 @@ def _select_from_learned(
             else:
                 accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
 
+    # Preserve the semantic feasibility mask before any progress/top-k frontier.
+    # The v8 mechanism verifier evaluated the final 1--4 candidate shortlist as if
+    # it were a classifier acceptance set, which mathematically caps NCF recall.
+    semantic_accepted = accepted.clone()
+
     if method == "cowp" and gate_mode in {"priority", "soft"}:
         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
         # explanatory evidence, but selection is anchored by a candidate-level NCF
@@ -758,6 +763,7 @@ def _select_from_learned(
 
     selected: list[int] = []
     masks: list[np.ndarray] = []
+    semantic_masks: list[np.ndarray] = []
     B = scores.shape[0]
     for b in range(B):
         mask = accepted[b]
@@ -780,7 +786,8 @@ def _select_from_learned(
             else:
                 selected.append(-1)
         masks.append(mask.detach().cpu().numpy())
-    return selected, masks
+        semantic_masks.append(semantic_accepted[b].detach().cpu().numpy())
+    return selected, masks, semantic_masks
 
 
 def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
@@ -976,6 +983,9 @@ class _LearnedMetricsAccumulator:
         self.total_ncf = 0
         self.accepted_false_safe = 0
         self.total_false_safe = 0
+        self.semantic_total = 0
+        self.semantic_ncf = 0
+        self.semantic_false_safe = 0
         self.selected_waymax_valid = 0
         self.selected_waymax_collision = 0
         self.selected_waymax_offroad = 0
@@ -991,7 +1001,14 @@ class _LearnedMetricsAccumulator:
         self.cert_accepted_risk_sum = 0.0
         self.cert_accepted_pressure_sum = 0.0
 
-    def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
+    def add_selection(
+        self,
+        selected_idx: int,
+        accepted_mask: np.ndarray,
+        label: dict[str, np.ndarray],
+        cert: dict[str, np.ndarray] | None = None,
+        semantic_mask: np.ndarray | None = None,
+    ) -> None:
         self.selected_total += 1
         self.label_metrics.add(selected_idx, label)
         valid = np.asarray(label.get("cowp/candidates/valid", []), dtype=bool)
@@ -1001,6 +1018,10 @@ class _LearnedMetricsAccumulator:
         fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & valid
         conv = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool) & valid
         accepted = _align_candidate_vector(accepted_mask, len(valid), fill_value=False, dtype=bool) & valid
+        semantic = _align_candidate_vector(
+            accepted_mask if semantic_mask is None else semantic_mask,
+            len(valid), fill_value=False, dtype=bool,
+        ) & valid
         if selected_idx >= 0 and selected_idx < len(valid):
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
@@ -1032,6 +1053,9 @@ class _LearnedMetricsAccumulator:
         self.total_ncf += int(ncf.sum())
         self.accepted_false_safe += int((accepted & fs).sum())
         self.total_false_safe += int(fs.sum())
+        self.semantic_total += int(semantic.sum())
+        self.semantic_ncf += int((semantic & ncf).sum())
+        self.semantic_false_safe += int((semantic & fs).sum())
         rollout_valid = label.get("waymax/candidate_rollout_valid")
         if selected_idx >= 0 and rollout_valid is not None:
             rv = np.asarray(rollout_valid, dtype=bool)
@@ -1062,6 +1086,9 @@ class _LearnedMetricsAccumulator:
         metrics["LearnedAcceptedCandidateRate"] = float(self.accepted_total / max(self.valid_total, 1))
         metrics["LearnedAcceptNCFRecall"] = float(self.accepted_ncf / max(self.total_ncf, 1))
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
+        metrics["SemanticFeasibleCandidateRate"] = float(self.semantic_total / max(self.valid_total, 1))
+        metrics["SemanticAcceptNCFRecall"] = float(self.semantic_ncf / max(self.total_ncf, 1))
+        metrics["SemanticAcceptFalseSafeRate"] = float(self.semantic_false_safe / max(self.total_false_safe, 1))
         metrics["WitnessQuality/AUPRC"] = float(auprc)
         metrics["PlannerRankingPairAccuracy"] = float(rank_good / max(rank_total, 1)) if rank_total else 0.0
         if self.selected_waymax_valid > 0:
@@ -1239,7 +1266,7 @@ def _learned_offline_candidate_eval_many(
             # one pass over the validation set.
             for method_name in method_list:
                 for th in thresholds:
-                    batch_selected, batch_accepted_masks = _select_from_learned(
+                    batch_selected, batch_accepted_masks, batch_semantic_masks = _select_from_learned(
                         batch,
                         pred,
                         witness_threshold=th,
@@ -1267,7 +1294,13 @@ def _learned_offline_candidate_eval_many(
                             "pressure_prior": pressure_prior_np[i],
                             "rule_risk": rule_risk_np[i],
                         }
-                        acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
+                        acc.add_selection(
+                            int(batch_selected[i]),
+                            np.asarray(batch_accepted_masks[i], dtype=bool),
+                            item,
+                            cert=cert_item,
+                            semantic_mask=np.asarray(batch_semantic_masks[i], dtype=bool),
+                        )
                         acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(

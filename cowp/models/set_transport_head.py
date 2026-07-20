@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 
 
 class SetTransportCertificateHead(nn.Module):
-    """Candidate-conditioned transport of the root-scene natural response set.
+    """Candidate-conditioned transport of a *supported* natural option set.
 
-    The head does not classify a candidate directly.  It predicts, for every
-    natural mode, whether the option conflicts with the ego candidate and whether
-    it remains a low-burden safe option.  These mode-level quantities are integrated
-    with the predicted response bank to obtain OPR, minimum safe burden and a
-    monotone pairwise coercion certificate.
+    The denominator of option-preservation ratio (OPR) must contain only root
+    options that are both valid and naturally low-burden.  v8 normalized over all
+    decoder slots, including padded/high-burden modes, which makes the aggregate
+    certificate non-identifiable and systematically biases OPR/conflict mass.
+
+    This head predicts three separate objects:
+      1. root support (valid + naturally low-burden) from the natural decoder;
+      2. candidate-conditioned conflict/retention for each same-root mode;
+      3. candidate-conditioned safe response existence and minimum burden.
     """
 
     def __init__(self, d_model: int = 128, hidden: int = 64, source_count: int = 4):
@@ -23,28 +29,29 @@ class SetTransportCertificateHead(nn.Module):
         self.graph = nn.Linear(d_model, h, bias=False)
         self.mode = nn.Linear(d_model, h, bias=False)
         self.norm = nn.LayerNorm(h)
+        # conflict logit, intervention-conditioned burden parameter, epistemic uncertainty.
+        # Keeping three channels preserves v8 checkpoint shape compatibility while
+        # replacing the unconstrained "retain" classifier with an explicit burden field.
         self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 3))
-        # Bounded residual calibration.  The analytic certificate remains primary.
+        # A bounded *logit-space* residual preserves monotonic analytic structure
+        # and avoids the flat gradients created by probability-space clamping.
         self.calibration = nn.Sequential(
             nn.Linear(d_model * 3, h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, 1), nn.Tanh()
         )
 
     @staticmethod
-    def _soft_min_burden(
-        burden: torch.Tensor,
-        safe_prob: torch.Tensor,
-        valid_prob: torch.Tensor,
-        mode_weight: torch.Tensor,
+    def _soft_min(
+        value: torch.Tensor,
+        support: torch.Tensor,
         tau: float,
+        *,
+        empty_value: float = 2.0,
     ) -> torch.Tensor:
         tau = max(float(tau), 1.0e-3)
-        support = (safe_prob * valid_prob * mode_weight).clamp_min(1.0e-8)
-        log_support = support.log()
-        value = -tau * torch.logsumexp(log_support - burden / tau, dim=-1)
-        # If no response is believed safe/valid, expose a high burden rather than
-        # returning a deceptively small soft minimum.
-        existence = support.sum(dim=-1)
-        return torch.where(existence > 1.0e-4, value.clamp_min(0.0), torch.full_like(value, 2.0))
+        mass = support.sum(dim=-1)
+        normalized = support / mass.unsqueeze(-1).clamp_min(1.0e-8)
+        out = -tau * torch.logsumexp(normalized.clamp_min(1.0e-8).log() - value / tau, dim=-1)
+        return torch.where(mass > 1.0e-4, out.clamp_min(0.0), torch.full_like(out, float(empty_value)))
 
     def forward(
         self,
@@ -78,41 +85,83 @@ class SetTransportCertificateHead(nn.Module):
         )
         raw = self.mode_out(self.norm(h))
         conflict_prob = torch.sigmoid(raw[..., 0])
-        retain_prob = torch.sigmoid(raw[..., 1])
+        # A positive burden field gives the mode-level certificate a physically
+        # interpretable transport variable.  v8 predicted retention directly, which
+        # could disagree with its own burden threshold and was hard to audit.
+        mode_burden_under = torch.nn.functional.softplus(raw[..., 1]).clamp(max=2.0)
         mode_uncertainty = torch.sigmoid(raw[..., 2])
 
-        natural_weight = torch.softmax(natural["logits"].float(), dim=-1)[:, None, :, :]
-        natural_weight = natural_weight.expand(B, K, A, M)
+        # Root support is a probability *mass*, not a softmax over every slot.
+        # Missing fields preserve backward compatibility with v8 checkpoints/tests.
+        root_prior = torch.softmax(natural["logits"].float(), dim=-1)
+        valid_logits = natural.get("valid_logits")
+        low_logits = natural.get("low_neutral_logits")
+        root_valid = torch.sigmoid(valid_logits.float()) if valid_logits is not None else torch.ones_like(root_prior)
+        root_low = torch.sigmoid(low_logits.float()) if low_logits is not None else torch.ones_like(root_prior)
+        root_support = (root_prior * root_valid * root_low).clamp_min(0.0)  # [B,A,M]
+        low_natural_mass_root = root_support.sum(dim=-1).clamp(0.0, 1.0)  # [B,A]
+        normalized_support_root = root_support / low_natural_mass_root.unsqueeze(-1).clamp_min(1.0e-8)
+
+        support = root_support[:, None, :, :].expand(B, K, A, M)
+        normalized_support = normalized_support_root[:, None, :, :].expand(B, K, A, M)
+        low_natural_mass = low_natural_mass_root[:, None, :].expand(B, K, A)
         source_prob = torch.softmax(natural["source_logits"].float(), dim=-1)[:, None, :, :, :]
         priority_prob = torch.sigmoid(natural["priority_logits"].float())[:, None, :, :]
 
-        # A retained option must be both predicted retained and not in conflict.
-        low_safe_option_prob = retain_prob * (1.0 - conflict_prob)
-        opr = (natural_weight * low_safe_option_prob).sum(dim=-1).clamp(0.0, 1.0)
-        natural_conflict_mass = (natural_weight * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
-        priority_conflict_mass = (
-            natural_weight * priority_prob * conflict_prob
-        ).sum(dim=-1).clamp(0.0, 1.0)
+        # A root option is retained only if it remains geometrically clear and its
+        # intervention-conditioned burden stays below the scene-specific threshold.
+        # This is the differentiable counterpart of A_nat ∩ R_low in the paper.
+        beta_mode = beta.float()[:, None, :, None].expand(B, K, A, M)
+        burden_low_prob = torch.sigmoid((beta_mode - mode_burden_under) / max(float(gate_temperature), 1.0e-3))
+        low_safe_option_prob = (1.0 - conflict_prob) * burden_low_prob
+        retained_mass = (support * low_safe_option_prob).sum(dim=-1)
+        opr = torch.where(
+            low_natural_mass > 1.0e-5,
+            retained_mass / low_natural_mass.clamp_min(1.0e-6),
+            torch.ones_like(retained_mass),
+        ).clamp(0.0, 1.0)
+        natural_conflict_mass = (support * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
+        priority_conflict_mass = (support * priority_prob * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
 
-        natural_mass_by_source = (natural_weight[..., None] * source_prob).sum(dim=-2)
-        conflict_mass_by_source = (
-            natural_weight[..., None] * source_prob * conflict_prob[..., None]
-        ).sum(dim=-2)
-        low_safe_mass_by_source = (
-            natural_weight[..., None] * source_prob * low_safe_option_prob[..., None]
-        ).sum(dim=-2)
-        source_opr = low_safe_mass_by_source / natural_mass_by_source.clamp_min(1.0e-6)
+        natural_mass_by_source = (support[..., None] * source_prob).sum(dim=-2)
+        conflict_mass_by_source = (support[..., None] * source_prob * conflict_prob[..., None]).sum(dim=-2)
+        low_safe_mass_by_source = (support[..., None] * source_prob * low_safe_option_prob[..., None]).sum(dim=-2)
+        source_opr = torch.where(
+            natural_mass_by_source > 1.0e-6,
+            low_safe_mass_by_source / natural_mass_by_source.clamp_min(1.0e-6),
+            torch.ones_like(low_safe_mass_by_source),
+        ).clamp(0.0, 1.0)
+
+        neutral_burden = natural.get("neutral_burden")
+        if neutral_burden is None:
+            neutral_burden = torch.zeros_like(root_prior)
+        natural_min_burden_root = self._soft_min(
+            neutral_burden.float(), root_support, burden_temperature, empty_value=0.0
+        )
+        natural_min_burden = natural_min_burden_root[:, None, :].expand(B, K, A)
 
         response_safe = torch.sigmoid(response["safe_logits"].float())
         response_low = torch.sigmoid(response["low_logits"].float())
         response_valid = torch.sigmoid(response.get("valid_logits", torch.zeros_like(response_safe)).float())
         response_weight = torch.softmax(response.get("mode_logits", torch.zeros_like(response_safe)).float(), dim=-1)
-        response_low_safe = response_safe * response_low * response_valid
-        response_low_safe_mass = (response_weight * response_low_safe).sum(dim=-1).clamp(0.0, 1.0)
-        response_exist_low_safe = 1.0 - torch.prod((1.0 - response_low_safe).clamp(1.0e-5, 1.0), dim=-1)
-        min_safe_burden = self._soft_min_burden(
-            response["burden_total"].float(), response_safe, response_valid, response_weight, burden_temperature
+        response_low_safe = response_safe * response_low
+        valid_weight = response_weight * response_valid
+        response_low_safe_mass = (
+            (valid_weight * response_low_safe).sum(dim=-1)
+            / valid_weight.sum(dim=-1).clamp_min(1.0e-6)
+        ).clamp(0.0, 1.0)
+        # Differentiable OR over valid slots. Padded slots contribute near zero.
+        log_no_low_safe = (
+            response_valid * torch.log1p(-response_low_safe.clamp(max=1.0 - 1.0e-6))
+        ).sum(dim=-1)
+        response_exist_low_safe = (1.0 - torch.exp(log_no_low_safe)).clamp(0.0, 1.0)
+        min_safe_burden = self._soft_min(
+            response["burden_total"].float(),
+            response_weight * response_safe * response_valid,
+            burden_temperature,
+            empty_value=2.0,
         )
+        coercion_increment = (min_safe_burden - natural_min_burden).clamp(0.0, 2.0)
 
         beta_pair = beta.float()[:, None, :].expand(B, K, A)
         gt = max(float(gate_temperature), 1.0e-3)
@@ -120,30 +169,29 @@ class SetTransportCertificateHead(nn.Module):
         burden_gate = torch.sigmoid((min_safe_burden - (beta_pair + float(gamma))) / gt)
         option_gate = torch.sigmoid((float(alpha_opr) - opr) / gt)
         response_absence_gate = 1.0 - response_exist_low_safe
-        # Monotone union of failure causes, activated only when the ego candidate
-        # intersects meaningful natural option mass.
         failure_union = 1.0 - (
-            (1.0 - burden_gate)
-            * (1.0 - option_gate)
-            * (1.0 - response_absence_gate)
+            (1.0 - burden_gate) * (1.0 - option_gate) * (1.0 - response_absence_gate)
         )
-        analytic_witness = (conflict_gate * failure_union).clamp(0.0, 1.0)
+        analytic_witness = (conflict_gate * failure_union).clamp(1.0e-5, 1.0 - 1.0e-5)
 
         calib_in = torch.cat([
             z_candidate[:, :, None, :].expand(B, K, A, D),
             zcrit[:, None, :, :].expand(B, K, A, D),
             z_graph[:, None, None, :].expand(B, K, A, D),
         ], dim=-1)
-        residual = self.calibration(calib_in).squeeze(-1) * float(calibration_scale)
-        witness_prob = (analytic_witness + residual).clamp(0.0, 1.0)
-        eps = 1.0e-5
-        witness_logit = torch.logit(witness_prob.clamp(eps, 1.0 - eps))
+        residual_logit = self.calibration(calib_in).squeeze(-1) * float(calibration_scale)
+        analytic_logit = torch.logit(analytic_witness)
+        witness_logit = analytic_logit + residual_logit
+        witness_prob = torch.sigmoid(witness_logit)
 
-        entropy = -(natural_weight * natural_weight.clamp_min(1.0e-8).log()).sum(dim=-1)
-        entropy = entropy / max(float(torch.log(torch.tensor(float(max(M, 2)))).item()), 1.0e-6)
+        entropy = -(normalized_support * normalized_support.clamp_min(1.0e-8).log()).sum(dim=-1)
+        entropy = entropy / max(math.log(float(max(M, 2))), 1.0e-6)
+        support_gap = (1.0 - low_natural_mass).clamp(0.0, 1.0)
         uncertainty = (
-            (natural_weight * mode_uncertainty).sum(dim=-1) + entropy
-        ).mul(0.5).clamp(0.0, 1.0)
+            (normalized_support * mode_uncertainty).sum(dim=-1)
+            + entropy
+            + support_gap
+        ).div(3.0).clamp(0.0, 1.0)
 
         return {
             "exist_logits": witness_logit,
@@ -151,6 +199,9 @@ class SetTransportCertificateHead(nn.Module):
             "analytic_witness_prob": analytic_witness,
             "opr": opr,
             "min_safe_burden": min_safe_burden,
+            "natural_min_burden": natural_min_burden,
+            "coercion_increment": coercion_increment,
+            "low_natural_mass": low_natural_mass,
             "natural_conflict_mass": natural_conflict_mass,
             "priority_conflict_mass": priority_conflict_mass,
             "response_low_safe_mass": response_low_safe_mass,
@@ -159,7 +210,13 @@ class SetTransportCertificateHead(nn.Module):
             "conflict_mass_by_source": conflict_mass_by_source,
             "low_safe_mass_by_source": low_safe_mass_by_source,
             "source_opr": source_opr,
+            "mode_conflict_logit": raw[..., 0],
+            "mode_burden_under": mode_burden_under,
             "mode_conflict_prob": conflict_prob,
-            "mode_retain_prob": retain_prob,
+            "mode_low_burden_prob": burden_low_prob,
+            "mode_low_safe_prob": low_safe_option_prob,
+            "root_support_prob": (root_valid * root_low).clamp(0.0, 1.0),
+            "root_valid_prob": root_valid,
+            "root_low_neutral_prob": root_low,
             "uncertainty": uncertainty,
         }

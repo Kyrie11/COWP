@@ -84,6 +84,64 @@ def _pairwise_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Tenso
     return torch.linalg.norm(pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
 
 
+def _nearest_transport_plan(
+    cost: torch.Tensor,
+    pred_mass: torch.Tensor,
+    gt_valid: torch.Tensor,
+) -> torch.Tensor:
+    """Independent nearest-mode assignment used only for the transport ablation."""
+    with torch.no_grad():
+        valid = gt_valid.bool()
+        c = _safe_float(cost).detach().masked_fill(~valid[:, :, None, :], 1.0e6)
+        match = c.argmin(dim=-1)
+        plan = torch.zeros_like(c)
+        plan.scatter_(-1, match[..., None], _nonnegative_weight(pred_mass).detach()[..., None])
+        has_gt = valid.any(dim=-1, keepdim=True).unsqueeze(-1)
+        return torch.where(has_gt, plan, torch.zeros_like(plan))
+
+
+def _sinkhorn_transport_plan(
+    cost: torch.Tensor,
+    pred_mass: torch.Tensor,
+    gt_mass: torch.Tensor,
+    gt_valid: torch.Tensor,
+    *,
+    epsilon: float = 1.0,
+    iterations: int = 20,
+) -> torch.Tensor:
+    """Balanced entropic OT plan from decoded slots to same-root label modes.
+
+    Nearest-neighbour matching lets many predicted modes collapse onto one easy GT
+    mode.  A balanced plan preserves the probability mass of both sets and makes
+    the supervised object a genuine set transport rather than a bag of independent
+    binary labels.  Matching is detached: the plan defines soft targets, while the
+    trajectory decoder continues to receive its own natural-mode losses.
+    """
+    with torch.no_grad():
+        c = _safe_float(cost).detach()
+        valid = gt_valid.bool()
+        a = _nonnegative_weight(pred_mass).detach()
+        b = _nonnegative_weight(gt_mass).detach() * valid.float()
+        a = a / a.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+        b_sum = b.sum(dim=-1, keepdim=True)
+        b = torch.where(b_sum > 1.0e-8, b / b_sum.clamp_min(1.0e-8), torch.zeros_like(b))
+
+        eps = max(float(epsilon), 1.0e-3)
+        # Row-wise centering avoids underflow without changing the OT solution.
+        c = c - c.amin(dim=-1, keepdim=True)
+        kernel = torch.exp(-(c / eps).clamp(max=50.0)) * valid[:, :, None, :].float()
+        u = torch.ones_like(a)
+        v = torch.ones_like(b)
+        for _ in range(max(int(iterations), 1)):
+            kv = torch.einsum("bapg,bag->bap", kernel, v).clamp_min(1.0e-8)
+            u = a / kv
+            ktu = torch.einsum("bapg,bap->bag", kernel, u).clamp_min(1.0e-8)
+            v = torch.where(valid, b / ktu, torch.zeros_like(b))
+        plan = u[..., None] * kernel * v[:, :, None, :]
+        has_gt = valid.any(dim=-1, keepdim=True).unsqueeze(-1)
+        return torch.where(has_gt, plan, torch.zeros_like(plan))
+
+
 def _focal_bce_values(logits: torch.Tensor, target: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
     target = _binary_target(target)
     logits = _safe_float(logits)
@@ -995,19 +1053,23 @@ def planner_ranking_loss(scores: torch.Tensor, ncf: torch.Tensor, false_safe: to
 
 
 def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
-    """Supervise the explicit set certificate with aggregate set statistics.
+    """Supervise the explicit same-root set-transport certificate.
 
-    Existing caches already contain OPR, minimum burden and source-wise mass, so
-    v8 can be trained without rebuilding WOMD.  A later optional cache augmentation
-    can add mode-level labels, but the aggregate objective already prevents the
-    certificate from degenerating into a candidate classifier.
+    v9 fixes three target mismatches in v8: (i) the minimum-safe-burden target is
+    ``witness/min_safe_burden`` rather than the option-loss-adjusted aggregate
+    ``burden_total``; (ii) conflict mass is never replaced by ``c_i``; and (iii)
+    root low-burden support is supervised from source-wise natural mass.
     """
     cand = batch["cowp/candidates/valid"].bool()
     crit = batch["cowp/critical/valid"].bool()
     pair = cand[:, :, None] & crit[:, None, :]
     if not pair.any():
         z = _zero_like_loss(pred)
-        return {"loss": z, "witness": z, "opr": z, "burden": z, "conflict": z, "source": z, "response": z}
+        return {
+            "loss": z, "witness": z, "opr": z, "burden": z,
+            "increment": z, "conflict": z, "support": z,
+            "source": z, "response": z,
+        }
 
     y = _binary_target(batch["cowp/witness/exists"])
     witness = focal_bce_with_logits(
@@ -1015,42 +1077,188 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         gamma=float(weights.get("set_transport_focal_gamma", 2.0)),
         alpha=float(weights.get("set_transport_focal_alpha", 0.5)),
     )
-    opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair)
-    burden_target = _safe_float(batch["cowp/witness/burden_total"]).clamp(0.0, 2.0)
-    burden = masked_mean(torch.abs(_safe_float(pred["min_safe_burden"]).clamp(0.0, 2.0) - burden_target), pair)
+    opr = masked_mean(
+        torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])),
+        pair,
+    )
+
+    burden_target = batch.get("cowp/witness/min_safe_burden")
+    if burden_target is None:
+        burden_target = batch["cowp/witness/burden_total"]
+    burden_target = _safe_float(burden_target).clamp(0.0, 2.0)
+    burden = masked_mean(
+        torch.abs(_safe_float(pred["min_safe_burden"]).clamp(0.0, 2.0) - burden_target),
+        pair,
+    )
+
+    increment_target = _safe_float(batch["cowp/witness/c_i"]).clamp(0.0, 2.0)
+    increment_pred = _safe_float(pred.get("coercion_increment", pred["min_safe_burden"])).clamp(0.0, 2.0)
+    increment = masked_mean(torch.abs(increment_pred - increment_target), pair)
 
     conflict_target = batch.get("cowp/witness/natural_conflict_mass")
-    if conflict_target is None:
-        conflict_target = batch.get("cowp/witness/c_i", torch.zeros_like(pred["natural_conflict_mass"]))
-    conflict = masked_mean(torch.abs(_safe_float(pred["natural_conflict_mass"]) - _safe_float(conflict_target).clamp(0.0, 1.0)), pair)
+    if conflict_target is not None:
+        conflict = masked_mean(
+            torch.abs(_safe_float(pred["natural_conflict_mass"]) - _safe_float(conflict_target).clamp(0.0, 1.0)),
+            pair,
+        )
+    else:
+        conflict = _zero_like_loss(pred)
 
     src_terms = []
     src_mask = pair[..., None]
     for key, pkey in (
+        ("cowp/witness/natural_mass_by_source", "natural_mass_by_source"),
         ("cowp/witness/natural_conflict_mass_by_source", "conflict_mass_by_source"),
         ("cowp/witness/low_safe_mass_by_source", "low_safe_mass_by_source"),
     ):
         target = batch.get(key)
         if target is not None and pkey in pred:
-            src_terms.append(masked_mean(torch.abs(_safe_float(pred[pkey]) - _safe_float(target).clamp(0.0, 1.0)), src_mask))
+            src_terms.append(masked_mean(
+                torch.abs(_safe_float(pred[pkey]) - _safe_float(target).clamp(0.0, 1.0)),
+                src_mask,
+            ))
     source = torch.stack(src_terms).mean() if src_terms else _zero_like_loss(pred)
 
+    natural_mass_target = batch.get("cowp/witness/natural_mass_by_source")
+    if natural_mass_target is not None and "low_natural_mass" in pred:
+        target_mass = _safe_float(natural_mass_target).sum(dim=-1).clamp(0.0, 1.0)
+        support = masked_mean(
+            torch.abs(_safe_float(pred["low_natural_mass"]) - target_mass),
+            pair,
+        )
+    else:
+        support = _zero_like_loss(pred)
+
     if all(k in batch for k in ("cowp/response/is_safe", "cowp/response/is_low_burden", "cowp/response/valid")):
-        low_exists_target = ((batch["cowp/response/is_safe"].bool() & batch["cowp/response/is_low_burden"].bool() & batch["cowp/response/valid"].bool()).any(dim=-1)).float()
+        low_exists_target = (
+            batch["cowp/response/is_safe"].bool()
+            & batch["cowp/response/is_low_burden"].bool()
+            & batch["cowp/response/valid"].bool()
+        ).any(dim=-1).float()
         response_prob = _safe_float(pred["response_exist_low_safe"]).clamp(1.0e-5, 1.0 - 1.0e-5)
-        response_logit = torch.logit(response_prob)
         response = masked_mean(
-            F.binary_cross_entropy_with_logits(response_logit, low_exists_target, reduction="none"),
+            F.binary_cross_entropy_with_logits(torch.logit(response_prob), low_exists_target, reduction="none"),
             pair,
         )
     else:
         response = _zero_like_loss(pred)
+
+    # Optional per-natural-mode supervision (v9 cache).  Predicted natural slots
+    # are aligned to generated same-root modes with balanced entropic optimal
+    # transport, preventing duplicate nearest-neighbour matches and mode collapse.
+    mode_conflict_loss = _zero_like_loss(pred)
+    mode_retain_loss = _zero_like_loss(pred)
+    mode_support_loss = _zero_like_loss(pred)
+    mode_burden_loss = _zero_like_loss(pred)
+    mode_keys = (
+        "cowp/transport/mode_support",
+        "cowp/transport/mode_conflict",
+        "cowp/transport/mode_retained",
+        "cowp/natural/traj",
+        "cowp/natural/valid",
+    )
+    if all(k in batch for k in mode_keys) and "natural_pred_traj" in pred:
+        pred_traj = _safe_float(pred["natural_pred_traj"])
+        gt_traj = _safe_float(batch["cowp/natural/traj"])
+        gt_valid = batch["cowp/natural/valid"].bool() & crit[:, :, None]
+        distance = _pairwise_ade(pred_traj, gt_traj)
+        if "natural_pred_source_logits" in pred and "cowp/natural/source" in batch:
+            src_prob = F.softmax(_safe_float(pred["natural_pred_source_logits"]), dim=-1)
+            gt_src = torch.nan_to_num(batch["cowp/natural/source"].float(), nan=0.0).long()
+            gt_src = gt_src.clamp(0, src_prob.shape[-1] - 1)
+            Bm, Am, Mp, S = src_prob.shape
+            Mg = gt_src.shape[-1]
+            src_exp = src_prob[:, :, :, None, :].expand(Bm, Am, Mp, Mg, S)
+            src_idx = gt_src[:, :, None, :, None].expand(Bm, Am, Mp, Mg, 1)
+            affinity = torch.gather(src_exp, -1, src_idx).squeeze(-1)
+            distance = distance + float(weights.get("set_transport_match_source_cost", 1.5)) * (1.0 - affinity)
+        distance = distance.masked_fill(~gt_valid[:, :, None, :], 1.0e4)
+
+        if "natural_pred_logits" in pred:
+            pred_mass = F.softmax(_safe_float(pred["natural_pred_logits"]), dim=-1)
+        else:
+            pred_mass = torch.ones_like(distance[..., 0]) / max(distance.shape[-2], 1)
+        gt_mass = _safe_float(batch.get("cowp/natural/weight", gt_valid.float())) * gt_valid.float()
+        matching = str(weights.get("set_transport_matching", "sinkhorn")).lower()
+        if matching in ("nearest", "nn", "independent"):
+            plan = _nearest_transport_plan(distance, pred_mass, gt_valid)
+        elif matching in ("sinkhorn", "ot", "optimal_transport"):
+            plan = _sinkhorn_transport_plan(
+                distance, pred_mass, gt_mass, gt_valid,
+                epsilon=float(weights.get("set_transport_ot_epsilon", 1.0)),
+                iterations=int(weights.get("set_transport_ot_iterations", 20)),
+            )
+        else:
+            raise ValueError(f"Unknown set_transport_matching={matching!r}")
+        row_mass = plan.sum(dim=-1).clamp_min(1.0e-8)  # [B,A,M_pred]
+        any_gt = gt_valid.any(dim=-1, keepdim=True)
+        mode_active = crit[:, :, None] & any_gt & (row_mass > 1.0e-7)
+
+        target_support_gt = _binary_target(batch["cowp/transport/mode_support"])
+        target_support = (plan * target_support_gt[:, :, None, :]).sum(dim=-1) / row_mass
+        root_support_prob = _safe_float(pred["root_support_prob"]).clamp(1.0e-5, 1.0 - 1.0e-5)
+        mode_support_loss = masked_mean(
+            F.binary_cross_entropy_with_logits(
+                torch.logit(root_support_prob), target_support.clamp(0.0, 1.0), reduction="none"
+            ),
+            mode_active,
+        )
+
+        gt_conflict = _binary_target(batch["cowp/transport/mode_conflict"])
+        gt_retained = _binary_target(batch["cowp/transport/mode_retained"])
+        target_conflict = torch.einsum("bapg,bkag->bkap", plan, gt_conflict) / row_mass[:, None, :, :]
+        target_retained = torch.einsum("bapg,bkag->bkap", plan, gt_retained) / row_mass[:, None, :, :]
+        support_pair = target_support[:, None, :, :] > 0.02
+        mode_mask = pair[..., None] & mode_active[:, None, :, :] & support_pair
+        mode_conflict_loss = masked_mean(
+            F.binary_cross_entropy_with_logits(
+                _safe_float(pred["mode_conflict_logit"]), target_conflict.clamp(0.0, 1.0), reduction="none"
+            ),
+            mode_mask,
+        )
+        low_safe_prob = _safe_float(pred["mode_low_safe_prob"]).clamp(1.0e-5, 1.0 - 1.0e-5)
+        mode_retain_loss = masked_mean(
+            F.binary_cross_entropy_with_logits(
+                torch.logit(low_safe_prob), target_retained.clamp(0.0, 1.0), reduction="none"
+            ),
+            mode_mask,
+        )
+
+        if "cowp/transport/mode_burden_under" in batch and "mode_burden_under" in pred:
+            gt_mode_burden = _safe_float(batch["cowp/transport/mode_burden_under"]).clamp(0.0, 2.0)
+            target_mode_burden = (
+                torch.einsum("bapg,bkag->bkap", plan, gt_mode_burden)
+                / row_mass[:, None, :, :]
+            )
+            mode_burden_loss = masked_mean(
+                F.smooth_l1_loss(
+                    _safe_float(pred["mode_burden_under"]).clamp(0.0, 2.0),
+                    target_mode_burden.clamp(0.0, 2.0),
+                    reduction="none",
+                ),
+                mode_mask,
+            )
+
     total = (
         float(weights.get("set_transport_witness", 2.0)) * witness
-        + float(weights.get("set_transport_opr", 1.0)) * opr
-        + float(weights.get("set_transport_burden", 0.75)) * burden
+        + float(weights.get("set_transport_opr", 1.25)) * opr
+        + float(weights.get("set_transport_burden", 1.0)) * burden
+        + float(weights.get("set_transport_increment", 0.75)) * increment
         + float(weights.get("set_transport_conflict", 1.0)) * conflict
+        + float(weights.get("set_transport_support", 0.75)) * support
         + float(weights.get("set_transport_source", 0.75)) * source
-        + float(weights.get("set_transport_response_exist", 0.5)) * response
+        + float(weights.get("set_transport_response_exist", 0.75)) * response
+        + float(weights.get("set_transport_mode_conflict", 1.0)) * mode_conflict_loss
+        + float(weights.get("set_transport_mode_retain", 1.0)) * mode_retain_loss
+        + float(weights.get("set_transport_mode_support", 0.5)) * mode_support_loss
+        + float(weights.get("set_transport_mode_burden", 0.75)) * mode_burden_loss
     )
-    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response}
+    return {
+        "loss": total, "witness": witness, "opr": opr, "burden": burden,
+        "increment": increment, "conflict": conflict, "support": support,
+        "source": source, "response": response,
+        "mode_conflict": mode_conflict_loss,
+        "mode_retain": mode_retain_loss,
+        "mode_support": mode_support_loss,
+        "mode_burden": mode_burden_loss,
+    }

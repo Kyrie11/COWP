@@ -65,7 +65,7 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         for key in ("cowp/candidates/trajectory", "cowp/candidates/macro_type", "cowp/candidates/valid"):
             if key not in data:
                 missing.append(key)
-    if stage in ("response", "all"):
+    if stage in ("response", "witness", "planner", "all"):
         for key in (
             "cowp/response/valid",
             "cowp/response/is_safe",
@@ -338,7 +338,7 @@ def _wanted_keys_for_stage(
     if stage in ("representation", "natural", "all"):
         wanted.add("cowp/natural/")
 
-    if stage in ("response", "all"):
+    if stage in ("response", "witness", "planner", "all"):
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -347,11 +347,17 @@ def _wanted_keys_for_stage(
             "cowp/response/is_safe",
             "cowp/response/is_low_burden",
             "cowp/response/burden_total",
+            "cowp/response/source",
         })
         if include_response_components:
             wanted.add("cowp/response/burden_components")
         if include_response_traj:
             wanted.add("cowp/response/traj")
+
+    if stage in ("witness", "planner", "all"):
+        # Natural trajectories are needed only during training to align predicted
+        # decoder slots with per-mode transport labels. planner_eval remains compact.
+        wanted.update({"cowp/natural/", "cowp/transport/"})
 
     if stage in ("witness", "planner", "planner_eval", "all"):
         wanted.update({

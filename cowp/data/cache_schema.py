@@ -60,6 +60,10 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/witness/conflict_region_id": FieldSpec(("K", "A"), ("i", "u")),
     "cowp/witness/critical_agent_track_index": FieldSpec(("A",), ("i", "u")),
     "cowp/witness/rho": FieldSpec(("K", "A"), ("i", "u")),
+    "cowp/transport/mode_support": FieldSpec(("A", "M"), "b", required=False),
+    "cowp/transport/mode_conflict": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/transport/mode_retained": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/transport/mode_burden_under": FieldSpec(("K", "A", "M"), "f", required=False),
     "map/conflict_regions": FieldSpec(("C", 8), "f"),
     "map/conflict_region_valid": FieldSpec(("C",), "b"),
 }
