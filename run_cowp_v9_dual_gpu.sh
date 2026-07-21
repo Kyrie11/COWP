@@ -53,7 +53,7 @@ ONLINE_OUTCOME_RISK_PENALTY="${ONLINE_OUTCOME_RISK_PENALTY:-0.75}"
 OUTCOME_RISK_THRESHOLD="${OUTCOME_RISK_THRESHOLD:-0.65}"
 WAYMAX_ACTION_MODE="${WAYMAX_ACTION_MODE:-absolute_xy_yaw}"
 
-INIT_CKPT="${INIT_CKPT:-outputs/cowp_v8_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt}"
+INIT_CKPT="${INIT_CKPT:-outputs/cowp_v8/checkpoints/planner/cowp_planner_best.pt}"
 TRANSPORT_CKPT="${TRANSPORT_CKPT:-}"
 CKPT="${CKPT:-}"
 REQUIRE_INIT_CKPT="${REQUIRE_INIT_CKPT:-1}"
