@@ -416,7 +416,12 @@ class COWPNpzDataset:
 
     def __init__(self, cache_dir: str | Path, pattern: str = "*.npz"):
         self.cache_dir = Path(cache_dir)
-        self.paths = sorted(self.cache_dir.glob(pattern))
+        # Exclude hidden NPZ metadata files such as sampler-weight caches.
+        # They share the .npz suffix but are not scenario samples and must never
+        # enter dataset indexing, augmentation, signatures, or DDP sampling.
+        self.paths = sorted(
+            p for p in self.cache_dir.glob(pattern) if not p.name.startswith(".")
+        )
         if not self.paths:
             raise FileNotFoundError(f"No cache npz files found in {self.cache_dir} matching {pattern}")
         sidecar_name = ".transport_v9"

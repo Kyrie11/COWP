@@ -382,7 +382,10 @@ def main() -> None:
 
     cfg = load_config(args.label_config, args.data_config)
     src_dir, dst_dir = Path(args.input_dir), Path(args.output_dir)
-    paths = sorted(src_dir.glob("*.npz"))
+    # Hidden NPZ files in a cache directory are metadata/artifact caches (for
+    # example .cowp_sampler_weights_*.npz), not WOMD scenario samples.
+    # Treating them as samples makes augmentation fail on missing COWP fields.
+    paths = sorted(p for p in src_dir.glob("*.npz") if not p.name.startswith("."))
     if args.limit > 0:
         paths = paths[: args.limit]
     if not paths:
