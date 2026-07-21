@@ -366,6 +366,15 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         out.update({f"response/{k}": v for k, v in rl.items() if k != "loss"})
         losses.append(rl["loss"])
     if stage in ("witness", "planner", "all"):
+        # Keep natural primitive identity trainable during transport learning.
+        # v9 froze randomly initialized/new mode-identity layers for all 10 epochs,
+        # so direct transport labels could not repair the primitive basis.
+        natural_scale_key = "planner_natural_scale" if stage == "planner" else "witness_natural_scale"
+        natural_scale = float(loss_weights.get(natural_scale_key, 0.0))
+        if natural_scale > 0.0 and isinstance(pred.get("natural"), dict) and "traj" in pred["natural"]:
+            nl_aux = natural_loss(pred["natural"], batch, loss_weights)
+            out.update({f"natural_aux/{k}": v for k, v in nl_aux.items() if k != "loss"})
+            losses.append(natural_scale * nl_aux["loss"])
         # Keep the proxy witness for token/interval explanation, while training the
         # mechanistic Set-Transport certificate as the decision certificate.
         witness_pred = pred.get("witness_proxy", pred["witness"])
@@ -640,10 +649,32 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
     return float(score), "planner_certificate_composite"
 
 
-def _set_planner_backbone_frozen(model: torch.nn.Module, frozen: bool) -> None:
+def _set_stage_freeze(model: torch.nn.Module, stage: str, warmup_frozen: bool) -> None:
+    """Granular v10 freeze policy.
+
+    Transport learning always updates candidate, natural and witness identity heads;
+    only the expensive graph encoder is protected during warm-up.  Planner learning
+    keeps natural/witness identities fixed, while allowing candidate features to
+    adapt after warm-up.  Set-transport and response modules always remain trainable.
+    """
     core = model.module if hasattr(model, "module") else model
-    for module_name in ("graph", "candidate_encoder", "natural_decoder", "witness_decoder"):
-        # set_transport and response_decoder intentionally remain trainable in v9
+    if stage == "witness":
+        policy = {
+            "graph": bool(warmup_frozen),
+            "candidate_encoder": False,
+            "natural_decoder": False,
+            "witness_decoder": False,
+        }
+    elif stage == "planner":
+        policy = {
+            "graph": True,
+            "candidate_encoder": bool(warmup_frozen),
+            "natural_decoder": True,
+            "witness_decoder": True,
+        }
+    else:
+        policy = {"graph": False, "candidate_encoder": False, "natural_decoder": False, "witness_decoder": False}
+    for module_name, frozen in policy.items():
         module = getattr(core, module_name, None)
         if module is None:
             continue
@@ -1010,9 +1041,9 @@ def main() -> None:
     try:
         for epoch in range(start_epoch, epochs):
             freeze_now = stage in {"witness", "planner"} and epoch < max(int(args.freeze_backbone_epochs), 0)
-            _set_planner_backbone_frozen(model, freeze_now)
+            _set_stage_freeze(model, stage, freeze_now)
             if _is_main_process() and stage in {"witness", "planner"} and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
-                _rank0_print(f"{stage} backbone frozen={freeze_now} at epoch={epoch}")
+                _rank0_print(f"{stage} warmup_frozen={freeze_now} at epoch={epoch}")
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,

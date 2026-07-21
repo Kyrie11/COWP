@@ -52,6 +52,7 @@ class COWPModel(nn.Module):
             d_model=d_model,
             hidden=int(m.get("set_transport_hidden", 64)),
             source_count=4,
+            geometry_steps=int(m.get("set_transport_geometry_steps", 16)),
         )
         self.planner = PlannerHead(d_model=d_model)
         # Candidate-level calibrated non-coercive feasibility certificate.
@@ -344,12 +345,15 @@ class COWPModel(nn.Module):
                     natural=natural_out,
                     response=response_out,
                     beta=beta,
+                    candidate_traj=cand_traj,
+                    natural_traj=natural_out.get("traj"),
                     alpha_opr=float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     gamma=float(pcfg.get("ncf_gamma_infer", self.cfg.get("ncf", {}).get("gamma", 0.10))),
                     conflict_mass_floor=float(pcfg.get("set_transport_conflict_mass_floor", self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))),
                     burden_temperature=float(pcfg.get("set_transport_burden_temperature", 0.08)),
                     gate_temperature=float(pcfg.get("set_transport_gate_temperature", 0.06)),
                     calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
+                    root_mass_scale=float(pcfg.get("set_transport_root_mass_scale", 1.0)),
                 )
                 out["set_certificate"] = set_certificate
                 # The selector consumes the mechanistic certificate.  The proxy

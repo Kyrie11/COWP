@@ -1115,20 +1115,36 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     mode_valid = batch.get("cowp/transport/mode_valid")
     mode_conflict_target = batch.get("cowp/transport/mode_conflict")
     mode_retain_target = batch.get("cowp/transport/mode_retained_low_safe")
+    def _balanced_mode_bce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        target = _binary_target(target)
+        active = mask.float()
+        pos = (target * active).sum()
+        neg = ((1.0 - target) * active).sum()
+        max_pw = float(weights.get("set_transport_mode_max_pos_weight", 4.0))
+        pos_weight = (neg / pos.clamp_min(1.0)).clamp(0.25, max_pw)
+        raw_loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none", pos_weight=pos_weight)
+        return masked_mean(raw_loss, mask)
+
     if mode_valid is not None and mode_conflict_target is not None and "mode_conflict_prob" in pred:
         mm = mode_valid.bool() & pair[..., None]
         assignment = _gt_to_pred_natural_assignment(pred, batch)
-        cp = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
-        cp_logit = torch.logit(cp)
-        mode_conflict = masked_mean(F.binary_cross_entropy_with_logits(cp_logit, _binary_target(mode_conflict_target), reduction="none"), mm)
+        if "mode_conflict_logits" in pred:
+            cp_logit = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_logits"]), assignment)
+        else:
+            cp = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
+            cp_logit = torch.logit(cp)
+        mode_conflict = _balanced_mode_bce(cp_logit, mode_conflict_target, mm)
     else:
         mode_conflict = _zero_like_loss(pred)
     if mode_valid is not None and mode_retain_target is not None and "mode_retain_prob" in pred:
         mm = mode_valid.bool() & pair[..., None]
         assignment = _gt_to_pred_natural_assignment(pred, batch)
-        rp = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
-        rp_logit = torch.logit(rp)
-        mode_retain = masked_mean(F.binary_cross_entropy_with_logits(rp_logit, _binary_target(mode_retain_target), reduction="none"), mm)
+        if "mode_retain_logits" in pred:
+            rp_logit = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_logits"]), assignment)
+        else:
+            rp = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
+            rp_logit = torch.logit(rp)
+        mode_retain = _balanced_mode_bce(rp_logit, mode_retain_target, mm)
     else:
         mode_retain = _zero_like_loss(pred)
     if (mode_valid is not None and mode_conflict_target is not None and mode_retain_target is not None
@@ -1149,7 +1165,19 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     # labels are available.
     recovery_target = batch.get("cowp/transport/root_recovery_mass")
     if recovery_target is not None and "root_recovery_mass" in pred:
-        root_recovery = masked_mean(torch.abs(_safe_float(pred["root_recovery_mass"]) - _safe_float(recovery_target).clamp(0.0, 1.0)), pair)
+        rt = _safe_float(recovery_target).clamp(0.0, 1.0)
+        rp = _safe_float(pred["root_recovery_mass"]).clamp(1.0e-5, 1.0 - 1.0e-5)
+        has_recovery = (rt > float(weights.get("set_transport_recovery_positive_floor", 1.0e-4))).float()
+        active = pair.float()
+        pos = (has_recovery * active).sum()
+        neg = ((1.0 - has_recovery) * active).sum()
+        pos_weight = (neg / pos.clamp_min(1.0)).clamp(1.0, float(weights.get("set_transport_recovery_max_pos_weight", 8.0)))
+        presence = masked_mean(
+            F.binary_cross_entropy_with_logits(torch.logit(rp), has_recovery, reduction="none", pos_weight=pos_weight), pair
+        )
+        pos_mask = pair & (has_recovery > 0.5)
+        magnitude = masked_mean(torch.abs(rp - rt), pos_mask) if pos_mask.any() else _zero_like_loss(rp)
+        root_recovery = 0.7 * presence + 0.3 * magnitude
     else:
         root_recovery = _zero_like_loss(pred)
 

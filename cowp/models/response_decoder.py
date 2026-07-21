@@ -21,6 +21,13 @@ class ResponseDecoder(nn.Module):
         # predicts the natural alternative from which it is transported.  This
         # remains available when dense response trajectories are disabled.
         self.root_head = nn.Linear(d_model, responses * self.natural_modes)
+        # Slot-specific residual queries preserve v9 logits while making response
+        # identities explicit.  The new parameters can be learned from a v9 ckpt.
+        self.response_embedding = nn.Parameter(torch.randn(responses, d_model) * 0.02)
+        self.root_refine_norm = nn.LayerNorm(d_model)
+        self.root_refine = nn.Linear(d_model, self.natural_modes)
+        nn.init.zeros_(self.root_refine.weight)
+        nn.init.zeros_(self.root_refine.bias)
         self.min_burden_head = nn.Linear(d_model, responses)
         self.burden_head = nn.Linear(d_model, responses * 7)  # total + 6 components
 
@@ -42,13 +49,16 @@ class ResponseDecoder(nn.Module):
         zg = z_graph[:, None, None, :].expand(B, K, A, D)
         pair = self.pair(torch.cat([zc, za, zg], dim=-1))
         burden = self.burden_head(pair).reshape(B, K, A, self.responses, 7)
+        base_root = self.root_head(pair).reshape(B, K, A, self.responses, self.natural_modes)
+        slot = self.root_refine_norm(pair[..., None, :] + self.response_embedding[None, None, None, :, :])
+        root_logits = base_root + self.root_refine(slot)
         out = {
             "safe_logits": self.safe_head(pair),
             "low_logits": self.low_head(pair),
             "valid_logits": self.valid_head(pair),
             "mode_logits": self.mode_head(pair),
             "source_logits": self.source_head(pair).reshape(B, K, A, self.responses, 4),
-            "root_logits": self.root_head(pair).reshape(B, K, A, self.responses, self.natural_modes),
+            "root_logits": root_logits,
             "min_burden_logits": self.min_burden_head(pair),
             "burden_total": burden[..., 0].relu(),
             "burden_components": burden[..., 1:].relu().clamp(max=2.0),
