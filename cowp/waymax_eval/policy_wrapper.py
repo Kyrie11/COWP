@@ -1985,6 +1985,28 @@ class COWPWaymaxPolicy:
                 cand_quality_prob = ((1.0 - mix_value) * cand_quality_prob + mix_value * (1.0 - fallback_cert_risk)).clamp(0.0, 1.0)
             candidate_cert_risk = cert_decision_risk
 
+            transport_risk_t = pred.get("candidate_transport_risk")
+            if self.torch.is_tensor(transport_risk_t):
+                transport_risk = self.torch.nan_to_num(
+                    transport_risk_t[0].float(), nan=1.0, posinf=1.0, neginf=0.0
+                ).clamp(0.0, 1.0)
+            else:
+                transport_risk = structured_risk
+            transport_unc_t = pred.get("candidate_transport_uncertainty")
+            if self.torch.is_tensor(transport_unc_t):
+                transport_uncertainty = self.torch.nan_to_num(
+                    transport_unc_t[0].float(), nan=1.0, posinf=1.0, neginf=0.0
+                ).clamp(0.0, 1.0)
+            else:
+                transport_uncertainty = self.torch.zeros_like(scores)
+            transport_severe_t = pred.get("candidate_transport_severe_prob")
+            if self.torch.is_tensor(transport_severe_t):
+                transport_severe = self.torch.nan_to_num(
+                    transport_severe_t[0].float(), nan=1.0, posinf=1.0, neginf=0.0
+                ).clamp(0.0, 1.0)
+            else:
+                transport_severe = self.torch.zeros_like(scores)
+
             crit_mask = batch["cowp/critical/valid"][0].bool()
             witness = self.torch.where(crit_mask[None, :], witness, self.torch.zeros_like(witness))
             witness_cert = self.torch.where(crit_mask[None, :], witness_cert, self.torch.zeros_like(witness_cert))
@@ -2032,12 +2054,30 @@ class COWPWaymaxPolicy:
                 opr_ucb_scale = float(pcfg_runtime.get("set_transport_opr_ucb_scale", 0.50))
                 confident_pair = uncertainty <= hard_max_unc
                 opr_upper = (opr + opr_ucb_scale * uncertainty).clamp(0.0, 1.0)
-                primary_bad = ((witness_cert >= float(self.witness_threshold)) & primary_claim & confident_pair).any(dim=-1)
-                option_bad = ((opr_upper < alpha) & primary_claim & confident_pair).any(dim=-1)
-                severe_bad = ((witness_cert >= float(self.secondary_witness_threshold)) & (opr_upper <= float(self.secondary_opr_alpha)) & primary_claim & confident_pair).any(dim=-1)
+                severe_pair_bad = ((witness_cert >= float(self.secondary_witness_threshold))
+                                   & (opr_upper <= float(self.secondary_opr_alpha))
+                                   & primary_claim & confident_pair).any(dim=-1)
+                transport_gate_mode = str(pcfg_runtime.get("candidate_transport_gate_mode", "budget")).lower()
+                if transport_gate_mode in {"pairmax", "pair_max", "legacy"}:
+                    primary_bad = ((witness_cert >= float(self.witness_threshold)) & primary_claim & confident_pair).any(dim=-1)
+                    option_bad = ((opr_upper < alpha) & primary_claim & confident_pair).any(dim=-1)
+                    severe_bad = severe_pair_bad
+                else:
+                    budget_scale = float(pcfg_runtime.get("candidate_transport_budget_scale", 1.0))
+                    budget_bias = float(pcfg_runtime.get("candidate_transport_budget_bias", 0.0))
+                    transport_budget = min(max(float(self.witness_threshold) * budget_scale + budget_bias, 0.02), 0.98)
+                    transport_ucb = (
+                        transport_risk
+                        + float(pcfg_runtime.get("candidate_transport_ucb_scale", 0.25)) * transport_uncertainty
+                    ).clamp(0.0, 1.0)
+                    primary_bad = transport_ucb >= transport_budget
+                    option_bad = self.torch.zeros_like(primary_bad)
+                    severe_bad = severe_pair_bad | (
+                        transport_severe >= float(pcfg_runtime.get("candidate_transport_severe_threshold", 0.80))
+                    )
                 uncertain_mix = float(pcfg_runtime.get("set_transport_uncertain_penalty", 0.25))
-                burden_penalty = ((witness + uncertain_mix * uncertainty) * priority).amax(dim=-1)
-                option_penalty = (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
+                burden_penalty = transport_risk
+                option_penalty = float(pcfg_runtime.get("candidate_transport_uncertainty_penalty", 0.20)) * transport_uncertainty
                 cert_penalty = float(self.cfg.get("planning", {}).get("candidate_certificate_penalty", 1.0))
                 pressure_penalty = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
                 rule_penalty = float(self.cfg.get("planning", {}).get("candidate_rule_risk_penalty", 1.25))
@@ -2073,10 +2113,7 @@ class COWPWaymaxPolicy:
                 # conventional safety and silently resurrect rejected witnesses.
                 frontier_base = accepted & physical_ok
                 if frontier_base.any():
-                    if 'priority' in locals() and priority.numel():
-                        pair_risk = (witness * priority).amax(dim=-1) + (self.torch.relu(alpha - opr) * priority).amax(dim=-1)
-                    else:
-                        pair_risk = witness.amax(dim=-1) + self.torch.relu(alpha - opr).amax(dim=-1)
+                    pair_risk = transport_risk
                     pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.20))
                     pressure_mix = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_mix", 0.35))
                     rule_mix = float(self.cfg.get("planning", {}).get("candidate_rule_risk_mix", 1.0))

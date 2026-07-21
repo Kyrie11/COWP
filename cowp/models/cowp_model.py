@@ -53,6 +53,7 @@ class COWPModel(nn.Module):
             hidden=int(m.get("set_transport_hidden", 64)),
             source_count=4,
             geometry_steps=int(m.get("set_transport_geometry_steps", 16)),
+            response_topk=int(m.get("set_transport_response_topk", 8)),
         )
         self.planner = PlannerHead(d_model=d_model)
         # Candidate-level calibrated non-coercive feasibility certificate.
@@ -67,6 +68,22 @@ class COWPModel(nn.Module):
             nn.LayerNorm(d_model),
             nn.Linear(d_model, 3),
         )
+        # v11-BCOT calibrates only monotone transport statistics.  The legacy
+        # candidate head is retained for checkpoint compatibility and ablation,
+        # but the main certificate no longer receives a generic candidate latent
+        # that could solve false-safe classification while ignoring option
+        # transport.
+        self.transport_candidate_calibrator = nn.Sequential(
+            nn.Linear(11, 64),
+            nn.GELU(),
+            nn.LayerNorm(64),
+            nn.Linear(64, 3),
+            nn.Tanh(),
+        )
+        # Preserve the analytic BCOT certificate at v10 checkpoint load; the
+        # residual starts exactly at zero and is learned only as calibration.
+        nn.init.zeros_(self.transport_candidate_calibrator[3].weight)
+        nn.init.zeros_(self.transport_candidate_calibrator[3].bias)
         self.priority_claim = PriorityClaimHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.outcome_risk = OutcomeRiskHead(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
         self.max_agents = int(m.get("max_agents", 128))
@@ -347,6 +364,7 @@ class COWPModel(nn.Module):
                     beta=beta,
                     candidate_traj=cand_traj,
                     natural_traj=natural_out.get("traj"),
+                    critical_mask=critical_mask,
                     alpha_opr=float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     gamma=float(pcfg.get("ncf_gamma_infer", self.cfg.get("ncf", {}).get("gamma", 0.10))),
                     conflict_mass_floor=float(pcfg.get("set_transport_conflict_mass_floor", self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))),
@@ -354,6 +372,7 @@ class COWPModel(nn.Module):
                     gate_temperature=float(pcfg.get("set_transport_gate_temperature", 0.06)),
                     calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
                     root_mass_scale=float(pcfg.get("set_transport_root_mass_scale", 1.0)),
+                    candidate_tail_temperature=float(pcfg.get("candidate_transport_tail_temperature", 0.12)),
                 )
                 out["set_certificate"] = set_certificate
                 # The selector consumes the mechanistic certificate.  The proxy
@@ -368,6 +387,9 @@ class COWPModel(nn.Module):
                 witness["opr"] = set_certificate["opr"]
                 witness["burden_total"] = set_certificate["min_safe_burden"]
                 witness["c_i"] = set_certificate["natural_conflict_mass"]
+                out["candidate_transport_risk"] = set_certificate["candidate_transport_risk"]
+                out["candidate_transport_uncertainty"] = set_certificate["candidate_transport_uncertainty"]
+                out["candidate_transport_severe_prob"] = set_certificate["candidate_severe_prob"]
             out["witness"] = witness
         if need_planner:
             assert z_cand is not None and cand_mask is not None
@@ -453,16 +475,28 @@ class COWPModel(nn.Module):
                 max_ci_excess = ci_excess.max(dim=-1).values.clamp(0.0, 2.0) / 2.0
                 collapse_fraction = option_collapse.sum(dim=-1) / denom
                 max_uncertainty = uncertainty.max(dim=-1).values.clamp(0.0, 1.0)
-                # Analytic set-preservation risk.  It is interpretable and cannot be
-                # replaced by a generic outcome/planner-score fallback.  The learned
-                # head predicts a residual calibration on top of this certificate.
-                pair_set_risk = (
-                    0.50 * wp_aux
-                    + 0.25 * option_collapse
-                    + 0.15 * burden_excess.clamp(0.0, 1.0)
-                    + 0.10 * ci_excess.clamp(0.0, 1.0)
-                ).clamp(0.0, 1.0)
-                structured_risk = torch.where(cm, pair_set_risk, torch.zeros_like(pair_set_risk)).max(dim=-1).values
+                set_certificate = out.get("set_certificate")
+                if isinstance(set_certificate, dict) and "candidate_transport_risk" in set_certificate:
+                    structured_risk = set_certificate["candidate_transport_risk"].float()
+                    mean_deficit = set_certificate["candidate_mean_deficit"].float()
+                    tail_deficit = set_certificate["candidate_tail_deficit"].float()
+                    severe_prob = set_certificate["candidate_severe_prob"].float()
+                    transport_uncertainty = set_certificate["candidate_transport_uncertainty"].float()
+                    unrecovered = set_certificate["unrecovered_conflict_mass"].float()
+                    max_unrecovered = torch.where(cm, unrecovered, torch.zeros_like(unrecovered)).max(dim=-1).values
+                else:
+                    pair_set_risk = (
+                        0.50 * wp_aux
+                        + 0.25 * option_collapse
+                        + 0.15 * burden_excess.clamp(0.0, 1.0)
+                        + 0.10 * ci_excess.clamp(0.0, 1.0)
+                    ).clamp(0.0, 1.0)
+                    structured_risk = torch.where(cm, pair_set_risk, torch.zeros_like(pair_set_risk)).max(dim=-1).values
+                    mean_deficit = structured_risk
+                    tail_deficit = structured_risk
+                    severe_prob = structured_risk
+                    transport_uncertainty = max_uncertainty
+                    max_unrecovered = max_ci_excess
             else:
                 max_wit = witness_for_planner
                 mean_wit = witness_for_planner
@@ -473,6 +507,11 @@ class COWPModel(nn.Module):
                 collapse_fraction = torch.relu(0.35 - min_opr).clamp(0.0, 1.0)
                 max_uncertainty = torch.zeros_like(max_wit)
                 structured_risk = (0.65 * max_wit + 0.35 * collapse_fraction).clamp(0.0, 1.0)
+                mean_deficit = structured_risk
+                tail_deficit = structured_risk
+                severe_prob = structured_risk
+                transport_uncertainty = max_uncertainty
+                max_unrecovered = max_ci_excess
             safe_aux = torch.ones_like(max_wit) if conventional_safe is None else conventional_safe.float()
             cert_aux = torch.stack([
                 ego_utility.float(), safe_aux,
@@ -480,14 +519,27 @@ class COWPModel(nn.Module):
                 max_burden_excess.float(), max_ci_excess.float(),
                 collapse_fraction.float(), max_uncertainty.float(),
             ], dim=-1)
-            cert_residual = self.candidate_certificate(torch.cat([z_cand_planner, cert_aux.detach() if detach_backbone else cert_aux], dim=-1))
+            crit_fraction = (
+                critical_mask.float().sum(dim=-1, keepdim=True) / max(float(critical_mask.shape[-1]), 1.0)
+                if critical_mask is not None
+                else torch.ones_like(structured_risk[:, :1])
+            ).expand_as(structured_risk)
+            transport_features = torch.stack([
+                structured_risk.float(), mean_deficit.float(), tail_deficit.float(),
+                severe_prob.float(), transport_uncertainty.float(),
+                max_wit.float(), min_opr.float(), max_burden_excess.float(),
+                max_ci_excess.float(), max_unrecovered.float(), crit_fraction.float(),
+            ], dim=-1)
+            cert_residual = self.transport_candidate_calibrator(
+                transport_features.detach() if detach_backbone else transport_features
+            )
             eps = 1.0e-4
             base_fs = (safe_aux * structured_risk).clamp(eps, 1.0 - eps)
             base_ncf = (safe_aux * (1.0 - structured_risk)).clamp(eps, 1.0 - eps)
             base_fs_logit = torch.logit(base_fs)
             base_ncf_logit = torch.logit(base_ncf)
             structured_weight = float(self.cfg.get("planning", {}).get("candidate_structured_logit_weight", 1.0))
-            residual_scale = float(self.cfg.get("planning", {}).get("candidate_certificate_residual_scale", 0.15))
+            residual_scale = float(self.cfg.get("planning", {}).get("candidate_transport_residual_scale", 0.20))
             out["candidate_ncf_logit"] = structured_weight * base_ncf_logit + residual_scale * cert_residual[..., 0]
             out["candidate_false_safe_logit"] = structured_weight * base_fs_logit + residual_scale * cert_residual[..., 1]
             out["candidate_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]

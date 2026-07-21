@@ -1181,6 +1181,62 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     else:
         root_recovery = _zero_like_loss(pred)
 
+    # Candidate-level budget supervision.  Pair AUPRC can be high while an
+    # any/max reduction rejects nearly every candidate.  Supervise the monotone
+    # BCOT aggregate directly with the same disjoint NCF/false-safe labels used
+    # for evaluation.  The aggregate contains no generic candidate latent, so
+    # this objective calibrates option transport rather than replacing it.
+    candidate_transport = pred.get("candidate_transport_risk")
+    if candidate_transport is not None:
+        raw_ncf = _binary_target(batch.get(
+            "cowp/candidates/noncoercive_feasible",
+            torch.zeros_like(candidate_transport),
+        )) > 0.5
+        raw_fs = _binary_target(batch.get(
+            "cowp/candidates/false_safe",
+            torch.zeros_like(candidate_transport),
+        )) > 0.5
+        ncf_pos = cand & raw_ncf & ~raw_fs
+        fs_pos = cand & raw_fs
+        disc = ncf_pos | fs_pos
+        if disc.any():
+            risk = _safe_float(candidate_transport).clamp(1.0e-5, 1.0 - 1.0e-5)
+            risk_logit = torch.logit(risk)
+            target = fs_pos.float()
+            pos_weight = (
+                ncf_pos.float().sum() / fs_pos.float().sum().clamp_min(1.0)
+            ).clamp(1.0, float(weights.get("set_transport_candidate_max_pos_weight", 4.0)))
+            budget_bce = masked_mean(
+                F.binary_cross_entropy_with_logits(
+                    risk_logit, target, reduction="none", pos_weight=pos_weight
+                ),
+                disc,
+            )
+            rank_terms: list[torch.Tensor] = []
+            margin = float(weights.get("set_transport_candidate_margin", 0.10))
+            max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
+            for b in range(cand.shape[0]):
+                good = torch.where(ncf_pos[b])[0]
+                bad = torch.where(fs_pos[b])[0]
+                if not (good.numel() and bad.numel()):
+                    continue
+                if good.numel() * bad.numel() > max_pairs:
+                    g_keep = max(1, int(max_pairs ** 0.5))
+                    b_keep = max(1, max_pairs // g_keep)
+                    good = good[:g_keep]
+                    bad = bad[:b_keep]
+                rank_terms.append(
+                    torch.relu(
+                        margin + risk[b, good[:, None]] - risk[b, bad[None, :]]
+                    ).mean()
+                )
+            budget_rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(risk)
+            candidate_budget = 0.65 * budget_bce + 0.35 * budget_rank
+        else:
+            candidate_budget = _zero_like_loss(candidate_transport)
+    else:
+        candidate_budget = _zero_like_loss(pred)
+
     total = (
         float(weights.get("set_transport_witness", 2.0)) * witness
         + float(weights.get("set_transport_opr", 1.0)) * opr
@@ -1192,5 +1248,6 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
         + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
         + float(weights.get("set_transport_root_recovery", 0.75)) * root_recovery
+        + float(weights.get("set_transport_candidate_budget", 2.0)) * candidate_budget
     )
-    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response, "mode_conflict": mode_conflict, "mode_retain": mode_retain, "mode_uncertainty": mode_uncertainty, "root_recovery": root_recovery}
+    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response, "mode_conflict": mode_conflict, "mode_retain": mode_retain, "mode_uncertainty": mode_uncertainty, "root_recovery": root_recovery, "candidate_budget": candidate_budget}

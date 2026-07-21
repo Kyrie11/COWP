@@ -1,0 +1,161 @@
+COWP v11-BCOT：部署、双 GPU 训练、离线 gate 与 100 场景 probe
+================================================================
+
+重要结论
+--------
+1. v11 复用现有 tensor_cache_*_waymax_transport_v9，不需要重建 WOMD labels、tensor cache、Waymax replay 或 transport sidecar。
+2. 从 v10-GCT planner checkpoint 初始化；不要回退到 v8/v9。
+3. 训练阶段按依赖关系串行，但每个阶段使用 GPU0+GPU1 DDP。
+4. learned-offline 主评估与 pairmax ablation 分别占 GPU0/GPU1 并行。
+5. gate 通过后：第一波 COWP-BCOT(GPU0)+conventional(GPU1)；第二波 pairmax(GPU0)+Pareto ablation(GPU1)。
+6. 100 场景仅用于机制 smoke test，不用于 SOTA 声明。
+
+一、部署
+--------
+cd /home/senzeyu2/code
+cp -a COWP "COWP_backup_before_v11_$(date +%Y%m%d_%H%M%S)"
+
+# 将 COWP_v11_BCOT.zip 上传到 /home/senzeyu2/code 后：
+rm -rf /home/senzeyu2/code/COWP_v11_BCOT
+unzip -q -o COWP_v11_BCOT.zip -d /home/senzeyu2/code/
+
+rsync -a --delete \
+  --exclude outputs --exclude .git \
+  /home/senzeyu2/code/COWP_v11_BCOT/ \
+  /home/senzeyu2/code/COWP/
+
+cd /home/senzeyu2/code/COWP
+
+二、静态与定向测试
+------------------
+PY=/home/senzeyu2/miniconda3/envs/mfrp/bin/python
+
+$PY -m compileall -q cowp
+bash -n run_cowp_v11_dual_gpu.sh
+
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $PY -m pytest -q \
+  tests/test_v11_bcot_budget.py \
+  tests/test_v10_geometry_transport.py \
+  tests/test_set_transport_certificate.py \
+  tests/test_v9_transport_supervision.py \
+  tests/test_response_mask_and_amp.py \
+  tests/test_model_out_of_range_critical.py \
+  tests/test_losses_natural.py
+
+本地定向测试预期：19 passed。
+
+三、确认初始化 checkpoint
+------------------------
+ls -lh outputs/cowp_v10_gct_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt
+
+若真实 v10 输出目录名称不同，只修改下面 INIT_CKPT，不要关闭 REQUIRE_INIT_CKPT。
+
+四、推荐：一次执行 v11 双卡训练 + 离线 gate + 100 场景 probe
+-----------------------------------------------------------
+cd /home/senzeyu2/code/COWP
+
+PYTHON_BIN=/home/senzeyu2/miniconda3/envs/mfrp/bin/python \
+TORCHRUN_BIN=/home/senzeyu2/miniconda3/envs/mfrp/bin/torchrun \
+RAW_TRAIN_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax \
+RAW_VAL_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax \
+TRAIN_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax_transport_v9 \
+VAL_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax_transport_v9 \
+WAYMAX_VAL='/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150' \
+OUT_ROOT=outputs/cowp_v11_bcot_probe100_seed2026 \
+INIT_CKPT=outputs/cowp_v10_gct_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt \
+TRAIN_SEED=2026 \
+GPU0=0 GPU1=1 TRAIN_NPROC=2 \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 \
+RUN_TRANSPORT=1 RUN_PLANNER=1 RUN_OFFLINE=1 RUN_PROBE=1 \
+RUN_PAIRMAX_ABLATION=1 RUN_PARETO_ABLATION=1 RUN_SEMANTIC_PROBE=0 RUN_FULL=0 \
+TRANSPORT_EPOCHS=14 PLANNER_EPOCHS=10 \
+BATCH_PER_GPU=5 NUM_WORKERS=4 PREFETCH_FACTOR=1 \
+TRANSPORT_LR=1.5e-5 PLANNER_LR=8e-6 \
+FREEZE_BACKBONE_EPOCHS=1 EARLY_STOP_PATIENCE=5 \
+PROBE_SCENARIOS=100 \
+OFFLINE_OUTCOME_RISK_PENALTY=0.0 ONLINE_OUTCOME_RISK_PENALTY=0.75 \
+FORCE_TRAIN=1 FORCE_EVAL=1 REQUIRE_INIT_CKPT=1 DETACH=1 \
+bash run_cowp_v11_dual_gpu.sh
+
+查看总控日志：
+tail -f outputs/cowp_v11_bcot_probe100_seed2026/logs/driver.nohup.log
+
+查看 transport 训练：
+tail -f outputs/cowp_v11_bcot_probe100_seed2026/logs/train_transport_ddp.log
+
+查看 planner 训练：
+tail -f outputs/cowp_v11_bcot_probe100_seed2026/logs/train_planner_ddp.log
+
+五、离线阶段必须检查
+--------------------
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/learned_offline/bcot_readiness.json
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/learned_offline/witness_calibration.json
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/learned_offline/mechanism_verification.json
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/learned_offline/pairmax_ablation.json
+
+训练日志重点字段：
+- val/set_transport/mode_conflict
+- val/set_transport/mode_retain
+- val/set_transport/root_recovery
+- val/set_transport/candidate_budget
+- val/response_aux/root
+- val/response_aux/min_burden
+
+离线评估重点字段：
+- WitnessQuality/AUPRC
+- BCOT/FalseSafe_AUPRC
+- BCOT/RiskRankingPairAccuracy
+- LearnedAcceptNCFRecall
+- LearnedAcceptedCandidateRate
+- FallbackRate
+- SelectedFalseSafeRate
+- EP / OPR / HBCR
+
+开发 gate：
+- WitnessQuality/AUPRC >= 0.60
+- BCOT/FalseSafe_AUPRC >= 0.65
+- LearnedAcceptNCFRecall >= 0.30
+- LearnedAcceptedCandidateRate >= 0.10
+- FallbackRate <= 0.25
+- conventional - COWP SelectedFalseSafeRate >= 0.08
+
+未通过时脚本会停在 Waymax 前。不要手动放松 gate；将上述 JSON 和两个 history 文件重新打包分析。
+
+六、gate 通过后检查 100 场景
+----------------------------
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/probe/delta_conventional_vs_root_transport.json
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/probe/delta_pairmax_vs_bcot.json
+cat outputs/cowp_v11_bcot_probe100_seed2026/eval/probe/delta_pareto_vs_bcot.json
+
+BCOT 必须至少满足：
+- 相对 conventional：overlap/offroad/wrong-way/kinematics 不显著恶化；
+- route progression/EP 不因 fallback 明显下降；
+- 相对 pairmax：fallback 和可行候选保留明显改善；
+- 相对 Pareto ablation：核心 safety/option 指标不退化。
+
+七、100 场景方向正确后运行同 checkpoint 的 1000 场景
+---------------------------------------------------
+# 继续使用同一个 OUT_ROOT，从而自动读取 calibration threshold 和 checkpoint。
+cd /home/senzeyu2/code/COWP
+
+PYTHON_BIN=/home/senzeyu2/miniconda3/envs/mfrp/bin/python \
+TORCHRUN_BIN=/home/senzeyu2/miniconda3/envs/mfrp/bin/torchrun \
+TRAIN_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax_transport_v9 \
+VAL_CACHE=/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax_transport_v9 \
+WAYMAX_VAL='/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150' \
+OUT_ROOT=outputs/cowp_v11_bcot_probe100_seed2026 \
+CKPT=outputs/cowp_v11_bcot_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt \
+GPU0=0 GPU1=1 FULL_SCENARIOS=1000 \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_TRANSPORT=0 RUN_PLANNER=0 \
+RUN_OFFLINE=0 RUN_PROBE=0 RUN_PAIRMAX_ABLATION=0 RUN_PARETO_ABLATION=0 RUN_FULL=1 \
+FORCE_EVAL=1 DETACH=1 \
+bash run_cowp_v11_dual_gpu.sh
+
+八、不要执行
+------------
+- 不要重建 WOMD labels/tensor cache/Waymax replay/transport_v9。
+- 不要用 v8 checkpoint 替代 v10 初始化。
+- 不要把附着的稀疏 candidate outcome 当作在线闭环结果。
+- 不要因为 gate 失败而降低 NCF recall、accepted rate 或 fallback 门槛。
+- 不要跳过 pairmax ablation；它是证明 v11 聚合创新有效的关键证据。
+- 不要直接跑 5000 场景或多种子，先通过 100/1000 场景开发检查。

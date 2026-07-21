@@ -616,7 +616,8 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
             + 0.15 * gw("set_transport/burden")
             + 0.35 * gw("set_transport/mode_conflict")
             + 0.35 * gw("set_transport/mode_retain")
-            + 0.15 * gw("set_transport/root_recovery")
+            + 0.10 * gw("set_transport/root_recovery")
+            + 0.45 * gw("set_transport/candidate_budget")
             + 0.10 * gw("response_aux/root")
             + 0.05 * gw("response_aux/min_burden")
         )
@@ -642,7 +643,8 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         + 0.15 * g("set_transport/burden", 1.0)
         + 0.25 * g("set_transport/mode_conflict", 1.0)
         + 0.25 * g("set_transport/mode_retain", 1.0)
-        + 0.10 * g("set_transport/root_recovery", 1.0)
+        + 0.05 * g("set_transport/root_recovery", 1.0)
+        + 0.35 * g("set_transport/candidate_budget", 1.0)
         + 0.10 * g("planner/outcome_cls", 1.0)
         + 0.10 * g("planner/ranking", 1.0)
     )
@@ -650,7 +652,7 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
 
 
 def _set_stage_freeze(model: torch.nn.Module, stage: str, warmup_frozen: bool) -> None:
-    """Granular v10 freeze policy.
+    """Granular v11 freeze policy.
 
     Transport learning always updates candidate, natural and witness identity heads;
     only the expensive graph encoder is protected during warm-up.  Planner learning

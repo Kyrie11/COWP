@@ -22,11 +22,13 @@ class SetTransportCertificateHead(nn.Module):
         source_count: int = 4,
         geometry_steps: int = 16,
         geometry_dim: int = 8,
+        response_topk: int = 8,
     ):
         super().__init__()
         h = int(hidden)
         self.source_count = int(source_count)
         self.geometry_steps = max(int(geometry_steps), 4)
+        self.response_topk = max(int(response_topk), 1)
         self.cand = nn.Linear(d_model, h, bias=False)
         self.agent = nn.Linear(d_model, h, bias=False)
         self.graph = nn.Linear(d_model, h, bias=False)
@@ -139,6 +141,7 @@ class SetTransportCertificateHead(nn.Module):
         beta: torch.Tensor,
         candidate_traj: torch.Tensor | None = None,
         natural_traj: torch.Tensor | None = None,
+        critical_mask: torch.Tensor | None = None,
         alpha_opr: float = 0.35,
         gamma: float = 0.10,
         conflict_mass_floor: float = 0.10,
@@ -146,6 +149,7 @@ class SetTransportCertificateHead(nn.Module):
         gate_temperature: float = 0.06,
         calibration_scale: float = 0.10,
         root_mass_scale: float = 1.0,
+        candidate_tail_temperature: float = 0.12,
     ) -> dict[str, torch.Tensor]:
         B, K, D = z_candidate.shape
         A = critical_indices.shape[1]
@@ -191,17 +195,26 @@ class SetTransportCertificateHead(nn.Module):
         response_weight = torch.softmax(response.get("mode_logits", torch.zeros_like(response_safe)).float(), dim=-1)
         response_low_safe = response_safe * response_low * response_valid
         response_low_safe_mass = (response_weight * response_low_safe).sum(dim=-1).clamp(0.0, 1.0)
-        response_exist_low_safe = 1.0 - torch.prod((1.0 - response_low_safe).clamp(1.0e-5, 1.0), dim=-1)
+        # The label is existential (there is at least one low-burden safe
+        # response), not a response-mixture expectation.  v10 multiplied every
+        # root contribution by the mixture weight and under-estimated sparse
+        # recovery, while an all-slot noisy-OR lets duplicated/diffuse slots
+        # manufacture near-one recovery.  Use the fuzzy existential operator
+        # (max/supremum) over only the strongest slots.  It is bounded, invariant
+        # to duplicate slots, and gives a uniform root assignment only 1/M mass.
+        top_r = min(self.response_topk, int(response_low_safe.shape[-1]))
+        response_strength, response_top_idx = torch.topk(response_low_safe, k=top_r, dim=-1)
+        response_exist_low_safe = response_strength.amax(dim=-1)
 
         root_logits = response.get("root_logits")
         if root_logits is not None and root_logits.shape[-1] == M:
             root_prob = torch.softmax(root_logits.float(), dim=-1)
-            # v9 omitted response mixture weights here.  With 32 diffuse slots,
-            # the product-of-complements greatly overestimated root recovery.
-            root_low_safe_mass = (
-                root_prob * response_low_safe[..., None] * response_weight[..., None]
-            ).sum(dim=-2)
-            root_response_exist = (root_low_safe_mass * float(root_mass_scale)).clamp(0.0, 1.0)
+            gather_idx = response_top_idx[..., None].expand(*response_top_idx.shape, M)
+            root_top = torch.gather(root_prob, dim=-2, index=gather_idx)
+            root_contribution = (
+                root_top * response_strength[..., None] * float(root_mass_scale)
+            ).clamp(0.0, 1.0)
+            root_response_exist = root_contribution.amax(dim=-2)
         else:
             root_response_exist = low_safe_option_prob
         conflicted_mass = natural_weight * conflict_prob
@@ -236,6 +249,74 @@ class SetTransportCertificateHead(nn.Module):
         witness_logit = torch.logit(witness_prob.clamp(eps, 1.0 - eps))
         uncertainty = (natural_weight * mode_uncertainty).sum(dim=-1).clamp(0.0, 1.0)
 
+        # ------------------------------------------------------------------
+        # Budgeted Counterfactual Option Transport (BCOT) candidate certificate
+        # ------------------------------------------------------------------
+        # A max/any reduction over up to six pair certificates turns a moderate
+        # pair-level false-positive rate into a very low candidate-level recall.
+        # The paper's object is instead the amount of low-burden option mass that
+        # ego removes.  Aggregate that mass with a smooth tail-risk term, while
+        # preserving an explicit hard signal for a genuinely severe protected
+        # pair.  This is monotone in conflict, option loss, burden excess and
+        # failed same-root recovery, so a generic candidate classifier cannot
+        # silently replace the proposed mechanism.
+        unrecovered_mode_mass = natural_weight * conflict_prob * (1.0 - root_response_exist)
+        unrecovered_conflict_mass = unrecovered_mode_mass.sum(dim=-1).clamp(0.0, 1.0)
+        option_shortfall = (
+            torch.relu(torch.as_tensor(float(alpha_opr), device=opr.device, dtype=opr.dtype) - opr)
+            / max(float(alpha_opr), 1.0e-6)
+        ).clamp(0.0, 1.0)
+        priority_support = (natural_weight * priority_prob).sum(dim=-1).clamp(0.0, 1.0)
+        pair_transport_deficit = (
+            0.55 * unrecovered_conflict_mass
+            + 0.25 * natural_conflict_mass * burden_gate
+            + 0.20 * option_shortfall
+        ).clamp(0.0, 1.0)
+        pair_severe_prob = (
+            conflict_gate
+            * response_absence_gate
+            * burden_gate
+            * priority_support
+            * (1.0 - 0.5 * uncertainty)
+        ).clamp(0.0, 1.0)
+
+        if critical_mask is None:
+            cmask = torch.ones(B, A, device=pair_transport_deficit.device, dtype=torch.bool)
+        else:
+            cmask = critical_mask.bool()
+        cm = cmask[:, None, :].expand(B, K, A)
+        priority_weight = torch.where(
+            cm,
+            0.25 + 0.75 * priority_support,
+            torch.zeros_like(priority_support),
+        )
+        weight_denom = priority_weight.sum(dim=-1).clamp_min(1.0e-6)
+        candidate_mean_deficit = (
+            priority_weight * pair_transport_deficit
+        ).sum(dim=-1) / weight_denom
+
+        tail_tau = max(float(candidate_tail_temperature), 1.0e-3)
+        tail_logits = pair_transport_deficit / tail_tau + torch.log(priority_weight.clamp_min(1.0e-8))
+        tail_logits = torch.where(cm, tail_logits, torch.full_like(tail_logits, -1.0e4))
+        tail_weight = torch.softmax(tail_logits, dim=-1) * cm.float()
+        tail_weight = tail_weight / tail_weight.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
+        candidate_tail_deficit = (tail_weight * pair_transport_deficit).sum(dim=-1)
+        candidate_severe_prob = torch.where(
+            cm, pair_severe_prob, torch.zeros_like(pair_severe_prob)
+        ).amax(dim=-1)
+        candidate_transport_risk = (
+            0.55 * candidate_mean_deficit
+            + 0.30 * candidate_tail_deficit
+            + 0.15 * candidate_severe_prob
+        ).clamp(0.0, 1.0)
+        candidate_mean_uncertainty = (
+            priority_weight * uncertainty
+        ).sum(dim=-1) / weight_denom
+        candidate_tail_uncertainty = (tail_weight * uncertainty).sum(dim=-1)
+        candidate_transport_uncertainty = (
+            0.60 * candidate_mean_uncertainty + 0.40 * candidate_tail_uncertainty
+        ).clamp(0.0, 1.0)
+
         return {
             "exist_logits": witness_logit,
             "witness_prob": witness_prob,
@@ -260,4 +341,13 @@ class SetTransportCertificateHead(nn.Module):
             "uncertainty": uncertainty,
             "geometry_min_distance_norm": geometry_feat[..., 0],
             "geometry_clearance_norm": geometry_feat[..., 7],
+            "unrecovered_conflict_mass": unrecovered_conflict_mass,
+            "pair_transport_deficit": pair_transport_deficit,
+            "pair_severe_prob": pair_severe_prob,
+            "priority_support": priority_support,
+            "candidate_mean_deficit": candidate_mean_deficit,
+            "candidate_tail_deficit": candidate_tail_deficit,
+            "candidate_severe_prob": candidate_severe_prob,
+            "candidate_transport_risk": candidate_transport_risk,
+            "candidate_transport_uncertainty": candidate_transport_uncertainty,
         }

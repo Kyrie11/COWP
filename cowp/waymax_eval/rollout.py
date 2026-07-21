@@ -597,6 +597,27 @@ def _select_from_learned(
         utility_scores = scores
     cand_ncf_prob, cand_false_safe_prob, cand_quality_prob = _candidate_certificate_scores(pred, scores, cfg, cand_valid)
     candidate_cert_risk = _candidate_certificate_risk(cand_ncf_prob, cand_false_safe_prob, cand_quality_prob, cfg)
+    transport_risk = pred.get("candidate_transport_risk")
+    if torch.is_tensor(transport_risk):
+        transport_risk = torch.nan_to_num(
+            transport_risk.detach().float(), nan=1.0, posinf=1.0, neginf=0.0
+        ).clamp(0.0, 1.0)
+    else:
+        transport_risk = None
+    transport_uncertainty = pred.get("candidate_transport_uncertainty")
+    if torch.is_tensor(transport_uncertainty):
+        transport_uncertainty = torch.nan_to_num(
+            transport_uncertainty.detach().float(), nan=1.0, posinf=1.0, neginf=0.0
+        ).clamp(0.0, 1.0)
+    else:
+        transport_uncertainty = torch.zeros_like(scores)
+    transport_severe = pred.get("candidate_transport_severe_prob")
+    if torch.is_tensor(transport_severe):
+        transport_severe = torch.nan_to_num(
+            transport_severe.detach().float(), nan=1.0, posinf=1.0, neginf=0.0
+        ).clamp(0.0, 1.0)
+    else:
+        transport_severe = torch.zeros_like(scores)
     pressure_prior = _candidate_pressure_prior_torch(batch, cfg, scores)
     rule_risk = batch.get("cowp/candidates/rule_risk")
     if rule_risk is not None:
@@ -688,15 +709,35 @@ def _select_from_learned(
             opr_ucb_scale = float(pcfg_gate.get("set_transport_opr_ucb_scale", 0.50))
             confident_pair = witness_uncertainty <= hard_max_unc
             opr_upper = (opr + opr_ucb_scale * witness_uncertainty).clamp(0.0, 1.0)
-            # Hard-first remains exact for *certified* coercion.  Uncertain pairs
-            # are retained in the frontier with a soft penalty rather than being
-            # treated as proven infeasible.
-            primary_bad = ((witness_cert >= witness_threshold) & priority_claim & confident_pair).any(dim=-1)
-            option_bad = ((opr_upper < float(alpha_opr)) & priority_claim & confident_pair).any(dim=-1)
-            severe_bad = ((witness_cert >= float(secondary_witness_threshold)) & (opr_upper <= float(secondary_opr_alpha)) & priority_claim & confident_pair).any(dim=-1)
+            # v10 used an any/max reduction over up to six critical agents.  Even
+            # with strong pair AUPRC, one moderate false positive rejected an
+            # otherwise non-coercive candidate, limiting NCF recall to 0.14.
+            # v11 applies the paper's object directly: a candidate-level budget on
+            # transported option deficit, while retaining an explicit severe-pair
+            # veto for high-confidence protected-priority violations.
+            severe_pair_bad = ((witness_cert >= float(secondary_witness_threshold))
+                               & (opr_upper <= float(secondary_opr_alpha))
+                               & priority_claim & confident_pair).any(dim=-1)
+            pcfg_gate = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+            transport_gate_mode = str(pcfg_gate.get("candidate_transport_gate_mode", "budget")).lower()
+            if transport_risk is not None and transport_gate_mode not in {"pairmax", "pair_max", "legacy"}:
+                budget_scale = float(pcfg_gate.get("candidate_transport_budget_scale", 1.0))
+                budget_bias = float(pcfg_gate.get("candidate_transport_budget_bias", 0.0))
+                transport_budget = min(max(float(witness_threshold) * budget_scale + budget_bias, 0.02), 0.98)
+                transport_ucb_scale = float(pcfg_gate.get("candidate_transport_ucb_scale", 0.25))
+                transport_ucb = (transport_risk + transport_ucb_scale * transport_uncertainty).clamp(0.0, 1.0)
+                primary_bad = transport_ucb >= transport_budget
+                severe_prob_threshold = float(pcfg_gate.get("candidate_transport_severe_threshold", 0.80))
+                severe_bad = severe_pair_bad | (transport_severe >= severe_prob_threshold)
+                option_bad = torch.zeros_like(primary_bad)
+            else:
+                primary_bad = ((witness_cert >= witness_threshold) & priority_claim & confident_pair).any(dim=-1)
+                option_bad = ((opr_upper < float(alpha_opr)) & priority_claim & confident_pair).any(dim=-1)
+                severe_bad = severe_pair_bad
             uncertain_mix = float(pcfg_gate.get("set_transport_uncertain_penalty", 0.25))
             pair_soft = witness_prob + uncertain_mix * witness_uncertainty
-            penalty = (pair_soft * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
+            pair_penalty = (pair_soft * priority_proxy).amax(dim=-1) + (torch.relu(float(alpha_opr) - opr) * priority_proxy).amax(dim=-1)
+            penalty = transport_risk if transport_risk is not None else pair_penalty
             cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.0))
             pressure_penalty = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
             rule_penalty = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_penalty", 1.25))
@@ -1176,6 +1217,10 @@ def _learned_offline_candidate_eval_many(
     cert_fs_targets: list[np.ndarray] = []
     cert_q_scores: list[np.ndarray] = []
     cert_q_targets: list[np.ndarray] = []
+    transport_scores: list[np.ndarray] = []
+    transport_targets: list[np.ndarray] = []
+    transport_rank_good = 0
+    transport_rank_total = 0
     cert_rank_good = 0
     cert_rank_total = 0
     rank_good = 0
@@ -1226,6 +1271,13 @@ def _learned_offline_candidate_eval_many(
             cert_fs_np = cert_fs_t.detach().cpu().numpy()
             cert_q_np = cert_q_t.detach().cpu().numpy()
             cert_risk_np = cert_risk_t.detach().cpu().numpy()
+            transport_t = pred.get("candidate_transport_risk")
+            if torch.is_tensor(transport_t):
+                transport_np = torch.nan_to_num(
+                    transport_t.detach().float(), nan=1.0, posinf=1.0, neginf=0.0
+                ).clamp(0.0, 1.0).cpu().numpy()
+            else:
+                transport_np = cert_risk_np
             pressure_prior_np = pressure_prior_t.detach().cpu().numpy()
             rule_risk_np = rule_risk_t.detach().cpu().numpy()
             if valid_np.any():
@@ -1235,6 +1287,8 @@ def _learned_offline_candidate_eval_many(
                 cert_fs_targets.append(fs_np[valid_np])
                 cert_q_scores.append(cert_q_np[valid_np])
                 cert_q_targets.append(ncf_np[valid_np] & ~fs_np[valid_np])
+                transport_scores.append(transport_np[valid_np])
+                transport_targets.append(fs_np[valid_np])
             g, t = _ranking_pair_accuracy(score_np, ncf_np, fs_np, valid_np)
             rank_good += g
             rank_total += t
@@ -1243,6 +1297,9 @@ def _learned_offline_candidate_eval_many(
             cg, ct = _ranking_pair_accuracy(cert_risk_np, ncf_np, fs_np, valid_np)
             cert_rank_good += cg
             cert_rank_total += ct
+            tg, tt = _ranking_pair_accuracy(transport_np, ncf_np, fs_np, valid_np)
+            transport_rank_good += tg
+            transport_rank_total += tt
 
             # Model inference and all host transfers above are shared across
             # methods.  Only the inexpensive candidate selection/aggregation is
@@ -1293,6 +1350,9 @@ def _learned_offline_candidate_eval_many(
     cert_ncf_auprc = _average_precision_binary(np.concatenate(cert_ncf_scores), np.concatenate(cert_ncf_targets)) if cert_ncf_scores else 0.0
     cert_fs_auprc = _average_precision_binary(np.concatenate(cert_fs_scores), np.concatenate(cert_fs_targets)) if cert_fs_scores else 0.0
     cert_q_auprc = _average_precision_binary(np.concatenate(cert_q_scores), np.concatenate(cert_q_targets)) if cert_q_scores else 0.0
+    transport_fs_auprc = _average_precision_binary(
+        np.concatenate(transport_scores), np.concatenate(transport_targets)
+    ) if transport_scores else 0.0
     out_by_method = {
         method_name: {
             th: accs[method_name][th].finish(
@@ -1311,6 +1371,10 @@ def _learned_offline_candidate_eval_many(
             row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
             row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
             row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
+            row["BCOT/FalseSafe_AUPRC"] = float(transport_fs_auprc)
+            row["BCOT/RiskRankingPairAccuracy"] = float(
+                transport_rank_good / max(transport_rank_total, 1)
+            ) if transport_rank_total else 0.0
     if all_pair_scores.size:
         qs = np.quantile(all_pair_scores, [0.1, 0.5, 0.9, 0.99])
         for method_out in out_by_method.values():

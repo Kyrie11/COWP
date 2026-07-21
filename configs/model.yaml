@@ -15,6 +15,9 @@ model:
   edge_distance_scale_m: 12.0
   ego_centric_normalization: true
   evidential_witness: true
+  set_transport_hidden: 96
+  set_transport_geometry_steps: 20
+  set_transport_response_topk: 8
 
 ablation:
   use_obs_branch: true
