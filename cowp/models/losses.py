@@ -646,7 +646,12 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
                 root_target_gt.shape[0], root_target_gt.shape[1], assignment.shape[1], assignment.shape[2]
             )
             safe_gt = root_target_gt.clamp(0, assignment.shape[-1] - 1)
-            root_target = torch.gather(gather_map, -1, safe_gt.unsqueeze(-1)).squeeze(-1)
+            # gather_map: [B, K, A, M_gt], safe_gt: [B, K, A, R].
+            # torch.gather requires input and index to have the same rank; the
+            # previous unsqueeze created a 5-D index and crashed on the first
+            # training batch.  Gathering directly maps every GT root id to the
+            # aligned predicted-natural-mode id and returns [B, K, A, R].
+            root_target = torch.gather(gather_map, -1, safe_gt)
         else:
             root_target = root_target_gt
         root_target = root_target.clamp(0, pred["root_logits"].shape[-1] - 1)

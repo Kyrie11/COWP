@@ -105,3 +105,37 @@ def test_unordered_natural_modes_are_aligned_before_root_supervision():
     values = torch.tensor([[[[0.2, 0.8]]]])  # [B,K,A,M_pred]
     aligned = _align_pred_modes_to_gt(values, assignment)
     assert torch.allclose(aligned, torch.tensor([[[[0.8, 0.2]]]]))
+
+
+def test_response_root_supervision_with_unordered_natural_alignment():
+    B, K, A, R, M, T = 2, 3, 2, 4, 5, 6
+    response_pred = {
+        "safe_logits": torch.randn(B, K, A, R),
+        "low_logits": torch.randn(B, K, A, R),
+        "valid_logits": torch.randn(B, K, A, R),
+        "source_logits": torch.randn(B, K, A, R, 4),
+        "root_logits": torch.randn(B, K, A, R, M),
+        "min_burden_logits": torch.randn(B, K, A, R),
+        "burden_total": torch.rand(B, K, A, R),
+        "_natural_pred_traj": torch.randn(B, A, M, T, 5),
+    }
+    batch = {
+        "cowp/candidates/valid": torch.ones(B, K, dtype=torch.bool),
+        "cowp/critical/valid": torch.ones(B, A, dtype=torch.bool),
+        "cowp/response/valid": torch.ones(B, K, A, R, dtype=torch.bool),
+        "cowp/response/is_safe": torch.randint(0, 2, (B, K, A, R)).bool(),
+        "cowp/response/is_low_burden": torch.randint(0, 2, (B, K, A, R)).bool(),
+        "cowp/response/source": torch.zeros(B, K, A, R, dtype=torch.long),
+        "cowp/response/burden_total": torch.rand(B, K, A, R),
+        "cowp/transport/response_root_index": torch.randint(0, M, (B, K, A, R)),
+        "cowp/transport/response_is_min_burden": torch.randint(0, 2, (B, K, A, R)).bool(),
+        "cowp/natural/traj": torch.randn(B, A, M, T, 5),
+        "cowp/natural/valid": torch.ones(B, A, M, dtype=torch.bool),
+    }
+    losses = response_loss(
+        response_pred, batch,
+        {"response_traj_l1": 0.0, "response_components_l1": 0.0},
+    )
+    assert torch.isfinite(losses["loss"])
+    assert torch.isfinite(losses["root"])
+    assert losses["root"].item() > 0
