@@ -347,6 +347,11 @@ planning:
   set_transport_opr_ucb_scale: 0.5
   set_transport_uncertain_penalty: 0.25
   candidate_transport_tail_temperature: 0.12
+  # Candidate-level BCOT risk budget is calibrated independently from the
+  # pair-level witness probability threshold.
+  candidate_transport_budget: 0.35
+  candidate_transport_pure_selector: true
+  # Deprecated v11 compatibility fields (no longer used by the selector).
   candidate_transport_budget_scale: 1.0
   candidate_transport_budget_bias: 0.0
   candidate_transport_ucb_scale: 0.15

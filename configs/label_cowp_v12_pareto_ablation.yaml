@@ -254,6 +254,7 @@ ncf:
   min_alt_weight: 0.03
   positive_min_natural_conflict_mass: 0.1
 planning:
+  set_transport_root_mass_scale: 1.0
   p_hard: 0.75
   p_soft: 0.45
   alpha_opr_infer: 0.35
@@ -349,6 +350,7 @@ planning:
   # Candidate-level BCOT risk budget is calibrated independently from the
   # pair-level witness probability threshold.
   candidate_transport_budget: 0.35
+  pair_witness_threshold: 0.70
   candidate_transport_pure_selector: true
   # Deprecated v11 compatibility fields (no longer used by the selector).
   candidate_transport_budget_scale: 1.0

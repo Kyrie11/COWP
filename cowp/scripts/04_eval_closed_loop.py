@@ -9,6 +9,7 @@ from cowp.core.config import load_config
 from cowp.waymax_eval.rollout import (
     import_policy_fn,
     learned_offline_candidate_eval,
+    learned_offline_candidate_eval_budget_sweep,
     learned_offline_candidate_eval_methods,
     learned_offline_candidate_eval_sweep,
     offline_candidate_eval,
@@ -75,7 +76,9 @@ def main() -> None:
     ap.add_argument("--num-workers", type=int, default=0, help="DataLoader workers for learned_offline cache loading.")
     ap.add_argument("--prefetch-factor", type=int, default=2, help="Batches prefetched per learned_offline DataLoader worker.")
     ap.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=None, help="Pin learned_offline host tensors. Default: enabled only for CUDA evaluation.")
-    ap.add_argument("--witness-threshold", type=float, default=0.5)
+    ap.add_argument("--witness-threshold", type=float, default=0.5, help="Pair-level coercion witness threshold; independent of the candidate BCOT risk budget.")
+    ap.add_argument("--bcot-risk-budget", type=float, default=None, help="Candidate-level BCOT risk budget. Defaults to planning.candidate_transport_budget.")
+    ap.add_argument("--bcot-risk-budget-sweep", default=None, help="Comma-separated candidate BCOT budgets. Keeps the pair-witness threshold fixed and reuses one model/cache pass.")
     ap.add_argument("--witness-threshold-sweep", default=None, help="Comma-separated thresholds for learned_offline diagnostic sweep, e.g. 0.1,0.2,0.3,0.5,0.7.")
     ap.add_argument("--ncf-gate-mode", choices=["hard", "priority", "soft", "none"], default="priority", help="Candidate acceptance gate. priority is the default COWP gate; hard/universal vetoes any predicted witness; soft uses witness only as a score penalty; none disables witness gating.")
     ap.add_argument("--priority-hard-threshold", type=float, default=0.55, help="Online priority proxy threshold for hard P-NCF rejection.")
@@ -119,7 +122,62 @@ def main() -> None:
         if not args.checkpoint:
             raise ValueError("--mode learned_offline requires --checkpoint")
         method_list = [x.strip() for x in str(args.methods or "").split(",") if x.strip()]
-        if method_list:
+        if args.bcot_risk_budget_sweep and method_list:
+            raise ValueError(
+                "--bcot-risk-budget-sweep currently evaluates one --method. "
+                "Run the shared --methods comparison at the calibrated budget in a separate command."
+            )
+        if args.bcot_risk_budget_sweep:
+            budgets = [
+                float(x.strip())
+                for x in args.bcot_risk_budget_sweep.split(",")
+                if x.strip()
+            ]
+            if args.bcot_risk_budget is not None:
+                budgets.append(float(args.bcot_risk_budget))
+            sweep = learned_offline_candidate_eval_budget_sweep(
+                args.cache_dir or cfg["outputs"]["tensor_cache_dir"],
+                args.checkpoint,
+                cfg,
+                bcot_risk_budgets=budgets,
+                witness_threshold=args.witness_threshold,
+                batch_size=args.batch_size,
+                device=args.device,
+                num_workers=args.num_workers,
+                prefetch_factor=args.prefetch_factor,
+                pin_memory=args.pin_memory,
+                progress=not args.no_progress,
+                gate_mode=args.ncf_gate_mode,
+                secondary_witness_threshold=args.secondary_witness_threshold,
+                secondary_opr_alpha=args.secondary_opr_alpha,
+                priority_hard_threshold=args.priority_hard_threshold,
+                soft_ncf_penalty=args.soft_ncf_penalty,
+                method=args.method,
+                offline_fallback=args.offline_fallback,
+                adaptive_frontier_margin=args.adaptive_frontier_margin,
+                outcome_risk_penalty=args.outcome_risk_penalty,
+                outcome_risk_threshold=args.outcome_risk_threshold,
+            )
+            target_budget = float(
+                args.bcot_risk_budget
+                if args.bcot_risk_budget is not None
+                else cfg.get("planning", {}).get("candidate_transport_budget", 0.35)
+            )
+            metrics = min(
+                sweep,
+                key=lambda m: abs(float(m.get("bcot_risk_budget", target_budget)) - target_budget),
+            )
+            payload = {
+                args.method: metrics,
+                "mode": "learned_offline",
+                "checkpoint": args.checkpoint,
+                "ncf_gate_mode": args.ncf_gate_mode,
+                "priority_hard_threshold": args.priority_hard_threshold,
+                "offline_fallback": args.offline_fallback,
+                "pair_witness_threshold": float(args.witness_threshold),
+                "bcot_risk_budget_sweep": sweep,
+            }
+        elif method_list:
             thresholds = [float(args.witness_threshold)]
             if args.witness_threshold_sweep:
                 thresholds.extend(float(x.strip()) for x in args.witness_threshold_sweep.split(",") if x.strip())
@@ -134,6 +192,7 @@ def main() -> None:
                 prefetch_factor=args.prefetch_factor,
                 pin_memory=args.pin_memory,
                 witness_thresholds=thresholds,
+                bcot_risk_budget=args.bcot_risk_budget,
                 progress=not args.no_progress,
                 gate_mode=args.ncf_gate_mode,
                 secondary_witness_threshold=args.secondary_witness_threshold,
@@ -173,6 +232,7 @@ def main() -> None:
                 prefetch_factor=args.prefetch_factor,
                 pin_memory=args.pin_memory,
                 witness_thresholds=thresholds,
+                bcot_risk_budget=args.bcot_risk_budget,
                 progress=not args.no_progress,
                 gate_mode=args.ncf_gate_mode,
                 secondary_witness_threshold=args.secondary_witness_threshold,
@@ -198,6 +258,7 @@ def main() -> None:
                 prefetch_factor=args.prefetch_factor,
                 pin_memory=args.pin_memory,
                 witness_threshold=args.witness_threshold,
+                bcot_risk_budget=args.bcot_risk_budget,
                 progress=not args.no_progress,
                 gate_mode=args.ncf_gate_mode,
                 secondary_witness_threshold=args.secondary_witness_threshold,
@@ -220,6 +281,7 @@ def main() -> None:
                 cfg,
                 device=args.device,
                 witness_threshold=args.witness_threshold,
+                bcot_risk_budget=args.bcot_risk_budget,
                 action_mode=args.waymax_action_mode,
                 ncf_gate_mode=args.ncf_gate_mode,
                 priority_hard_threshold=args.priority_hard_threshold,
@@ -279,6 +341,12 @@ def main() -> None:
             payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]
             payload["standard_metric_summary"] = aggregate_waymax_standard_metrics(rollouts)
 
+    if isinstance(payload, dict):
+        payload["bcot_risk_budget"] = float(
+            cfg.get("planning", {}).get("candidate_transport_budget", 0.35)
+            if args.bcot_risk_budget is None else args.bcot_risk_budget
+        )
+        payload["pair_witness_threshold"] = float(args.witness_threshold)
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:

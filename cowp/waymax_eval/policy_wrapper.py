@@ -1600,6 +1600,7 @@ class COWPWaymaxPolicy:
     cfg: dict
     device: str = "auto"
     witness_threshold: float = 0.5
+    bcot_risk_budget: float | None = None
     action_mode: str = "absolute_xy_yaw"
     ncf_gate_mode: str = "hard"
     priority_hard_threshold: float = 0.55
@@ -1801,6 +1802,10 @@ class COWPWaymaxPolicy:
                     "mean_opr": 1.0,
                     "score": float(baseline_host[5]),
                     "witness_threshold": float(self.witness_threshold),
+                    "bcot_risk_budget": float(
+                        self.cfg.get("planning", {}).get("candidate_transport_budget", 0.35)
+                        if self.bcot_risk_budget is None else self.bcot_risk_budget
+                    ),
                     "alpha_opr": float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     "gate_mode": str(gate_mode),
                     "method": str(method),
@@ -2063,9 +2068,9 @@ class COWPWaymaxPolicy:
                     option_bad = ((opr_upper < alpha) & primary_claim & confident_pair).any(dim=-1)
                     severe_bad = severe_pair_bad
                 else:
-                    budget_scale = float(pcfg_runtime.get("candidate_transport_budget_scale", 1.0))
-                    budget_bias = float(pcfg_runtime.get("candidate_transport_budget_bias", 0.0))
-                    transport_budget = min(max(float(self.witness_threshold) * budget_scale + budget_bias, 0.02), 0.98)
+                    configured_budget = float(pcfg_runtime.get("candidate_transport_budget", 0.35))
+                    transport_budget = configured_budget if self.bcot_risk_budget is None else float(self.bcot_risk_budget)
+                    transport_budget = min(max(transport_budget, 0.02), 0.98)
                     transport_ucb = (
                         transport_risk
                         + float(pcfg_runtime.get("candidate_transport_ucb_scale", 0.25)) * transport_uncertainty
@@ -2082,15 +2087,25 @@ class COWPWaymaxPolicy:
                 pressure_penalty = float(self.cfg.get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
                 rule_penalty = float(self.cfg.get("planning", {}).get("candidate_rule_risk_penalty", 1.25))
                 action_penalty = float(self.cfg.get("planning", {}).get("candidate_action_risk_penalty", 1.0))
-                adjusted_scores = (
-                    scores
-                    + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
-                    + cert_penalty * cert_decision_risk
-                    + pressure_penalty * pressure_decision_risk
-                    + rule_penalty * rule_decision_risk
-                    + action_penalty * action_decision_risk
-                    + float(self.outcome_risk_penalty) * outcome_decision_risk
-                )
+                transport_pure = bool(pcfg_runtime.get("candidate_transport_pure_selector", True))
+                if transport_pure:
+                    adjusted_scores = (
+                        scores
+                        + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
+                        + rule_penalty * rule_decision_risk
+                        + action_penalty * action_decision_risk
+                        + float(self.outcome_risk_penalty) * outcome_decision_risk
+                    )
+                else:
+                    adjusted_scores = (
+                        scores
+                        + float(self.soft_ncf_penalty) * (burden_penalty + option_penalty)
+                        + cert_penalty * cert_decision_risk
+                        + pressure_penalty * pressure_decision_risk
+                        + rule_penalty * rule_decision_risk
+                        + action_penalty * action_decision_risk
+                        + float(self.outcome_risk_penalty) * outcome_decision_risk
+                    )
                 if gate_mode == "soft":
                     accepted = cand_valid & conventional
                 elif gate_mode in {"none", "off"}:
@@ -2124,7 +2139,18 @@ class COWPWaymaxPolicy:
                     # risks are feasibility shields.  In v4 they were mixed directly
                     # into the frontier with large weights, which improved standard
                     # CR/EP but let the selected candidate become more coercive.
-                    noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+                    transport_pure = bool(pcfg_selector.get("candidate_transport_pure_selector", True))
+                    if transport_pure:
+                        noncoercive_risk = (
+                            transport_risk
+                            + float(pcfg_selector.get("candidate_transport_uncertainty_penalty", 0.15)) * transport_uncertainty
+                        ).clamp(0.0, 1.0)
+                        frontier_ncf_prob = (1.0 - transport_risk).clamp(0.0, 1.0)
+                        frontier_false_safe_prob = transport_risk
+                    else:
+                        noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+                        frontier_ncf_prob = cand_ncf_prob
+                        frontier_false_safe_prob = cand_false_safe_prob
                     shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
                     frontier_risk = noncoercive_risk + shield_tie_mix * shield_risk
                     result = select_set_preservation_frontier_1d(
@@ -2137,8 +2163,8 @@ class COWPWaymaxPolicy:
                         action_risk=action_decision_risk,
                         rule_risk=rule_decision_risk,
                         outcome_risk=outcome_decision_risk,
-                        ncf_probability=cand_ncf_prob,
-                        false_safe_probability=cand_false_safe_prob,
+                        ncf_probability=frontier_ncf_prob,
+                        false_safe_probability=frontier_false_safe_prob,
                         cfg=pcfg_selector,
                     )
                     frontier = result.frontier
@@ -2308,6 +2334,7 @@ def make_cowp_policy(
     *,
     device: str = "auto",
     witness_threshold: float = 0.5,
+    bcot_risk_budget: float | None = None,
     action_mode: str = "absolute_xy_yaw",
     ncf_gate_mode: str = "hard",
     priority_hard_threshold: float = 0.55,
@@ -2324,6 +2351,7 @@ def make_cowp_policy(
         cfg=cfg,
         device=device,
         witness_threshold=witness_threshold,
+        bcot_risk_budget=bcot_risk_budget,
         action_mode=action_mode,
         ncf_gate_mode=ncf_gate_mode,
         priority_hard_threshold=priority_hard_threshold,

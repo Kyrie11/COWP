@@ -567,6 +567,7 @@ def _select_from_learned(
     pred,
     *,
     witness_threshold: float = 0.5,
+    bcot_risk_budget: float | None = None,
     alpha_opr: float = 0.35,
     gate_mode: str = "priority",
     secondary_witness_threshold: float = 0.85,
@@ -721,9 +722,12 @@ def _select_from_learned(
             pcfg_gate = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
             transport_gate_mode = str(pcfg_gate.get("candidate_transport_gate_mode", "budget")).lower()
             if transport_risk is not None and transport_gate_mode not in {"pairmax", "pair_max", "legacy"}:
-                budget_scale = float(pcfg_gate.get("candidate_transport_budget_scale", 1.0))
-                budget_bias = float(pcfg_gate.get("candidate_transport_budget_bias", 0.0))
-                transport_budget = min(max(float(witness_threshold) * budget_scale + budget_bias, 0.02), 0.98)
+                # Pair witness probability and candidate BCOT risk have different
+                # semantics/calibration.  v11 reused witness_threshold as the BCOT
+                # budget, making both the sweep and online gate uninterpretable.
+                configured_budget = float(pcfg_gate.get("candidate_transport_budget", 0.35))
+                transport_budget = configured_budget if bcot_risk_budget is None else float(bcot_risk_budget)
+                transport_budget = min(max(transport_budget, 0.02), 0.98)
                 transport_ucb_scale = float(pcfg_gate.get("candidate_transport_ucb_scale", 0.25))
                 transport_ucb = (transport_risk + transport_ucb_scale * transport_uncertainty).clamp(0.0, 1.0)
                 primary_bad = transport_ucb >= transport_budget
@@ -741,14 +745,28 @@ def _select_from_learned(
             cert_penalty = float((cfg or {}).get("planning", {}).get("candidate_certificate_penalty", 1.0))
             pressure_penalty = float((cfg or {}).get("planning", {}).get("candidate_pressure_prior_penalty", 0.75))
             rule_penalty = float((cfg or {}).get("planning", {}).get("candidate_rule_risk_penalty", 1.25))
-            adjusted_scores = (
-                scores
-                + float(soft_ncf_penalty) * penalty
-                + cert_penalty * cert_decision_risk
-                + pressure_penalty * pressure_decision_risk
-                + rule_penalty * rule_decision_risk
-                + float(outcome_risk_penalty) * outcome_decision_risk
-            )
+            transport_pure = bool(pcfg_gate.get("candidate_transport_pure_selector", True)) and transport_risk is not None
+            if transport_pure:
+                transport_decision = (
+                    transport_risk
+                    + float(pcfg_gate.get("candidate_transport_uncertainty_penalty", 0.15)) * transport_uncertainty
+                ).clamp(0.0, 1.0)
+                adjusted_scores = (
+                    scores
+                    + float(soft_ncf_penalty) * transport_decision
+                    + rule_penalty * rule_decision_risk
+                    + float(pcfg_gate.get("candidate_action_risk_penalty", 1.0)) * action_decision_risk
+                    + float(outcome_risk_penalty) * outcome_decision_risk
+                )
+            else:
+                adjusted_scores = (
+                    scores
+                    + float(soft_ncf_penalty) * penalty
+                    + cert_penalty * cert_decision_risk
+                    + pressure_penalty * pressure_decision_risk
+                    + rule_penalty * rule_decision_risk
+                    + float(outcome_risk_penalty) * outcome_decision_risk
+                )
             if gate_mode == "soft":
                 accepted = cand_valid & conventional
             else:
@@ -777,7 +795,18 @@ def _select_from_learned(
         # Two-level frontier: the frontier itself is a non-coercion certificate
         # layer.  Closed-loop rule/outcome risks act as a weak shield/tie-breaker
         # instead of replacing the paper's P-NCF risk.
-        noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+        transport_pure = bool(pcfg.get("candidate_transport_pure_selector", True)) and transport_risk is not None
+        if transport_pure:
+            noncoercive_risk = (
+                transport_risk
+                + float(pcfg.get("candidate_transport_uncertainty_penalty", 0.15)) * transport_uncertainty
+            ).clamp(0.0, 1.0)
+            frontier_ncf_prob = (1.0 - transport_risk).clamp(0.0, 1.0)
+            frontier_false_safe_prob = transport_risk
+        else:
+            noncoercive_risk = cert_decision_risk + pair_mix * pair_risk + pressure_mix * pressure_decision_risk
+            frontier_ncf_prob = cand_ncf_prob
+            frontier_false_safe_prob = cand_false_safe_prob
         action_mix = float((cfg or {}).get("planning", {}).get("candidate_action_risk_mix", 1.0))
         shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
         risk = noncoercive_risk + shield_mix * shield_risk
@@ -800,8 +829,8 @@ def _select_from_learned(
             action_risk=action_decision_risk,
             rule_risk=rule_decision_risk,
             outcome_risk=outcome_decision_risk,
-            ncf_probability=cand_ncf_prob,
-            false_safe_probability=cand_false_safe_prob,
+            ncf_probability=frontier_ncf_prob,
+            false_safe_probability=frontier_false_safe_prob,
             cfg=pcfg,
         )
         has_frontier = frontier.any(dim=1)
@@ -847,6 +876,117 @@ def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
     tp = np.cumsum(y)
     precision = tp / np.maximum(np.arange(1, len(y) + 1, dtype=np.float64), 1.0)
     return float((precision * y).sum() / max(float(y.sum()), 1.0))
+
+
+def _root_low_safe_target_eval(batch, mode_count: int):
+    """Build the explicit per-natural-root low-burden safe-response target.
+
+    This mirrors the training target but lives in evaluation code deliberately:
+    the headline mechanism metric must be computed from cache labels rather than
+    from candidate-level false-safe labels or a learned classifier.
+    """
+    import torch
+
+    required = (
+        "cowp/response/valid",
+        "cowp/response/is_safe",
+        "cowp/response/is_low_burden",
+        "cowp/transport/response_root_index",
+    )
+    if any(k not in batch for k in required) or int(mode_count) <= 0:
+        return None
+    low_safe = (
+        batch["cowp/response/valid"].bool()
+        & batch["cowp/response/is_safe"].bool()
+        & batch["cowp/response/is_low_burden"].bool()
+    )
+    root = batch["cowp/transport/response_root_index"].long()
+    in_range = (root >= 0) & (root < int(mode_count))
+    target = torch.zeros(
+        *root.shape[:-1], int(mode_count),
+        device=root.device, dtype=torch.float32,
+    )
+    target.scatter_add_(
+        -1, root.clamp(0, int(mode_count) - 1), (low_safe & in_range).float()
+    )
+    return target.gt(0.0)
+
+
+def _root_transport_eval_arrays(pred, batch):
+    """Align unordered predicted natural roots to GT and return RIOT metrics.
+
+    Returns direct and auxiliary root-recovery scores together with all-valid and
+    conflict-conditioned masks.  Natural modes are an unordered set, therefore
+    raw decoder indices are not compared directly.
+    """
+    import torch
+
+    cert = pred.get("set_certificate")
+    natural = pred.get("natural")
+    if not isinstance(cert, dict) or not isinstance(natural, dict):
+        return None
+    direct = cert.get("root_transport_exist")
+    auxiliary = cert.get("response_root_exist_aux")
+    pred_traj = natural.get("traj")
+    gt_traj = batch.get("cowp/natural/traj")
+    mode_valid = batch.get("cowp/transport/mode_valid")
+    mode_conflict = batch.get("cowp/transport/mode_conflict")
+    if not all(torch.is_tensor(x) for x in (direct, pred_traj, gt_traj, mode_valid, mode_conflict)):
+        return None
+    if direct.ndim != 4 or pred_traj.ndim != 5 or gt_traj.ndim != 5:
+        return None
+
+    with torch.no_grad():
+        # [B,A,M_pred,M_gt]
+        pair_ade = torch.linalg.vector_norm(
+            pred_traj.float()[:, :, :, None, :, :2]
+            - gt_traj.float()[:, :, None, :, :, :2],
+            dim=-1,
+        ).mean(dim=-1)
+        assignment = pair_ade.argmin(dim=2).long()
+        natural_valid = batch.get("cowp/natural/valid")
+        if torch.is_tensor(natural_valid):
+            assignment = torch.where(
+                natural_valid.bool(), assignment, torch.zeros_like(assignment)
+            )
+        idx = assignment[:, None, :, :].expand(
+            direct.shape[0], direct.shape[1], assignment.shape[1], assignment.shape[2]
+        )
+        direct_aligned = torch.gather(direct.float(), -1, idx).clamp(0.0, 1.0)
+        aux_aligned = None
+        if torch.is_tensor(auxiliary) and auxiliary.shape == direct.shape:
+            aux_aligned = torch.gather(auxiliary.float(), -1, idx).clamp(0.0, 1.0)
+        target = _root_low_safe_target_eval(batch, assignment.shape[-1])
+        if target is None:
+            return None
+        candidate_valid = batch["cowp/candidates/valid"].bool()[:, :, None, None]
+        critical_valid = batch["cowp/critical/valid"].bool()[:, None, :, None]
+        all_mask = mode_valid.bool() & candidate_valid & critical_valid
+        conflict_mask = all_mask & mode_conflict.bool()
+        nearest = pair_ade.min(dim=2).values
+        nearest_mask = natural_valid.bool() if torch.is_tensor(natural_valid) else all_mask.any(dim=1)
+        assignment_ade_sum = float(nearest[nearest_mask].sum().item()) if nearest_mask.any() else 0.0
+        assignment_ade_count = int(nearest_mask.sum().item())
+    return {
+        "direct": direct_aligned.detach().cpu().numpy(),
+        "aux": aux_aligned.detach().cpu().numpy() if aux_aligned is not None else None,
+        "target": target.detach().cpu().numpy(),
+        "all_mask": all_mask.detach().cpu().numpy(),
+        "conflict_mask": conflict_mask.detach().cpu().numpy(),
+        "assignment_ade_sum": assignment_ade_sum,
+        "assignment_ade_count": assignment_ade_count,
+    }
+
+
+def _binary_recall_at(score: np.ndarray, target: np.ndarray, threshold: float = 0.5) -> float:
+    score = np.asarray(score, dtype=np.float64).reshape(-1)
+    target = np.asarray(target, dtype=bool).reshape(-1)
+    finite = np.isfinite(score)
+    score, target = score[finite], target[finite]
+    positives = int(target.sum())
+    if positives <= 0:
+        return 0.0
+    return float(((score >= float(threshold)) & target).sum() / positives)
 
 
 def _ranking_pair_accuracy(scores: np.ndarray, ncf: np.ndarray, false_safe: np.ndarray, valid: np.ndarray) -> tuple[int, int]:
@@ -1154,6 +1294,8 @@ def _learned_offline_candidate_eval_many(
     prefetch_factor: int = 2,
     pin_memory: bool | None = None,
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
+    bcot_risk_budget: float | None = None,
+    bcot_risk_budgets: list[float] | tuple[float, ...] | None = None,
     progress: bool = True,
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
@@ -1166,7 +1308,7 @@ def _learned_offline_candidate_eval_many(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
-) -> dict[float, dict[str, object]] | dict[str, dict[float, dict[str, object]]]:
+) -> dict | dict[str, dict]:
     import torch
     from torch.utils.data import DataLoader
 
@@ -1176,6 +1318,17 @@ def _learned_offline_candidate_eval_many(
     thresholds = sorted({float(t) for t in witness_thresholds})
     if not thresholds:
         thresholds = [0.5]
+    configured_budget = float(
+        (cfg or {}).get("planning", {}).get("candidate_transport_budget", 0.35)
+    )
+    if bcot_risk_budgets is not None:
+        budgets = sorted({float(x) for x in bcot_risk_budgets})
+    else:
+        budgets = [configured_budget if bcot_risk_budget is None else float(bcot_risk_budget)]
+    if not budgets:
+        budgets = [configured_budget]
+    operating_points = [(th, budget) for th in thresholds for budget in budgets]
+    multi_budget = len(budgets) > 1
     multi_method = methods is not None
     method_list = list(dict.fromkeys(str(x).strip() for x in (methods or [method]) if str(x).strip()))
     if not method_list:
@@ -1190,7 +1343,10 @@ def _learned_offline_candidate_eval_many(
 
     # Use the stage-filtered evaluation view.  This avoids reading dense response
     # targets and broad waymax/* tensors that are irrelevant for planner eval.
-    ds = TorchCOWPDataset(cache_dir, stage="planner_eval")
+    ds = TorchCOWPDataset(
+        cache_dir, stage="planner_eval",
+        include_response_traj=False, include_response_components=False,
+    )
     workers = max(int(num_workers), 0)
     use_pin_memory = bool(dev.type == "cuda") if pin_memory is None else bool(pin_memory)
     dl_kwargs = {
@@ -1206,7 +1362,10 @@ def _learned_offline_candidate_eval_many(
     dl = DataLoader(ds, **dl_kwargs)
     beta_default = float(cfg.get("burden", {}).get("beta0_vehicle", 0.65))
     accs = {
-        method_name: {th: _LearnedMetricsAccumulator(beta_default=beta_default) for th in thresholds}
+        method_name: {
+            op: _LearnedMetricsAccumulator(beta_default=beta_default)
+            for op in operating_points
+        }
         for method_name in method_list
     }
     pair_scores: list[np.ndarray] = []
@@ -1219,6 +1378,14 @@ def _learned_offline_candidate_eval_many(
     cert_q_targets: list[np.ndarray] = []
     transport_scores: list[np.ndarray] = []
     transport_targets: list[np.ndarray] = []
+    root_direct_scores: list[np.ndarray] = []
+    root_direct_targets: list[np.ndarray] = []
+    root_conflict_scores: list[np.ndarray] = []
+    root_conflict_targets: list[np.ndarray] = []
+    root_aux_conflict_scores: list[np.ndarray] = []
+    root_aux_conflict_targets: list[np.ndarray] = []
+    root_assignment_ade_sum = 0.0
+    root_assignment_ade_count = 0
     transport_rank_good = 0
     transport_rank_total = 0
     cert_rank_good = 0
@@ -1289,6 +1456,22 @@ def _learned_offline_candidate_eval_many(
                 cert_q_targets.append(ncf_np[valid_np] & ~fs_np[valid_np])
                 transport_scores.append(transport_np[valid_np])
                 transport_targets.append(fs_np[valid_np])
+
+            root_eval = _root_transport_eval_arrays(pred, batch)
+            if root_eval is not None:
+                all_root = root_eval["all_mask"]
+                conflict_root = root_eval["conflict_mask"]
+                if all_root.any():
+                    root_direct_scores.append(root_eval["direct"][all_root])
+                    root_direct_targets.append(root_eval["target"][all_root])
+                if conflict_root.any():
+                    root_conflict_scores.append(root_eval["direct"][conflict_root])
+                    root_conflict_targets.append(root_eval["target"][conflict_root])
+                    if root_eval["aux"] is not None:
+                        root_aux_conflict_scores.append(root_eval["aux"][conflict_root])
+                        root_aux_conflict_targets.append(root_eval["target"][conflict_root])
+                root_assignment_ade_sum += float(root_eval["assignment_ade_sum"])
+                root_assignment_ade_count += int(root_eval["assignment_ade_count"])
             g, t = _ranking_pair_accuracy(score_np, ncf_np, fs_np, valid_np)
             rank_good += g
             rank_total += t
@@ -1306,11 +1489,12 @@ def _learned_offline_candidate_eval_many(
             # repeated, replacing N full checkpoint loads and N cache scans with
             # one pass over the validation set.
             for method_name in method_list:
-                for th in thresholds:
+                for th, budget in operating_points:
                     batch_selected, batch_accepted_masks = _select_from_learned(
                         batch,
                         pred,
                         witness_threshold=th,
+                        bcot_risk_budget=budget,
                         alpha_opr=alpha,
                         gate_mode=gate_mode,
                         secondary_witness_threshold=secondary_witness_threshold,
@@ -1325,7 +1509,7 @@ def _learned_offline_candidate_eval_many(
                         cfg=cfg,
                     )
                     pred_exists = pair_score_np >= float(th)
-                    acc = accs[method_name][th]
+                    acc = accs[method_name][(th, budget)]
                     for i, item in enumerate(batch_labels):
                         cert_item = {
                             "ncf_prob": cert_ncf_np[i],
@@ -1339,9 +1523,9 @@ def _learned_offline_candidate_eval_many(
                         acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(
-                    done=accs[method_list[0]][thresholds[0]].selected_total,
+                    done=accs[method_list[0]][operating_points[0]].selected_total,
                     methods=len(method_list),
-                    thresholds=len(thresholds),
+                    operating_points=len(operating_points),
                     refresh=True,
                 )
 
@@ -1353,25 +1537,46 @@ def _learned_offline_candidate_eval_many(
     transport_fs_auprc = _average_precision_binary(
         np.concatenate(transport_scores), np.concatenate(transport_targets)
     ) if transport_scores else 0.0
+    root_all_score = np.concatenate(root_direct_scores) if root_direct_scores else np.asarray([], dtype=np.float32)
+    root_all_target = np.concatenate(root_direct_targets) if root_direct_targets else np.asarray([], dtype=bool)
+    root_conflict_score = np.concatenate(root_conflict_scores) if root_conflict_scores else np.asarray([], dtype=np.float32)
+    root_conflict_target = np.concatenate(root_conflict_targets) if root_conflict_targets else np.asarray([], dtype=bool)
+    root_aux_conflict_score = np.concatenate(root_aux_conflict_scores) if root_aux_conflict_scores else np.asarray([], dtype=np.float32)
+    root_aux_conflict_target = np.concatenate(root_aux_conflict_targets) if root_aux_conflict_targets else np.asarray([], dtype=bool)
+    root_all_auprc = _average_precision_binary(root_all_score, root_all_target)
+    root_conflict_auprc = _average_precision_binary(root_conflict_score, root_conflict_target)
+    root_conflict_recall = _binary_recall_at(root_conflict_score, root_conflict_target, 0.5)
+    root_aux_conflict_auprc = _average_precision_binary(root_aux_conflict_score, root_aux_conflict_target)
+    root_assignment_minade = root_assignment_ade_sum / max(root_assignment_ade_count, 1)
     out_by_method = {
         method_name: {
-            th: accs[method_name][th].finish(
+            op: accs[method_name][op].finish(
                 auprc=auprc,
                 rank_good=rank_good,
                 rank_total=rank_total,
-                witness_threshold=th,
+                witness_threshold=op[0],
             )
-            for th in thresholds
+            for op in operating_points
         }
         for method_name in method_list
     }
     for method_out in out_by_method.values():
-        for row in method_out.values():
+        for (th, budget), row in method_out.items():
             row["CandidateCertificate/NCF_AUPRC"] = float(cert_ncf_auprc)
             row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
             row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
             row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
             row["BCOT/FalseSafe_AUPRC"] = float(transport_fs_auprc)
+            # Direct mechanism metrics: does the root-indexed head recover an
+            # explicit low-burden safe response for each natural option?
+            row["RootTransport/LowSafeExist_AUPRC"] = float(root_all_auprc)
+            row["RootTransport/ConflictConditioned_AUPRC"] = float(root_conflict_auprc)
+            row["RootTransport/ConflictConditioned_Recall@0.5"] = float(root_conflict_recall)
+            row["RootTransport/AuxConflictConditioned_AUPRC"] = float(root_aux_conflict_auprc)
+            row["RootTransport/NaturalAssignmentMinADE_m"] = float(root_assignment_minade)
+            row["RootTransport/EvaluatedConflictRoots"] = int(root_conflict_score.size)
+            row["bcot_risk_budget"] = float(budget)
+            row["pair_witness_threshold"] = float(th)
             row["BCOT/RiskRankingPairAccuracy"] = float(
                 transport_rank_good / max(transport_rank_total, 1)
             ) if transport_rank_total else 0.0
@@ -1383,6 +1588,13 @@ def _learned_offline_candidate_eval_many(
                 row["WitnessProb/p50"] = float(qs[1])
                 row["WitnessProb/p90"] = float(qs[2])
                 row["WitnessProb/p99"] = float(qs[3])
+    if not multi_budget:
+        # Backward-compatible public shape: dict[witness_threshold, metrics].
+        simple = {
+            method_name: {op[0]: row for op, row in method_out.items()}
+            for method_name, method_out in out_by_method.items()
+        }
+        return simple if multi_method else simple[method_list[0]]
     return out_by_method if multi_method else out_by_method[method_list[0]]
 
 
@@ -1397,6 +1609,7 @@ def learned_offline_candidate_eval(
     prefetch_factor: int = 2,
     pin_memory: bool | None = None,
     witness_threshold: float = 0.5,
+    bcot_risk_budget: float | None = None,
     progress: bool = True,
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
@@ -1419,6 +1632,7 @@ def learned_offline_candidate_eval(
         prefetch_factor=prefetch_factor,
         pin_memory=pin_memory,
         witness_thresholds=[float(witness_threshold)],
+        bcot_risk_budget=bcot_risk_budget,
         progress=progress,
         gate_mode=gate_mode,
         secondary_witness_threshold=secondary_witness_threshold,
@@ -1444,6 +1658,7 @@ def learned_offline_candidate_eval_sweep(
     prefetch_factor: int = 2,
     pin_memory: bool | None = None,
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
+    bcot_risk_budget: float | None = None,
     progress: bool = True,
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
@@ -1466,6 +1681,7 @@ def learned_offline_candidate_eval_sweep(
         prefetch_factor=prefetch_factor,
         pin_memory=pin_memory,
         witness_thresholds=list(witness_thresholds),
+        bcot_risk_budget=bcot_risk_budget,
         progress=progress,
         gate_mode=gate_mode,
         secondary_witness_threshold=secondary_witness_threshold,
@@ -1481,6 +1697,64 @@ def learned_offline_candidate_eval_sweep(
     return [out[th] for th in sorted(out)]
 
 
+def learned_offline_candidate_eval_budget_sweep(
+    cache_dir: str | Path,
+    checkpoint: str | Path,
+    cfg: dict,
+    *,
+    bcot_risk_budgets: list[float] | tuple[float, ...],
+    witness_threshold: float = 0.70,
+    batch_size: int = 8,
+    device: str = "auto",
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
+    pin_memory: bool | None = None,
+    progress: bool = True,
+    gate_mode: str = "hard",
+    secondary_witness_threshold: float = 0.85,
+    secondary_opr_alpha: float = 0.10,
+    priority_hard_threshold: float = 0.55,
+    soft_ncf_penalty: float = 1.5,
+    method: str = "cowp",
+    offline_fallback: str = "stop_like",
+    adaptive_frontier_margin: float = 0.20,
+    outcome_risk_penalty: float = 0.0,
+    outcome_risk_threshold: float = 1.10,
+) -> list[dict[str, object]]:
+    """Sweep the candidate BCOT budget from one shared model/cache pass.
+
+    Pair-witness probability and candidate transported-option risk are different
+    random variables.  v11 swept one scalar while reusing it for both, making the
+    selected operating point statistically uninterpretable.  This API keeps the
+    pair threshold fixed and sweeps only the candidate feasibility budget.
+    """
+    nested = _learned_offline_candidate_eval_many(
+        cache_dir,
+        checkpoint,
+        cfg,
+        batch_size=batch_size,
+        device=device,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        pin_memory=pin_memory,
+        witness_thresholds=[float(witness_threshold)],
+        bcot_risk_budgets=list(bcot_risk_budgets),
+        progress=progress,
+        gate_mode=gate_mode,
+        secondary_witness_threshold=secondary_witness_threshold,
+        secondary_opr_alpha=secondary_opr_alpha,
+        priority_hard_threshold=priority_hard_threshold,
+        soft_ncf_penalty=soft_ncf_penalty,
+        method=method,
+        offline_fallback=offline_fallback,
+        adaptive_frontier_margin=adaptive_frontier_margin,
+        outcome_risk_penalty=outcome_risk_penalty,
+        outcome_risk_threshold=outcome_risk_threshold,
+    )
+    rows = [row for (_, _), row in sorted(nested.items(), key=lambda kv: kv[0][1])]
+    return rows
+
+
 def learned_offline_candidate_eval_methods(
     cache_dir: str | Path,
     checkpoint: str | Path,
@@ -1493,6 +1767,7 @@ def learned_offline_candidate_eval_methods(
     prefetch_factor: int = 2,
     pin_memory: bool | None = None,
     witness_thresholds: list[float] | tuple[float, ...] = (0.5,),
+    bcot_risk_budget: float | None = None,
     progress: bool = True,
     gate_mode: str = "hard",
     secondary_witness_threshold: float = 0.85,
@@ -1515,6 +1790,7 @@ def learned_offline_candidate_eval_methods(
         prefetch_factor=prefetch_factor,
         pin_memory=pin_memory,
         witness_thresholds=list(witness_thresholds),
+        bcot_risk_budget=bcot_risk_budget,
         progress=progress,
         gate_mode=gate_mode,
         secondary_witness_threshold=secondary_witness_threshold,

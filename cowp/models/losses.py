@@ -318,6 +318,46 @@ def _align_pred_modes_to_gt(values: torch.Tensor, assignment: torch.Tensor | Non
     return torch.gather(values, dim=-1, index=idx)
 
 
+def _root_low_safe_target(
+    batch: dict[str, torch.Tensor],
+    mode_count: int,
+) -> torch.Tensor | None:
+    """Build a per-natural-root low-burden safe-response existence target.
+
+    The cache stores unordered ego-conditioned response slots and the natural
+    root assigned to each slot.  The paper's transport predicate is existential:
+    for each natural option, does at least one valid, safe, low-burden response
+    remain?  Scatter-reducing the explicit slot labels gives that target without
+    loading dense response trajectories or relying on a learned root classifier.
+    """
+    required = (
+        "cowp/response/valid",
+        "cowp/response/is_safe",
+        "cowp/response/is_low_burden",
+        "cowp/transport/response_root_index",
+    )
+    if any(k not in batch for k in required):
+        return None
+    valid = batch["cowp/response/valid"].bool()
+    low_safe = (
+        valid
+        & batch["cowp/response/is_safe"].bool()
+        & batch["cowp/response/is_low_burden"].bool()
+    )
+    root = batch["cowp/transport/response_root_index"].long()
+    root_in_range = (root >= 0) & (root < int(mode_count))
+    safe_root = root.clamp(0, max(int(mode_count) - 1, 0))
+    target = torch.zeros(
+        *root.shape[:-1], int(mode_count),
+        device=root.device,
+        dtype=torch.float32,
+    )
+    # scatter_add is portable across the supported torch versions; thresholding
+    # implements an OR/existential reduction and is insensitive to duplicates.
+    target.scatter_add_(-1, safe_root, (low_safe & root_in_range).float())
+    return (target > 0.0).float()
+
+
 def _zero_like_pred(pred: dict[str, torch.Tensor]) -> torch.Tensor:
     for v in pred.values():
         if torch.is_tensor(v):
@@ -1161,6 +1201,40 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     else:
         mode_uncertainty = _zero_like_loss(pred)
 
+    # Direct primitive-indexed response recovery.  v11 reconstructed this event
+    # only through an unordered response bank and a difficult 24-class root CE;
+    # the resulting root recovery stayed close to no-skill and became the main
+    # feasibility bottleneck.  Supervise the root-indexed transport head from the
+    # exact same response-set labels used to construct the dataset.
+    root_low_safe_target = _root_low_safe_target(
+        batch,
+        int(pred["mode_recovery_logits"].shape[-1]) if "mode_recovery_logits" in pred else 0,
+    ) if "mode_recovery_logits" in pred else None
+    if mode_valid is not None and root_low_safe_target is not None:
+        mm = mode_valid.bool() & pair[..., None]
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        recovery_logit = _align_pred_modes_to_gt(
+            _safe_float(pred["mode_recovery_logits"]), assignment
+        )
+        mode_recovery = _balanced_mode_bce(recovery_logit, root_low_safe_target, mm)
+    else:
+        mode_recovery = _zero_like_loss(pred)
+
+    # Keep the old response-bank/root-classifier path as an auxiliary
+    # reconstruction constraint.  It is useful for interpretability and response
+    # visualization, but no longer defines the decision certificate.
+    if root_low_safe_target is not None and "response_root_exist_aux" in pred and mode_valid is not None:
+        mm = mode_valid.bool() & pair[..., None]
+        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        aux_prob = _align_pred_modes_to_gt(
+            _safe_float(pred["response_root_exist_aux"]), assignment
+        ).clamp(1.0e-5, 1.0 - 1.0e-5)
+        response_root_aux = _balanced_mode_bce(
+            torch.logit(aux_prob), root_low_safe_target, mm
+        )
+    else:
+        response_root_aux = _zero_like_loss(pred)
+
     # Supervise conflict-conditioned same-root recovery mass when augmented
     # labels are available.
     recovery_target = batch.get("cowp/transport/root_recovery_mass")
@@ -1187,53 +1261,62 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     # for evaluation.  The aggregate contains no generic candidate latent, so
     # this objective calibrates option transport rather than replacing it.
     candidate_transport = pred.get("candidate_transport_risk")
+    candidate_budget_coverage = _zero_like_loss(pred)
+    candidate_budget_ncf_rate = _zero_like_loss(pred)
+    candidate_budget_false_safe_rate = _zero_like_loss(pred)
     if candidate_transport is not None:
-        raw_ncf = _binary_target(batch.get(
-            "cowp/candidates/noncoercive_feasible",
-            torch.zeros_like(candidate_transport),
-        )) > 0.5
-        raw_fs = _binary_target(batch.get(
-            "cowp/candidates/false_safe",
-            torch.zeros_like(candidate_transport),
-        )) > 0.5
-        ncf_pos = cand & raw_ncf & ~raw_fs
-        fs_pos = cand & raw_fs
-        disc = ncf_pos | fs_pos
-        if disc.any():
-            risk = _safe_float(candidate_transport).clamp(1.0e-5, 1.0 - 1.0e-5)
-            risk_logit = torch.logit(risk)
-            target = fs_pos.float()
-            pos_weight = (
-                ncf_pos.float().sum() / fs_pos.float().sum().clamp_min(1.0)
-            ).clamp(1.0, float(weights.get("set_transport_candidate_max_pos_weight", 4.0)))
-            budget_bce = masked_mean(
-                F.binary_cross_entropy_with_logits(
-                    risk_logit, target, reduction="none", pos_weight=pos_weight
-                ),
-                disc,
-            )
-            rank_terms: list[torch.Tensor] = []
-            margin = float(weights.get("set_transport_candidate_margin", 0.10))
-            max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
-            for b in range(cand.shape[0]):
-                good = torch.where(ncf_pos[b])[0]
-                bad = torch.where(fs_pos[b])[0]
-                if not (good.numel() and bad.numel()):
-                    continue
-                if good.numel() * bad.numel() > max_pairs:
-                    g_keep = max(1, int(max_pairs ** 0.5))
-                    b_keep = max(1, max_pairs // g_keep)
-                    good = good[:g_keep]
-                    bad = bad[:b_keep]
-                rank_terms.append(
-                    torch.relu(
-                        margin + risk[b, good[:, None]] - risk[b, bad[None, :]]
-                    ).mean()
-                )
-            budget_rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(risk)
-            candidate_budget = 0.65 * budget_bce + 0.35 * budget_rank
-        else:
+        ncf_target = batch.get("cowp/candidates/noncoercive_feasible")
+        fs_target = batch.get("cowp/candidates/false_safe")
+        # Missing supervision must not silently become all-negative labels.  The
+        # training entry point validates these keys for witness/planner stages;
+        # keeping the branch explicit also makes unit tests and custom callers
+        # expose the problem instead of reporting a misleading zero loss.
+        if ncf_target is None or fs_target is None:
             candidate_budget = _zero_like_loss(candidate_transport)
+        else:
+            raw_ncf = _binary_target(ncf_target) > 0.5
+            raw_fs = _binary_target(fs_target) > 0.5
+            ncf_pos = cand & raw_ncf & ~raw_fs
+            fs_pos = cand & raw_fs
+            disc = ncf_pos | fs_pos
+            candidate_budget_coverage = disc.float().sum() / cand.float().sum().clamp_min(1.0)
+            candidate_budget_ncf_rate = ncf_pos.float().sum() / disc.float().sum().clamp_min(1.0)
+            candidate_budget_false_safe_rate = fs_pos.float().sum() / disc.float().sum().clamp_min(1.0)
+            if disc.any():
+                risk = _safe_float(candidate_transport).clamp(1.0e-5, 1.0 - 1.0e-5)
+                risk_logit = torch.logit(risk)
+                target = fs_pos.float()
+                pos_weight = (
+                    ncf_pos.float().sum() / fs_pos.float().sum().clamp_min(1.0)
+                ).clamp(1.0, float(weights.get("set_transport_candidate_max_pos_weight", 4.0)))
+                budget_bce = masked_mean(
+                    F.binary_cross_entropy_with_logits(
+                        risk_logit, target, reduction="none", pos_weight=pos_weight
+                    ),
+                    disc,
+                )
+                rank_terms: list[torch.Tensor] = []
+                margin = float(weights.get("set_transport_candidate_margin", 0.10))
+                max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
+                for b in range(cand.shape[0]):
+                    good = torch.where(ncf_pos[b])[0]
+                    bad = torch.where(fs_pos[b])[0]
+                    if not (good.numel() and bad.numel()):
+                        continue
+                    if good.numel() * bad.numel() > max_pairs:
+                        g_keep = max(1, int(max_pairs ** 0.5))
+                        b_keep = max(1, max_pairs // g_keep)
+                        good = good[:g_keep]
+                        bad = bad[:b_keep]
+                    rank_terms.append(
+                        torch.relu(
+                            margin + risk[b, good[:, None]] - risk[b, bad[None, :]]
+                        ).mean()
+                    )
+                budget_rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(risk)
+                candidate_budget = 0.65 * budget_bce + 0.35 * budget_rank
+            else:
+                candidate_budget = _zero_like_loss(candidate_transport)
     else:
         candidate_budget = _zero_like_loss(pred)
 
@@ -1247,7 +1330,19 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_mode_conflict", 1.5)) * mode_conflict
         + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
         + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
+        + float(weights.get("set_transport_mode_recovery", 2.0)) * mode_recovery
+        + float(weights.get("set_transport_response_root_aux", 0.15)) * response_root_aux
         + float(weights.get("set_transport_root_recovery", 0.75)) * root_recovery
         + float(weights.get("set_transport_candidate_budget", 2.0)) * candidate_budget
     )
-    return {"loss": total, "witness": witness, "opr": opr, "burden": burden, "conflict": conflict, "source": source, "response": response, "mode_conflict": mode_conflict, "mode_retain": mode_retain, "mode_uncertainty": mode_uncertainty, "root_recovery": root_recovery, "candidate_budget": candidate_budget}
+    return {
+        "loss": total, "witness": witness, "opr": opr, "burden": burden,
+        "conflict": conflict, "source": source, "response": response,
+        "mode_conflict": mode_conflict, "mode_retain": mode_retain,
+        "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
+        "response_root_aux": response_root_aux, "root_recovery": root_recovery,
+        "candidate_budget": candidate_budget,
+        "candidate_budget_coverage": candidate_budget_coverage.detach(),
+        "candidate_budget_ncf_rate": candidate_budget_ncf_rate.detach(),
+        "candidate_budget_false_safe_rate": candidate_budget_false_safe_rate.detach(),
+    }

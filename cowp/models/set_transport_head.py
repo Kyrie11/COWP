@@ -37,7 +37,20 @@ class SetTransportCertificateHead(nn.Module):
             nn.Linear(int(geometry_dim), h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, h, bias=False)
         )
         self.norm = nn.LayerNorm(h)
-        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 3))
+        # Per-natural-root primitive outputs:
+        #   0 conflict,
+        #   1 retained-low-safe conditional on no conflict,
+        #   2 epistemic/aleatoric error proxy,
+        #   3 existence of a low-burden safe response transported from this root.
+        #
+        # v11 inferred item (3) indirectly from a generic unordered response bank
+        # plus a 24-way root classifier.  That is unnecessarily hard and, more
+        # importantly, does not condition response feasibility on the natural
+        # option that the paper claims to transport.  The direct root-recovery
+        # primitive is the minimal structural repair: it is still supervised by
+        # the explicit response-set/root labels, while making the decision
+        # certificate root indexed by construction.
+        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 4))
         self.calibration = nn.Sequential(
             nn.Linear(d_model * 3, h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, 1), nn.Tanh()
         )
@@ -51,9 +64,17 @@ class SetTransportCertificateHead(nn.Module):
         tau: float,
     ) -> torch.Tensor:
         tau = max(float(tau), 1.0e-3)
-        support = (safe_prob * valid_prob * mode_weight).clamp_min(1.0e-8)
-        value = -tau * torch.logsumexp(support.log() - burden / tau, dim=-1)
-        existence = support.sum(dim=-1)
+        # This quantity is existential: the least-burden safe response should not
+        # disappear merely because its mixture probability is small.  v11 folded
+        # ``mode_weight`` into support, turning an existential minimum into a
+        # density-weighted expectation.  Normalize only the safe/valid support so
+        # duplicate slots do not artificially reduce the soft minimum.
+        support = (safe_prob * valid_prob).clamp_min(0.0)
+        existence = support.amax(dim=-1)
+        norm_support = support / support.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+        value = -tau * torch.logsumexp(
+            norm_support.clamp_min(1.0e-8).log() - burden / tau, dim=-1
+        )
         return torch.where(existence > 1.0e-4, value.clamp_min(0.0), torch.full_like(value, 2.0))
 
     def _relative_geometry(
@@ -171,16 +192,26 @@ class SetTransportCertificateHead(nn.Module):
         )
         raw = self.mode_out(self.norm(h))
         conflict_logit = raw[..., 0]
-        retain_logit = raw[..., 1]
+        retain_conditional_logit = raw[..., 1]
         conflict_prob = torch.sigmoid(conflict_logit)
-        retain_prob = torch.sigmoid(retain_logit)
+        # Labels define retained-low-safe as an explicitly non-conflicting mode.
+        # Factorize P(retained-low-safe) = P(no conflict) * P(low-safe | no
+        # conflict), which removes impossible high-conflict/high-retention states
+        # and prevents the downstream OPR computation from applying the same
+        # no-conflict condition twice.
+        retain_conditional_prob = torch.sigmoid(retain_conditional_logit)
+        retain_prob = ((1.0 - conflict_prob) * retain_conditional_prob).clamp(1.0e-5, 1.0 - 1.0e-5)
+        retain_logit = torch.logit(retain_prob)
         mode_uncertainty = torch.sigmoid(raw[..., 2])
+        mode_recovery_logit = raw[..., 3]
+        mode_recovery_prob = torch.sigmoid(mode_recovery_logit)
 
         natural_weight = torch.softmax(natural["logits"].float(), dim=-1)[:, None, :, :].expand(B, K, A, M)
         source_prob = torch.softmax(natural["source_logits"].float(), dim=-1)[:, None, :, :, :]
         priority_prob = torch.sigmoid(natural["priority_logits"].float())[:, None, :, :]
 
-        low_safe_option_prob = retain_prob * (1.0 - conflict_prob)
+        # ``retain_prob`` already includes the no-conflict event by construction.
+        low_safe_option_prob = retain_prob
         opr = (natural_weight * low_safe_option_prob).sum(dim=-1).clamp(0.0, 1.0)
         natural_conflict_mass = (natural_weight * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
         priority_conflict_mass = (natural_weight * priority_prob * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
@@ -214,12 +245,17 @@ class SetTransportCertificateHead(nn.Module):
             root_contribution = (
                 root_top * response_strength[..., None] * float(root_mass_scale)
             ).clamp(0.0, 1.0)
-            root_response_exist = root_contribution.amax(dim=-2)
+            response_root_exist_aux = root_contribution.amax(dim=-2)
         else:
-            root_response_exist = low_safe_option_prob
+            response_root_exist_aux = low_safe_option_prob
+        # Preserve the legacy response-bank reconstruction under its original
+        # name for diagnostics/ablations.  The new root-indexed quantity is the
+        # primary transport certificate used by the planner.
+        root_response_exist = response_root_exist_aux
+        root_transport_exist = mode_recovery_prob
         conflicted_mass = natural_weight * conflict_prob
         conflict_denom = conflicted_mass.sum(dim=-1)
-        root_recovery_mass = (conflicted_mass * root_response_exist).sum(dim=-1) / conflict_denom.clamp_min(1.0e-6)
+        root_recovery_mass = (conflicted_mass * root_transport_exist).sum(dim=-1) / conflict_denom.clamp_min(1.0e-6)
         root_recovery_mass = torch.where(
             conflict_denom > 1.0e-6, root_recovery_mass, torch.ones_like(root_recovery_mass)
         ).clamp(0.0, 1.0)
@@ -260,7 +296,7 @@ class SetTransportCertificateHead(nn.Module):
         # pair.  This is monotone in conflict, option loss, burden excess and
         # failed same-root recovery, so a generic candidate classifier cannot
         # silently replace the proposed mechanism.
-        unrecovered_mode_mass = natural_weight * conflict_prob * (1.0 - root_response_exist)
+        unrecovered_mode_mass = natural_weight * conflict_prob * (1.0 - root_transport_exist)
         unrecovered_conflict_mass = unrecovered_mode_mass.sum(dim=-1).clamp(0.0, 1.0)
         option_shortfall = (
             torch.relu(torch.as_tensor(float(alpha_opr), device=opr.device, dtype=opr.dtype) - opr)
@@ -328,6 +364,8 @@ class SetTransportCertificateHead(nn.Module):
             "response_low_safe_mass": response_low_safe_mass,
             "response_exist_low_safe": response_exist_low_safe,
             "root_response_exist": root_response_exist,
+            "root_transport_exist": root_transport_exist,
+            "response_root_exist_aux": response_root_exist_aux,
             "root_recovery_mass": root_recovery_mass,
             "natural_mass_by_source": natural_mass_by_source,
             "conflict_mass_by_source": conflict_mass_by_source,
@@ -335,9 +373,13 @@ class SetTransportCertificateHead(nn.Module):
             "source_opr": source_opr,
             "mode_conflict_logits": conflict_logit,
             "mode_retain_logits": retain_logit,
+            "mode_retain_conditional_logits": retain_conditional_logit,
             "mode_conflict_prob": conflict_prob,
             "mode_retain_prob": retain_prob,
+            "mode_retain_conditional_prob": retain_conditional_prob,
             "mode_uncertainty": mode_uncertainty,
+            "mode_recovery_logits": mode_recovery_logit,
+            "mode_recovery_prob": mode_recovery_prob,
             "uncertainty": uncertainty,
             "geometry_min_distance_norm": geometry_feat[..., 0],
             "geometry_clearance_norm": geometry_feat[..., 7],

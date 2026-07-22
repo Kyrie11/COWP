@@ -1,0 +1,113 @@
+{
+  "note": "Recommended publication gates, not official leaderboard thresholds.",
+  "rows": [
+    {
+      "metric": "Pair witness AUPRC",
+      "current_v11": 0.6807941073,
+      "development_gate": 0.6,
+      "paper_target": 0.7,
+      "direction": "higher",
+      "gap_to_paper": 0.01920589269999995,
+      "status": "near target"
+    },
+    {
+      "metric": "BCOT false-safe AUPRC",
+      "current_v11": 0.4114683441,
+      "development_gate": 0.65,
+      "paper_target": 0.75,
+      "direction": "higher",
+      "gap_to_paper": 0.3385316559,
+      "status": "major gap"
+    },
+    {
+      "metric": "Direct root-transport conflict AUPRC",
+      "current_v11": null,
+      "development_gate": 0.65,
+      "paper_target": 0.75,
+      "direction": "higher",
+      "gap_to_paper": null,
+      "status": "not measured in v11; mandatory in v12"
+    },
+    {
+      "metric": "Accepted NCF recall",
+      "current_v11": 0.2011396257,
+      "development_gate": 0.3,
+      "paper_target": 0.5,
+      "direction": "higher",
+      "gap_to_paper": 0.2988603743,
+      "status": "major gap"
+    },
+    {
+      "metric": "Accepted candidate rate",
+      "current_v11": 0.0831373198,
+      "development_gate": 0.1,
+      "paper_target": 0.2,
+      "direction": "higher",
+      "gap_to_paper": 0.11686268020000001,
+      "status": "major gap"
+    },
+    {
+      "metric": "Fallback rate",
+      "current_v11": 0.2730899661,
+      "development_gate": 0.25,
+      "paper_target": 0.1343287453,
+      "direction": "lower",
+      "gap_to_paper": 0.13876122080000003,
+      "status": "major gap"
+    },
+    {
+      "metric": "Ego progress",
+      "current_v11": 0.3538001848,
+      "development_gate": 0.3754,
+      "paper_target": 0.3870105052,
+      "direction": "higher",
+      "gap_to_paper": 0.03321032040000005,
+      "status": "moderate gap"
+    },
+    {
+      "metric": "Selected false-safe rate",
+      "current_v11": 0.4254937163,
+      "development_gate": 0.5080710154,
+      "paper_target": 0.4410532615,
+      "direction": "lower",
+      "gap_to_paper": -0.015559545200000025,
+      "status": "minimum target met"
+    },
+    {
+      "metric": "Selected false-safe strong target",
+      "current_v11": 0.4254937163,
+      "development_gate": null,
+      "paper_target": 0.35,
+      "direction": "lower",
+      "gap_to_paper": 0.07549371630000001,
+      "status": "strong-target gap"
+    },
+    {
+      "metric": "Option preservation ratio",
+      "current_v11": 0.8005081722,
+      "development_gate": 0.78,
+      "paper_target": 0.8,
+      "direction": "higher",
+      "gap_to_paper": -0.00050817219999999,
+      "status": "numeric target met; EP constraint pending"
+    },
+    {
+      "metric": "High-burden ceding rate",
+      "current_v11": 0.2529423499,
+      "development_gate": 0.32,
+      "paper_target": 0.2972770796,
+      "direction": "lower",
+      "gap_to_paper": -0.04433472970000002,
+      "status": "numeric target met"
+    },
+    {
+      "metric": "COWP Waymax collision-risk rate",
+      "current_v11": null,
+      "development_gate": null,
+      "paper_target": null,
+      "direction": "lower",
+      "gap_to_paper": null,
+      "status": "no COWP online result"
+    }
+  ]
+}

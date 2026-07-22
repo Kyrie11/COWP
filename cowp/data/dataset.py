@@ -90,6 +90,20 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
         for key in ("cowp/candidates/noncoercive_feasible", "cowp/candidates/false_safe"):
             if key not in data:
                 missing.append(key)
+    if stage == "planner_eval":
+        # RIOT is a root-indexed transport claim.  Evaluation must fail rather
+        # than silently omit the direct mechanism metric when the augmented
+        # response-root labels are absent.
+        for key in (
+            "cowp/response/valid",
+            "cowp/response/is_safe",
+            "cowp/response/is_low_burden",
+            "cowp/transport/response_root_index",
+            "cowp/transport/mode_valid",
+            "cowp/transport/mode_conflict",
+        ):
+            if key not in data:
+                missing.append(key)
     return missing
 
 
@@ -344,7 +358,7 @@ def _wanted_keys_for_stage(
     # Set-Transport certificate consumes the compact response bank.  v8 only
     # loaded these keys for stage=response/all, so response_aux and
     # set_transport/response silently stayed at zero during planner training.
-    if stage in ("response", "witness", "planner", "all"):
+    if stage in ("response", "witness", "planner", "planner_eval", "all"):
         wanted.update({
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
@@ -356,9 +370,12 @@ def _wanted_keys_for_stage(
             "cowp/response/burden_total",
             "cowp/transport/",
         })
-        if include_response_components:
+        # Learned-offline planner evaluation needs compact response/root labels
+        # for direct RIOT mechanism metrics, but never needs the dense response
+        # trajectory or component tensors.
+        if stage != "planner_eval" and include_response_components:
             wanted.add("cowp/response/burden_components")
-        if include_response_traj:
+        if stage != "planner_eval" and include_response_traj:
             wanted.add("cowp/response/traj")
 
     if stage in ("witness", "planner", "planner_eval", "all"):
@@ -373,7 +390,12 @@ def _wanted_keys_for_stage(
             "cowp/witness/",
         })
 
-    if stage in ("planner", "planner_eval", "all"):
+    # Candidate-level NCF/false-safe supervision is consumed directly by the
+    # Set-Transport candidate-budget objective.  The dedicated transport stage
+    # is named ``witness`` in the training CLI, so these labels must be loaded
+    # there as well as for planner fine-tuning.  v11 omitted them for witness,
+    # which made set_transport/candidate_budget identically zero.
+    if stage in ("witness", "planner", "planner_eval", "all"):
         load_waymax = (stage == "planner_eval") or (stage in ("planner", "all") and include_waymax_outcomes)
         if load_waymax:
             wanted.update({

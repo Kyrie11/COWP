@@ -17,6 +17,7 @@ def _f(d: dict[str, Any], key: str, default: float = 0.0) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Summarize BCOT mechanism and selector readiness.")
     ap.add_argument("--input", required=True)
+    ap.add_argument("--sweep-input", default="", help="Optional JSON containing bcot_risk_budget_sweep; --input can remain the shared-method comparison.")
     ap.add_argument("--calibration-json", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--method", default="cowp")
@@ -26,7 +27,15 @@ def main() -> None:
     calibration = json.loads(Path(args.calibration_json).read_text(encoding="utf-8"))
     selected = calibration.get("selection_metrics", {})
     conventional = payload.get("conventional_safety", {})
-    sweep = payload.get("witness_threshold_sweep", {})
+    sweep_payload = (
+        json.loads(Path(args.sweep_input).read_text(encoding="utf-8"))
+        if args.sweep_input else payload
+    )
+    sweep = sweep_payload.get("bcot_risk_budget_sweep", [])
+    operating_key = "bcot_risk_budget"
+    if not sweep:
+        sweep = sweep_payload.get("witness_threshold_sweep", {})
+        operating_key = "witness_threshold"
     if isinstance(sweep, dict):
         sweep = sweep.get(args.method, [])
     sweep = sweep if isinstance(sweep, list) else []
@@ -43,7 +52,12 @@ def main() -> None:
     best_recall = max(sweep, key=lambda r: _f(r, "LearnedAcceptNCFRecall"), default={})
     best_fs = min(sweep, key=lambda r: _f(r, "SelectedFalseSafeRate", 1.0), default={})
     report = {
-        "calibrated_threshold": _f(calibration, "witness_threshold"),
+        "calibrated_operating_point": _f(
+            calibration,
+            operating_key,
+            _f(calibration, "bcot_risk_budget", _f(calibration, "witness_threshold")),
+        ),
+        "operating_point_kind": operating_key,
         "calibration_status": calibration.get("status", "unknown"),
         "conventional": {k: _f(conventional, k) for k in keys},
         "bcot_calibrated": {k: _f(selected, k) for k in keys},
@@ -58,9 +72,9 @@ def main() -> None:
             "points": len(sweep),
             "feasible_points": len(feasible),
             "best_ncf_recall": {k: best_recall.get(k) for k in (
-                "witness_threshold", "LearnedAcceptNCFRecall", "FallbackRate", "SelectedFalseSafeRate", "EP")},
+                operating_key, "LearnedAcceptNCFRecall", "FallbackRate", "SelectedFalseSafeRate", "EP")},
             "lowest_false_safe": {k: best_fs.get(k) for k in (
-                "witness_threshold", "LearnedAcceptNCFRecall", "FallbackRate", "SelectedFalseSafeRate", "EP")},
+                operating_key, "LearnedAcceptNCFRecall", "FallbackRate", "SelectedFalseSafeRate", "EP")},
         },
         "development_gate": {
             "pair_auprc": _f(selected, "WitnessQuality/AUPRC") >= 0.60,

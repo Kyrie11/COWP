@@ -333,7 +333,14 @@ class COWPModel(nn.Module):
                     z_cand,
                     enc_cond["z_graph"],
                     critical_idx,
-                    decode_traj=bool(decode_response_traj and stage in ("response", "all")),
+                    # Witness/planner stages also optimize response auxiliary
+                    # losses.  v11 accepted --response-traj-weight for those
+                    # stages but silently skipped the trajectory head, so enabling
+                    # the loss would fail when response_loss accessed pred["traj"].
+                    decode_traj=bool(
+                        decode_response_traj
+                        and stage in ("response", "witness", "planner", "all")
+                    ),
                 ),
                 anchor7,
             )
@@ -540,9 +547,27 @@ class COWPModel(nn.Module):
             base_ncf_logit = torch.logit(base_ncf)
             structured_weight = float(self.cfg.get("planning", {}).get("candidate_structured_logit_weight", 1.0))
             residual_scale = float(self.cfg.get("planning", {}).get("candidate_transport_residual_scale", 0.20))
-            out["candidate_ncf_logit"] = structured_weight * base_ncf_logit + residual_scale * cert_residual[..., 0]
-            out["candidate_false_safe_logit"] = structured_weight * base_fs_logit + residual_scale * cert_residual[..., 1]
-            out["candidate_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]
+            # Mechanism-only calibration is exposed separately.  The main COWP
+            # selector consumes candidate_transport_risk directly, while these
+            # logits support a transport-calibration ablation without a generic
+            # candidate latent.
+            out["candidate_transport_ncf_logit"] = structured_weight * base_ncf_logit + residual_scale * cert_residual[..., 0]
+            out["candidate_transport_false_safe_logit"] = structured_weight * base_fs_logit + residual_scale * cert_residual[..., 1]
+            out["candidate_transport_quality_logit"] = structured_weight * (base_ncf_logit - base_fs_logit) + residual_scale * cert_residual[..., 2]
+
+            # Keep the generic candidate classifier as an explicit diagnostic /
+            # candidate-only ablation.  v11 left this module instantiated but
+            # never called it, so its parameters were dead and the reported
+            # "candidate certificate" was actually another transport-calibrator
+            # view.  Separating the outputs makes the causal claim auditable:
+            # generic classification may be strong, but the default selector is
+            # forbidden from using it.
+            generic_logits = self.candidate_certificate(
+                torch.cat([z_cand_planner, cert_aux], dim=-1)
+            )
+            out["candidate_ncf_logit"] = generic_logits[..., 0]
+            out["candidate_false_safe_logit"] = generic_logits[..., 1]
+            out["candidate_quality_logit"] = generic_logits[..., 2]
             out["candidate_structured_coercion_risk"] = structured_risk
             out["planner_score"] = self.planner(
                 z_cand_planner,

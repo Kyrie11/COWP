@@ -354,6 +354,78 @@ def _to_device(batch: dict[str, Any], device: torch.device, *, non_blocking: boo
     return {k: v.to(device, non_blocking=bool(non_blocking)) for k, v in batch.items() if torch.is_tensor(v)}
 
 
+def _validate_stage_supervision(dataset, stage: str, *, samples: int = 32) -> dict[str, float]:
+    """Fail fast when a staged objective has no labels.
+
+    v11 trained ``stage=witness`` without loading candidate-level NCF and
+    false-safe labels.  The candidate-budget objective then returned zero for
+    every batch while checkpoint selection treated that zero as an excellent
+    loss.  Inspect a small deterministic prefix before allocating GPUs so this
+    failure mode cannot recur silently.
+    """
+    required: dict[str, tuple[str, ...]] = {
+        "witness": (
+            "cowp/transport/mode_valid",
+            "cowp/transport/mode_conflict",
+            "cowp/transport/mode_retained_low_safe",
+            "cowp/candidates/valid",
+            "cowp/candidates/noncoercive_feasible",
+            "cowp/candidates/false_safe",
+        ),
+        "planner": (
+            "cowp/candidates/valid",
+            "cowp/candidates/noncoercive_feasible",
+            "cowp/candidates/false_safe",
+        ),
+    }
+    keys = required.get(str(stage), ())
+    if not keys or len(dataset) == 0:
+        return {}
+    n = min(max(int(samples), 1), len(dataset))
+    missing: set[str] = set()
+    valid_count = disc_count = ncf_count = fs_count = 0.0
+    # Probe the full cache deterministically instead of only its prefix.  WOMD
+    # caches are commonly written in shard/scenario order, so the first few files
+    # may not represent rare false-safe/NCF supervision.
+    if n == 1:
+        probe_indices = [0]
+    else:
+        probe_indices = sorted({round(i * (len(dataset) - 1) / (n - 1)) for i in range(n)})
+    for i in probe_indices:
+        item = dataset[i]
+        missing.update(k for k in keys if k not in item)
+        if all(k in item for k in (
+            "cowp/candidates/valid",
+            "cowp/candidates/noncoercive_feasible",
+            "cowp/candidates/false_safe",
+        )):
+            valid = item["cowp/candidates/valid"].bool()
+            ncf = item["cowp/candidates/noncoercive_feasible"].bool() & valid
+            fs = item["cowp/candidates/false_safe"].bool() & valid
+            disc = (ncf & ~fs) | fs
+            valid_count += float(valid.float().sum().item())
+            disc_count += float(disc.float().sum().item())
+            ncf_count += float((ncf & ~fs).float().sum().item())
+            fs_count += float(fs.float().sum().item())
+    if missing:
+        raise RuntimeError(
+            f"stage={stage} is missing required supervision keys: {sorted(missing)}. "
+            "Rebuild/augment the cache or use the corrected stage key loader before training."
+        )
+    if stage in {"witness", "planner"} and disc_count <= 0:
+        raise RuntimeError(
+            f"stage={stage} found no discriminative NCF/false-safe candidates in {len(probe_indices)} evenly spaced samples. "
+            "Candidate-budget training would be inactive; run label/cache diagnostics before training."
+        )
+    return {
+        "candidate_valid": valid_count,
+        "candidate_discriminative": disc_count,
+        "candidate_ncf": ncf_count,
+        "candidate_false_safe": fs_count,
+        "candidate_budget_coverage": disc_count / max(valid_count, 1.0),
+    }
+
+
 def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage: str, loss_weights: dict[str, float]) -> dict[str, torch.Tensor]:
     out: dict[str, torch.Tensor] = {}
     losses: list[torch.Tensor] = []
@@ -602,6 +674,22 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
     risk-calibration collapse while retaining a small total/outcome term.
     """
     total = float(metrics.get("loss", float("inf")))
+    if stage in {"natural", "representation"}:
+        def gn(name: str, default: float = 100.0) -> float:
+            try:
+                value = float(metrics.get(name, default))
+                return value if math.isfinite(value) else default
+            except Exception:
+                return default
+        score = (
+            0.55 * gn("natural/traj")
+            + 0.20 * gn("natural/branch_minade")
+            + 0.10 * gn("natural/neutral_consistency")
+            + 0.05 * gn("natural/mode", 5.0)
+            + 0.05 * gn("natural/source", 5.0)
+            + 0.05 * total
+        )
+        return float(score), "natural_basis_composite"
     if stage == "witness":
         def gw(name: str, default: float = 1.0) -> float:
             try:
@@ -609,14 +697,20 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
                 return value if math.isfinite(value) else default
             except Exception:
                 return default
+        budget_coverage = gw("set_transport/candidate_budget_coverage", 0.0)
+        # Coverage is a diagnostic, not a loss.  A checkpoint with absent budget
+        # supervision is invalid rather than optimal.
+        inactive_penalty = 5.0 if budget_coverage < 1.0e-4 else 0.0
         score = (
-            0.10 * total
+            inactive_penalty
+            + 0.10 * total
             + 0.30 * gw("set_transport/witness")
             + 0.20 * gw("set_transport/opr")
             + 0.15 * gw("set_transport/burden")
             + 0.35 * gw("set_transport/mode_conflict")
             + 0.35 * gw("set_transport/mode_retain")
-            + 0.10 * gw("set_transport/root_recovery")
+            + 0.30 * gw("set_transport/mode_recovery")
+            + 0.15 * gw("set_transport/root_recovery")
             + 0.45 * gw("set_transport/candidate_budget")
             + 0.10 * gw("response_aux/root")
             + 0.05 * gw("response_aux/min_burden")
@@ -643,7 +737,8 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         + 0.15 * g("set_transport/burden", 1.0)
         + 0.25 * g("set_transport/mode_conflict", 1.0)
         + 0.25 * g("set_transport/mode_retain", 1.0)
-        + 0.05 * g("set_transport/root_recovery", 1.0)
+        + 0.20 * g("set_transport/mode_recovery", 1.0)
+        + 0.10 * g("set_transport/root_recovery", 1.0)
         + 0.35 * g("set_transport/candidate_budget", 1.0)
         + 0.10 * g("planner/outcome_cls", 1.0)
         + 0.10 * g("planner/ranking", 1.0)
@@ -651,7 +746,14 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
     return float(score), "planner_certificate_composite"
 
 
-def _set_stage_freeze(model: torch.nn.Module, stage: str, warmup_frozen: bool) -> None:
+def _set_stage_freeze(
+    model: torch.nn.Module,
+    stage: str,
+    warmup_frozen: bool,
+    *,
+    freeze_natural_during_witness: bool = False,
+    freeze_graph_during_natural: bool = False,
+) -> None:
     """Granular v11 freeze policy.
 
     Transport learning always updates candidate, natural and witness identity heads;
@@ -660,11 +762,26 @@ def _set_stage_freeze(model: torch.nn.Module, stage: str, warmup_frozen: bool) -
     adapt after warm-up.  Set-transport and response modules always remain trainable.
     """
     core = model.module if hasattr(model, "module") else model
-    if stage == "witness":
+    if stage in {"natural", "representation"}:
+        # Natural-basis repair should not rewrite the scene encoder inherited from
+        # a strong planner checkpoint.  Training only the natural decoder yields a
+        # stable primitive basis that later transport stages can treat as an
+        # identifiable coordinate system.
+        policy = {
+            "graph": bool(freeze_graph_during_natural),
+            "candidate_encoder": True,
+            "natural_decoder": False,
+            "witness_decoder": True,
+        }
+    elif stage == "witness":
         policy = {
             "graph": bool(warmup_frozen),
             "candidate_encoder": False,
-            "natural_decoder": False,
+            # v11 jointly moved the natural basis while learning root-indexed
+            # transport labels.  Validation natural minADE drifted from ~48 m to
+            # ~67 m, so mode identities used by the certificate were nonstationary.
+            # v12 pretrains/repairs the basis, then freezes it during transport.
+            "natural_decoder": bool(freeze_natural_during_witness),
             "witness_decoder": False,
         }
     elif stage == "planner":
@@ -931,6 +1048,13 @@ def main() -> None:
         else None
     )
     _rank0_print(f"Loaded datasets: train={len(train_ds)}" + (f", val={len(val_ds)}" if val_ds is not None else ""))
+    train_supervision = _validate_stage_supervision(train_ds, stage)
+    if train_supervision:
+        _rank0_print(f"Stage supervision check (train prefix): {train_supervision}")
+    if val_ds is not None:
+        val_supervision = _validate_stage_supervision(val_ds, stage)
+        if val_supervision:
+            _rank0_print(f"Stage supervision check (val prefix): {val_supervision}")
     oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
     # Representation/natural stages do not consume witness/candidate labels.
     # Scanning every npz for those labels can add many minutes before the first
@@ -1043,7 +1167,17 @@ def main() -> None:
     try:
         for epoch in range(start_epoch, epochs):
             freeze_now = stage in {"witness", "planner"} and epoch < max(int(args.freeze_backbone_epochs), 0)
-            _set_stage_freeze(model, stage, freeze_now)
+            _set_stage_freeze(
+                model,
+                stage,
+                freeze_now,
+                freeze_natural_during_witness=bool(
+                    tcfg.get("freeze_natural_during_witness", False)
+                ),
+                freeze_graph_during_natural=bool(
+                    tcfg.get("freeze_graph_during_natural", False)
+                ),
+            )
             if _is_main_process() and stage in {"witness", "planner"} and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
                 _rank0_print(f"{stage} warmup_frozen={freeze_now} at epoch={epoch}")
             _set_sampler_epoch(train_dl, epoch)

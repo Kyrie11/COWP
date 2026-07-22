@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from cowp.data.dataset import _wanted_keys_for_stage
@@ -66,6 +67,8 @@ def test_root_and_mode_losses_are_active():
         "mode_conflict_prob": torch.rand(B, K, A, M).clamp(0.01, 0.99),
         "mode_retain_prob": torch.rand(B, K, A, M).clamp(0.01, 0.99),
         "mode_uncertainty": torch.rand(B, K, A, M),
+        "mode_recovery_logits": torch.randn(B, K, A, M),
+        "response_root_exist_aux": torch.rand(B, K, A, M).clamp(0.01, 0.99),
         "root_recovery_mass": torch.rand(B, K, A),
     }
     batch.update({
@@ -82,6 +85,24 @@ def test_root_and_mode_losses_are_active():
     assert torch.isfinite(sl["loss"])
     assert sl["mode_conflict"].item() > 0
     assert sl["mode_retain"].item() > 0
+    assert sl["mode_recovery"].item() > 0
+
+
+def test_direct_root_recovery_target_is_existential_per_natural_mode():
+    from cowp.models.losses import _root_low_safe_target
+
+    # Two low-safe responses map to root 1; duplicates must still create one
+    # existential positive, while a safe-but-high-burden response at root 2 is
+    # not a positive.
+    batch = {
+        "cowp/response/valid": torch.tensor([[[[1, 1, 1, 0]]]], dtype=torch.bool),
+        "cowp/response/is_safe": torch.tensor([[[[1, 1, 1, 1]]]], dtype=torch.bool),
+        "cowp/response/is_low_burden": torch.tensor([[[[1, 1, 0, 1]]]], dtype=torch.bool),
+        "cowp/transport/response_root_index": torch.tensor([[[[1, 1, 2, 3]]]]),
+    }
+    target = _root_low_safe_target(batch, 4)
+    assert target is not None
+    assert target.tolist() == [[[[0.0, 1.0, 0.0, 0.0]]]]
 
 
 def test_unordered_natural_modes_are_aligned_before_root_supervision():
@@ -139,3 +160,44 @@ def test_response_root_supervision_with_unordered_natural_alignment():
     assert torch.isfinite(losses["loss"])
     assert torch.isfinite(losses["root"])
     assert losses["root"].item() > 0
+
+
+def test_root_transport_eval_metric_aligns_unordered_roots_and_uses_explicit_labels():
+    from cowp.waymax_eval.rollout import _root_transport_eval_arrays
+
+    # GT natural order: x=0, x=10. Predicted decoder order is swapped. The direct
+    # root head predicts high recovery for predicted mode 1, which must align to
+    # GT root 0. Only GT root 0 has an explicit low-burden safe response.
+    gt = torch.zeros(1, 1, 2, 3, 5)
+    gt[:, :, 1, :, 0] = 10.0
+    pred_traj = torch.zeros_like(gt)
+    pred_traj[:, :, 0, :, 0] = 10.0
+    pred_traj[:, :, 1, :, 0] = 0.0
+    pred = {
+        "natural": {"traj": pred_traj},
+        "set_certificate": {
+            "root_transport_exist": torch.tensor([[[[0.1, 0.9]]]]),
+            "response_root_exist_aux": torch.tensor([[[[0.2, 0.8]]]]),
+        },
+    }
+    batch = {
+        "cowp/natural/traj": gt,
+        "cowp/natural/valid": torch.ones(1, 1, 2, dtype=torch.bool),
+        "cowp/candidates/valid": torch.ones(1, 1, dtype=torch.bool),
+        "cowp/critical/valid": torch.ones(1, 1, dtype=torch.bool),
+        "cowp/transport/mode_valid": torch.ones(1, 1, 1, 2, dtype=torch.bool),
+        "cowp/transport/mode_conflict": torch.ones(1, 1, 1, 2, dtype=torch.bool),
+        "cowp/response/valid": torch.tensor([[[[1, 1]]]], dtype=torch.bool),
+        "cowp/response/is_safe": torch.tensor([[[[1, 1]]]], dtype=torch.bool),
+        "cowp/response/is_low_burden": torch.tensor([[[[1, 0]]]], dtype=torch.bool),
+        "cowp/transport/response_root_index": torch.tensor([[[[0, 1]]]]),
+    }
+    out = _root_transport_eval_arrays(pred, batch)
+    assert out is not None
+    assert out["target"].tolist() == [[[[True, False]]]]
+    assert float(out["direct"][0, 0, 0, 0]) == pytest.approx(0.9)
+    assert float(out["direct"][0, 0, 0, 1]) == pytest.approx(0.1)
+    assert float(out["aux"][0, 0, 0, 0]) == pytest.approx(0.8)
+    assert float(out["aux"][0, 0, 0, 1]) == pytest.approx(0.2)
+    assert out["assignment_ade_count"] == 2
+    assert out["assignment_ade_sum"] == pytest.approx(0.0)
