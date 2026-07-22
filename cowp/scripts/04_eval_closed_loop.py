@@ -114,6 +114,15 @@ def main() -> None:
     args = ap.parse_args()
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
+    protocol_cfg = cfg.get("eval", {}) if isinstance(cfg, dict) else {}
+    actual_non_ego_policy = str(protocol_cfg.get("actual_non_ego_policy", "logged_replay"))
+    reactive_mixture_implemented = bool(protocol_cfg.get("reactive_mixture_implemented", False))
+    if args.mode == "waymax" and actual_non_ego_policy != "logged_replay":
+        raise ValueError(
+            "This evaluator controls only the SDC and leaves non-ego agents on Waymax/log playback. "
+            f"eval.actual_non_ego_policy={actual_non_ego_policy!r} would be a false protocol claim. "
+            "Use logged_replay here or implement and validate a real sim-agent actor wrapper first."
+        )
 
     if args.mode == "offline":
         metrics = offline_candidate_eval(args.labels_dir or cfg["outputs"]["labels_dir"], cfg, method=args.method, progress=not args.no_progress)
@@ -334,6 +343,9 @@ def main() -> None:
             "num_shards": int(args.num_shards),
             "num_rollouts": len(rollouts),
             "steps": [int(x.get("steps", 0)) for x in rollouts],
+            "actual_non_ego_policy": actual_non_ego_policy,
+            "reactive_mixture_implemented": reactive_mixture_implemented,
+            "mechanism_ground_truth_available_online": False,
             "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
             "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
         }

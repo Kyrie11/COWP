@@ -40,7 +40,12 @@ class COWPModel(nn.Module):
             edge_distance_scale_m=float(m.get("edge_distance_scale_m", 12.0)),
         )
         self.candidate_encoder = CandidateEncoder(d_model=d_model, dropout=float(m.get("dropout", 0.1)))
-        self.natural_decoder = NaturalDecoder(d_model=d_model, modes=int(m.get("max_natural_alternatives", 24)), future_steps=int(m.get("future_steps", 80)))
+        self.natural_decoder = NaturalDecoder(
+            d_model=d_model,
+            modes=int(m.get("max_natural_alternatives", 24)),
+            future_steps=int(m.get("future_steps", 80)),
+            decoder_type=str(m.get("natural_decoder_type", "temporal_kinematic")),
+        )
         self.response_decoder = ResponseDecoder(
             d_model=d_model,
             responses=int(m.get("max_safe_responses", 32)),
@@ -320,7 +325,13 @@ class COWPModel(nn.Module):
         natural_out = None
         if need_natural:
             assert enc_scene is not None
-            natural_out = self.natural_decoder(enc_scene["z_agent"], critical_idx, decode_traj=decode_natural_traj)
+            natural_out = self.natural_decoder(
+                enc_scene["z_agent"],
+                critical_idx,
+                decode_traj=decode_natural_traj,
+                anchor7=anchor7,
+                dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
+            )
             if decode_natural_traj:
                 assert anchor7 is not None
                 natural_out = self._add_natural_anchor(natural_out, anchor7)

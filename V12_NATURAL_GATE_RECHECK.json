@@ -1,0 +1,46 @@
+{
+  "pass": false,
+  "metrics": {
+    "set_minade_m": 41.28876117407967,
+    "minade_1s_m": Infinity,
+    "minade_3s_m": Infinity,
+    "minade_5s_m": Infinity,
+    "branch_minade_m": 42.00750712253299,
+    "observed_minade_m": 43.66735476799871,
+    "neutral_minade_m": 40.75459615612201,
+    "priority_minade_m": 39.94072374783525,
+    "neutral_consistency_m": 53.93597668340399,
+    "source_ce": 1.0215348360616465,
+    "priority_bce": 0.6672671925489009,
+    "source_improvement": 0.0018502707898879756,
+    "priority_improvement": 0.0015388289485075424,
+    "neutral_consistency_improvement_m": 0.0012948761244899742,
+    "checkpoint_score": 42.64451953297444,
+    "epoch": 7
+  },
+  "checks": {
+    "set_minade_pass": false,
+    "branch_minade_pass": false,
+    "neutral_minade_pass": false,
+    "priority_minade_pass": false,
+    "source_semantics_learning_pass": false,
+    "priority_semantics_learning_pass": false,
+    "neutral_consistency_learning_pass": false
+  },
+  "thresholds": {
+    "max_set_minade_m": 12.0,
+    "effective_set_minade_gate_m": 12.0,
+    "max_oracle_gap_m": 6.0,
+    "max_branch_minade_m": 15.0,
+    "max_neutral_minade_m": 15.0,
+    "max_priority_minade_m": 15.0,
+    "max_minade_1s_m": 3.0,
+    "max_minade_3s_m": 8.0,
+    "min_source_improvement": 0.01,
+    "min_priority_improvement": 0.005,
+    "min_neutral_consistency_improvement_m": 0.5
+  },
+  "oracle_report": null,
+  "validation_points": 8,
+  "failure_interpretation": "Do not continue to transport/planner training when this gate fails; root identity is not sufficiently learned."
+}

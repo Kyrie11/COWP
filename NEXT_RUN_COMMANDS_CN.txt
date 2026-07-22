@@ -1,0 +1,159 @@
+# COWP v13 推荐执行顺序
+# 在服务器 COWP_v13_natural_closedloop 根目录执行。
+# 不要复用 outputs/cowp_v12_riot_probe100_seed2026，避免新旧 history/checkpoint 混淆。
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal
+
+export RAW_TRAIN_CACHE=$COWP_ROOT/tensor_cache_train_waymax
+export RAW_VAL_CACHE=$COWP_ROOT/tensor_cache_val_waymax
+export TRAIN_CACHE=$COWP_ROOT/tensor_cache_train_waymax_transport_v9
+export VAL_CACHE=$COWP_ROOT/tensor_cache_val_waymax_transport_v9
+export INIT_CKPT=outputs/cowp_v10_gct_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt
+export OUT_ROOT=outputs/cowp_v13_temporal_riot_seed2026
+
+###############################################################################
+# 0. 环境/静态检查
+###############################################################################
+python -m compileall -q cowp tests
+pytest -q
+bash -n run_cowp_v13_dual_gpu.sh
+
+###############################################################################
+# 1. 必须先做 raw/transport cache 对齐与自然轨迹 oracle 诊断
+###############################################################################
+mkdir -p "$OUT_ROOT/eval"
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_TRAIN_CACHE" \
+  --transport-cache "$TRAIN_CACHE" \
+  --max-scenes 2000 \
+  --output "$OUT_ROOT/eval/cache_alignment_train.json"
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_VAL_CACHE" \
+  --transport-cache "$VAL_CACHE" \
+  --max-scenes 2000 \
+  --output "$OUT_ROOT/eval/cache_alignment_val.json"
+
+python -u -m cowp.scripts.34_diagnose_natural_oracles \
+  --cache-dir "$RAW_TRAIN_CACHE" \
+  --max-scenes 2000 \
+  --output "$OUT_ROOT/eval/natural_oracle_train.json"
+
+python -u -m cowp.scripts.34_diagnose_natural_oracles \
+  --cache-dir "$RAW_VAL_CACHE" \
+  --max-scenes 2000 \
+  --output "$OUT_ROOT/eval/natural_oracle_val.json"
+
+# 检查：
+# - raw_transport_base_tensor_checks / critical mapping 不得有 hard failure；
+# - transport root index 不得越界；
+# - first-step/current/CV alignment 若出现大误差，先修数据，不要训练；
+# - logdiv coverage 仍为 0 时继续保持 logdiv loss=0。
+
+###############################################################################
+# 2. 只训练 natural basis；通过 gate 才继续
+###############################################################################
+OUT_ROOT="$OUT_ROOT" \
+INIT_CKPT="$INIT_CKPT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 \
+RUN_NATURAL=1 RUN_TRANSPORT=0 RUN_PLANNER=0 RUN_OFFLINE=0 \
+RUN_PROBE=0 RUN_FULL=0 STOP_AFTER_STAGE=natural \
+NATURAL_EPOCHS=30 NATURAL_LR=1.0e-4 EARLY_STOP_PATIENCE=8 \
+bash run_cowp_v13_dual_gpu.sh
+
+cat "$OUT_ROOT/eval/learned_offline/natural_basis_gate.json"
+# 必须 pass=true。若失败，先看 1s/3s/8s minADE 和 source/priority/neutral 学习量；
+# 不要只放宽 12/15m gate。
+
+###############################################################################
+# 3. 只训练 RIOT transport；不要同时训练 planner
+###############################################################################
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 \
+RUN_NATURAL=0 RUN_TRANSPORT=1 RUN_PLANNER=0 RUN_OFFLINE=0 \
+RUN_PROBE=0 RUN_FULL=0 STOP_AFTER_STAGE=transport \
+TRANSPORT_EPOCHS=14 TRANSPORT_LR=1.5e-5 EARLY_STOP_PATIENCE=8 \
+bash run_cowp_v13_dual_gpu.sh
+
+# 先查看 transport history 中：
+# RootTransport/ConflictConditioned_AUPRC
+# RootTransport/LowSafeExist_AUPRC
+# response-bank auxiliary AUPRC
+# pair witness AUPRC
+# natural-root assignment minADE
+# direct root transport 未达到开发 gate 时，禁止 planner/Waymax。
+
+###############################################################################
+# 4. planner + learned-offline 机制验证
+###############################################################################
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 \
+RUN_NATURAL=0 RUN_TRANSPORT=0 RUN_PLANNER=1 RUN_OFFLINE=1 \
+RUN_PROBE=0 RUN_FULL=0 STOP_AFTER_STAGE=offline \
+PLANNER_EPOCHS=10 PLANNER_LR=8e-6 \
+ONLINE_OUTCOME_RISK_PENALTY=0.0 OUTCOME_RISK_THRESHOLD=1.10 \
+bash run_cowp_v13_dual_gpu.sh
+
+cat "$OUT_ROOT/eval/learned_offline/mechanism_verification.json"
+cat "$OUT_ROOT/eval/learned_offline/bcot_readiness.json"
+# 必须 pass=true。least_violation operating point 不能进入论文主表。
+
+###############################################################################
+# 5. 100 场景 Waymax smoke test，只查协议/代码问题，不做 SOTA 声明
+###############################################################################
+export WAYMAX_VAL="$WOMD_ROOT/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150"
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" WAYMAX_VAL="$WAYMAX_VAL" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 RUN_TRANSPORT=0 RUN_PLANNER=0 \
+RUN_OFFLINE=0 RUN_PROBE=1 RUN_FULL=0 STOP_AFTER_STAGE=probe \
+PROBE_SCENARIOS=100 ONLINE_OUTCOME_RISK_PENALTY=0.0 OUTCOME_RISK_THRESHOLD=1.10 \
+bash run_cowp_v13_dual_gpu.sh
+
+# 检查 JSON 必须明确：
+# actual_non_ego_policy=logged_replay
+# reactive_mixture_implemented=false
+# mechanism_ground_truth_available_online=false
+# ClosedLoopMechanismProxyOnly=1
+
+###############################################################################
+# 6. 开发集 1000 场景；稳定后再完整 5013 val
+###############################################################################
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" WAYMAX_VAL="$WAYMAX_VAL" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 RUN_TRANSPORT=0 RUN_PLANNER=0 \
+RUN_OFFLINE=0 RUN_PROBE=0 RUN_FULL=1 \
+FULL_SCENARIOS=1000 ONLINE_OUTCOME_RISK_PENALTY=0.0 OUTCOME_RISK_THRESHOLD=1.10 \
+bash run_cowp_v13_dual_gpu.sh
+
+# 最终论文版本：
+# FULL_SCENARIOS=5013；固定场景和 checkpoint，不再根据结果调 threshold。
+
+###############################################################################
+# 7. 可选：定向补齐 Waymax outcome，而不是重放全部训练集
+###############################################################################
+# 在 planner checkpoint 固定后，仅 replay：
+# - COWP selected candidate；
+# - conventional_safety selected candidate；
+# - planner_score_only selected candidate；
+# - 每场少量 hard negatives/near-frontier candidates。
+# 对 val 先做到 selected-candidate outcome coverage >= 0.90，再决定是否启用：
+# ONLINE_OUTCOME_RISK_PENALTY=0.75 OUTCOME_RISK_THRESHOLD=0.65
+# 该设置必须作为独立消融，不能与主 RIOT 结果混在一起。
+
+###############################################################################
+# 8. reactive-agent 协议
+###############################################################################
+# 当前包未实现并验证 Waymax sim-agent/IDM actor wrapper；不要通过修改 YAML
+# 假装启用。先完成 logged-replay 全量结果，再单独接入 Waymax IDM/sim agents
+# 或 V-Max multi-agent WOMD，并独立命名输出目录和论文表格。

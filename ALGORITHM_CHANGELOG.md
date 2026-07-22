@@ -322,3 +322,129 @@ Validation after hardening:
 - `pytest -q`: **70 passed**;
 - `python -m compileall cowp tests`: pass;
 - `bash -n run_cowp_v12_dual_gpu.sh`: pass.
+
+## v13-TKN — Temporal-Kinematic Natural Basis and Protocol-Safe Closed Loop
+
+### Triggering evidence from `cowp_v12_riot_probe100_seed2026`
+
+The supplied v12 result directory contains only copied configs and
+`checkpoints/natural/history_natural.json`; it contains no natural checkpoint,
+transport/planner history or checkpoint, learned-offline report, probe result, or
+Waymax result.  The run therefore stopped before RIOT was trained or evaluated.
+
+The best recorded natural-basis row is epoch 7:
+
+- validation set minADE: **41.2888 m**;
+- branch minADE: **42.0075 m**;
+- observational / neutral / priority minADE: **43.6674 / 40.7546 / 39.9407 m**;
+- neutral consistency: **53.9360 m**;
+- source CE: **1.0215**, improving only **0.00185** over the run;
+- priority BCE: **0.6673**, improving only **0.00154**;
+- composite checkpoint score: **42.6445**.
+
+A v13 recheck fails every registered v12 natural gate.  This is not evidence
+against RIOT itself, because RIOT never received an identifiable natural root
+basis and no transport/planner/online result exists.
+
+### Root causes
+
+1. The old natural trajectory head projected one agent token directly to all
+   `M x T x 7` values.  Its mode embedding did not participate in trajectory
+   decoding and there was no explicit time representation or motion prior.
+2. Natural alternatives are unordered, but source and priority semantics were
+   supervised mainly as aggregate distributions rather than on the trajectory
+   mode matched to each ground-truth root.  Root identity was therefore weakly
+   identifiable.
+3. Neutral consistency used source-neutral probability without the mode mixture
+   probability, so even negligible modes contributed equally; the corresponding
+   validation error stayed near 54 m.
+4. The v12 gate had no dataset/oracle diagnostic and no short-horizon metrics,
+   making it impossible to distinguish coordinate/track misalignment from a bad
+   decoder using the result package alone.
+5. Online `ClosedLoopPredFSR/CBS/OPR` are predictions of the same network that
+   selects the candidate.  They are health diagnostics, not counterfactual
+   ground truth and cannot independently validate the paper mechanism.
+6. The real Waymax evaluator controls only the SDC.  Non-ego agents follow log
+   playback.  The previous config described this correctly but the field was not
+   enforced or emitted in the result JSON.
+7. Replanning had no plan-stitching/hysteresis term, allowing high-frequency
+   candidate switching even when every individual lattice trajectory was valid.
+8. `metrics_from_labels` had a latent missing-field crash caused by an undefined
+   `valid` variable in fallback burden/OPR allocation.
+
+### Implemented changes
+
+1. Added `temporal_kinematic` natural decoding:
+   - constant-velocity anchor baseline;
+   - explicit mode and time embeddings connected to trajectory generation;
+   - bounded cumulative position/yaw residuals and bounded velocity/size offsets;
+   - zero-initialized residual head, so a new model starts exactly at the
+     kinematic baseline;
+   - `legacy_linear` retained for a controlled ablation.
+2. Added matched-mode semantic supervision: nearest-trajectory matching now binds
+   source CE and priority BCE to the recovered natural root.
+3. Corrected neutral consistency weighting to use both mixture probability and
+   neutral-source probability.
+4. Added validation natural minADE at 1 s, 3 s, 5 s, and 8 s.
+5. Hardened `32_gate_natural_basis.py` with semantic-learning checks and optional
+   kinematic-oracle comparison.
+6. Added `33_diagnose_cache_alignment.py` for raw/transport tensor equality,
+   critical track-to-input mapping, current/future coordinate consistency,
+   transport-root ranges, and Waymax outcome/log-divergence coverage.
+7. Added `34_diagnose_natural_oracles.py`, a 15-trajectory acceleration/yaw-rate
+   bank that reports source-stratified 1/3/5/8 s oracle minADE.
+8. Added online plan-continuity risk after the hard feasibility/frontier filter.
+   It can reorder feasible candidates but cannot make a rejected candidate
+   feasible.  The same regularizer is applied to internal baselines.
+9. Waymax outputs now explicitly include:
+   - `actual_non_ego_policy=logged_replay`;
+   - `reactive_mixture_implemented=false`;
+   - `mechanism_ground_truth_available_online=false`;
+   - proxy-only markers for online model-predicted mechanism diagnostics.
+   The evaluator raises an error if a config falsely requests a reactive non-ego
+   policy without an implemented actor wrapper.
+10. Fixed the missing optional witness-array crash in label-only metrics.
+11. Added `STOP_AFTER_STAGE=natural|transport|planner|offline|probe` to make each
+    promotion gate independently executable.  A natural-only run no longer
+    requires transport caches unless transport diagnostics/later stages are
+    requested.
+12. Added v13 configs and `run_cowp_v13_dual_gpu.sh`.
+
+### What is and is not validated
+
+Validated locally without WOMD/Waymax data:
+
+- YAML parsing;
+- Python compilation;
+- driver shell syntax;
+- temporal decoder kinematic initialization;
+- proxy protocol markers and missing-field metric fallback;
+- full test suite: **73 passed**.
+
+Not yet validated, because the uploaded package does not include the actual
+raw/transport caches, the initialization checkpoint, or a Waymax installation:
+
+- real cache coordinate/track alignment;
+- v13 natural-basis convergence;
+- RIOT direct root-transport AUPRC;
+- planner selection gains;
+- logged-replay Waymax metrics;
+- reactive-agent counterfactual burden reduction.
+
+### Promotion policy
+
+- Do not continue beyond natural training unless the v13 natural gate passes.
+- Do not run Waymax unless learned-offline mechanism verification passes.
+- Do not use sparse attached candidate outcomes as the sole planner objective or
+  as a full validation result.
+- Keep log-divergence loss/reporting disabled until finite label coverage is
+  measured; the supplied cache audit reports zero finite log-divergence labels.
+- Do not call logged-replay Waymax evaluation reactive or use model-predicted
+  online FSR/CBS/OPR as causal ground truth.
+- A paper-ready result requires paired full-validation comparisons, confidence
+  intervals, and a separately labelled reactive-agent protocol.
+13. Keep the sparse Waymax outcome head as auxiliary supervision, but disable it
+    in the primary v13 selector by default (`candidate_selection_outcome_weight=0`,
+    `candidate_outcome_risk_mix=0`, online penalty `0`, threshold `1.10`).  It must
+    be re-enabled only as a registered ablation after checkpoint-selected
+    validation replay coverage is reported.

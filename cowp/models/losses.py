@@ -448,6 +448,70 @@ def _natural_priority_expectation_loss(logits: torch.Tensor, priority_logits: to
     return masked_mean(bce, agent_mask)
 
 
+def _matched_natural_semantic_losses(
+    pairwise_ade: torch.Tensor,
+    logits: torch.Tensor,
+    source_logits: torch.Tensor | None,
+    priority_logits: torch.Tensor | None,
+    gt_source: torch.Tensor,
+    gt_priority: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor,
+    ref: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Attach branch semantics to the trajectory mode that explains each GT root.
+
+    v12 supervised only the aggregate source/priority distribution of the whole
+    mixture.  A decoder could therefore obtain a reasonable aggregate CE while
+    assigning arbitrary semantics to individual modes, which is fatal for RIOT's
+    root-indexed transport.  The hard nearest-mode assignment is permutation
+    invariant and directly supervises the matched predicted root.
+    """
+    if not valid.any():
+        z = _zero_like_loss(ref)
+        return z, z
+    with torch.no_grad():
+        assignment = pairwise_ade.argmin(dim=2)  # [B,A,M_gt]
+    w = _nonnegative_weight(weight) * valid.float()
+    denom = w.sum().clamp_min(1e-6)
+
+    if source_logits is not None:
+        src = torch.nan_to_num(
+            gt_source.float(), nan=float(NaturalSource.PAD),
+            posinf=float(NaturalSource.PAD), neginf=float(NaturalSource.PAD),
+        ).long().clamp(0, int(source_logits.shape[-1]) - 1)
+        idx = assignment[..., None].expand(*assignment.shape, source_logits.shape[-1])
+        matched_src = torch.gather(source_logits, dim=2, index=idx)
+        src_ce = F.cross_entropy(
+            _safe_float(matched_src).reshape(-1, matched_src.shape[-1]),
+            src.reshape(-1), reduction="none",
+        ).reshape_as(src)
+        source_loss = (src_ce * w).sum() / denom
+    else:
+        source_loss = _zero_like_loss(ref)
+
+    if priority_logits is not None:
+        matched_prio = torch.gather(priority_logits, dim=2, index=assignment)
+        target = _binary_target(gt_priority)
+        bce = F.binary_cross_entropy_with_logits(_safe_float(matched_prio), target, reduction="none")
+        priority_loss = (bce * w).sum() / denom
+    else:
+        priority_loss = _zero_like_loss(ref)
+    return source_loss, priority_loss
+
+
+def _set_minade_at_steps(
+    pred_traj: torch.Tensor,
+    gt_traj: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor,
+    steps: int,
+) -> torch.Tensor:
+    steps = max(1, min(int(steps), int(pred_traj.shape[-2]), int(gt_traj.shape[-2])))
+    pair = _pairwise_ade(pred_traj[..., :steps, :], gt_traj[..., :steps, :])
+    return _weighted_set_minade_from_pairwise(pair, valid, weight, pred_traj)
+
+
 def _branch_minade_from_pairwise(pairwise_ade: torch.Tensor, valid: torch.Tensor, source: torch.Tensor, branch: int, ref: torch.Tensor) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
     if not branch_gt.any():
@@ -491,27 +555,26 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
             tau=float(weights.get("natural_mode_tau_m", 2.0)),
         )
 
+        source_ce, priority_loss = _matched_natural_semantic_losses(
+            pairwise_ade,
+            logits,
+            pred.get("source_logits"),
+            pred.get("priority_logits"),
+            gt_source,
+            batch["cowp/natural/priority_preserved"],
+            mask,
+            nat_weight,
+            pred["traj"],
+        )
+        # Keep a small aggregate-distribution auxiliary for calibration without
+        # allowing it to replace mode-level branch identity.
         if "source_logits" in pred:
-            source_ce = _natural_source_distribution_loss(
-                logits,
-                pred["source_logits"],
-                gt_source,
-                mask,
-                nat_weight,
+            source_distribution = _natural_source_distribution_loss(
+                logits, pred["source_logits"], gt_source, mask, nat_weight,
                 int(pred["source_logits"].shape[-1]),
             )
         else:
-            source_ce = _zero_like_loss(pred["traj"])
-        if "priority_logits" in pred:
-            priority_loss = _natural_priority_expectation_loss(
-                logits,
-                pred["priority_logits"],
-                batch["cowp/natural/priority_preserved"],
-                mask,
-                nat_weight,
-            )
-        else:
-            priority_loss = _zero_like_loss(pred["traj"])
+            source_distribution = _zero_like_loss(pred["traj"])
 
         obs_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.OBS), pred["traj"])
         neu_minade = _branch_minade_from_pairwise(pairwise_ade, mask, gt_source, int(NaturalSource.NEU), pred["traj"])
@@ -524,7 +587,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 
         neu_gt_mask = mask & (gt_source == int(NaturalSource.NEU))
         if neu_gt_mask.any() and "source_logits" in pred:
-            prob_neu = F.softmax(_safe_float(pred["source_logits"]), dim=-1)[..., int(NaturalSource.NEU)] * crit[:, :, None].float()
+            mode_prob = F.softmax(_safe_float(logits), dim=-1)
+            source_prob_neu = F.softmax(_safe_float(pred["source_logits"]), dim=-1)[..., int(NaturalSource.NEU)]
+            prob_neu = mode_prob * source_prob_neu * crit[:, :, None].float()
             pred_mu = (_safe_float(pred["traj"]) * prob_neu[..., None, None]).sum(dim=2) / prob_neu.sum(dim=2).clamp_min(1e-6)[..., None, None]
             gt_w = nat_weight * neu_gt_mask.float()
             gt_mu = (gt_traj * gt_w[..., None, None]).sum(dim=2) / gt_w.sum(dim=2).clamp_min(1e-6)[..., None, None]
@@ -536,13 +601,22 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     else:
         traj = _zero_like_loss(pred["traj"])
         mode = _zero_like_loss(pred.get("logits", pred["traj"]))
-        source_ce = priority_loss = branch_minade = neu_cons = div = _zero_like_loss(pred["traj"])
+        source_ce = source_distribution = priority_loss = branch_minade = neu_cons = div = _zero_like_loss(pred["traj"])
         obs_minade = neu_minade = prio_minade = _zero_like_loss(pred["traj"])
+
+    if mask.any():
+        dt = float(weights.get("natural_dt", 0.1))
+        h1 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, max(1, round(1.0 / dt)))
+        h3 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, max(1, round(3.0 / dt)))
+        h5 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, max(1, round(5.0 / dt)))
+    else:
+        h1 = h3 = h5 = _zero_like_loss(pred["traj"])
 
     total = (
         weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj
         + weights.get("natural_mode_ce", 0.5) * mode
         + weights.get("branch_source_ce", 0.4) * source_ce
+        + weights.get("source_distribution_aux", 0.05) * source_distribution
         + weights.get("branch_minade", 0.7) * branch_minade
         + weights.get("priority_preservation", 0.4) * priority_loss
         + weights.get("neutral_consistency", 0.3) * neu_cons
@@ -553,6 +627,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         "traj": traj,
         "mode": mode,
         "source": source_ce,
+        "source_distribution": source_distribution,
         "priority": priority_loss,
         "branch_minade": branch_minade,
         "obs_minade": obs_minade,
@@ -560,6 +635,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         "prio_minade": prio_minade,
         "neutral_consistency": neu_cons,
         "diversity": div,
+        "minade_1s": h1,
+        "minade_3s": h3,
+        "minade_5s": h5,
     }
 
 

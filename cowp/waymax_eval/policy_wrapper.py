@@ -1594,6 +1594,41 @@ def _risk_budgeted_selection_scores_1d(
     )
     return torch.where(select, obj, inf)
 
+def _plan_continuity_risk_np(
+    candidates: np.ndarray,
+    cand_valid: np.ndarray,
+    previous_traj: np.ndarray | None,
+    cfg: dict,
+) -> np.ndarray:
+    """Distance to the previous plan shifted by one simulation step.
+
+    This is a selection regularizer, not a safety certificate.  It suppresses
+    one-step candidate oscillation while preserving fresh replanning and all hard
+    COWP/physical gates.
+    """
+    K = int(candidates.shape[0])
+    out = np.zeros(K, dtype=np.float32)
+    if previous_traj is None or candidates.ndim < 3 or previous_traj.ndim < 2:
+        return out
+    pcfg = cfg.get("planning", {})
+    h = min(
+        int(pcfg.get("online_plan_continuity_horizon_steps", 12)),
+        int(candidates.shape[1]),
+        max(int(previous_traj.shape[0]) - 1, 0),
+    )
+    if h <= 0:
+        return out
+    ref = np.asarray(previous_traj[1 : 1 + h, :2], dtype=np.float32)
+    cur = np.asarray(candidates[:, :h, :2], dtype=np.float32)
+    finite = cand_valid.astype(bool) & np.isfinite(cur).all(axis=(1, 2)) & np.isfinite(ref).all()
+    if not finite.any():
+        return out
+    d = np.linalg.norm(cur[finite] - ref[None, :, :], axis=-1).mean(axis=-1)
+    scale = max(float(pcfg.get("online_plan_continuity_scale_m", 3.0)), 1.0e-3)
+    out[finite] = np.clip(d / scale, 0.0, 1.0).astype(np.float32)
+    return out
+
+
 @dataclass
 class COWPWaymaxPolicy:
     checkpoint: str
@@ -1636,6 +1671,7 @@ class COWPWaymaxPolicy:
         self._diagnostics_log: list[dict[str, Any]] = []
         self._previous_longitudinal_accel: float = 0.0
         self._previous_scenario_index: int | None = None
+        self._previous_selected_traj: np.ndarray | None = None
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
 
@@ -1686,6 +1722,7 @@ class COWPWaymaxPolicy:
     def __call__(self, state: Any, *, step: int | None = None, scenario_index: int | None = None) -> Any:
         if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
             self._previous_longitudinal_accel = 0.0
+            self._previous_selected_traj = None
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
@@ -1741,6 +1778,14 @@ class COWPWaymaxPolicy:
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
             utility = batch.get("cowp/candidates/ego_utility_prior", None)
             utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
+            continuity_np = _plan_continuity_risk_np(
+                batch_np["cowp/candidates/trajectory"][0],
+                batch_np["cowp/candidates/valid"][0].astype(bool),
+                self._previous_selected_traj,
+                self.cfg,
+            )
+            continuity_risk = self.torch.as_tensor(continuity_np, device=self.dev, dtype=scores.dtype)
+            continuity_weight = float(self.cfg.get("planning", {}).get("online_plan_continuity_weight", 0.20))
 
             if not needs_cowp_risk:
                 # Fast exact-equivalent path for internal baselines.  These methods
@@ -1755,6 +1800,7 @@ class COWPWaymaxPolicy:
                 else:  # planner_score_only
                     select_mask = cand_valid
                     adjusted_scores = scores
+                adjusted_scores = adjusted_scores + continuity_weight * continuity_risk
                 fallback_used = False
                 fallback_reason = "accepted_baseline"
                 macro_t = batch["cowp/candidates/macro_type"][0].long()
@@ -1831,9 +1877,11 @@ class COWPWaymaxPolicy:
                     "mean_candidate_action_risk": 0.0,
                     "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
                 }
+                diag["selected_plan_continuity_risk"] = float(continuity_np[selected])
                 self._last_diagnostics = diag
                 self._diagnostics_log.append(diag)
-                traj = batch_np["cowp/candidates/trajectory"][0, selected]
+                traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
+                self._previous_selected_traj = np.array(traj, copy=True)
                 return self._trajectory_to_action(state, agent_state, sdc_index, traj)
 
             pcfg = self.cfg.get("planning", {})
@@ -2171,6 +2219,10 @@ class COWPWaymaxPolicy:
                     if bool(frontier.any().detach().cpu().item()):
                         accepted = frontier
                         adjusted_scores = result.adjusted_scores
+            # Plan continuity is a tie/selection regularizer only.  It is added
+            # after hard feasibility/frontier construction and therefore cannot
+            # make a rejected candidate feasible.
+            adjusted_scores = adjusted_scores + continuity_weight * continuity_risk
             # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
             # neutral/stop-like conventional candidate; finally the guaranteed
             # neutral candidate.  Avoid falling back to an arbitrary conventional
@@ -2307,9 +2359,11 @@ class COWPWaymaxPolicy:
                 diag["max_predicted_burden"] = float(host[32])
             if c_i is not None:
                 diag["max_predicted_c_i"] = float(host[33])
+            diag["selected_plan_continuity_risk"] = float(continuity_np[selected])
         self._last_diagnostics = diag
         self._diagnostics_log.append(diag)
-        traj = batch_np["cowp/candidates/trajectory"][0, selected]
+        traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
+        self._previous_selected_traj = np.array(traj, copy=True)
         return self._trajectory_to_action(
             state,
             agent_state,
