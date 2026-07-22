@@ -37,6 +37,10 @@ def main() -> None:
     ap.add_argument("--min-source-improvement", type=float, default=0.01)
     ap.add_argument("--min-priority-improvement", type=float, default=0.005)
     ap.add_argument("--min-neutral-consistency-improvement-m", type=float, default=0.5)
+    ap.add_argument("--max-source-ce", type=float, default=0.30, help="Absolute semantic gate; typed roots may already be correct at epoch -1 and need not improve further.")
+    ap.add_argument("--max-priority-bce", type=float, default=0.45)
+    ap.add_argument("--max-neutral-consistency-m", type=float, default=10.0)
+    ap.add_argument("--max-typed-untyped-gap-m", type=float, default=4.0, help="Typed matching must not hide severe loss of geometric coverage.")
     ap.add_argument("--min-validation-points", type=int, default=2)
     args = ap.parse_args()
 
@@ -49,6 +53,7 @@ def main() -> None:
     best = min(val_rows, key=lambda r: (_finite(r, "checkpoint/score"), _finite(r, "val/natural/traj")))
     metrics = {
         "set_minade_m": _finite(best, "val/natural/traj"),
+        "untyped_set_minade_m": _finite(best, "val/natural/untyped_traj"),
         "minade_1s_m": _finite(best, "val/natural/minade_1s"),
         "minade_3s_m": _finite(best, "val/natural/minade_3s"),
         "minade_5s_m": _finite(best, "val/natural/minade_5s"),
@@ -82,10 +87,24 @@ def main() -> None:
         "branch_minade_pass": metrics["branch_minade_m"] <= args.max_branch_minade_m,
         "neutral_minade_pass": metrics["neutral_minade_m"] <= args.max_neutral_minade_m,
         "priority_minade_pass": metrics["priority_minade_m"] <= args.max_priority_minade_m,
-        "source_semantics_learning_pass": (metrics["source_improvement"] or 0.0) >= args.min_source_improvement,
-        "priority_semantics_learning_pass": (metrics["priority_improvement"] or 0.0) >= args.min_priority_improvement,
-        "neutral_consistency_learning_pass": (metrics["neutral_consistency_improvement_m"] or 0.0) >= args.min_neutral_consistency_improvement_m,
+        "source_semantics_pass": (
+            metrics["source_ce"] <= args.max_source_ce
+            or (metrics["source_improvement"] or 0.0) >= args.min_source_improvement
+        ),
+        "priority_semantics_pass": (
+            metrics["priority_bce"] <= args.max_priority_bce
+            or (metrics["priority_improvement"] or 0.0) >= args.min_priority_improvement
+        ),
+        "neutral_consistency_pass": (
+            metrics["neutral_consistency_m"] <= args.max_neutral_consistency_m
+            or (metrics["neutral_consistency_improvement_m"] or 0.0) >= args.min_neutral_consistency_improvement_m
+        ),
     }
+    if math.isfinite(metrics["untyped_set_minade_m"]):
+        checks["typed_untyped_gap_pass"] = (
+            metrics["set_minade_m"] - metrics["untyped_set_minade_m"]
+        ) <= args.max_typed_untyped_gap_m
+
     # Older histories do not contain horizon metrics; do not fabricate a failure.
     if math.isfinite(metrics["minade_1s_m"]):
         checks["minade_1s_pass"] = metrics["minade_1s_m"] <= args.max_minade_1s_m
@@ -108,10 +127,14 @@ def main() -> None:
             "min_source_improvement": args.min_source_improvement,
             "min_priority_improvement": args.min_priority_improvement,
             "min_neutral_consistency_improvement_m": args.min_neutral_consistency_improvement_m,
+            "max_source_ce": args.max_source_ce,
+            "max_priority_bce": args.max_priority_bce,
+            "max_neutral_consistency_m": args.max_neutral_consistency_m,
+            "max_typed_untyped_gap_m": args.max_typed_untyped_gap_m,
         },
         "oracle_report": args.oracle_report,
         "validation_points": len(val_rows),
-        "failure_interpretation": "Do not continue to transport/planner training when this gate fails; root identity is not sufficiently learned.",
+        "failure_interpretation": "Do not continue to transport/planner training when this gate fails. v14 accepts either a sufficiently good absolute semantic metric or measurable learning, because the typed prior can already be correct at epoch -1.",
     }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -1,0 +1,287 @@
+COWP v14 推荐执行指令（严格按 gate 顺序）
+==========================================
+
+0. 环境与路径
+-------------
+
+cd /path/to/COWP_v14_typed_natural_basis
+
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export RAW_TRAIN_CACHE="$COWP_ROOT/tensor_cache_train_waymax"
+export RAW_VAL_CACHE="$COWP_ROOT/tensor_cache_val_waymax"
+export TRAIN_CACHE="$COWP_ROOT/tensor_cache_train_waymax_transport_v9"
+export VAL_CACHE="$COWP_ROOT/tensor_cache_val_waymax_transport_v9"
+export INIT_CKPT=outputs/cowp_v10_gct_probe100_seed2026/checkpoints/planner/cowp_planner_best.pt
+export OUT_ROOT=outputs/cowp_v14_typed_natural_seed2026
+export GPU0=0
+export GPU1=1
+export DIAG_WORKERS=8
+
+先确认：
+
+python - <<'PY'
+from pathlib import Path
+import os
+for k in ["RAW_TRAIN_CACHE","RAW_VAL_CACHE","TRAIN_CACHE","VAL_CACHE","INIT_CKPT"]:
+    p=Path(os.environ[k])
+    print(k, p, "OK" if p.exists() else "MISSING")
+PY
+
+任何 MISSING 先修路径，不要训练。
+
+
+1. 快速数据诊断（先小样本）
+---------------------------
+
+mkdir -p "$OUT_ROOT/eval" "$OUT_ROOT/logs"
+
+# 1.1 raw/transport 对齐：默认 sampled hash + selective NPZ read + 8 workers
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_TRAIN_CACHE" \
+  --transport-cache "$TRAIN_CACHE" \
+  --max-scenes 256 \
+  --workers "$DIAG_WORKERS" \
+  --hash-mode sampled \
+  --output "$OUT_ROOT/eval/cache_alignment_train_smoke.json" \
+  2>&1 | tee "$OUT_ROOT/logs/cache_alignment_train_smoke.log"
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_VAL_CACHE" \
+  --transport-cache "$VAL_CACHE" \
+  --max-scenes 256 \
+  --workers "$DIAG_WORKERS" \
+  --hash-mode sampled \
+  --output "$OUT_ROOT/eval/cache_alignment_val_smoke.json" \
+  2>&1 | tee "$OUT_ROOT/logs/cache_alignment_val_smoke.log"
+
+# 1.2 label-only运动学 oracle：先 500 scenes
+python -u -m cowp.scripts.34_diagnose_natural_oracles \
+  --cache-dir "$RAW_VAL_CACHE" \
+  --max-scenes 500 \
+  --workers "$DIAG_WORKERS" \
+  --output "$OUT_ROOT/eval/natural_oracle_val_smoke.json" \
+  2>&1 | tee "$OUT_ROOT/logs/natural_oracle_val_smoke.log"
+
+# 1.3 最关键：复现训练实际路径的 model-anchor preflight
+python -u -m cowp.scripts.35_diagnose_model_anchor \
+  --data-config configs/data.yaml \
+  --model-config configs/model.yaml \
+  --label-config configs/label_cowp_v14.yaml \
+  --train-config configs/train_cowp_v14.yaml \
+  --cache-dir "$RAW_VAL_CACHE" \
+  --max-scenes 500 \
+  --batch-size 16 \
+  --num-workers "$DIAG_WORKERS" \
+  --device cpu \
+  --output "$OUT_ROOT/eval/model_anchor_preflight_val_smoke.json" \
+  2>&1 | tee "$OUT_ROOT/logs/model_anchor_preflight_val_smoke.log"
+
+三个命令必须 exit code=0。
+重点检查 model_anchor_preflight_val_smoke.json：
+- pass=true
+- critical_unmapped_or_invisible <= 0.02
+- gt_first_step_vs_model_cv_anchor_m.p90 <= 5.0
+- typed_basis/1s.mean <= 3.0
+- typed_basis/8s.mean <= 8.5
+
+若 35 失败：
+- input_index_vs_original_track_index_anchor_delta 很大：重点查 proto track_index 到 tf.Example row 的映射；
+- first-step p90 很大但 input_index delta 不大：重点查坐标系/当前帧时间索引；
+- unmapped rate 很大：重点查 max_agents、筛选和 input_index 缺失；
+- first-step正常但 8s差：再查 natural label与运动学先验，不要先改 planner。
+
+
+2. promotion 数据审计（扩大到 2000 scenes）
+------------------------------------------
+
+仅在步骤1全部通过后运行：
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_TRAIN_CACHE" --transport-cache "$TRAIN_CACHE" \
+  --max-scenes 2000 --workers "$DIAG_WORKERS" --hash-mode sampled \
+  --output "$OUT_ROOT/eval/cache_alignment_train.json" \
+  2>&1 | tee "$OUT_ROOT/logs/cache_alignment_train.log"
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_VAL_CACHE" --transport-cache "$VAL_CACHE" \
+  --max-scenes 2000 --workers "$DIAG_WORKERS" --hash-mode sampled \
+  --output "$OUT_ROOT/eval/cache_alignment_val.json" \
+  2>&1 | tee "$OUT_ROOT/logs/cache_alignment_val.log"
+
+python -u -m cowp.scripts.34_diagnose_natural_oracles \
+  --cache-dir "$RAW_VAL_CACHE" --max-scenes 2000 --workers "$DIAG_WORKERS" \
+  --output "$OUT_ROOT/eval/natural_oracle_val.json" \
+  2>&1 | tee "$OUT_ROOT/logs/natural_oracle_val.log"
+
+python -u -m cowp.scripts.35_diagnose_model_anchor \
+  --data-config configs/data.yaml --model-config configs/model.yaml \
+  --label-config configs/label_cowp_v14.yaml \
+  --train-config configs/train_cowp_v14.yaml \
+  --cache-dir "$RAW_VAL_CACHE" --max-scenes 2000 \
+  --batch-size 16 --num-workers "$DIAG_WORKERS" --device cpu \
+  --output "$OUT_ROOT/eval/model_anchor_preflight_val.json" \
+  2>&1 | tee "$OUT_ROOT/logs/model_anchor_preflight_val.log"
+
+需要严格字节审计时，单独对少量场景运行：
+
+python -u -m cowp.scripts.33_diagnose_cache_alignment \
+  --raw-cache "$RAW_VAL_CACHE" --transport-cache "$VAL_CACHE" \
+  --max-scenes 64 --workers 4 --hash-mode full \
+  --output "$OUT_ROOT/eval/cache_alignment_val_fullhash64.json"
+
+不要日常对 2000 scenes 使用 full hash。
+
+
+3. 只训练 natural basis，并在 gate 后停止
+-----------------------------------------
+
+推荐使用 driver，以确保 epoch -1 baseline、reset natural head 和所有 gate 一致：
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" \
+RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" \
+VAL_CACHE="$VAL_CACHE" \
+INIT_CKPT="$INIT_CKPT" \
+GPU0="$GPU0" GPU1="$GPU1" \
+RUN_AUGMENT=0 \
+RUN_DIAGNOSE=0 \
+RUN_NATURAL=1 \
+RUN_TRANSPORT=0 \
+RUN_PLANNER=0 \
+RUN_OFFLINE=0 \
+RUN_PROBE=0 \
+RUN_FULL=0 \
+STOP_AFTER_STAGE=natural \
+NATURAL_EPOCHS=20 \
+NATURAL_LR=3e-5 \
+BATCH_PER_GPU=5 \
+TRAIN_NPROC=2 \
+NUM_WORKERS=4 \
+DIAG_WORKERS=8 \
+ANCHOR_DIAG_SCENES=2000 \
+ORACLE_DIAG_SCENES=2000 \
+bash run_cowp_v14_dual_gpu.sh
+
+关键输出：
+- $OUT_ROOT/eval/model_anchor_preflight_val.json
+- $OUT_ROOT/checkpoints/natural/history_natural.json
+- $OUT_ROOT/checkpoints/natural/cowp_natural_best.pt
+- $OUT_ROOT/eval/learned_offline/natural_basis_gate.json
+
+只有 natural_basis_gate.json 中 pass=true 才继续。
+
+若 gate 失败，先执行：
+
+python - <<'PY'
+import json, os
+p=os.path.join(os.environ['OUT_ROOT'],'eval/learned_offline/natural_basis_gate.json')
+x=json.load(open(p))
+print(json.dumps(x, indent=2, ensure_ascii=False))
+PY
+
+诊断优先级：
+1) model-anchor preflight；
+2) epoch -1 是否已低于 v13；
+3) typed vs untyped gap；
+4) OBS/NEU/PRIO 单分支；
+5) train-val gap；
+6) source/priority semantics。
+不要先调 BCOT budget。
+
+
+4. natural gate 通过后，只训练 transport
+---------------------------------------
+
+export NATURAL_CKPT="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+export NATURAL_HISTORY="$OUT_ROOT/checkpoints/natural/history_natural.json"
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+NATURAL_CKPT="$NATURAL_CKPT" NATURAL_HISTORY="$NATURAL_HISTORY" \
+GPU0="$GPU0" GPU1="$GPU1" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 \
+RUN_TRANSPORT=1 RUN_PLANNER=0 RUN_OFFLINE=0 RUN_PROBE=0 RUN_FULL=0 \
+STOP_AFTER_STAGE=transport \
+TRANSPORT_EPOCHS=14 TRANSPORT_LR=1.5e-5 \
+bash run_cowp_v14_dual_gpu.sh
+
+然后不要直接跑 Waymax。先进入 planner/offline mechanism verification。
+
+
+5. planner + learned-offline mechanism gate
+-------------------------------------------
+
+export TRANSPORT_CKPT="$OUT_ROOT/checkpoints/transport/cowp_witness_best.pt"
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+NATURAL_CKPT="$NATURAL_CKPT" NATURAL_HISTORY="$NATURAL_HISTORY" \
+TRANSPORT_CKPT="$TRANSPORT_CKPT" \
+GPU0="$GPU0" GPU1="$GPU1" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 RUN_TRANSPORT=0 \
+RUN_PLANNER=1 RUN_OFFLINE=1 RUN_PROBE=0 RUN_FULL=0 \
+STOP_AFTER_STAGE=offline \
+PLANNER_EPOCHS=10 PLANNER_LR=8e-6 \
+bash run_cowp_v14_dual_gpu.sh
+
+必须检查：
+- eval/learned_offline/mechanism_verification.json: pass=true
+- direct root transport AUPRC
+- response-bank-only / pairmax ablation差距
+- NCF recall、accepted rate、fallback、selected false-safe
+
+若 direct root transport 不优于 pairmax/response-bank-only，不进入闭环。
+
+
+6. Waymax 100-scene smoke
+-------------------------
+
+export CKPT="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
+export WAYMAX_VAL=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+NATURAL_CKPT="$NATURAL_CKPT" NATURAL_HISTORY="$NATURAL_HISTORY" \
+TRANSPORT_CKPT="$TRANSPORT_CKPT" CKPT="$CKPT" WAYMAX_VAL="$WAYMAX_VAL" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 RUN_TRANSPORT=0 RUN_PLANNER=0 \
+RUN_OFFLINE=0 RUN_PROBE=1 RUN_FULL=0 STOP_AFTER_STAGE=probe \
+PROBE_SCENARIOS=100 \
+bash run_cowp_v14_dual_gpu.sh
+
+100 scenes 只查实现错误，不做 SOTA 结论。
+
+
+7. 完整 validation logged-replay
+--------------------------------
+
+机制 gate 和 100-scene smoke 均通过后：
+
+OUT_ROOT="$OUT_ROOT" \
+RAW_TRAIN_CACHE="$RAW_TRAIN_CACHE" RAW_VAL_CACHE="$RAW_VAL_CACHE" \
+TRAIN_CACHE="$TRAIN_CACHE" VAL_CACHE="$VAL_CACHE" \
+NATURAL_CKPT="$NATURAL_CKPT" NATURAL_HISTORY="$NATURAL_HISTORY" \
+TRANSPORT_CKPT="$TRANSPORT_CKPT" CKPT="$CKPT" WAYMAX_VAL="$WAYMAX_VAL" \
+RUN_AUGMENT=0 RUN_DIAGNOSE=0 RUN_NATURAL=0 RUN_TRANSPORT=0 RUN_PLANNER=0 \
+RUN_OFFLINE=0 RUN_PROBE=0 RUN_FULL=1 \
+FULL_SCENARIOS=5013 \
+bash run_cowp_v14_dual_gpu.sh
+
+至少重复 seed 2026 / 2027 / 2028。threshold/budget 只在 calibration split 选择，final split 禁止再调。
+
+
+8. 论文必要的后续协议
+---------------------
+
+当前 driver 的 Waymax online evaluator明确是 SDC closed-loop + logged non-ego replay。
+论文核心命题还需要另行注册：
+- Waymax IDM non-ego；
+- learned reactive traffic agent；
+- non-ego induced deceleration / jerk / gap surrender / priority abandonment；
+- paired counterfactual candidate rollout；
+- 小规模专家人工审计。
+
+在这些协议实现并验证前，不得把 logged-replay 结果写成 reactive multi-agent 证据。

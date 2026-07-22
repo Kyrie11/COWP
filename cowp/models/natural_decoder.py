@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 
+from cowp.core.constants import NaturalSource
+
 
 class NaturalDecoder(nn.Module):
-    """Multi-branch natural alternative decoder.
+    """Counterfactual natural-option decoder with stable typed root identities.
 
-    v13 adds a temporally structured, kinematic-residual decoder.  The former
-    implementation used one linear layer to emit all ``M x T x 7`` values from a
-    single agent token; mode embeddings were not connected to the trajectory
-    head.  That made every time step compete through one very large projection
-    and gave the model no useful motion prior.  The new decoder starts from a
-    constant-velocity baseline and predicts bounded, cumulative residuals from
-    explicit mode and time embeddings.  ``legacy_linear`` remains available for
-    checkpoint ablations.
+    ``typed_kinematic_residual`` (v14) assigns every mode a permanent semantic
+    source (OBS/NEU/PRIO), initializes it with a distinct kinematic prototype, and
+    learns only a bounded residual around that prototype.  This prevents the v13
+    failure mode where all 24 roots started as the same constant-velocity curve
+    and global nearest-neighbour matching allowed many heterogeneous GT roots to
+    collapse onto one predicted mode.
+
+    The decoder emits *offsets* from ``anchor7``.  ``COWPModel`` adds the absolute
+    current-state anchor after decoding, preserving existing label/loss semantics.
+    ``temporal_kinematic`` and ``legacy_linear`` remain available for ablations.
     """
 
     def __init__(
@@ -23,7 +29,7 @@ class NaturalDecoder(nn.Module):
         modes: int = 24,
         future_steps: int = 80,
         source_count: int = 4,
-        decoder_type: str = "temporal_kinematic",
+        decoder_type: str = "typed_kinematic_residual",
     ):
         super().__init__()
         self.modes = int(modes)
@@ -32,8 +38,7 @@ class NaturalDecoder(nn.Module):
         self.decoder_type = str(decoder_type).lower()
 
         self.shared = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.LayerNorm(d_model))
-        # Kept under the old name so legacy checkpoints can still be loaded and
-        # explicitly evaluated with model.natural_decoder_type=legacy_linear.
+        # Kept under the old name for checkpoint-compatible legacy ablations.
         self.head = nn.Linear(d_model, self.modes * self.future_steps * 7)
         self.logit = nn.Linear(d_model, self.modes)
         self.source_logit = nn.Linear(d_model, self.modes * self.source_count)
@@ -48,44 +53,131 @@ class NaturalDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, 7),
         )
-        # A newly initialized v13 decoder exactly reproduces the CV baseline.
-        # This is much safer than starting tens of metres away in global space.
+        self.residual_gate = nn.Linear(d_model, 1)
         nn.init.zeros_(self.temporal_head[-1].weight)
         nn.init.zeros_(self.temporal_head[-1].bias)
+        nn.init.zeros_(self.residual_gate.weight)
+        nn.init.constant_(self.residual_gate.bias, -2.5)
+
+        mode_source, accel, yaw_rate, speed_offset = self._make_typed_specs(self.modes)
+        self.register_buffer("mode_source", mode_source, persistent=True)
+        self.register_buffer("prototype_accel", accel, persistent=True)
+        self.register_buffer("prototype_yaw_rate", yaw_rate, persistent=True)
+        self.register_buffer("prototype_speed_offset", speed_offset, persistent=True)
+
+        source_bias = torch.full((self.modes, self.source_count), -3.0, dtype=torch.float32)
+        for m, src in enumerate(mode_source.tolist()):
+            if 0 <= src < self.source_count:
+                source_bias[m, src] = 3.0
+        if self.source_count > int(NaturalSource.PAD):
+            source_bias[:, int(NaturalSource.PAD)] = -6.0
+        self.register_buffer("typed_source_bias", source_bias, persistent=True)
+
+        priority_bias = torch.zeros(self.modes, dtype=torch.float32)
+        priority_bias[mode_source == int(NaturalSource.PRIO)] = 1.5
+        self.register_buffer("typed_priority_bias", priority_bias, persistent=True)
+
+    @staticmethod
+    def _make_typed_specs(modes: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Eight diverse prototypes per semantic source for the default M=24.
+        # OBS is broad and turning-capable; NEU is ego-neutral longitudinal
+        # continuation; PRIO emphasizes maintained/progressive motion.
+        obs = [
+            (-2.0, -0.14, 0.0), (-2.0, 0.14, 0.0),
+            (-0.5, -0.10, 0.0), (-0.5, 0.10, 0.0),
+            (0.5, -0.06, 0.0), (0.5, 0.06, 0.0),
+            (1.5, -0.12, 0.0), (1.5, 0.12, 0.0),
+        ]
+        neu = [
+            (-3.0, 0.0, 0.0), (-2.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+            (-0.4, 0.0, 0.0), (0.0, 0.0, 0.0), (0.5, 0.0, 0.0),
+            (1.2, 0.0, 0.0), (2.0, 0.0, 0.0),
+        ]
+        prio = [
+            (-1.0, 0.0, 0.0), (-0.3, 0.0, 0.0), (0.0, -0.04, 0.0),
+            (0.0, 0.0, 0.8), (0.6, 0.0, 0.0), (1.2, 0.0, 0.0),
+            (2.0, 0.0, 0.0), (3.0, 0.03, 0.0),
+        ]
+        groups = [
+            (int(NaturalSource.OBS), obs),
+            (int(NaturalSource.NEU), neu),
+            (int(NaturalSource.PRIO), prio),
+        ]
+        specs: list[tuple[int, float, float, float]] = []
+        # Interleave complete source groups, then cycle if a non-standard number
+        # of modes is requested.  Default 24 preserves 8/8/8 exactly.
+        flat = [(src, *p) for src, bank in groups for p in bank]
+        while len(specs) < modes:
+            specs.extend(flat[: min(len(flat), modes - len(specs))])
+        specs = specs[:modes]
+        return (
+            torch.tensor([s[0] for s in specs], dtype=torch.long),
+            torch.tensor([s[1] for s in specs], dtype=torch.float32),
+            torch.tensor([s[2] for s in specs], dtype=torch.float32),
+            torch.tensor([s[3] for s in specs], dtype=torch.float32),
+        )
+
+    def typed_kinematic_basis(self, anchor7: torch.Tensor, dt: float) -> torch.Tensor:
+        """Return typed prototype offsets with shape ``[B,A,M,T,7]``."""
+        if anchor7.ndim != 3 or anchor7.shape[-1] != 7:
+            raise ValueError(f"anchor7 must be [B,A,7], got {tuple(anchor7.shape)}")
+        dtype, device = anchor7.dtype, anchor7.device
+        t = (torch.arange(1, self.future_steps + 1, device=device, dtype=dtype) * float(dt))
+        accel = self.prototype_accel.to(device=device, dtype=dtype)[None, None, :, None]
+        yaw_rate = self.prototype_yaw_rate.to(device=device, dtype=dtype)[None, None, :, None]
+        speed_offset = self.prototype_speed_offset.to(device=device, dtype=dtype)[None, None, :, None]
+
+        yaw0 = anchor7[..., 2, None, None]
+        vx0 = anchor7[..., 3]
+        vy0 = anchor7[..., 4]
+        speed0 = torch.sqrt(vx0.square() + vy0.square()).clamp_min(0.0)[..., None, None]
+        speed = (speed0 + speed_offset + accel * t[None, None, None, :]).clamp_min(0.0)
+        yaw = yaw0 + yaw_rate * t[None, None, None, :]
+        vx = speed * torch.cos(yaw)
+        vy = speed * torch.sin(yaw)
+
+        out = torch.zeros(
+            anchor7.shape[0], anchor7.shape[1], self.modes, self.future_steps, 7,
+            device=device, dtype=dtype,
+        )
+        out[..., 0] = torch.cumsum(vx * float(dt), dim=-1)
+        out[..., 1] = torch.cumsum(vy * float(dt), dim=-1)
+        out[..., 2] = yaw - yaw0
+        out[..., 3] = vx - vx0[..., None, None]
+        out[..., 4] = vy - vy0[..., None, None]
+        # Length/width are absolute anchors outside this decoder, so zero offsets.
+        return out
+
+    def _learned_residual(self, mode_latent: torch.Tensor) -> torch.Tensor:
+        time = self.time_embedding[None, None, None, :, :]
+        h_mt = self.temporal_norm(mode_latent[:, :, :, None, :] + time)
+        raw = self.temporal_head(h_mt)
+        gate = torch.sigmoid(self.residual_gate(mode_latent))[..., None, :]
+
+        # Residual capacity is deliberately smaller than the analytic basis.  It
+        # can fit logged curvature/noise without erasing source identity.
+        step_xy = torch.tanh(raw[..., 0:2]) * 0.12
+        pos_res = torch.cumsum(step_xy, dim=3)
+        yaw_res = torch.cumsum(torch.tanh(raw[..., 2:3]) * 0.012, dim=3)
+        vel_res = torch.tanh(raw[..., 3:5]) * 3.0
+        size_res = torch.tanh(raw[..., 5:7]) * 0.20
+        return torch.cat([pos_res, yaw_res, vel_res, size_res], dim=-1) * gate
 
     def _temporal_kinematic_offsets(
         self,
         mode_latent: torch.Tensor,
         anchor7: torch.Tensor | None,
         dt: float,
-    ) -> torch.Tensor:
-        B, A, M, _ = mode_latent.shape
-        time = self.time_embedding[None, None, None, :, :]
-        h_mt = self.temporal_norm(mode_latent[:, :, :, None, :] + time)
-        raw = self.temporal_head(h_mt)
-
-        # Bounded per-step residuals give smooth trajectories while retaining a
-        # wide 8 s reachable set.  Position and yaw are integrated; velocity is
-        # predicted as a bounded offset; dimensions remain nearly constant.
-        step_xy = torch.tanh(raw[..., 0:2]) * 0.45
-        pos_res = torch.cumsum(step_xy, dim=3)
-        yaw_res = torch.cumsum(torch.tanh(raw[..., 2:3]) * 0.035, dim=3)
-        vel_res = torch.tanh(raw[..., 3:5]) * 8.0
-        size_res = torch.tanh(raw[..., 5:7]) * 0.35
-        residual = torch.cat([pos_res, yaw_res, vel_res, size_res], dim=-1)
-
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        residual = self._learned_residual(mode_latent)
         if anchor7 is None:
-            return residual
-        t = (
-            torch.arange(1, self.future_steps + 1, device=mode_latent.device, dtype=mode_latent.dtype)
-            * float(dt)
-        )
-        baseline = torch.zeros(B, A, 1, self.future_steps, 7, device=mode_latent.device, dtype=mode_latent.dtype)
-        baseline[..., 0] = anchor7[:, :, None, None, 3] * t[None, None, None, :]
-        baseline[..., 1] = anchor7[:, :, None, None, 4] * t[None, None, None, :]
-        # Heading, velocity and box dimensions are offsets from the current-state
-        # anchor and therefore remain zero in the CV baseline.
-        return baseline + residual
+            base = torch.zeros_like(residual)
+        else:
+            t = torch.arange(1, self.future_steps + 1, device=mode_latent.device, dtype=mode_latent.dtype) * float(dt)
+            base = torch.zeros_like(residual)
+            base[..., 0] = anchor7[:, :, None, None, 3] * t[None, None, None, :]
+            base[..., 1] = anchor7[:, :, None, None, 4] * t[None, None, None, :]
+        return base + residual, base, residual
 
     def forward(
         self,
@@ -101,8 +193,9 @@ class NaturalDecoder(nn.Module):
         z = torch.gather(z_agent, 1, idx)
         h = self.shared(z)
         logits = self.logit(h)
-        source_logits = self.source_logit(h).reshape(B, A, self.modes, self.source_count)
-        priority_logits = self.priority_logit(h)
+        learned_source_logits = self.source_logit(h).reshape(B, A, self.modes, self.source_count)
+        source_logits = learned_source_logits + self.typed_source_bias[None, None].to(learned_source_logits)
+        priority_logits = self.priority_logit(h) + self.typed_priority_bias[None, None].to(h)
         mode_latent = self.mode_norm(h[:, :, None, :] + self.mode_embedding[None, None, :, :])
         out = {
             "latent": h,
@@ -110,10 +203,20 @@ class NaturalDecoder(nn.Module):
             "logits": logits,
             "source_logits": source_logits,
             "priority_logits": priority_logits,
+            "mode_source": self.mode_source,
         }
         if decode_traj:
             if self.decoder_type in {"legacy", "legacy_linear", "linear"}:
-                out["traj"] = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
+                traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
+                out.update({"traj": traj, "base_traj": torch.zeros_like(traj), "residual": traj})
+            elif self.decoder_type in {"typed", "typed_kinematic", "typed_kinematic_residual", "tnob"}:
+                if anchor7 is None:
+                    base = torch.zeros(B, A, self.modes, self.future_steps, 7, device=h.device, dtype=h.dtype)
+                else:
+                    base = self.typed_kinematic_basis(anchor7, dt)
+                residual = self._learned_residual(mode_latent)
+                out.update({"traj": base + residual, "base_traj": base, "residual": residual})
             else:
-                out["traj"] = self._temporal_kinematic_offsets(mode_latent, anchor7, dt)
+                traj, base, residual = self._temporal_kinematic_offsets(mode_latent, anchor7, dt)
+                out.update({"traj": traj, "base_traj": base, "residual": residual})
         return out

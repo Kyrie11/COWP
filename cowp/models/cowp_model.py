@@ -138,6 +138,8 @@ class COWPModel(nn.Module):
     def _add_natural_anchor(pred: dict[str, torch.Tensor], anchor7: torch.Tensor) -> dict[str, torch.Tensor]:
         out = dict(pred)
         out["traj"] = pred["traj"] + anchor7[:, :, None, None, :]
+        if "base_traj" in pred:
+            out["base_traj"] = pred["base_traj"] + anchor7[:, :, None, None, :]
         return out
 
     @staticmethod

@@ -1,3 +1,7 @@
+> **v14 source-layout notice:** executable Python source lives only under `cowp/`.
+> Earlier archives also contained stale top-level duplicates such as `models/` and `scripts/`;
+> those were not imported by `python -m cowp...` and have been removed from this delivery.
+
 # COWP：基于 WOMD + Waymax 的 Non-Coercive Planning 复现工程
 
 本工程实现论文 **Not All Collision-Free Plans Are Safe: Non-Coercive Feasibility for Interactive Autonomous Driving** 的数据构造、诊断、模型训练、候选规划、闭环/离线评测、消融实验和结果表生成流程。实现重点不是普通 collision prediction，而是同一 WOMD root scene 下多个 ego intervention candidate 对 critical road users 的 **natural alternatives、safe response set、burden、option preservation ratio、coercion witness** 的影响。

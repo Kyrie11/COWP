@@ -563,6 +563,7 @@ def _run_epoch(
     amp: bool = False,
     non_blocking_transfer: bool = False,
     decode_response_traj: bool = True,
+    grad_clip: float = 5.0,
 ) -> dict[str, float]:
     is_train = opt is not None
     model.train(is_train)
@@ -601,12 +602,12 @@ def _run_epoch(
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
                     scaler.step(opt)
                     scaler.update()
                 else:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
                     opt.step()
             bs = int(next(iter(batch.values())).shape[0]) if batch else 1
             count += bs
@@ -626,31 +627,51 @@ def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor
     return model.state_dict()
 
 
-def _load_model_state_robust(model: torch.nn.Module, state: dict[str, torch.Tensor]) -> None:
-    """Load checkpoints saved from eager/compiled models and tolerate new heads."""
+def _load_model_state_robust(
+    model: torch.nn.Module,
+    state: dict[str, torch.Tensor],
+    *,
+    reset_prefixes: tuple[str, ...] = (),
+) -> None:
+    """Load compatible weights while explicitly reinitializing selected modules.
+
+    Cross-version natural warm starts are unsafe when mode identities or decoder
+    parameterization changed.  ``reset_prefixes=("natural_decoder",)`` keeps the
+    pretrained scene graph but guarantees a fresh typed option basis.
+    """
     candidates = [state]
     if state and all(k.startswith("_orig_mod.") for k in state.keys()):
         candidates.insert(0, {k[len("_orig_mod."):]: v for k, v in state.items()})
+    prefixes = tuple(p.strip().rstrip(".") for p in reset_prefixes if p and p.strip())
     last_error: RuntimeError | None = None
     model_state = model.state_dict()
-    for cand in candidates:
-        try:
-            model.load_state_dict(cand)
-            return
-        except RuntimeError as exc:
-            last_error = exc
+    for cand0 in candidates:
+        cand = {
+            k: v for k, v in cand0.items()
+            if not any(k == p or k.startswith(p + ".") for p in prefixes)
+        }
+        if not prefixes:
+            try:
+                model.load_state_dict(cand)
+                return
+            except RuntimeError as exc:
+                last_error = exc
         compatible = {k: v for k, v in cand.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
         missing = sorted(set(model_state) - set(compatible))
         unexpected = sorted(set(cand) - set(compatible))
         if compatible:
             model.load_state_dict(compatible, strict=False)
+            if prefixes:
+                reset_keys = [k for k in model_state if any(k == p or k.startswith(p + ".") for p in prefixes)]
+                print(f"Explicitly reinitialized {len(reset_keys)} checkpoint keys under prefixes={prefixes}")
             if missing:
-                print(f"Loaded checkpoint with {len(missing)} newly initialized/missing keys, e.g. {missing[:6]}")
+                print(f"Loaded checkpoint with {len(missing)} initialized/missing keys, e.g. {missing[:6]}")
             if unexpected:
                 print(f"Ignored {len(unexpected)} incompatible/unexpected keys, e.g. {unexpected[:6]}")
             return
-    assert last_error is not None
-    raise last_error
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Checkpoint contains no compatible model parameters")
 
 
 
@@ -923,6 +944,8 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--resume", default=None)
     ap.add_argument("--resume-training", action="store_true", help="When --resume points to a checkpoint from the same stage, continue epoch numbering/history instead of treating it as a warm start.")
+    ap.add_argument("--reset-checkpoint-prefix", action="append", default=[], help="Reinitialize a module prefix instead of loading it from --resume. Repeatable; v14 natural training should pass natural_decoder.")
+    ap.add_argument("--eval-before-train", action="store_true", help="Evaluate/save the initialized or warm-started model as epoch -1 before optimization. Prevents training from silently degrading a strong analytic basis.")
     ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
     ap.add_argument("--output-dir", default="outputs/checkpoints")
     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
@@ -944,6 +967,8 @@ def main() -> None:
     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     ap.add_argument("--freeze-backbone-epochs", type=int, default=0, help="For planner training, freeze graph/candidate/witness backbones for the first N epochs so new certificate/outcome heads warm up without erasing pretrained representations.")
+    ap.add_argument("--natural-graph-warmup-epochs", type=int, default=None, help="Freeze the graph only for the first N natural-stage epochs, then unfreeze it at low LR. Overrides train.natural_graph_warmup_epochs.")
+    ap.add_argument("--grad-clip", type=float, default=1.0, help="Global gradient-norm clip. Typed residual training uses 1.0 by default.")
     ap.add_argument("--early-stop-patience", type=int, default=0, help="Stop after this many validation checks without composite-score improvement. 0 disables early stopping.")
     ap.add_argument("--early-stop-min-delta", type=float, default=1.0e-4, help="Minimum checkpoint-score decrease counted as an improvement.")
     ap.add_argument("--lr-scheduler", choices=["none", "plateau", "cosine"], default="none", help="Learning-rate scheduler for stable planner fine-tuning.")
@@ -1097,7 +1122,7 @@ def main() -> None:
     resume_ckpt: dict[str, Any] | None = None
     if args.resume:
         resume_ckpt = torch.load(args.resume, map_location=device)
-        _load_model_state_robust(model, resume_ckpt["model"])
+        _load_model_state_robust(model, resume_ckpt["model"], reset_prefixes=tuple(args.reset_checkpoint_prefix))
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
         ddp_kwargs = {"find_unused_parameters": True}
@@ -1157,6 +1182,37 @@ def main() -> None:
         else:
             _rank0_print(f"Warning: checkpoint {args.resume} has no optimizer state; continuing model weights from epoch {ckpt_epoch} with a fresh optimizer.")
         _rank0_print(f"Resume-training stage={stage}: checkpoint_epoch={ckpt_epoch}, next_epoch={start_epoch}, target_epochs={epochs}, previous_history_rows={len(history)}")
+    if args.eval_before_train and val_dl is not None and not args.resume_training and start_epoch == 0:
+        _set_sampler_epoch(val_dl, -1)
+        init_metrics = _run_epoch(
+            model, val_dl, device, stage, loss_weights, None, epoch=-1,
+            progress=(not args.no_progress) and _is_main_process(),
+            amp=args.amp, non_blocking_transfer=pin_memory,
+            decode_response_traj=include_response_traj, grad_clip=args.grad_clip,
+        )
+        init_metrics = _distributed_mean_metrics(init_metrics, device)
+        init_score, init_kind = _checkpoint_selection_score(init_metrics, stage)
+        if _is_main_process():
+            row0: dict[str, Any] = {
+                "epoch": -1,
+                **{f"val/{k}": v for k, v in init_metrics.items()},
+                "checkpoint/score": float(init_score),
+                "checkpoint/kind": init_kind,
+                "checkpoint/improved": True,
+                "initial_basis_evaluation": True,
+            }
+            history.append(row0)
+            best_val = float(init_score)
+            torch.save(
+                _make_checkpoint_payload(
+                    model, cfg, opt, epoch=-1, stage=stage, best_val=best_val,
+                    save_optimizer=not args.no_save_optimizer,
+                    extra={"val_" + init_kind: init_score, "initial_basis_evaluation": True},
+                ),
+                output_dir / f"cowp_{stage}_best.pt",
+            )
+            _rank0_print("Initial model-facing basis: " + json.dumps(row0, ensure_ascii=False))
+
     if start_epoch >= epochs:
         _rank0_print(f"Stage {stage} already reached target epochs: checkpoint next_epoch={start_epoch}, target_epochs={epochs}")
         _cleanup_distributed()
@@ -1174,12 +1230,21 @@ def main() -> None:
                 freeze_natural_during_witness=bool(
                     tcfg.get("freeze_natural_during_witness", False)
                 ),
-                freeze_graph_during_natural=bool(
-                    tcfg.get("freeze_graph_during_natural", False)
+                freeze_graph_during_natural=(
+                    bool(tcfg.get("freeze_graph_during_natural", False))
+                    and epoch < int(
+                        args.natural_graph_warmup_epochs
+                        if args.natural_graph_warmup_epochs is not None
+                        else tcfg.get("natural_graph_warmup_epochs", epochs)
+                    )
                 ),
             )
             if _is_main_process() and stage in {"witness", "planner"} and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
                 _rank0_print(f"{stage} warmup_frozen={freeze_now} at epoch={epoch}")
+            if _is_main_process() and stage in {"natural", "representation"}:
+                ngw = int(args.natural_graph_warmup_epochs if args.natural_graph_warmup_epochs is not None else tcfg.get("natural_graph_warmup_epochs", epochs))
+                if epoch == start_epoch or epoch == ngw:
+                    _rank0_print(f"natural graph_frozen={bool(tcfg.get('freeze_graph_during_natural', False)) and epoch < ngw} at epoch={epoch}; warmup_epochs={ngw}")
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,
@@ -1193,6 +1258,7 @@ def main() -> None:
                 amp=args.amp,
                 non_blocking_transfer=pin_memory,
                 decode_response_traj=include_response_traj,
+                grad_clip=args.grad_clip,
             )
             train_metrics = _distributed_mean_metrics(train_metrics, device)
             row: dict[str, Any] = {"epoch": epoch, **{f"train/{k}": v for k, v in train_metrics.items()}}
@@ -1211,6 +1277,7 @@ def main() -> None:
                     amp=args.amp,
                     non_blocking_transfer=pin_memory,
                     decode_response_traj=include_response_traj,
+                    grad_clip=args.grad_clip,
                 )
                 val_metrics = _distributed_mean_metrics(val_metrics, device)
                 row.update({f"val/{k}": v for k, v in val_metrics.items()})

@@ -448,3 +448,120 @@ raw/transport caches, the initialization checkpoint, or a Waymax installation:
     `candidate_outcome_risk_mix=0`, online penalty `0`, threshold `1.10`).  It must
     be re-enabled only as a registered ablation after checkpoint-selected
     validation replay coverage is reported.
+
+## v14-TNOB — Typed Natural Option Basis, Exact Anchor Preflight, and Fast Diagnostics
+
+### Triggering evidence from `cowp_v13_temporal_riot_seed2026`
+
+The v13 natural gate failed at epoch 29:
+
+- validation set minADE: **35.8454 m**;
+- 1 s / 3 s / 5 s minADE: **34.5138 / 34.7494 / 35.1241 m**;
+- branch minADE: **37.7621 m**;
+- OBS / NEU / PRIO minADE: **40.9817 / 36.1811 / 32.9040 m**;
+- source CE: **0.9151**, improvement only **0.00717**;
+- priority BCE: **0.3121**, the only semantic gate that passed;
+- neutral consistency: **37.6742 m**, improvement only **0.0491 m**.
+
+The label-side kinematic oracle on 2,000 validation scenes achieved
+**0.283 / 0.608 / 1.204 / 2.466 m** at 1/3/5/8 s.  The nearly constant
+~35 m model error from 1 s through 8 s is therefore inconsistent with ordinary
+long-horizon forecast divergence and strongly suggests a model-facing critical
+row/current-state anchor/frame mismatch.  The exact subcase cannot be proven
+without the server caches; v14 adds a hard exact-path preflight rather than
+silently guessing.
+
+Independently of that suspected data-path issue, v13 had a confirmed structural
+failure: all 24 roots began as the same constant-velocity curve, while global
+nearest-neighbour matching allowed OBS, NEU and PRIO targets to compete for any
+mode.  This makes semantic root identity non-identifiable and invalidates later
+same-root transport even if aggregate displacement improves.
+
+### Implemented changes
+
+1. Added **Typed Natural Option Basis (TNOB)** in
+   `cowp/models/natural_decoder.py`:
+   - fixed 8/8/8 OBS/NEU/PRIO mode identities for the default 24 modes;
+   - distinct analytic acceleration/yaw-rate/speed-offset prototypes;
+   - zero-initialized, gated and physically bounded temporal residuals;
+   - explicit `mode_source`, `base_traj` and `residual` outputs;
+   - legacy temporal and linear decoders retained for ablation.
+2. Replaced cross-source global matching with source-restricted matching in
+   `cowp/models/losses.py`.  Trajectory, mixture, branch, short-horizon,
+   source and priority supervision now share the same typed assignment.
+3. Added untyped geometric coverage as a diagnostic and a typed-vs-untyped gap
+   gate, preventing semantic typing from hiding lost trajectory coverage.
+4. Added analytic-prior preservation (`base_deviation`) and residual magnitude
+   regularization, plus explicit 1/3/5 s loss terms.
+5. Added `--eval-before-train`: epoch -1 analytic TNOB is evaluated and can be
+   retained as the best checkpoint if learning degrades it.
+6. Added `--reset-checkpoint-prefix`; the v14 driver resets `natural_decoder`
+   when loading an old planner checkpoint while retaining the graph backbone.
+7. Replaced full-stage graph freezing with a configurable two-epoch natural
+   warmup followed by low-LR joint adaptation; added gradient clipping.
+8. Added `35_diagnose_model_anchor.py`, which follows the exact production path:
+   `TorchCOWPDataset -> _agent_history_from_batch -> input_index ->
+   _safe_critical_indices -> _critical_anchor7 -> typed_kinematic_basis`.
+   It hard-fails on excessive unmapped critical agents, first-step anchor error,
+   or 1/8 s typed-basis error.
+9. Rewrote `33_diagnose_cache_alignment.py` for selective NPZ member reads,
+   symlink/samefile shortcuts, sampled hashing and threaded I/O.
+10. Rewrote `34_diagnose_natural_oracles.py` to vectorize root/horizon distance
+    calculation and support threaded loading.
+11. Hardened the natural gate with absolute-or-improvement semantic criteria and
+    the typed/untyped coverage check.
+12. Added v14 configs, driver, execution guide and typed-basis unit tests.
+
+### Promotion gates
+
+Training is blocked unless exact model-facing preflight satisfies:
+
+- critical unmapped/invisible rate <= 2%;
+- first-step GT versus model-CV-anchor p90 <= 5 m;
+- typed basis minADE@1s <= 3 m;
+- typed basis minADE@8s <= 8.5 m.
+
+Natural promotion additionally requires:
+
+- set minADE <= min(12 m, oracle@8s + 6 m);
+- branch/NEU/PRIO minADE <= 15 m;
+- source CE <= 0.30 or registered learning improvement;
+- priority BCE <= 0.45 or registered learning improvement;
+- neutral consistency <= 10 m or registered learning improvement;
+- typed minus untyped minADE <= 4 m.
+
+No transport, planner or Waymax result may be promoted when these gates fail.
+
+### Validation and limitations
+
+Validated locally:
+
+- full test suite: **76 passed**;
+- Python compilation: pass;
+- `bash -n run_cowp_v14_dual_gpu.sh`: pass;
+- typed mode identities, non-collapsed analytic endpoints and source-restricted
+  matching unit tests: pass.
+
+Not validated locally because the uploaded artifacts omit the actual raw and
+transport-v9 caches, initialization checkpoint, Waymax runtime and standalone
+`cache_sufficiency_full.json`:
+
+- which concrete mapping/frame bug caused the v13 ~35 m translation;
+- v14 A30 convergence and gate pass;
+- direct root-transport mechanism gains;
+- full logged-replay or reactive-agent closed-loop performance;
+- SOTA status.
+
+### Additional prohibited shortcuts
+
+- Do not weaken the anchor preflight or natural gate to continue a run.
+- Do not restore global cross-source matching in the primary method; keep it only
+  as a registered ablation.
+- Do not claim TNOB alone proves non-coercive feasibility; it establishes root
+  identifiability, while transport and independent reactive evidence prove the
+  mechanism.
+- Do not claim SOTA from a 100-scene probe or from sparse attached outcomes.
+13. Removed stale top-level duplicate Python trees that were not included by the
+    `cowp*` package configuration.  The authoritative implementation is now
+    unambiguously under `cowp/`, preventing fixes from being applied to inert
+    copies.
