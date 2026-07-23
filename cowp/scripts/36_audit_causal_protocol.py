@@ -30,6 +30,8 @@ def main() -> None:
     ap.add_argument("--train-config", required=True)
     ap.add_argument("--eval-config", required=True)
     ap.add_argument("--cache-alignment-report", default=None)
+    ap.add_argument("--data-protocol", choices=["v15", "v9_reuse"], default="v15")
+    ap.add_argument("--cache-reuse-report", default=None)
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
@@ -46,7 +48,7 @@ def main() -> None:
 
     future_source = str(planning.get("online_other_future_source", "constant_velocity")).lower()
     causal_sources = {"constant_velocity", "current_state", "learned", "learned_response"}
-    checks: dict[str, bool] = {
+    engineering_checks: dict[str, bool] = {
         "future_label_encoder_fallback_disabled": not bool(merged_model.get("allow_label_only_state_fallback", False)),
         "explicit_sdc_required": bool(merged_model.get("require_explicit_sdc_index", False)),
         "online_other_future_is_causal": future_source in causal_sources,
@@ -57,10 +59,18 @@ def main() -> None:
             bool(eval_block.get("reactive_mixture_implemented", False))
             or str(eval_block.get("actual_non_ego_policy", "")).lower() == "logged_replay"
         ),
-        "natural_map_filter_enabled": bool(natural.get("map_filter_enabled", False)),
-        "observational_decontamination_enabled": bool(natural.get("obs_decontamination_enabled", False)),
         "typed_source_ce_not_used_as_learning_claim": abs(float(weights.get("branch_source_ce", 0.0))) <= 1e-12,
     }
+
+    label_protocol_checks: dict[str, bool] = {
+        "natural_map_filter_enabled": bool(natural.get("map_filter_enabled", False)),
+        "observational_decontamination_enabled": bool(natural.get("obs_decontamination_enabled", False)),
+    }
+    reuse_report = None
+    if args.cache_reuse_report:
+        reuse_report = json.loads(Path(args.cache_reuse_report).read_text(encoding="utf-8"))
+        materialized = bool(_nested(reuse_report, "decisions", "reuse_as_true_v15_causal_label_dataset", "pass", default=False))
+        label_protocol_checks["v15_label_tensors_materialized"] = materialized
 
     alignment = None
     if args.cache_alignment_report:
@@ -69,15 +79,23 @@ def main() -> None:
         if finite_rate is not None:
             finite_rate = float(finite_rate)
             logdiv_weight = float(weights.get("outcome_logdiv", 0.0))
-            checks["missing_logdiv_not_supervised"] = finite_rate > 0.0 or abs(logdiv_weight) <= 1e-12
-        checks["critical_mapping_complete"] = float(_nested(alignment, "rates", "critical_unmapped", default=1.0)) <= 0.0
-        checks["response_root_indices_in_range"] = float(_nested(alignment, "rates", "response_root_out_of_range", default=1.0)) <= 0.0
+            engineering_checks["missing_logdiv_not_supervised"] = finite_rate > 0.0 or abs(logdiv_weight) <= 1e-12
+        engineering_checks["critical_mapping_complete"] = float(_nested(alignment, "rates", "critical_unmapped", default=1.0)) <= 0.0
+        engineering_checks["response_root_indices_in_range"] = float(_nested(alignment, "rates", "response_root_out_of_range", default=1.0)) <= 0.0
 
-    failed = [name for name, ok in checks.items() if not ok]
+    engineering_failed = [name for name, ok in engineering_checks.items() if not ok]
+    label_failed = [name for name, ok in label_protocol_checks.items() if not ok]
+    require_v15_labels = args.data_protocol == "v15"
+    failed = engineering_failed + (label_failed if require_v15_labels else [])
     report = {
         "pass": not failed,
-        "checks": checks,
+        "checks": {**engineering_checks, **label_protocol_checks},
+        "engineering_pass": not engineering_failed,
+        "full_v15_label_protocol_pass": not label_failed,
+        "data_protocol": args.data_protocol,
         "failed_checks": failed,
+        "engineering_failed_checks": engineering_failed,
+        "label_protocol_failed_checks": label_failed,
         "protocol": {
             "online_other_future_source": future_source,
             "actual_non_ego_policy": eval_block.get("actual_non_ego_policy"),
@@ -90,6 +108,7 @@ def main() -> None:
             "It does not establish algorithmic SOTA or supply reactive non-ego ground truth."
         ),
         "cache_alignment_report": args.cache_alignment_report,
+        "cache_reuse_report": args.cache_reuse_report,
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)

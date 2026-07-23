@@ -1,0 +1,898 @@
+{
+  "scan_mode": "full",
+  "sample_scenes_per_split": null,
+  "train": {
+    "split": "train",
+    "cache_dir": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax",
+    "files_total": 14640,
+    "files_readable": 14640,
+    "read_error_count": 0,
+    "read_error_examples": [],
+    "unique_scenario_ids": 14640,
+    "stage_key_coverage": {
+      "natural": {
+        "complete_scenes": 14639,
+        "coverage": 0.999931693989071,
+        "top_missing_keys": [
+          [
+            "cowp/natural/traj",
+            1
+          ],
+          [
+            "cowp/natural/weight",
+            1
+          ],
+          [
+            "cowp/natural/source",
+            1
+          ],
+          [
+            "cowp/natural/valid",
+            1
+          ],
+          [
+            "cowp/natural/beta",
+            1
+          ]
+        ]
+      },
+      "response": {
+        "complete_scenes": 14639,
+        "coverage": 0.999931693989071,
+        "top_missing_keys": [
+          [
+            "cowp/candidates/trajectory",
+            1
+          ],
+          [
+            "cowp/candidates/valid",
+            1
+          ],
+          [
+            "cowp/response/valid",
+            1
+          ],
+          [
+            "cowp/response/is_safe",
+            1
+          ],
+          [
+            "cowp/response/is_low_burden",
+            1
+          ],
+          [
+            "cowp/response/burden_total",
+            1
+          ]
+        ]
+      },
+      "witness": {
+        "complete_scenes": 14639,
+        "coverage": 0.999931693989071,
+        "top_missing_keys": [
+          [
+            "cowp/candidates/trajectory",
+            1
+          ],
+          [
+            "cowp/candidates/valid",
+            1
+          ],
+          [
+            "cowp/critical/valid",
+            1
+          ],
+          [
+            "cowp/witness/exists",
+            1
+          ],
+          [
+            "cowp/witness/token",
+            1
+          ],
+          [
+            "cowp/witness/burden_total",
+            1
+          ],
+          [
+            "cowp/witness/min_safe_burden",
+            1
+          ],
+          [
+            "cowp/witness/opr",
+            1
+          ],
+          [
+            "cowp/witness/conflict_interval",
+            1
+          ]
+        ]
+      },
+      "planner_core": {
+        "complete_scenes": 14639,
+        "coverage": 0.999931693989071,
+        "top_missing_keys": [
+          [
+            "cowp/candidates/trajectory",
+            1
+          ],
+          [
+            "cowp/candidates/valid",
+            1
+          ],
+          [
+            "cowp/candidates/conventional_safe",
+            1
+          ],
+          [
+            "cowp/candidates/false_safe",
+            1
+          ],
+          [
+            "cowp/candidates/noncoercive_feasible",
+            1
+          ],
+          [
+            "cowp/candidates/ego_utility_prior",
+            1
+          ],
+          [
+            "cowp/candidates/is_logged",
+            1
+          ],
+          [
+            "cowp/candidates/is_neutral",
+            1
+          ]
+        ]
+      },
+      "waymax_outcome": {
+        "complete_scenes": 14639,
+        "coverage": 0.999931693989071,
+        "top_missing_keys": [
+          [
+            "waymax/candidate_selected_for_rollout",
+            1
+          ],
+          [
+            "waymax/candidate_rollout_valid",
+            1
+          ],
+          [
+            "waymax/candidate_collision",
+            1
+          ],
+          [
+            "waymax/candidate_offroad",
+            1
+          ],
+          [
+            "waymax/candidate_log_divergence",
+            1
+          ]
+        ]
+      }
+    },
+    "scene_coverage": {
+      "with_any_selected": 0.999931693989071,
+      "with_any_rollout_valid": 0.9891393442622951,
+      "mixed_safe_unsafe_physical": 0.798155737704918,
+      "mixed_safe_unsafe_with_logdiv": 0.798155737704918
+    },
+    "candidate_totals": {
+      "total_slots": 936896,
+      "valid": 741348,
+      "selected": 175668,
+      "rollout_valid": 173772,
+      "selected_and_rollout_valid": 173772,
+      "selected_invalid_original": 0,
+      "rollout_valid_not_selected": 0,
+      "rollout_valid_invalid_original": 0,
+      "safe_physical": 83083,
+      "unsafe_physical": 90689,
+      "unsafe_with_logdiv": 90689,
+      "finite_logdiv": 0,
+      "nonzero_logdiv": 0
+    },
+    "candidate_distributions_per_scene": {
+      "valid": {
+        "count": 14640,
+        "mean": 50.63852459016393,
+        "std": 3.9523206170962757,
+        "p10": 46.0,
+        "p50": 52.0,
+        "p90": 56.0,
+        "min": 0.0,
+        "max": 59.0
+      },
+      "selected": {
+        "count": 14640,
+        "mean": 11.999180327868853,
+        "std": 0.09917355348765072,
+        "p10": 12.0,
+        "p50": 12.0,
+        "p90": 12.0,
+        "min": 0.0,
+        "max": 12.0
+      },
+      "rollout_valid": {
+        "count": 14640,
+        "mean": 11.86967213114754,
+        "std": 1.2437640744248424,
+        "p10": 12.0,
+        "p50": 12.0,
+        "p90": 12.0,
+        "min": 0.0,
+        "max": 12.0
+      },
+      "safe_physical": {
+        "count": 14640,
+        "mean": 5.675068306010929,
+        "std": 3.474686956962627,
+        "p10": 0.0,
+        "p50": 6.0,
+        "p90": 10.0,
+        "min": 0.0,
+        "max": 12.0
+      },
+      "unsafe_physical": {
+        "count": 14640,
+        "mean": 6.194603825136612,
+        "std": 3.4844166521653244,
+        "p10": 1.0,
+        "p50": 6.0,
+        "p90": 12.0,
+        "min": 0.0,
+        "max": 12.0
+      }
+    },
+    "outcome_quality": {
+      "selected_rollout_success_rate": 0.9892069130405082,
+      "rollout_valid_coverage_of_valid_candidates": 0.23440003884815228,
+      "physical_unsafe_rate_among_rollout_valid": 0.5218849987339732,
+      "logdiv_unsafe_rate_among_rollout_valid": 0.5218849987339732,
+      "finite_logdiv_rate_among_rollout_valid": 0.0,
+      "nonzero_logdiv_rate_among_finite": null,
+      "logdiv_stats": {
+        "count": 0,
+        "mean": null,
+        "std": null,
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "min": null,
+        "max": null
+      }
+    },
+    "consistency_errors": {
+      "selected_invalid_original": 0,
+      "rollout_valid_not_selected": 0,
+      "rollout_valid_invalid_original": 0
+    },
+    "coverage_by_candidate_class": {
+      "conventional_safe": {
+        "candidates": 402233,
+        "selected": 93524,
+        "rollout_valid": 92475,
+        "collision": 0,
+        "offroad": 18019,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23251200175022935,
+        "rollout_valid_coverage": 0.2299040605818021,
+        "collision_rate": 0.0,
+        "offroad_rate": 0.19485266288185996,
+        "finite_logdiv_rate": 0.0
+      },
+      "false_safe": {
+        "candidates": 267333,
+        "selected": 62262,
+        "rollout_valid": 61601,
+        "collision": 0,
+        "offroad": 10440,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23290053977623412,
+        "rollout_valid_coverage": 0.23042796811467345,
+        "collision_rate": 0.0,
+        "offroad_rate": 0.1694777682180484,
+        "finite_logdiv_rate": 0.0
+      },
+      "logged": {
+        "candidates": 8026,
+        "selected": 2271,
+        "rollout_valid": 2251,
+        "collision": 18,
+        "offroad": 21,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.28295539496635935,
+        "rollout_valid_coverage": 0.28046349364565165,
+        "collision_rate": 0.007996446023989337,
+        "offroad_rate": 0.009329187027987561,
+        "finite_logdiv_rate": 0.0
+      },
+      "neutral": {
+        "candidates": 32193,
+        "selected": 7906,
+        "rollout_valid": 7821,
+        "collision": 1718,
+        "offroad": 53,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.2455813375578542,
+        "rollout_valid_coverage": 0.24294101202124685,
+        "collision_rate": 0.21966500447513107,
+        "offroad_rate": 0.006776627029791587,
+        "finite_logdiv_rate": 0.0
+      },
+      "noncoercive_feasible": {
+        "candidates": 134806,
+        "selected": 31243,
+        "rollout_valid": 30855,
+        "collision": 0,
+        "offroad": 7572,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23176268118629734,
+        "rollout_valid_coverage": 0.2288844710176105,
+        "collision_rate": 0.0,
+        "offroad_rate": 0.2454059309674283,
+        "finite_logdiv_rate": 0.0
+      },
+      "valid": {
+        "candidates": 741348,
+        "selected": 175668,
+        "rollout_valid": 173772,
+        "collision": 70221,
+        "offroad": 31811,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.2369575422068988,
+        "rollout_valid_coverage": 0.23440003884815228,
+        "collision_rate": 0.40409847386230235,
+        "offroad_rate": 0.18306171304928298,
+        "finite_logdiv_rate": 0.0
+      }
+    },
+    "coverage_by_macro_type_id": {
+      "0": {
+        "candidates": 499936,
+        "rollout_valid": 111834,
+        "unsafe_physical": 56249,
+        "rollout_valid_coverage": 0.22369663316904564,
+        "unsafe_physical_rate": 0.5029686857306365
+      },
+      "1": {
+        "candidates": 14542,
+        "rollout_valid": 3407,
+        "unsafe_physical": 600,
+        "rollout_valid_coverage": 0.23428689313712006,
+        "unsafe_physical_rate": 0.1761080129145876
+      },
+      "2": {
+        "candidates": 4700,
+        "rollout_valid": 1011,
+        "unsafe_physical": 178,
+        "rollout_valid_coverage": 0.2151063829787234,
+        "unsafe_physical_rate": 0.17606330365974282
+      },
+      "3": {
+        "candidates": 17499,
+        "rollout_valid": 4399,
+        "unsafe_physical": 1168,
+        "rollout_valid_coverage": 0.2513857934739128,
+        "unsafe_physical_rate": 0.2655148897476699
+      },
+      "4": {
+        "candidates": 9102,
+        "rollout_valid": 1695,
+        "unsafe_physical": 750,
+        "rollout_valid_coverage": 0.1862228081740277,
+        "unsafe_physical_rate": 0.4424778761061947
+      },
+      "5": {
+        "candidates": 7120,
+        "rollout_valid": 1425,
+        "unsafe_physical": 411,
+        "rollout_valid_coverage": 0.20014044943820225,
+        "unsafe_physical_rate": 0.28842105263157897
+      },
+      "6": {
+        "candidates": 73195,
+        "rollout_valid": 19945,
+        "unsafe_physical": 13290,
+        "rollout_valid_coverage": 0.27249129038868775,
+        "unsafe_physical_rate": 0.6663324141388819
+      },
+      "7": {
+        "candidates": 73195,
+        "rollout_valid": 20195,
+        "unsafe_physical": 15367,
+        "rollout_valid_coverage": 0.2759068242366282,
+        "unsafe_physical_rate": 0.7609309234959148
+      },
+      "8": {
+        "candidates": 14639,
+        "rollout_valid": 3276,
+        "unsafe_physical": 1867,
+        "rollout_valid_coverage": 0.22378577771705718,
+        "unsafe_physical_rate": 0.5699023199023199
+      },
+      "9": {
+        "candidates": 14542,
+        "rollout_valid": 3235,
+        "unsafe_physical": 573,
+        "rollout_valid_coverage": 0.2224590840324577,
+        "unsafe_physical_rate": 0.17712519319938178
+      },
+      "10": {
+        "candidates": 8026,
+        "rollout_valid": 2251,
+        "unsafe_physical": 39,
+        "rollout_valid_coverage": 0.28046349364565165,
+        "unsafe_physical_rate": 0.0173256330519769
+      },
+      "11": {
+        "candidates": 4852,
+        "rollout_valid": 1099,
+        "unsafe_physical": 197,
+        "rollout_valid_coverage": 0.22650453421269579,
+        "unsafe_physical_rate": 0.17925386715195632
+      }
+    },
+    "proxy_selected_candidate_replay_coverage": {
+      "any_logged_replayed": {
+        "eligible_scenes": 8026,
+        "replayed_scenes": 2251,
+        "coverage": 0.28046349364565165
+      },
+      "any_neutral_replayed": {
+        "eligible_scenes": 6430,
+        "replayed_scenes": 4716,
+        "coverage": 0.7334370139968895
+      },
+      "utility_best_conventional": {
+        "eligible_scenes": 13109,
+        "replayed_scenes": 4392,
+        "coverage": 0.33503699748264554
+      },
+      "utility_best_ncf": {
+        "eligible_scenes": 5420,
+        "replayed_scenes": 1931,
+        "coverage": 0.3562730627306273
+      },
+      "utility_best_valid": {
+        "eligible_scenes": 14639,
+        "replayed_scenes": 4046,
+        "coverage": 0.27638499897533986
+      }
+    },
+    "rollout_status_counts": [
+      [
+        "attached_real_waymax_outcomes",
+        14481
+      ],
+      [
+        "attached_only_failed_waymax_outcomes",
+        158
+      ]
+    ]
+  },
+  "val": {
+    "split": "val",
+    "cache_dir": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax",
+    "files_total": 5013,
+    "files_readable": 5013,
+    "read_error_count": 0,
+    "read_error_examples": [],
+    "unique_scenario_ids": 5013,
+    "stage_key_coverage": {
+      "natural": {
+        "complete_scenes": 5013,
+        "coverage": 1.0,
+        "top_missing_keys": []
+      },
+      "response": {
+        "complete_scenes": 5013,
+        "coverage": 1.0,
+        "top_missing_keys": []
+      },
+      "witness": {
+        "complete_scenes": 5013,
+        "coverage": 1.0,
+        "top_missing_keys": []
+      },
+      "planner_core": {
+        "complete_scenes": 5013,
+        "coverage": 1.0,
+        "top_missing_keys": []
+      },
+      "waymax_outcome": {
+        "complete_scenes": 5013,
+        "coverage": 1.0,
+        "top_missing_keys": []
+      }
+    },
+    "scene_coverage": {
+      "with_any_selected": 1.0,
+      "with_any_rollout_valid": 1.0,
+      "mixed_safe_unsafe_physical": 0.798523838021145,
+      "mixed_safe_unsafe_with_logdiv": 0.798523838021145
+    },
+    "candidate_totals": {
+      "total_slots": 320832,
+      "valid": 253809,
+      "selected": 60156,
+      "rollout_valid": 60156,
+      "selected_and_rollout_valid": 60156,
+      "selected_invalid_original": 0,
+      "rollout_valid_not_selected": 0,
+      "rollout_valid_invalid_original": 0,
+      "safe_physical": 27974,
+      "unsafe_physical": 32182,
+      "unsafe_with_logdiv": 32182,
+      "finite_logdiv": 0,
+      "nonzero_logdiv": 0
+    },
+    "candidate_distributions_per_scene": {
+      "valid": {
+        "count": 5013,
+        "mean": 50.63016157989228,
+        "std": 3.947145301119641,
+        "p10": 46.0,
+        "p50": 52.0,
+        "p90": 56.0,
+        "min": 38.0,
+        "max": 59.0
+      },
+      "selected": {
+        "count": 5013,
+        "mean": 12.0,
+        "std": 0.0,
+        "p10": 12.0,
+        "p50": 12.0,
+        "p90": 12.0,
+        "min": 12.0,
+        "max": 12.0
+      },
+      "rollout_valid": {
+        "count": 5013,
+        "mean": 12.0,
+        "std": 0.0,
+        "p10": 12.0,
+        "p50": 12.0,
+        "p90": 12.0,
+        "min": 12.0,
+        "max": 12.0
+      },
+      "safe_physical": {
+        "count": 5013,
+        "mean": 5.580291242768801,
+        "std": 3.465682914519263,
+        "p10": 0.0,
+        "p50": 6.0,
+        "p90": 10.0,
+        "min": 0.0,
+        "max": 12.0
+      },
+      "unsafe_physical": {
+        "count": 5013,
+        "mean": 6.419708757231199,
+        "std": 3.465682914519263,
+        "p10": 2.0,
+        "p50": 6.0,
+        "p90": 12.0,
+        "min": 0.0,
+        "max": 12.0
+      }
+    },
+    "outcome_quality": {
+      "selected_rollout_success_rate": 1.0,
+      "rollout_valid_coverage_of_valid_candidates": 0.23701287188397574,
+      "physical_unsafe_rate_among_rollout_valid": 0.5349757297692666,
+      "logdiv_unsafe_rate_among_rollout_valid": 0.5349757297692666,
+      "finite_logdiv_rate_among_rollout_valid": 0.0,
+      "nonzero_logdiv_rate_among_finite": null,
+      "logdiv_stats": {
+        "count": 0,
+        "mean": null,
+        "std": null,
+        "p10": null,
+        "p50": null,
+        "p90": null,
+        "min": null,
+        "max": null
+      }
+    },
+    "consistency_errors": {
+      "selected_invalid_original": 0,
+      "rollout_valid_not_selected": 0,
+      "rollout_valid_invalid_original": 0
+    },
+    "coverage_by_candidate_class": {
+      "conventional_safe": {
+        "candidates": 139322,
+        "selected": 32173,
+        "rollout_valid": 32173,
+        "collision": 2,
+        "offroad": 6681,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.2309254819770029,
+        "rollout_valid_coverage": 0.2309254819770029,
+        "collision_rate": 6.216392627358344e-05,
+        "offroad_rate": 0.20765859571690548,
+        "finite_logdiv_rate": 0.0
+      },
+      "false_safe": {
+        "candidates": 92975,
+        "selected": 21649,
+        "rollout_valid": 21649,
+        "collision": 2,
+        "offroad": 3846,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23284753966119925,
+        "rollout_valid_coverage": 0.23284753966119925,
+        "collision_rate": 9.238302000092384e-05,
+        "offroad_rate": 0.17765254746177653,
+        "finite_logdiv_rate": 0.0
+      },
+      "logged": {
+        "candidates": 2788,
+        "selected": 833,
+        "rollout_valid": 833,
+        "collision": 12,
+        "offroad": 4,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.29878048780487804,
+        "rollout_valid_coverage": 0.29878048780487804,
+        "collision_rate": 0.014405762304921969,
+        "offroad_rate": 0.004801920768307323,
+        "finite_logdiv_rate": 0.0
+      },
+      "neutral": {
+        "candidates": 10721,
+        "selected": 2549,
+        "rollout_valid": 2549,
+        "collision": 541,
+        "offroad": 15,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23775767185896837,
+        "rollout_valid_coverage": 0.23775767185896837,
+        "collision_rate": 0.21224009415457043,
+        "offroad_rate": 0.005884660651235779,
+        "finite_logdiv_rate": 0.0
+      },
+      "noncoercive_feasible": {
+        "candidates": 46331,
+        "selected": 10519,
+        "rollout_valid": 10519,
+        "collision": 0,
+        "offroad": 2835,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.22704021065809069,
+        "rollout_valid_coverage": 0.22704021065809069,
+        "collision_rate": 0.0,
+        "offroad_rate": 0.26951231105618406,
+        "finite_logdiv_rate": 0.0
+      },
+      "valid": {
+        "candidates": 253809,
+        "selected": 60156,
+        "rollout_valid": 60156,
+        "collision": 24698,
+        "offroad": 11839,
+        "finite_logdiv": 0,
+        "selected_coverage": 0.23701287188397574,
+        "rollout_valid_coverage": 0.23701287188397574,
+        "collision_rate": 0.4105658620918944,
+        "offroad_rate": 0.19680497373495578,
+        "finite_logdiv_rate": 0.0
+      }
+    },
+    "coverage_by_macro_type_id": {
+      "0": {
+        "candidates": 171730,
+        "rollout_valid": 38942,
+        "unsafe_physical": 20028,
+        "rollout_valid_coverage": 0.226762941827287,
+        "unsafe_physical_rate": 0.5143033228904524
+      },
+      "1": {
+        "candidates": 4844,
+        "rollout_valid": 1138,
+        "unsafe_physical": 205,
+        "rollout_valid_coverage": 0.23492981007431873,
+        "unsafe_physical_rate": 0.18014059753954306
+      },
+      "2": {
+        "candidates": 1562,
+        "rollout_valid": 366,
+        "unsafe_physical": 68,
+        "rollout_valid_coverage": 0.23431498079385404,
+        "unsafe_physical_rate": 0.18579234972677597
+      },
+      "3": {
+        "candidates": 5831,
+        "rollout_valid": 1394,
+        "unsafe_physical": 345,
+        "rollout_valid_coverage": 0.239067055393586,
+        "unsafe_physical_rate": 0.24748923959827834
+      },
+      "4": {
+        "candidates": 3046,
+        "rollout_valid": 583,
+        "unsafe_physical": 278,
+        "rollout_valid_coverage": 0.19139855548260012,
+        "unsafe_physical_rate": 0.47684391080617494
+      },
+      "5": {
+        "candidates": 2413,
+        "rollout_valid": 486,
+        "unsafe_physical": 168,
+        "rollout_valid_coverage": 0.20140903439701616,
+        "unsafe_physical_rate": 0.345679012345679
+      },
+      "6": {
+        "candidates": 25065,
+        "rollout_valid": 6920,
+        "unsafe_physical": 4779,
+        "rollout_valid_coverage": 0.2760821863155795,
+        "unsafe_physical_rate": 0.690606936416185
+      },
+      "7": {
+        "candidates": 25065,
+        "rollout_valid": 6885,
+        "unsafe_physical": 5406,
+        "rollout_valid_coverage": 0.2746858168761221,
+        "unsafe_physical_rate": 0.7851851851851852
+      },
+      "8": {
+        "candidates": 5013,
+        "rollout_valid": 1123,
+        "unsafe_physical": 642,
+        "rollout_valid_coverage": 0.22401755435866746,
+        "unsafe_physical_rate": 0.5716829919857525
+      },
+      "9": {
+        "candidates": 4844,
+        "rollout_valid": 1122,
+        "unsafe_physical": 185,
+        "rollout_valid_coverage": 0.23162675474814204,
+        "unsafe_physical_rate": 0.16488413547237077
+      },
+      "10": {
+        "candidates": 2788,
+        "rollout_valid": 833,
+        "unsafe_physical": 16,
+        "rollout_valid_coverage": 0.29878048780487804,
+        "unsafe_physical_rate": 0.01920768307322929
+      },
+      "11": {
+        "candidates": 1608,
+        "rollout_valid": 364,
+        "unsafe_physical": 62,
+        "rollout_valid_coverage": 0.2263681592039801,
+        "unsafe_physical_rate": 0.17032967032967034
+      }
+    },
+    "proxy_selected_candidate_replay_coverage": {
+      "any_logged_replayed": {
+        "eligible_scenes": 2788,
+        "replayed_scenes": 833,
+        "coverage": 0.29878048780487804
+      },
+      "any_neutral_replayed": {
+        "eligible_scenes": 2159,
+        "replayed_scenes": 1553,
+        "coverage": 0.7193144974525243
+      },
+      "utility_best_conventional": {
+        "eligible_scenes": 4490,
+        "replayed_scenes": 1513,
+        "coverage": 0.33697104677060136
+      },
+      "utility_best_ncf": {
+        "eligible_scenes": 1817,
+        "replayed_scenes": 621,
+        "coverage": 0.34177215189873417
+      },
+      "utility_best_valid": {
+        "eligible_scenes": 5013,
+        "replayed_scenes": 1402,
+        "coverage": 0.27967285058846997
+      }
+    },
+    "rollout_status_counts": [
+      [
+        "attached_real_waymax_outcomes",
+        5013
+      ]
+    ]
+  },
+  "cross_split": {
+    "scenario_id_overlap": 0,
+    "metrics": {
+      "mean_valid_candidates": {
+        "train": 50.63852459016393,
+        "val": 50.63016157989228,
+        "absolute_difference": 0.008363010271651206
+      },
+      "mean_rollout_valid_candidates": {
+        "train": 11.86967213114754,
+        "val": 12.0,
+        "absolute_difference": 0.13032786885245962
+      },
+      "physical_unsafe_rate": {
+        "train": 0.5218849987339732,
+        "val": 0.5349757297692666,
+        "absolute_difference": 0.013090731035293346
+      },
+      "rollout_valid_candidate_coverage": {
+        "train": 0.23440003884815228,
+        "val": 0.23701287188397574,
+        "absolute_difference": 0.002612833035823464
+      },
+      "false_safe_replay_coverage": {
+        "train": 0.23042796811467345,
+        "val": 0.23284753966119925,
+        "absolute_difference": 0.002419571546525806
+      },
+      "ncf_replay_coverage": {
+        "train": 0.2288844710176105,
+        "val": 0.22704021065809069,
+        "absolute_difference": 0.001844260359519817
+      }
+    }
+  },
+  "decision": {
+    "core_staged_training": {
+      "status": "PASS",
+      "reasons": [
+        "natural/response/witness/planner core labels are structurally complete in both splits"
+      ],
+      "recommended_action": "Reuse the existing caches for natural, response, witness, and label-based planner training; no Waymax replay is needed for these stages."
+    },
+    "collision_offroad_auxiliary_training": {
+      "status": "PASS",
+      "reasons": [
+        "attached collision/offroad outcomes have broad scene coverage and high replay success"
+      ],
+      "recommended_action": "Reuse existing attached outcomes as an auxiliary collision/offroad planner loss. Do not make this sparse auxiliary loss the sole planner objective."
+    },
+    "logdiv_training_and_evaluation": {
+      "status": "FAIL",
+      "reasons": [
+        "train: finite logdiv coverage=0.000 < 0.90",
+        "train: logdiv is absent/near-constant (nonzero=0.000, std=0.0000, max=0.0000)",
+        "val: finite logdiv coverage=0.000 < 0.90",
+        "val: logdiv is absent/near-constant (nonzero=0.000, std=0.0000, max=0.0000)"
+      ],
+      "recommended_action": "Do not train the logdiv head from these labels and do not report SelectedWaymaxMeanLogDivergence as evidence. Either set logdiv/outcome-risk terms to zero, or replay only the subset needed with metric-set=safety_logdiv."
+    },
+    "learned_offline_waymax_outcome_metrics": {
+      "status": "WARN",
+      "reasons": [
+        "train: only 0.234 of valid candidates have valid Waymax outcomes",
+        "train: minimum proxy-selected candidate replay coverage=0.276 < 0.75",
+        "val: only 0.237 of valid candidates have valid Waymax outcomes",
+        "val: minimum proxy-selected candidate replay coverage=0.280 < 0.75"
+      ],
+      "recommended_action": "Treat learned-offline Waymax collision/offroad/logdiv numbers as partial diagnostics. Replay validation candidates selected by the trained checkpoint, or report the selected-outcome coverage denominator explicitly. Full training-set replay is not required for this."
+    },
+    "real_online_waymax_closed_loop_evaluation": {
+      "status": "PASS_NOT_CACHE_DEPENDENT",
+      "reasons": [
+        "real online evaluation loads validation tf.Example and steps the Waymax environment; attached candidate outcomes are not the evaluation environment"
+      ],
+      "recommended_action": "Run online Waymax closed-loop evaluation directly with the checkpoint. Do not spend four days replaying training labels merely to enable online evaluation."
+    },
+    "overall": {
+      "status": "REUSE_WITH_LOGDIV_DISABLED",
+      "reasons": [
+        "core labels and collision/offroad outcomes are usable, but logdiv is missing or degenerate"
+      ],
+      "recommended_action": "Skip full replay. Train with existing caches, disable logdiv/outcome-risk terms, and run real online Waymax. If logdiv is required for the paper, replay validation first and a targeted training subset rather than all 20k scenes."
+    }
+  },
+  "interpretation_notes": [
+    "Attached candidate outcomes are optional auxiliary planner labels; natural/response/witness training does not require replay/attach.",
+    "Real online Waymax closed-loop evaluation reads tf.Example and steps the simulator, so it is not enabled by replaying the training cache.",
+    "A safety-only replay can still be useful for collision/offroad auxiliary training, but missing/constant logdiv must not be silently treated as a true zero target.",
+    "Learned-offline selected Waymax metrics are only representative when the candidate selected by a method has a replayed valid outcome; report that coverage explicitly."
+  ]
+}

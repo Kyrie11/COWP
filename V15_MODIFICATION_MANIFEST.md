@@ -112,3 +112,33 @@ mixing old label semantics with new tensors.
   architecture currently described in parts of the TeX.
 - Run full-validation, at least three seeds, paired bootstrap confidence
   intervals, and external baseline comparisons before an SOTA claim.
+
+## v15.1 cache-reuse extension
+
+### Added
+
+- `cowp/scripts/38_gate_cache_reuse.py`
+- `tests/test_v15_v9_cache_reuse.py`
+- `CHECK_V9_CACHE_ONLY.sh`
+- `NEXT_RUN_COMMANDS_V15_REBUILD_FULL_CN.sh`
+- `COWP_V15_V9_CACHE_REUSE_ANALYSIS_CN.md`
+
+### Modified
+
+- `NEXT_RUN_COMMANDS_V15_CN.sh`
+  - now reuses existing `formal/tensor_cache_*_waymax` and
+    `tensor_cache_*_waymax_transport_v9` by default;
+  - performs a fresh full raw-cache audit and an independent raw/overlay gate;
+  - does not rebuild index, labels, tensor cache, replay outcomes, or overlay.
+- `run_cowp_v15_dual_gpu.sh`
+  - records `DATA_PROTOCOL` and cache paths in `data_protocol_manifest.json`;
+  - forwards the cache-reuse evidence to the causal audit.
+- `cowp/scripts/36_audit_causal_protocol.py`
+  - separates engineering validity from complete v15 causal-label validity.
+
+### Revised data compatibility
+
+Old v9 caches may be reused for an explicitly labelled **v15 model + v9 labels** run
+and for real online Waymax evaluation after the new gate passes. They are not equivalent
+to regenerated v15 causal labels and cannot validate the OBS-decontamination/map-filtering
+label contribution. Existing safety replay has no finite logdiv supervision.

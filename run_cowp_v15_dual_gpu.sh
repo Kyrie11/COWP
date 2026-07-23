@@ -4,10 +4,10 @@ set -euo pipefail
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}"
 OUT_ROOT="${OUT_ROOT:-outputs/cowp_v15_temporal_riot_probe100_seed2026}"
-RAW_TRAIN_CACHE="${RAW_TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax}"
-RAW_VAL_CACHE="${RAW_VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax}"
-TRAIN_CACHE="${TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax_transport_v9}"
-VAL_CACHE="${VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax_transport_v9}"
+RAW_TRAIN_CACHE="${RAW_TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal_v15/tensor_cache_train_waymax}"
+RAW_VAL_CACHE="${RAW_VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal_v15/tensor_cache_val_waymax}"
+TRAIN_CACHE="${TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal_v15/tensor_cache_train_waymax_transport_v15}"
+VAL_CACHE="${VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal_v15/tensor_cache_val_waymax_transport_v15}"
 WAYMAX_VAL="${WAYMAX_VAL:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord@150}"
 GPU0="${GPU0:-0}"
 GPU1="${GPU1:-1}"
@@ -67,12 +67,22 @@ NATURAL_HISTORY="${NATURAL_HISTORY:-}"
 TRANSPORT_CKPT="${TRANSPORT_CKPT:-}"
 CKPT="${CKPT:-}"
 REQUIRE_INIT_CKPT="${REQUIRE_INIT_CKPT:-1}"
+DATA_PROTOCOL="${DATA_PROTOCOL:-v15}"
+CACHE_REUSE_REPORT="${CACHE_REUSE_REPORT:-}"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
 export TOKENIZERS_PARALLELISM=false
 
 mkdir -p "$OUT_ROOT"/{logs,configs,checkpoints/natural,checkpoints/transport,checkpoints/planner,eval/learned_offline,eval/probe,eval/waymax,jax_cache}
+printf '{
+  "data_protocol": "%s",
+  "raw_train_cache": "%s",
+  "raw_val_cache": "%s",
+  "train_cache": "%s",
+  "val_cache": "%s"
+}
+' "$DATA_PROTOCOL" "$RAW_TRAIN_CACHE" "$RAW_VAL_CACHE" "$TRAIN_CACHE" "$VAL_CACHE" > "$OUT_ROOT/configs/data_protocol_manifest.json"
 cp configs/model_cowp_v15.yaml "$OUT_ROOT/configs/model_cowp_v15.yaml"
 cp configs/label_cowp_v15.yaml "$OUT_ROOT/configs/label_cowp_v15.yaml"
 cp configs/label_cowp_v15_pareto_ablation.yaml "$OUT_ROOT/configs/label_cowp_v15_pareto_ablation.yaml"
@@ -162,10 +172,10 @@ NEED_TRANSPORT_CACHE=0
 if [[ "$RUN_AUGMENT" == "1" || "$RUN_DIAGNOSE" == "1" || "$RUN_TRANSPORT" == "1" || "$RUN_PLANNER" == "1" || "$RUN_OFFLINE" == "1" || "$RUN_PROBE" == "1" || "$RUN_FULL" == "1" ]]; then
   NEED_TRANSPORT_CACHE=1
 fi
-#if [[ "$NEED_TRANSPORT_CACHE" == "1" ]]; then
-#  cache_ready "$TRAIN_CACHE" || { echo "Transport train cache is not ready: $TRAIN_CACHE" >&2; exit 2; }
-#  cache_ready "$VAL_CACHE" || { echo "Transport val cache is not ready: $VAL_CACHE" >&2; exit 2; }
-#fi
+if [[ "$NEED_TRANSPORT_CACHE" == "1" ]]; then
+  cache_ready "$TRAIN_CACHE" || { echo "Transport train cache is not ready: $TRAIN_CACHE" >&2; exit 2; }
+  cache_ready "$VAL_CACHE" || { echo "Transport val cache is not ready: $VAL_CACHE" >&2; exit 2; }
+fi
 
 if [[ "$RUN_DIAGNOSE" == "1" ]]; then
   logrun diagnose_transport_train "$PYTHON_BIN" -u -m cowp.scripts.27_diagnose_transport_labels \
@@ -201,10 +211,13 @@ CAUSAL_AUDIT_REPORT="$OUT_ROOT/eval/causal_protocol_audit.json"
 ALIGN_VAL_REPORT="$OUT_ROOT/eval/cache_alignment_val.json"
 audit_alignment_args=()
 [[ -s "$ALIGN_VAL_REPORT" ]] && audit_alignment_args=(--cache-alignment-report "$ALIGN_VAL_REPORT")
+audit_reuse_args=()
+[[ -n "$CACHE_REUSE_REPORT" && -s "$CACHE_REUSE_REPORT" ]] && audit_reuse_args=(--cache-reuse-report "$CACHE_REUSE_REPORT")
 logrun audit_causal_protocol "$PYTHON_BIN" -u -m cowp.scripts.36_audit_causal_protocol \
   --model-config "$MODEL_CFG" --label-config "$LABEL_CFG" \
   --train-config "$TRAIN_CFG" --eval-config "$EVAL_CFG" \
-  "${audit_alignment_args[@]}" --output "$CAUSAL_AUDIT_REPORT"
+  --data-protocol "$DATA_PROTOCOL" \
+  "${audit_alignment_args[@]}" "${audit_reuse_args[@]}" --output "$CAUSAL_AUDIT_REPORT"
 
 best_natural() {
   local p="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"

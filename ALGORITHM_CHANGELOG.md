@@ -722,3 +722,32 @@ Not validated in the supplied environment:
 - Do not claim SOTA before full-validation, multi-seed, paired confidence-
   interval comparisons under both logged-replay and independent reactive-agent
   protocols.
+
+## v15.1 — audited reuse of v9 transport caches (2026-07-23)
+
+1. Reclassified data compatibility into two explicit protocols:
+   - `v15`: regenerated causal-label protocol with OBS decontamination and map filtering;
+   - `v9_reuse`: v15 model/engineering stack trained on the existing v9 labels.
+2. Changed `NEXT_RUN_COMMANDS_V15_CN.sh` to reuse the existing raw Waymax caches and
+   `transport_v9` overlays by default. It no longer runs index, label generation,
+   tensor-cache construction, Waymax replay, outcome attachment, or transport augmentation.
+3. Preserved the former full rebuild route as
+   `NEXT_RUN_COMMANDS_V15_REBUILD_FULL_CN.sh`.
+4. Added `38_gate_cache_reuse.py`, which checks current server-side file counts,
+   raw/overlay alignment, required training fields, explicit SDC identity, critical-agent
+   mapping, response-root ranges, split overlap, v15 label materialization, and logdiv state.
+5. Added `CHECK_V9_CACHE_ONLY.sh` to run the complete raw-cache sufficiency scan and
+   the independent v9 overlay gate without launching training.
+6. Hardened `36_audit_causal_protocol.py` so `engineering_pass` is separated from
+   `full_v15_label_protocol_pass`. A v9-reuse run may be engineering-valid while
+   correctly refusing to claim that v15 causal labels were materialized.
+7. Added a data-protocol manifest to every v15 run. Paper-facing result aggregation
+   must not merge `v9_reuse` and full `v15` experiments as if they used identical labels.
+8. Disabled silent use of missing Waymax log-divergence supervision. Existing safety
+   replay has zero finite logdiv targets; collision/offroad may remain an auxiliary loss,
+   while final closed-loop metrics must come from online Waymax.
+9. Added `tests/test_v15_v9_cache_reuse.py`. Full local suite: **82 passed**.
+10. Documented the count discrepancy between the older full cache report (14,640 train)
+    and the later v14 alignment result (20,440 train). The new default script therefore
+    audits the current server directory before training and defaults to a 20,000-scene
+    minimum rather than trusting stale reports.
