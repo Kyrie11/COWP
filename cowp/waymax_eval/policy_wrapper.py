@@ -97,12 +97,30 @@ def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     return 1.0 / (1.0 + np.exp(x_arr))
 
 
-def _traj_arrays(state: Any) -> tuple[Any, int]:
-    traj = _get_field(state, ("sim_trajectory", "trajectory", "log_trajectory"))
+def _traj_arrays(
+    state: Any, *, allow_logged_fallback: bool = False, prefer_logged: bool = False
+) -> tuple[Any, int]:
+    """Return the causal simulator trajectory unless an oracle explicitly opts in.
+
+    ``log_trajectory`` contains privileged future states in Waymax.  Falling back
+    to it implicitly makes a supposedly closed-loop policy non-causal, so the
+    main path now refuses that fallback.
+    """
+    if prefer_logged:
+        traj = _get_field(state, ("log_trajectory",))
+        if traj is None and allow_logged_fallback:
+            traj = _get_field(state, ("sim_trajectory", "trajectory"))
+    else:
+        traj = _get_field(state, ("sim_trajectory", "trajectory"))
+        if traj is None and allow_logged_fallback:
+            traj = _get_field(state, ("log_trajectory",))
     timestep = _get_field(state, ("timestep", "time_index", "current_timestep"))
     t = int(_to_numpy(timestep).reshape(-1)[0]) if timestep is not None else 0
     if traj is None:
-        raise ValueError("SimulatorState has no sim_trajectory/trajectory/log_trajectory attribute.")
+        raise ValueError(
+            "SimulatorState has no causal sim_trajectory/trajectory attribute. "
+            "log_trajectory fallback is disabled outside an explicit oracle ablation."
+        )
     return traj, t
 
 
@@ -120,8 +138,12 @@ def _extract_sdc_index(state: Any, default: int = 0) -> int:
     return int(default)
 
 
-def _extract_traj_components(state: Any) -> dict[str, np.ndarray]:
-    traj, _ = _traj_arrays(state)
+def _extract_traj_components(
+    state: Any, *, allow_logged_fallback: bool = False, prefer_logged: bool = False
+) -> dict[str, np.ndarray]:
+    traj, _ = _traj_arrays(
+        state, allow_logged_fallback=allow_logged_fallback, prefer_logged=prefer_logged
+    )
     x = _unwrap_batch_dim(_to_numpy(_get_field(traj, ("x", "center_x"))))
     y = _unwrap_batch_dim(_to_numpy(_get_field(traj, ("y", "center_y"))))
     yaw_field = _get_field(traj, ("yaw", "heading", "bbox_yaw"))
@@ -273,8 +295,10 @@ def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) ->
     if source not in {"logged", "logged_oracle", "oracle"}:
         return None
     try:
-        _, t = _traj_arrays(state)
-        comps = _extract_traj_components(state)
+        _, t = _traj_arrays(state, allow_logged_fallback=True, prefer_logged=True)
+        comps = _extract_traj_components(
+            state, allow_logged_fallback=True, prefer_logged=True
+        )
     except Exception:
         return None
     return _extract_logged_future_from_components(comps, t, sdc_index, cfg)
@@ -1736,9 +1760,14 @@ class COWPWaymaxPolicy:
                 self._cached_roadgraph = roadgraph
         future_source = str(self.cfg.get("planning", {}).get("online_other_future_source", "constant_velocity")).lower()
         if future_source in {"logged", "logged_oracle", "oracle"}:
-            other_future_trajs = _extract_logged_future_from_components(
-                traj_components, current_t, sdc_index, self.cfg
+            other_future_trajs = _extract_logged_future_agent_trajs(
+                state, sdc_index, self.cfg
             )
+            if other_future_trajs is None:
+                raise RuntimeError(
+                    "Explicit logged-oracle evaluation requested, but privileged "
+                    "log_trajectory could not be extracted."
+                )
         else:
             # Causal main evaluation: no future state from sim/log trajectory is read.
             # Candidate checks use the existing constant-velocity fallback and the

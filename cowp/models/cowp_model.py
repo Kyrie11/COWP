@@ -94,6 +94,11 @@ class COWPModel(nn.Module):
         self.max_agents = int(m.get("max_agents", 128))
         self.history_steps = int(m.get("history_steps", 11))
         self.d_state = int(m.get("d_state", 11))
+        # Production must never synthesize encoder inputs from future trajectory
+        # labels.  The legacy path is retained only for explicitly opted-in toy
+        # tests and migration utilities.
+        self.allow_label_only_state_fallback = bool(m.get("allow_label_only_state_fallback", False))
+        self.require_explicit_sdc_index = bool(m.get("require_explicit_sdc_index", False))
 
     @staticmethod
     def _first_tensor(batch: dict[str, torch.Tensor], names: tuple[str, ...]) -> torch.Tensor | None:
@@ -176,18 +181,22 @@ class COWPModel(nn.Module):
             agent_mask = agent_valid.bool() if agent_valid is not None and agent_valid.shape[:2] == agent_history.shape[:2] else torch.ones(agent_history.shape[:2], device=agent_history.device, dtype=torch.bool)
             return agent_history, agent_mask
 
+        available = ", ".join(sorted(batch.keys())[:40])
+        if not self.allow_label_only_state_fallback:
+            raise RuntimeError(
+                "Causal input violation: COWPModel received no real history/current "
+                "state tensor. Refusing to reconstruct encoder state from future "
+                "cowp/natural/traj labels. Rebuild/repair the tensor cache instead. "
+                f"Available keys: {available}"
+            )
         if "cowp/natural/traj" not in batch:
-            available = ", ".join(sorted(batch.keys())[:40])
             raise KeyError(
-                "COWPModel requires encoder state tensors. Expected state/history, "
-                "womd/state/history, state/all, womd/state/all, or WOMD "
-                "state/{past,current}/x. The current batch also lacks "
-                f"cowp/natural/traj for the legacy toy fallback. Available keys: {available}"
+                "Legacy label-only fallback was explicitly enabled, but "
+                f"cowp/natural/traj is absent. Available keys: {available}"
             )
 
-        # Last-resort toy/label-only fallback. Production training should use
-        # tensor_cache with WOMD state features; dataset validation normally
-        # prevents this path.
+        # Explicitly opted-in legacy toy fallback. Never enable this in a train or
+        # evaluation config used for reported results.
         nat = batch["cowp/natural/traj"].float()
         B, A = nat.shape[:2]
         max_idx = int(batch["cowp/critical/track_index"].max().item() + 1) if batch["cowp/critical/track_index"].numel() else A
@@ -243,7 +252,9 @@ class COWPModel(nn.Module):
         agent_history, agent_mask = self._agent_history_from_batch(batch)
         conflict = batch.get("map/conflict_regions")
         conflict_mask = batch.get("map/conflict_region_valid")
-        sdc_index, ego_mask = infer_sdc_index(batch, agent_history)
+        sdc_index, ego_mask = infer_sdc_index(
+            batch, agent_history, require_explicit=self.require_explicit_sdc_index
+        )
 
         # Decode only the heads needed by the current stage.  Natural alternatives
         # should be conditioned on the root scene, not on a particular ego

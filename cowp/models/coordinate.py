@@ -11,7 +11,9 @@ def _first_tensor(batch: dict[str, torch.Tensor], names: tuple[str, ...]) -> tor
     return None
 
 
-def infer_sdc_index(batch: dict[str, torch.Tensor], agent_history: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def infer_sdc_index(
+    batch: dict[str, torch.Tensor], agent_history: torch.Tensor, *, require_explicit: bool = False
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Infer the SDC index and one-hot ego mask for every scene.
 
     WOMD global coordinates have an arbitrary per-scenario origin.  The planner
@@ -30,6 +32,11 @@ def infer_sdc_index(batch: dict[str, torch.Tensor], agent_history: torch.Tensor)
         ),
     )
     if is_sdc is None:
+        if require_explicit:
+            raise RuntimeError(
+                "Causal coordinate violation: state/is_sdc is missing. Refusing "
+                "to assume agent row 0 is ego in a reported run."
+            )
         idx = torch.zeros(B, device=agent_history.device, dtype=torch.long)
     else:
         mask = is_sdc.bool()
@@ -43,8 +50,14 @@ def infer_sdc_index(batch: dict[str, torch.Tensor], agent_history: torch.Tensor)
             pad = torch.zeros(B, N - mask.shape[1], device=mask.device, dtype=torch.bool)
             mask = torch.cat([mask, pad], dim=1)
         mask = mask[:, :N]
+        has_sdc = mask.any(dim=1)
+        if require_explicit and not bool(has_sdc.all().item()):
+            missing = torch.where(~has_sdc)[0].detach().cpu().tolist()
+            raise RuntimeError(
+                f"Causal coordinate violation: no valid SDC marker for batch rows {missing}."
+            )
         idx = mask.float().argmax(dim=1).long()
-        idx = torch.where(mask.any(dim=1), idx, torch.zeros_like(idx))
+        idx = torch.where(has_sdc, idx, torch.zeros_like(idx))
     ego_mask = torch.zeros(B, N, device=agent_history.device, dtype=torch.bool)
     ego_mask.scatter_(1, idx[:, None].clamp(0, max(N - 1, 0)), True)
     return idx, ego_mask

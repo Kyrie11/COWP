@@ -23,6 +23,13 @@ def _progress_reference_m(label: dict[str, np.ndarray]) -> float:
 
 
 def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str, np.ndarray]]) -> dict[str, float]:
+    """Compute label-space diagnostics, not simulator collision metrics.
+
+    ``conventional_safe`` is a candidate-label predicate.  Its complement must
+    not be presented as an executed closed-loop collision rate.  The legacy CR
+    alias is retained for old table scripts but is paired with explicit protocol
+    markers and a descriptive metric name.
+    """
     n = len(selected_indices)
     cf_count = 0
     false_safe = 0
@@ -80,8 +87,15 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
             if beta.shape[0] < crit.shape[0]:
                 beta = np.pad(beta, (0, crit.shape[0] - beta.shape[0]), constant_values=0.65)
             hbcr += int(np.any(min_safe[k, crit] > beta[: crit.shape[0]][crit]))
+    conventional_unsafe_rate = float(collision_or_offroad / max(n, 1))
     return {
-        "CR": float(collision_or_offroad / max(n, 1)),
+        "MetricProtocol/LabelSpaceOnly": 1.0,
+        "MetricProtocol/ClosedLoopCollisionAvailable": 0.0,
+        "OfflineConventionalUnsafeRate": conventional_unsafe_rate,
+        "CR_proxy_deprecated": conventional_unsafe_rate,
+        # Backward-compatible alias only.  Paper tables must use Waymax standard
+        # metrics for CR and the descriptive key above for label-space analysis.
+        "CR": conventional_unsafe_rate,
         "EP": float(np.mean(progress_norm)) if progress_norm else 0.0,
         "EP_m": float(np.mean(progress_m)) if progress_m else 0.0,
         "FallbackRate": float(fallback_count / max(n, 1)),

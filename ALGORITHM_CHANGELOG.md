@@ -565,3 +565,160 @@ transport-v9 caches, initialization checkpoint, Waymax runtime and standalone
     `cowp*` package configuration.  The authoritative implementation is now
     unambiguously under `cowp/`, preventing fixes from being applied to inert
     copies.
+
+## v15-CNOB — Causal Natural Option Basis, Protocol Integrity, and OBS Decontamination
+
+### Triggering evidence from `cowp_v14_typed_natural_seed2026`
+
+The uploaded v14 run did not produce `natural_basis_gate.json`, but this was not
+an ordinary metric failure. `NEXT_RUN_COMMANDS_V14_CN.txt` mixed executable shell
+commands with Chinese prose and was invoked through `bash`; the prose was parsed
+as commands. The driver then retained an existing natural checkpoint although
+`history_natural.json` was absent, so the hard gate could not be reconstructed by
+the run itself.
+
+The validation rows in `logs/train_natural_ddp.log` were recovered into a proper
+history file. Under the original v14 thresholds, the best epoch (15) passes:
+
+- typed set minADE@8 s: **1.8974 m**;
+- minADE@1/3/5 s: **0.2289 / 0.4480 / 0.8951 m**;
+- branch minADE: **2.9117 m**;
+- OBS / NEU / PRIO minADE: **4.6060 / 1.1351 / 1.2998 m**;
+- neutral consistency: **1.8647 m**;
+- priority BCE: **0.3495**.
+
+However, v14 is not promoted by the stricter v15 geometric gate. It fails on the
+OBS branch (**4.6060 m > 4.0 m**) and branch spread
+(**4.6060 - 1.1351 = 3.4708 m > 3.0 m**). Near-zero source CE is no longer
+counted as evidence of learning because typed root identities are structurally
+hard-coded.
+
+The epoch trace also shows that the learned temporal residual was nearly inert:
+aggregate quality jumped when the analytic typed basis/graph path became active,
+then remained almost flat; final base deviation was approximately 0.017 m and
+residual L2 approximately 8e-4. Thus v14 success was dominated by hand-designed
+kinematic prototypes rather than learned scene-conditioned natural behavior.
+
+### Confirmed engineering defects
+
+1. `COWPModel._agent_history_from_batch` could reconstruct encoder input from
+   `cowp/natural/traj` when real current/history tensors were missing. This is a
+   direct future-label leak.
+2. the online policy could silently fall back to Waymax `log_trajectory`, which
+   contains privileged future states;
+3. missing `state/is_sdc` could silently make row zero the ego, invalidating
+   ego-centric transforms and all downstream critical-agent indexing;
+4. observational perturbations shifted future positions without consistently
+   repairing velocity and heading, producing side-slip and first-step
+   discontinuities;
+5. natural alternatives declared map compliance without performing a map check;
+6. the logged OBS future could already contain ego-induced yielding, so it was
+   not a clean sample of behavior under the absence of ego pressure;
+7. a label-space candidate-safety complement was exported as `CR`, although it
+   was not a simulator-measured closed-loop collision/offroad rate;
+8. logged-replay non-ego agents were described by the paper as a reactive
+   mixture, although the current evaluator does not implement that mixture;
+9. checkpoint-only skip logic could preserve an incomplete natural stage;
+10. documentation and executable shell were mixed in one file.
+
+### Implemented changes
+
+1. Added a strict causal input contract:
+   - future-label reconstruction is disabled by default;
+   - reported runs require an explicit SDC marker;
+   - absent real history/current tensors or SDC identity hard-fail.
+2. Added a strict Waymax future-access contract:
+   - main policies use only simulated/current/history state;
+   - `log_trajectory` is inaccessible except in an explicitly named oracle
+     ablation;
+   - causal constant-velocity non-ego prediction is used by the model-facing
+     online wrapper when no learned reactive predictor is available.
+3. Reworked observational trajectory perturbation:
+   - every alternative starts continuously from the current state;
+   - lateral displacement uses a zero-origin smooth transition;
+   - heading and velocity are recomputed from the transformed path;
+   - invalid/non-finite motion is rejected.
+4. Added map-aware natural-option filtering using the available road/lane point
+   cloud, with type-aware distance thresholds and explicit verification fields.
+5. Added observational decontamination:
+   - estimate whether the logged agent decelerates/loses progress near ego;
+   - compare logged clearance with an ego-neutral continuation;
+   - produce an `obs_contamination` score;
+   - downweight or reject highly pressure-contaminated OBS alternatives.
+6. Introduced the **Causal Natural Option Basis (CNOB)** decoder profile:
+   - retain source-stable OBS/NEU/PRIO roots needed by same-root transport;
+   - allocate more bounded residual capacity to OBS, the empirically weak branch;
+   - preserve stronger analytic priors for NEU/PRIO;
+   - treat source identity as structure rather than an artificial source-CE win.
+7. Added source-specific prior-deviation losses and diagnostics, with a lower OBS
+   regularization coefficient and stronger NEU/PRIO preservation.
+8. Hardened the natural gate with absolute OBS quality and branch-spread checks.
+9. Split metric namespaces:
+   - closed-loop CR/offroad are accepted only from Waymax standard metrics;
+   - label-space safety is named `OfflineConventionalUnsafeRate`;
+   - `CR_proxy_deprecated` is retained only for old result readers.
+10. Added `36_audit_causal_protocol.py`, checking leakage, SDC identity, metric
+    provenance, map filtering, OBS decontamination, reactive-protocol honesty,
+    mapping completeness, root-index range, and missing log-divergence policy.
+11. Added pure executable scripts:
+    - `prepare_cowp_v15_data.sh` rebuilds labels/caches/outcomes/transport overlay;
+    - `NEXT_RUN_COMMANDS_V15_CN.sh` runs tests, data preparation, and the v15
+      training/evaluation driver without prose being parsed as shell;
+    - `run_cowp_v15_dual_gpu.sh` treats checkpoint+history as one atomic natural
+      artifact and retrains when either is incomplete.
+12. Rebuilt Pareto and pairmax ablation configs on top of the same v15 causal
+    natural-label settings, so ablations do not reintroduce old label defects.
+13. Added five causal-integrity regression tests. The local suite now reports
+    **81 passed**.
+
+### v15 promotion gates
+
+Natural-stage promotion requires all of the following:
+
+- typed set minADE@8 s <= min(8.5 m, label oracle + 6 m);
+- branch-weighted minADE <= 3.0 m;
+- OBS minADE <= 4.0 m;
+- max(OBS, NEU, PRIO) - min(OBS, NEU, PRIO) <= 3.0 m;
+- NEU and PRIO minADE <= 2.0 m;
+- minADE@1 s <= 3.0 m and minADE@3 s <= 5.0 m;
+- neutral consistency <= 3.0 m;
+- priority BCE <= 0.45;
+- typed-untyped gap <= 3.0 m.
+
+For paper-facing runs, the preferred target is stricter: OBS <= 3.5 m,
+branch spread <= 2.0 m, and typed set minADE <= 1.5--1.7 m, while preserving
+NEU/PRIO quality.
+
+### What is and is not validated
+
+Validated locally without WOMD/Waymax runtime:
+
+- Python compilation;
+- YAML parsing and driver shell syntax;
+- 81 unit/regression tests;
+- the static/report-backed causal protocol audit;
+- reconstruction of the v14 natural history and original gate;
+- expected rejection of v14 by the stricter v15 OBS/branch-spread gate.
+
+Not validated in the supplied environment:
+
+- v15 label/cache regeneration on the full WOMD data;
+- v15 natural convergence and actual OBS improvement;
+- transport/planner retraining;
+- full-validation Waymax closed-loop CR/offroad/progress;
+- reactive non-ego evaluation;
+- SOTA status.
+
+### Additional prohibited shortcuts
+
+- Do not enable `allow_label_only_state_fallback` in a reported run.
+- Do not disable `require_explicit_sdc_index` to bypass malformed caches.
+- Do not use `log_trajectory` outside a clearly labelled oracle diagnostic.
+- Do not report `OfflineConventionalUnsafeRate` or `CR_proxy_deprecated` as
+  closed-loop collision rate.
+- Do not call logged replay a reactive-agent experiment.
+- Do not claim the hard-coded source identity or its near-zero CE as novelty.
+- Do not continue beyond the natural gate when OBS or branch spread fails.
+- Do not claim SOTA before full-validation, multi-seed, paired confidence-
+  interval comparisons under both logged-replay and independent reactive-agent
+  protocols.

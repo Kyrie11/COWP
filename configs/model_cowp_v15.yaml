@@ -1,0 +1,34 @@
+model:
+  d_state: 11
+  history_steps: 11
+  d_model: 128
+  num_heads: 4
+  num_layers: 3
+  dropout: 0.1
+  max_agents: 128
+  max_candidates: 64
+  max_critical_agents: 8
+  max_natural_alternatives: 24
+  max_safe_responses: 32
+  future_steps: 80
+  token_count: 7
+  edge_distance_scale_m: 12.0
+  ego_centric_normalization: true
+  evidential_witness: true
+  set_transport_hidden: 96
+  set_transport_geometry_steps: 20
+  set_transport_response_topk: 8
+  natural_decoder_type: typed_causal_residual
+  allow_label_only_state_fallback: false
+  require_explicit_sdc_index: true
+ablation:
+  use_obs_branch: true
+  use_neutral_branch: true
+  use_priority_branch: true
+  use_option_preservation: true
+  use_hard_witness_rejection: true
+  use_dual_edge: true
+  use_conflict_query: true
+  use_typed_edges: true
+  use_adaptive_beta: true
+  soft_burden_cost_only: false

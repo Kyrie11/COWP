@@ -30,6 +30,8 @@ def main() -> None:
     ap.add_argument("--max-oracle-gap-m", type=float, default=6.0)
     ap.add_argument("--max-set-minade-m", type=float, default=12.0)
     ap.add_argument("--max-branch-minade-m", type=float, default=15.0)
+    ap.add_argument("--max-observed-minade-m", type=float, default=4.0)
+    ap.add_argument("--max-branch-spread-m", type=float, default=3.0)
     ap.add_argument("--max-neutral-minade-m", type=float, default=15.0)
     ap.add_argument("--max-priority-minade-m", type=float, default=15.0)
     ap.add_argument("--max-minade-1s-m", type=float, default=3.0)
@@ -82,15 +84,24 @@ def main() -> None:
                 effective_set_gate = min(effective_set_gate, oracle_mean + float(args.max_oracle_gap_m))
         except Exception:
             oracle_mean = None
+    branch_vals = [
+        metrics["observed_minade_m"], metrics["neutral_minade_m"], metrics["priority_minade_m"]
+    ]
+    finite_branch_vals = [x for x in branch_vals if math.isfinite(x)]
+    branch_spread = (max(finite_branch_vals) - min(finite_branch_vals)) if finite_branch_vals else math.inf
+    metrics["branch_spread_m"] = float(branch_spread)
+    metrics["source_identity_is_structural"] = True
     checks = {
         "set_minade_pass": metrics["set_minade_m"] <= effective_set_gate,
         "branch_minade_pass": metrics["branch_minade_m"] <= args.max_branch_minade_m,
+        "observed_minade_pass": metrics["observed_minade_m"] <= args.max_observed_minade_m,
+        "branch_spread_pass": branch_spread <= args.max_branch_spread_m,
         "neutral_minade_pass": metrics["neutral_minade_m"] <= args.max_neutral_minade_m,
         "priority_minade_pass": metrics["priority_minade_m"] <= args.max_priority_minade_m,
-        "source_semantics_pass": (
-            metrics["source_ce"] <= args.max_source_ce
-            or (metrics["source_improvement"] or 0.0) >= args.min_source_improvement
-        ),
+        # Source IDs are permanent typed roots in v15.  Source CE is retained as
+        # a diagnostic only; it cannot be used as evidence that semantics were
+        # learned from data.
+        "structural_source_identity_pass": True,
         "priority_semantics_pass": (
             metrics["priority_bce"] <= args.max_priority_bce
             or (metrics["priority_improvement"] or 0.0) >= args.min_priority_improvement
@@ -120,6 +131,8 @@ def main() -> None:
             "effective_set_minade_gate_m": effective_set_gate,
             "max_oracle_gap_m": args.max_oracle_gap_m,
             "max_branch_minade_m": args.max_branch_minade_m,
+            "max_observed_minade_m": args.max_observed_minade_m,
+            "max_branch_spread_m": args.max_branch_spread_m,
             "max_neutral_minade_m": args.max_neutral_minade_m,
             "max_priority_minade_m": args.max_priority_minade_m,
             "max_minade_1s_m": args.max_minade_1s_m,
@@ -134,7 +147,7 @@ def main() -> None:
         },
         "oracle_report": args.oracle_report,
         "validation_points": len(val_rows),
-        "failure_interpretation": "Do not continue to transport/planner training when this gate fails. v14 accepts either a sufficiently good absolute semantic metric or measurable learning, because the typed prior can already be correct at epoch -1.",
+        "failure_interpretation": "Do not continue to transport/planner training when this gate fails. v15 treats source identity as structural and requires geometric quality in every branch, especially OBS; near-zero source CE is not counted as learned novelty.",
     }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")

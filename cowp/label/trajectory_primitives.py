@@ -70,23 +70,66 @@ def constant_accel_trajectory(current: np.ndarray, horizon: int, dt: float, acce
     return repair_planar_kinematics(out, current, dt)
 
 
-def resample_logged(logged: np.ndarray, horizon: int, time_shift_steps: int = 0, speed_scale: float = 1.0, lateral_offset: float = 0.0) -> np.ndarray:
+def resample_logged(
+    logged: np.ndarray,
+    horizon: int,
+    time_shift_steps: int = 0,
+    speed_scale: float = 1.0,
+    lateral_offset: float = 0.0,
+    *,
+    current: np.ndarray | None = None,
+    dt: float = 0.1,
+) -> np.ndarray:
+    """Create a transformed observational root without kinematic discontinuities.
+
+    Earlier versions indexed a shifted future, changed velocity, and then moved
+    positions laterally while retaining the original yaw/velocity.  That can
+    introduce a first-step teleport and side-slip labels.  v15 reconstructs the
+    path from the current state, applies lateral offset with a zero-at-origin
+    smooth ramp, and finally repairs yaw/velocity from finite differences.
+    """
     logged = np.asarray(logged, dtype=np.float32)
-    if len(logged) == 0:
-        raise ValueError("logged trajectory is empty")
-    idx = np.arange(horizon) + int(time_shift_steps)
+    if logged.ndim != 2 or logged.shape[0] == 0 or logged.shape[1] < 7:
+        raise ValueError("logged trajectory must be non-empty [T,7]")
+    horizon = int(horizon)
+    dt = max(float(dt), 1e-3)
+    idx = np.arange(horizon, dtype=np.int64) + int(time_shift_steps)
     idx = np.clip(idx, 0, len(logged) - 1)
-    out = logged[idx].copy()
-    out[:, 3:5] *= float(speed_scale)
-    if speed_scale != 1.0:
-        pos = [out[0, :2].copy()]
-        for k in range(1, horizon):
-            pos.append(pos[-1] + out[k - 1, 3:5] * 0.1)
-        out[:, :2] = np.asarray(pos, dtype=np.float32)
-    if abs(lateral_offset) > 1e-6:
-        lateral = np.stack([-np.sin(out[:, 2]), np.cos(out[:, 2])], axis=-1)
-        out[:, :2] += lateral * float(lateral_offset)
-    return out
+    sampled = logged[idx].copy()
+
+    # Determine the state immediately before the first generated point.
+    if current is not None:
+        current_arr = np.asarray(current, dtype=np.float32)
+        prev_xy = current_arr[:2].copy()
+        prev_yaw = float(current_arr[6] if current_arr.shape[0] >= 7 else sampled[0, 2])
+    else:
+        prev_xy = sampled[0, :2] - sampled[0, 3:5] * dt
+        prev_yaw = float(sampled[0, 2])
+
+    velocity = sampled[:, 3:5] * float(speed_scale)
+    pos = np.zeros((horizon, 2), dtype=np.float32)
+    cursor = prev_xy.astype(np.float32)
+    for k in range(horizon):
+        cursor = cursor + velocity[k] * dt
+        pos[k] = cursor
+    sampled[:, :2] = pos
+
+    if abs(float(lateral_offset)) > 1e-6:
+        # Start at zero offset so the first predicted state remains connected to
+        # the observed current state.  A quintic ramp avoids lateral jerk.
+        frac = (np.arange(1, horizon + 1, dtype=np.float32) / max(horizon, 1)).clip(0.0, 1.0)
+        smooth = 10.0 * frac**3 - 15.0 * frac**4 + 6.0 * frac**5
+        yaw = sampled[:, 2]
+        lateral = np.stack([-np.sin(yaw), np.cos(yaw)], axis=-1)
+        sampled[:, :2] += lateral * (float(lateral_offset) * smooth[:, None])
+
+    if current is None:
+        pseudo_current = np.zeros(11, dtype=np.float32)
+        pseudo_current[:2] = prev_xy
+        pseudo_current[6] = prev_yaw
+        pseudo_current[7:9] = sampled[0, 5:7]
+        current = pseudo_current
+    return repair_planar_kinematics(sampled, current=current, dt=dt)
 
 
 def smooth_stop_trajectory(current: np.ndarray, horizon: int, dt: float, decel: float = -2.0, stop_after_m: float | None = None, creep_speed: float = 0.0) -> np.ndarray:

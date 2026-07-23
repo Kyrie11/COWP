@@ -623,12 +623,25 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 
         div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
         if "base_traj" in pred:
-            base_dev = masked_mean(
-                _trajectory_ade(pred["traj"], pred["base_traj"]),
-                (crit & mask.any(dim=-1))[:, :, None],
-            )
+            base_per_mode = _trajectory_ade(pred["traj"], pred["base_traj"])
+            mode_valid = (crit & mask.any(dim=-1))[:, :, None]
+            psrc_for_reg = _mode_source_tensor(pred_mode_source, pairwise_ade)
+            if psrc_for_reg is not None:
+                base_dev_obs = masked_mean(
+                    base_per_mode, mode_valid & (psrc_for_reg == int(NaturalSource.OBS))
+                )
+                base_dev_neu = masked_mean(
+                    base_per_mode, mode_valid & (psrc_for_reg == int(NaturalSource.NEU))
+                )
+                base_dev_prio = masked_mean(
+                    base_per_mode, mode_valid & (psrc_for_reg == int(NaturalSource.PRIO))
+                )
+            else:
+                base_dev_obs = base_dev_neu = base_dev_prio = masked_mean(base_per_mode, mode_valid)
+            base_dev = (base_dev_obs + base_dev_neu + base_dev_prio) / 3.0
         else:
             base_dev = _zero_like_loss(pred["traj"])
+            base_dev_obs = base_dev_neu = base_dev_prio = base_dev
         if "residual" in pred:
             residual_l2 = masked_mean(
                 _safe_float(pred["residual"])[..., :5].square().mean(dim=(-1, -2)),
@@ -644,6 +657,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
     else:
         traj = untyped_traj = mode = source_ce = source_distribution = priority_loss = branch_minade = neu_cons = div = _zero_like_loss(pred["traj"])
         obs_minade = neu_minade = prio_minade = base_dev = residual_l2 = _zero_like_loss(pred["traj"])
+        base_dev_obs = base_dev_neu = base_dev_prio = base_dev
         h1 = h3 = h5 = _zero_like_loss(pred["traj"])
 
     total = (
@@ -658,7 +672,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         + weights.get("natural_short_1s", 0.25) * h1
         + weights.get("natural_short_3s", 0.15) * h3
         + weights.get("natural_short_5s", 0.10) * h5
-        + weights.get("natural_base_deviation", 0.05) * base_dev
+        + weights.get("natural_base_deviation_obs", weights.get("natural_base_deviation", 0.05)) * base_dev_obs
+        + weights.get("natural_base_deviation_neu", weights.get("natural_base_deviation", 0.05)) * base_dev_neu
+        + weights.get("natural_base_deviation_prio", weights.get("natural_base_deviation", 0.05)) * base_dev_prio
         + weights.get("natural_residual_l2", 0.001) * residual_l2
     )
     return {
@@ -676,6 +692,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         "neutral_consistency": neu_cons,
         "diversity": div,
         "base_deviation": base_dev,
+        "base_deviation_obs": base_dev_obs,
+        "base_deviation_neu": base_dev_neu,
+        "base_deviation_prio": base_dev_prio,
         "residual_l2": residual_l2,
         "minade_1s": h1,
         "minade_3s": h3,

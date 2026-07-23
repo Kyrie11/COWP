@@ -77,6 +77,28 @@ class NaturalDecoder(nn.Module):
         priority_bias[mode_source == int(NaturalSource.PRIO)] = 1.5
         self.register_buffer("typed_priority_bias", priority_bias, persistent=True)
 
+        # v15 uses source-specific residual capacity.  OBS must fit real curved
+        # motion, while NEU/PRIO should stay close to their causal/rule priors.
+        xy_scale = torch.full((self.modes,), 0.12, dtype=torch.float32)
+        yaw_scale = torch.full((self.modes,), 0.012, dtype=torch.float32)
+        vel_scale = torch.full((self.modes,), 3.0, dtype=torch.float32)
+        gate_bias = torch.zeros(self.modes, dtype=torch.float32)
+        obs_mask = mode_source == int(NaturalSource.OBS)
+        neu_mask = mode_source == int(NaturalSource.NEU)
+        prio_mask = mode_source == int(NaturalSource.PRIO)
+        xy_scale[obs_mask] = 0.30
+        yaw_scale[obs_mask] = 0.025
+        vel_scale[obs_mask] = 5.0
+        xy_scale[prio_mask] = 0.10
+        yaw_scale[prio_mask] = 0.010
+        gate_bias[obs_mask] = 1.5
+        gate_bias[neu_mask] = 0.0
+        gate_bias[prio_mask] = -0.25
+        self.register_buffer("residual_xy_step_scale", xy_scale, persistent=True)
+        self.register_buffer("residual_yaw_step_scale", yaw_scale, persistent=True)
+        self.register_buffer("residual_velocity_scale", vel_scale, persistent=True)
+        self.register_buffer("typed_residual_gate_bias", gate_bias, persistent=True)
+
     @staticmethod
     def _make_typed_specs(modes: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # Eight diverse prototypes per semantic source for the default M=24.
@@ -152,15 +174,17 @@ class NaturalDecoder(nn.Module):
         time = self.time_embedding[None, None, None, :, :]
         h_mt = self.temporal_norm(mode_latent[:, :, :, None, :] + time)
         raw = self.temporal_head(h_mt)
-        gate = torch.sigmoid(self.residual_gate(mode_latent))[..., None, :]
+        gate_bias = self.typed_residual_gate_bias.to(mode_latent)[None, None, :, None]
+        gate = torch.sigmoid(self.residual_gate(mode_latent) + gate_bias)[..., None, :]
 
-        # Residual capacity is deliberately smaller than the analytic basis.  It
-        # can fit logged curvature/noise without erasing source identity.
-        step_xy = torch.tanh(raw[..., 0:2]) * 0.12
+        xy_scale = self.residual_xy_step_scale.to(raw)[None, None, :, None, None]
+        yaw_scale = self.residual_yaw_step_scale.to(raw)[None, None, :, None, None]
+        vel_scale = self.residual_velocity_scale.to(raw)[None, None, :, None, None]
+        step_xy = torch.tanh(raw[..., 0:2]) * xy_scale
         pos_res = torch.cumsum(step_xy, dim=3)
-        yaw_res = torch.cumsum(torch.tanh(raw[..., 2:3]) * 0.012, dim=3)
-        vel_res = torch.tanh(raw[..., 3:5]) * 3.0
-        size_res = torch.tanh(raw[..., 5:7]) * 0.20
+        yaw_res = torch.cumsum(torch.tanh(raw[..., 2:3]) * yaw_scale, dim=3)
+        vel_res = torch.tanh(raw[..., 3:5]) * vel_scale
+        size_res = torch.tanh(raw[..., 5:7]) * 0.10
         return torch.cat([pos_res, yaw_res, vel_res, size_res], dim=-1) * gate
 
     def _temporal_kinematic_offsets(
@@ -194,7 +218,7 @@ class NaturalDecoder(nn.Module):
         h = self.shared(z)
         logits = self.logit(h)
         learned_source_logits = self.source_logit(h).reshape(B, A, self.modes, self.source_count)
-        source_logits = learned_source_logits + self.typed_source_bias[None, None].to(learned_source_logits)
+        source_logits = 0.10 * learned_source_logits + self.typed_source_bias[None, None].to(learned_source_logits)
         priority_logits = self.priority_logit(h) + self.typed_priority_bias[None, None].to(h)
         mode_latent = self.mode_norm(h[:, :, None, :] + self.mode_embedding[None, None, :, :])
         out = {
@@ -209,7 +233,7 @@ class NaturalDecoder(nn.Module):
             if self.decoder_type in {"legacy", "legacy_linear", "linear"}:
                 traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
                 out.update({"traj": traj, "base_traj": torch.zeros_like(traj), "residual": traj})
-            elif self.decoder_type in {"typed", "typed_kinematic", "typed_kinematic_residual", "tnob"}:
+            elif self.decoder_type in {"typed", "typed_kinematic", "typed_kinematic_residual", "typed_causal_residual", "tnob"}:
                 if anchor7 is None:
                     base = torch.zeros(B, A, self.modes, self.future_steps, 7, device=h.device, dtype=h.dtype)
                 else:
