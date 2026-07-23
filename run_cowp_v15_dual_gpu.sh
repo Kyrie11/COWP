@@ -162,10 +162,10 @@ NEED_TRANSPORT_CACHE=0
 if [[ "$RUN_AUGMENT" == "1" || "$RUN_DIAGNOSE" == "1" || "$RUN_TRANSPORT" == "1" || "$RUN_PLANNER" == "1" || "$RUN_OFFLINE" == "1" || "$RUN_PROBE" == "1" || "$RUN_FULL" == "1" ]]; then
   NEED_TRANSPORT_CACHE=1
 fi
-if [[ "$NEED_TRANSPORT_CACHE" == "1" ]]; then
-  cache_ready "$TRAIN_CACHE" || { echo "Transport train cache is not ready: $TRAIN_CACHE" >&2; exit 2; }
-  cache_ready "$VAL_CACHE" || { echo "Transport val cache is not ready: $VAL_CACHE" >&2; exit 2; }
-fi
+#if [[ "$NEED_TRANSPORT_CACHE" == "1" ]]; then
+#  cache_ready "$TRAIN_CACHE" || { echo "Transport train cache is not ready: $TRAIN_CACHE" >&2; exit 2; }
+#  cache_ready "$VAL_CACHE" || { echo "Transport val cache is not ready: $VAL_CACHE" >&2; exit 2; }
+#fi
 
 if [[ "$RUN_DIAGNOSE" == "1" ]]; then
   logrun diagnose_transport_train "$PYTHON_BIN" -u -m cowp.scripts.27_diagnose_transport_labels \
