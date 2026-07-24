@@ -1,0 +1,699 @@
+--- a/NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh
++++ b/NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh
+@@ -2,7 +2,7 @@
+ set -euo pipefail
+ ROOT="${COWP_CODE_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
+ cd "$ROOT"
+-export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026}"
++export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026_ancdatafix}"
+ mkdir -p "$OUT_ROOT/logs"
+ export BACKGROUND="${BACKGROUND:-1}"
+ if [[ "$BACKGROUND" == "1" && "${COWP_V16_2_SMOKE_BACKGROUND_CHILD:-0}" != "1" ]]; then
+--- a/run_cowp_v16_2_dual_gpu.sh
++++ b/run_cowp_v16_2_dual_gpu.sh
+@@ -49,10 +49,19 @@
+ # conservative memory settings that avoided earlier pin/prefetch failures.
+ NATURAL_NUM_WORKERS="${NATURAL_NUM_WORKERS:-8}"
+ NATURAL_PREFETCH_FACTOR="${NATURAL_PREFETCH_FACTOR:-2}"
++# Validation creates a second worker pool per DDP rank.  Keep it intentionally
++# smaller and non-persistent; this only changes input-pipeline resource usage.
++NATURAL_VAL_NUM_WORKERS="${NATURAL_VAL_NUM_WORKERS:-2}"
++NATURAL_VAL_PREFETCH_FACTOR="${NATURAL_VAL_PREFETCH_FACTOR:-1}"
+ TRANSPORT_NUM_WORKERS="${TRANSPORT_NUM_WORKERS:-$NUM_WORKERS}"
+ TRANSPORT_PREFETCH_FACTOR="${TRANSPORT_PREFETCH_FACTOR:-$PREFETCH_FACTOR}"
++TRANSPORT_VAL_NUM_WORKERS="${TRANSPORT_VAL_NUM_WORKERS:-2}"
++TRANSPORT_VAL_PREFETCH_FACTOR="${TRANSPORT_VAL_PREFETCH_FACTOR:-1}"
+ PLANNER_NUM_WORKERS="${PLANNER_NUM_WORKERS:-$NUM_WORKERS}"
+ PLANNER_PREFETCH_FACTOR="${PLANNER_PREFETCH_FACTOR:-$PREFETCH_FACTOR}"
++PLANNER_VAL_NUM_WORKERS="${PLANNER_VAL_NUM_WORKERS:-2}"
++PLANNER_VAL_PREFETCH_FACTOR="${PLANNER_VAL_PREFETCH_FACTOR:-1}"
++TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
+ FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-1}"
+ NATURAL_LR="${NATURAL_LR:-3.0e-5}"
+ TRANSPORT_LR="${TRANSPORT_LR:-1.5e-5}"
+@@ -371,6 +380,8 @@
+       --cache-dir "$RAW_TRAIN_CACHE" --val-cache-dir "$RAW_VAL_CACHE" \
+       --stage natural --epochs "$NATURAL_EPOCHS" --batch-size "$BATCH_PER_GPU" \
+       --lr "$NATURAL_LR" --num-workers "$NATURAL_NUM_WORKERS" --prefetch-factor "$NATURAL_PREFETCH_FACTOR" \
++      --val-num-workers "$NATURAL_VAL_NUM_WORKERS" --val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR" \
++      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
+       --device cuda --output-dir "$OUT_ROOT/checkpoints/natural" \
+       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
+       --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
+@@ -437,6 +448,8 @@
+       --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
+       --stage witness --epochs "$TRANSPORT_EPOCHS" --batch-size "$BATCH_PER_GPU" \
+       --lr "$TRANSPORT_LR" --num-workers "$TRANSPORT_NUM_WORKERS" --prefetch-factor "$TRANSPORT_PREFETCH_FACTOR" \
++      --val-num-workers "$TRANSPORT_VAL_NUM_WORKERS" --val-prefetch-factor "$TRANSPORT_VAL_PREFETCH_FACTOR" \
++      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
+       --device cuda --output-dir "$OUT_ROOT/checkpoints/transport" \
+       --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
+       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
+@@ -464,6 +477,8 @@
+       --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
+       --stage planner --epochs "$PLANNER_EPOCHS" --batch-size "$BATCH_PER_GPU" \
+       --lr "$PLANNER_LR" --num-workers "$PLANNER_NUM_WORKERS" --prefetch-factor "$PLANNER_PREFETCH_FACTOR" \
++      --val-num-workers "$PLANNER_VAL_NUM_WORKERS" --val-prefetch-factor "$PLANNER_VAL_PREFETCH_FACTOR" \
++      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
+       --device cuda --output-dir "$OUT_ROOT/checkpoints/planner" \
+       --with-waymax-outcome-labels --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
+       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
+--- a/cowp/scripts/03_train.py
++++ b/cowp/scripts/03_train.py
+@@ -47,6 +47,7 @@
+ from cowp.data.dataset import TorchCOWPDataset, collate_torch
+ from cowp.models.cowp_model import COWPModel
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
+ 
+ 
+@@ -311,6 +312,7 @@
+     sampler_cache: bool = True,
+     pin_memory: bool = False,
+     prefetch_factor: int | None = None,
++    persistent_workers: bool = True,
+     distributed: bool = False,
+     rank: int = 0,
+     world_size: int = 1,
+@@ -335,7 +337,7 @@
+     nw = int(cfg["train"].get("num_workers", 0) if num_workers is None else num_workers)
+     kwargs: dict[str, Any] = {}
+     if nw > 0:
+-        kwargs["persistent_workers"] = True
++        kwargs["persistent_workers"] = bool(persistent_workers)
+         pf = int(cfg["train"].get("prefetch_factor", 2) if prefetch_factor is None else prefetch_factor)
+         kwargs["prefetch_factor"] = max(1, pf)
+     return DataLoader(
+@@ -950,8 +952,13 @@
+     ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
+     ap.add_argument("--output-dir", default="outputs/checkpoints")
+     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
+-    ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
+-    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override DataLoader prefetch_factor when num_workers > 0. For response/planner/all stages, default is capped to 1 to avoid huge queued batches.")
++    ap.add_argument("--num-workers", type=int, default=None, help="Override training DataLoader num_workers.")
++    ap.add_argument("--val-num-workers", type=int, default=None, help="Override validation DataLoader num_workers independently. Keeping validation smaller reduces DDP shared-storage pressure without changing metrics.")
++    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override training DataLoader prefetch_factor when num_workers > 0. For response/planner/all stages, default is capped to 1 to avoid huge queued batches.")
++    ap.add_argument("--val-prefetch-factor", type=int, default=None, help="Override validation DataLoader prefetch_factor independently.")
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None, help="PyTorch CPU tensor sharing strategy. auto prefers file_system on Linux to prevent 'received 0 items of ancdata'.")
++    ap.add_argument("--no-persistent-workers", action="store_true", help="Disable persistent DataLoader workers for both train and validation.")
++    ap.add_argument("--persistent-val-workers", action="store_true", help="Keep validation workers alive across validation passes. Disabled by default to release IPC resources after each pass.")
+     ap.add_argument("--no-positive-oversampling", action="store_true")
+     ap.add_argument("--force-positive-oversampling", action="store_true", help="Force witness/candidate positive oversampling even for representation/natural stages.")
+     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
+@@ -989,6 +996,7 @@
+         loss_weights["response_components_l1"] = 0.0
+ 
+     device_arg = args.device or tcfg.get("device", "auto")
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
+     distributed, rank, world_size, local_rank = _setup_distributed(str(device_arg))
+     if distributed and str(device_arg).lower() != "cpu" and torch.cuda.is_available():
+         device = torch.device(f"cuda:{local_rank}")
+@@ -1034,6 +1042,16 @@
+             "Use --prefetch-factor 1 if host RAM or pinned-memory errors appear."
+         )
+ 
++    train_num_workers = int(tcfg.get("num_workers", 0) if args.num_workers is None else args.num_workers)
++    val_num_workers = int(train_num_workers if args.val_num_workers is None else args.val_num_workers)
++    if train_num_workers < 0 or val_num_workers < 0:
++        raise ValueError(f"DataLoader worker counts must be >= 0, got train={train_num_workers}, val={val_num_workers}")
++    val_prefetch = effective_prefetch if args.val_prefetch_factor is None else max(1, int(args.val_prefetch_factor))
++    train_persistent_workers = bool(train_num_workers > 0 and not args.no_persistent_workers)
++    val_persistent_workers = bool(
++        val_num_workers > 0 and not args.no_persistent_workers and args.persistent_val_workers
++    )
++
+     compile_enabled = bool(args.compile or tcfg.get("compile", False))
+     # Respect response-head disabling flags in both response-only and all-head
+     # training.  Without this, ``--stage all --response-traj-weight 0`` still
+@@ -1048,7 +1066,8 @@
+     if distributed and compile_enabled:
+         _rank0_print("Warning: disabling torch.compile under DDP for staged training stability.")
+         compile_enabled = False
+-    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}, cuda_alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '')!r}")
++    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, train_workers={train_num_workers}, val_workers={val_num_workers}, train_prefetch={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, val_prefetch={val_prefetch if val_prefetch is not None else tcfg.get('prefetch_factor', 2)}, train_persistent={train_persistent_workers}, val_persistent={val_persistent_workers}, sharing_strategy={loader_runtime['selected']}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}, cuda_alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '')!r}")
++    _rank0_print("DataLoader IPC runtime: " + json.dumps(loader_runtime, ensure_ascii=False, sort_keys=True))
+     if device.type == "cuda":
+         try:
+             _rank0_print(f"CUDA device: {torch.cuda.get_device_name(device)}")
+@@ -1101,10 +1120,11 @@
+         oversample=oversample_enabled,
+         use_cuda=device.type == "cuda",
+         progress=(not args.no_progress) and _is_main_process(),
+-        num_workers=args.num_workers,
++        num_workers=train_num_workers,
+         sampler_cache=not args.no_sampler_cache,
+         pin_memory=pin_memory,
+         prefetch_factor=effective_prefetch,
++        persistent_workers=train_persistent_workers,
+         distributed=distributed,
+         rank=rank,
+         world_size=world_size,
+@@ -1114,11 +1134,21 @@
+         dist.barrier()
+     val_dl = _make_loader(
+         val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda",
+-        progress=(not args.no_progress) and _is_main_process(), num_workers=args.num_workers, pin_memory=pin_memory,
+-        prefetch_factor=effective_prefetch, distributed=distributed, rank=rank, world_size=world_size, seed=seed,
++        progress=(not args.no_progress) and _is_main_process(), num_workers=val_num_workers, pin_memory=pin_memory,
++        prefetch_factor=val_prefetch, persistent_workers=val_persistent_workers,
++        distributed=distributed, rank=rank, world_size=world_size, seed=seed,
+     ) if val_ds is not None else None
+ 
+-    _rank0_print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches_per_rank={len(train_dl)}" + (f", val_batches_per_rank={len(val_dl)}" if val_dl is not None else ""))
++    _rank0_print(
++        f"DataLoader: train_workers={train_dl.num_workers}, train_persistent={getattr(train_dl, 'persistent_workers', False)}, "
++        f"train_pin_memory={train_dl.pin_memory}, train_prefetch={getattr(train_dl, 'prefetch_factor', None)}, "
++        f"train_batches_per_rank={len(train_dl)}"
++        + (
++            f", val_workers={val_dl.num_workers}, val_persistent={getattr(val_dl, 'persistent_workers', False)}, "
++            f"val_prefetch={getattr(val_dl, 'prefetch_factor', None)}, val_batches_per_rank={len(val_dl)}"
++            if val_dl is not None else ""
++        )
++    )
+     model = COWPModel(cfg).to(device)
+     resume_ckpt: dict[str, Any] | None = None
+     if args.resume:
+--- a/cowp/scripts/20_train_external_baseline.py
++++ b/cowp/scripts/20_train_external_baseline.py
+@@ -20,6 +20,7 @@
+ from cowp.external_baselines.dtpp_cowp import COWPDTPP, dtpp_loss
+ from cowp.external_baselines.gameformer_cowp import COWPGameFormer, gameformer_loss
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ 
+ 
+ def _now() -> str:
+@@ -214,6 +215,7 @@
+     ap.add_argument("--epochs", type=int, default=20)
+     ap.add_argument("--batch-size", type=int, default=8)
+     ap.add_argument("--num-workers", type=int, default=4)
++    ap.add_argument("--val-num-workers", type=int, default=2)
+     ap.add_argument("--lr", type=float, default=1e-4)
+     ap.add_argument("--weight-decay", type=float, default=1e-4)
+     ap.add_argument("--device", default="auto")
+@@ -228,13 +230,17 @@
+     ap.add_argument("--grad-clip", type=float, default=5.0)
+     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
+     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
++    ap.add_argument("--val-prefetch-factor", type=int, default=1)
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
+     ap.add_argument("--no-persistent-workers", action="store_true")
+     ap.add_argument("--strict", action="store_true")
+     ap.add_argument("--no-progress", action="store_true")
+     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")), help="Emit one line per N batches even when tqdm is disabled. Use 0 to disable heartbeat lines.")
+     args = ap.parse_args()
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
+ 
+     _log(f"external training entry baseline={args.baseline} pid={os.getpid()} python={sys.executable} torch={torch.__version__}")
++    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
+     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
+     cfg = load_config(args.label_config, args.data_config, args.train_config)
+     device = _device(args.device)
+@@ -268,7 +274,15 @@
+         val_ds = ExternalCOWPDataset(args.val_cache_dir, include_waymax_outcomes=True)
+         _log(f"val dataset ready scenes={len(val_ds)}")
+         val_loader_kwargs = dict(loader_kwargs)
++        val_workers = max(int(args.val_num_workers), 0)
++        val_loader_kwargs["num_workers"] = val_workers
+         val_loader_kwargs["pin_memory"] = False
++        if val_workers > 0:
++            val_loader_kwargs["persistent_workers"] = False
++            val_loader_kwargs["prefetch_factor"] = max(int(args.val_prefetch_factor), 1)
++        else:
++            val_loader_kwargs.pop("persistent_workers", None)
++            val_loader_kwargs.pop("prefetch_factor", None)
+         val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **val_loader_kwargs)
+         _log(f"val loader ready batches={len(val_loader)}")
+ 
+--- a/cowp/scripts/21_eval_external_baseline.py
++++ b/cowp/scripts/21_eval_external_baseline.py
+@@ -17,6 +17,7 @@
+ from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_batch_item, make_external_batch
+ from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
+ from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
+ from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
+@@ -174,6 +175,7 @@
+     ap.add_argument("--mode", choices=["learned_offline", "waymax"], default="learned_offline")
+     ap.add_argument("--batch-size", type=int, default=16)
+     ap.add_argument("--num-workers", type=int, default=4)
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
+     ap.add_argument("--device", default="auto")
+     ap.add_argument("--max-neighbors", type=int, default=None)
+     ap.add_argument("--max-candidates", type=int, default=None)
+@@ -199,7 +201,9 @@
+     ap.add_argument("--no-progress", action="store_true")
+     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
+     args = ap.parse_args()
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
+     _log(f"external eval entry mode={args.mode} pid={os.getpid()} python={sys.executable} torch={torch.__version__}")
++    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
+     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
+     _configure_waymax_runtime(args)
+     cfg = load_config(args.label_config, args.data_config, args.eval_config)
+--- a/cowp/scripts/22_eval_rule_baseline.py
++++ b/cowp/scripts/22_eval_rule_baseline.py
+@@ -17,6 +17,7 @@
+ from cowp.external_baselines.rule_based import RULE_BASELINES, select_rule_indices
+ from cowp.external_baselines.rule_waymax_policy import make_rule_waymax_policy
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
+ from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
+ from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
+@@ -171,6 +172,7 @@
+     ap.add_argument("--mode", choices=["learned_offline", "waymax"], default="learned_offline")
+     ap.add_argument("--batch-size", type=int, default=64)
+     ap.add_argument("--num-workers", type=int, default=4)
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
+     ap.add_argument("--no-conventional-filter", action="store_true", help="Allow all valid candidates instead of filtering to conventional-safe candidates.")
+     ap.add_argument("--dump-selections", action="store_true")
+     ap.add_argument("--max-dump-rows", type=int, default=50)
+@@ -192,7 +194,9 @@
+     ap.add_argument("--no-progress", action="store_true")
+     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
+     args = ap.parse_args()
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
+     _log(f"rule baseline eval entry mode={args.mode} baseline={args.baseline} pid={os.getpid()} python={sys.executable}")
++    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
+     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
+     _configure_waymax_runtime(args)
+     cfg = load_config(args.label_config, args.data_config, args.eval_config)
+--- a/cowp/scripts/35_diagnose_model_anchor.py
++++ b/cowp/scripts/35_diagnose_model_anchor.py
+@@ -14,6 +14,7 @@
+ from cowp.data.dataset import TorchCOWPDataset, collate_torch
+ from cowp.models.cowp_model import COWPModel
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ 
+ 
+ def _indices(n: int, limit: int) -> list[int]:
+@@ -71,6 +72,7 @@
+     ap.add_argument("--max-scenes", type=int, default=2000)
+     ap.add_argument("--batch-size", type=int, default=16)
+     ap.add_argument("--num-workers", type=int, default=4)
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
+     ap.add_argument("--device", default="cpu")
+     ap.add_argument("--max-1s-minade-m", type=float, default=3.0)
+     ap.add_argument("--max-8s-minade-m", type=float, default=8.5)
+@@ -78,6 +80,8 @@
+     ap.add_argument("--max-critical-unmapped-rate", type=float, default=0.02)
+     ap.add_argument("--no-progress", action="store_true")
+     args = ap.parse_args()
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
++    print("DataLoader IPC runtime: " + json.dumps(loader_runtime, sort_keys=True), flush=True)
+ 
+     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
+     device = torch.device(args.device)
+--- a/cowp/scripts/39_diagnose_learned_natural.py
++++ b/cowp/scripts/39_diagnose_learned_natural.py
+@@ -15,6 +15,7 @@
+ from cowp.data.dataset import TorchCOWPDataset, collate_torch
+ from cowp.models.cowp_model import COWPModel
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ 
+ 
+ def _indices(n: int, limit: int) -> list[int]:
+@@ -78,9 +79,12 @@
+     ap.add_argument("--max-scenes", type=int, default=2000)
+     ap.add_argument("--batch-size", type=int, default=8)
+     ap.add_argument("--num-workers", type=int, default=4)
++    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
+     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+     ap.add_argument("--no-progress", action="store_true")
+     args = ap.parse_args()
++    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
++    print("DataLoader IPC runtime: " + json.dumps(loader_runtime, sort_keys=True), flush=True)
+ 
+     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
+     device = torch.device(args.device)
+--- a/cowp/waymax_eval/rollout.py
++++ b/cowp/waymax_eval/rollout.py
+@@ -12,6 +12,7 @@
+ from cowp.core.constants import MacroType
+ from cowp.planning.set_preservation_selector import select_set_preservation_frontier_batch
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ from cowp.waymax_eval.baselines import planner_for_method
+ from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, _progress_reference_m, _trajectory_progress_m
+ from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator
+@@ -1316,6 +1317,7 @@
+     from torch.utils.data import DataLoader
+ 
+     from cowp.data.dataset import TorchCOWPDataset, collate_torch
++    configure_dataloader_runtime()
+     from cowp.models.cowp_model import COWPModel
+ 
+     thresholds = sorted({float(t) for t in witness_thresholds})
+--- a/scripts/03_train.py
++++ b/scripts/03_train.py
+@@ -17,6 +17,7 @@
+ from cowp.data.dataset import TorchCOWPDataset, collate_torch
+ from cowp.models.cowp_model import COWPModel
+ from cowp.utils.progress import tqdm_iter
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+ from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_ranking_loss, response_loss, witness_loss
+ 
+ 
+@@ -520,6 +521,7 @@
+     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
+     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
+     args = ap.parse_args()
++    configure_dataloader_runtime()
+ 
+     cfg = load_config(args.model_config, args.train_config, args.data_config)
+     tcfg = cfg["train"]
+--- /dev/null
++++ b/cowp/utils/dataloader_runtime.py
+@@ -0,0 +1,105 @@
++from __future__ import annotations
++
++"""Runtime hardening for PyTorch multi-process DataLoaders.
++
++The project returns dictionaries containing many independent tensors per sample.
++Under Linux, PyTorch's default ``file_descriptor`` sharing strategy transfers a
++file descriptor for every shared CPU storage.  DDP multiplies that pressure by
++one DataLoader worker pool per rank.  When the process approaches its open-file
++limit, Python's multiprocessing receiver can fail while unpickling a batch with
++``RuntimeError: received 0 items of ancdata``.
++
++Switching to ``file_system`` changes only how CPU tensor storage is transported
++between DataLoader workers and the training process.  It does not alter sample
++order, labels, model execution, losses, gradients, or checkpoint semantics.
++"""
++
++import os
++import shutil
++from pathlib import Path
++from typing import Any
++
++
++def _open_fd_count() -> int | None:
++    proc_fd = Path("/proc/self/fd")
++    try:
++        return len(list(proc_fd.iterdir()))
++    except Exception:
++        return None
++
++
++def _nofile_limit() -> tuple[int | None, int | None]:
++    try:
++        import resource
++
++        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
++        return int(soft), int(hard)
++    except Exception:
++        return None, None
++
++
++def _shared_memory_bytes() -> tuple[int | None, int | None]:
++    try:
++        usage = shutil.disk_usage("/dev/shm")
++        return int(usage.free), int(usage.total)
++    except Exception:
++        return None, None
++
++
++def configure_dataloader_runtime(requested: str | None = None) -> dict[str, Any]:
++    """Configure and describe PyTorch CPU-tensor sharing for DataLoader workers.
++
++    Resolution order:
++
++    1. explicit ``requested`` argument;
++    2. ``COWP_TORCH_SHARING_STRATEGY`` environment variable;
++    3. ``auto``.
++
++    On Linux/Unix, ``auto`` prefers ``file_system`` when available because this
++    repository emits many tensor storages per batch and commonly runs one worker
++    pool per DDP rank.  Set the environment variable or CLI option to
++    ``file_descriptor`` to restore the PyTorch default for a host with unusually
++    constrained ``/dev/shm``.
++    """
++
++    import torch.multiprocessing as torch_mp
++
++    raw = requested if requested is not None else os.environ.get("COWP_TORCH_SHARING_STRATEGY", "auto")
++    choice = str(raw or "auto").strip().lower().replace("-", "_")
++    if choice in {"default", "current"}:
++        choice = "current"
++
++    available = sorted(str(x) for x in torch_mp.get_all_sharing_strategies())
++    before = str(torch_mp.get_sharing_strategy())
++
++    if choice == "auto":
++        if os.name == "posix" and "file_system" in available:
++            selected = "file_system"
++        else:
++            selected = before
++    elif choice == "current":
++        selected = before
++    elif choice in available:
++        selected = choice
++    else:
++        raise ValueError(
++            f"Unsupported torch sharing strategy {raw!r}; available={available}, "
++            "special values=['auto', 'current']"
++        )
++
++    if selected != before:
++        torch_mp.set_sharing_strategy(selected)
++    after = str(torch_mp.get_sharing_strategy())
++
++    soft, hard = _nofile_limit()
++    shm_free, shm_total = _shared_memory_bytes()
++    return {
++        "requested": choice,
++        "selected": after,
++        "available": available,
++        "open_fds": _open_fd_count(),
++        "nofile_soft": soft,
++        "nofile_hard": hard,
++        "shm_free_bytes": shm_free,
++        "shm_total_bytes": shm_total,
++    }
+--- /dev/null
++++ b/tests/test_dataloader_ancdata_hardening.py
+@@ -0,0 +1,60 @@
++from __future__ import annotations
++
++import importlib
++from pathlib import Path
++
++import pytest
++import torch
++import torch.multiprocessing as torch_mp
++
++from cowp.utils.dataloader_runtime import configure_dataloader_runtime
++
++
++def test_auto_sharing_strategy_avoids_file_descriptor_ancdata_path() -> None:
++    before = torch_mp.get_sharing_strategy()
++    try:
++        available = torch_mp.get_all_sharing_strategies()
++        if "file_descriptor" in available:
++            torch_mp.set_sharing_strategy("file_descriptor")
++        runtime = configure_dataloader_runtime("auto")
++        if "file_system" in available:
++            assert runtime["selected"] == "file_system"
++        assert runtime["nofile_soft"] is None or runtime["nofile_soft"] > 0
++    finally:
++        torch_mp.set_sharing_strategy(before)
++
++
++@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded.*:DeprecationWarning")
++def test_validation_loader_can_release_workers_after_each_pass() -> None:
++    train = importlib.import_module("cowp.scripts.03_train")
++
++    class TinyDataset(torch.utils.data.Dataset):
++        def __len__(self) -> int:
++            return 8
++
++        def __getitem__(self, index: int):
++            return {"x": torch.tensor([index], dtype=torch.float32)}
++
++    dl = train._make_loader(
++        TinyDataset(),
++        {"train": {"num_workers": 1, "prefetch_factor": 1}},
++        2,
++        shuffle=False,
++        oversample=False,
++        use_cuda=False,
++        progress=False,
++        num_workers=1,
++        prefetch_factor=1,
++        persistent_workers=False,
++    )
++    assert dl.num_workers == 1
++    assert dl.persistent_workers is False
++    assert sum(int(batch["x"].numel()) for batch in dl) == 8
++
++
++def test_v16_2_launcher_uses_separate_safe_validation_pipeline() -> None:
++    source = Path("run_cowp_v16_2_dual_gpu.sh").read_text(encoding="utf-8")
++    assert 'TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"' in source
++    assert '--val-num-workers "$NATURAL_VAL_NUM_WORKERS"' in source
++    assert '--val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR"' in source
++    assert '--sharing-strategy "$TORCH_SHARING_STRATEGY"' in source
+--- /dev/null
++++ b/DATALOADER_ANCDATA_FIX_CN.md
+@@ -0,0 +1,155 @@
++# COWP v16.2 DataLoader `ancdata` 稳定性修复说明
++
++## 1. 故障结论
++
++日志中的故障发生在 `eval-before-train` 的 natural 验证阶段：
++
++```text
++RuntimeError: received 0 items of ancdata
++```
++
++调用栈位于 `torch.utils.data.DataLoader` 主进程反序列化 worker 返回批次时，而不是模型前向、natural loss、反向传播或 DDP collective 内部。
++
++该项目每个样本返回包含大量独立 Tensor 的字典；原启动参数又采用：
++
++- 2 个 DDP rank；
++- 每个 rank 8 个 natural DataLoader worker；
++- 每个 worker 预取 2 个 batch；
++- 训练与验证均启用 persistent workers；
++- Linux 默认 `file_descriptor` Tensor 共享策略。
++
++`file_descriptor` 会为共享 CPU storage 传递并缓存文件描述符。多 rank、多 worker、多 Tensor、深预取叠加后，进程接近文件描述符或 IPC 资源边界，接收端可能得到缺失的 ancillary data，最终抛出该错误。
++
++## 2. 修复原则
++
++本次修改只调整数据加载和进程间 Tensor 传输方式，不改变：
++
++- 数据集样本内容与排序规则；
++- DDP sampler 逻辑；
++- 模型结构与前向计算；
++- natural / witness / planner 损失；
++- 优化器、学习率、AMP、梯度裁剪；
++- checkpoint 评分和早停逻辑。
++
++## 3. 核心修改
++
++### 3.1 新增统一 DataLoader IPC 运行时
++
++新增：
++
++```text
++cowp/utils/dataloader_runtime.py
++```
++
++默认在 Linux 上使用 `file_system` sharing strategy，避免逐 Tensor 文件描述符传递导致的 `ancdata` 故障。同时记录：
++
++- 当前 sharing strategy；
++- 打开文件描述符数量；
++- `RLIMIT_NOFILE`；
++- `/dev/shm` 可用空间。
++
++可通过以下方式覆盖：
++
++```bash
++--sharing-strategy file_descriptor
++```
++
++或：
++
++```bash
++export COWP_TORCH_SHARING_STRATEGY=file_descriptor
++```
++
++### 3.2 训练和验证 DataLoader 解耦
++
++`cowp/scripts/03_train.py` 新增：
++
++```text
++--val-num-workers
++--val-prefetch-factor
++--sharing-strategy
++--no-persistent-workers
++--persistent-val-workers
++```
++
++验证 worker 默认不持久化，以便每次验证结束后释放 worker、队列、共享 storage 和 IPC 资源。
++
++### 3.3 v16.2 启动脚本使用稳健验证配置
++
++`run_cowp_v16_2_dual_gpu.sh` 默认配置：
++
++```text
++TORCH_SHARING_STRATEGY=file_system
++natural validation: 2 workers, prefetch 1
++transport validation: 2 workers, prefetch 1
++planner validation: 2 workers, prefetch 1
++```
++
++natural 训练仍保留 8 workers / prefetch 2，不改变原训练吞吐策略；只收缩验证阶段资源峰值。
++
++### 3.4 同类入口统一修复
++
++以下直接创建 PyTorch DataLoader 的入口均接入统一 sharing strategy：
++
++- `cowp/scripts/03_train.py`
++- `cowp/scripts/20_train_external_baseline.py`
++- `cowp/scripts/21_eval_external_baseline.py`
++- `cowp/scripts/22_eval_rule_baseline.py`
++- `cowp/scripts/35_diagnose_model_anchor.py`
++- `cowp/scripts/39_diagnose_learned_natural.py`
++- `cowp/waymax_eval/rollout.py`
++- `scripts/03_train.py`（旧版直接入口）
++
++## 4. 重新运行
++
++直接执行原命令：
++
++```bash
++bash NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh
++```
++
++为避免原失败目录中的 provenance 与新代码签名冲突，smoke 默认输出目录已调整为：
++
++```text
++outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026_ancdatafix
++```
++
++查看日志：
++
++```bash
++tail -f outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026_ancdatafix/logs/smoke_driver.nohup.log
++```
++
++启动日志应出现类似内容：
++
++```text
++sharing_strategy=file_system
++train_workers=8
++val_workers=2
++val_persistent=False
++DataLoader IPC runtime: {...}
++```
++
++## 5. 可选保守运行参数
++
++服务器仍存在系统级资源限制时，可临时使用：
++
++```bash
++NATURAL_NUM_WORKERS=4 \
++NATURAL_VAL_NUM_WORKERS=0 \
++NATURAL_PREFETCH_FACTOR=1 \
++bash NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh
++```
++
++`val-num-workers=0` 是最保守的同步数据加载模式，只会降低验证读取速度，不改变验证指标。
++
++## 6. 验证结果
++
++已完成：
++
++- 全项目 Python 编译检查；
++- 所有 shell 脚本 `bash -n` 语法检查；
++- 新增 DataLoader sharing strategy 与验证 worker 生命周期测试；
++- 全量测试：`103 passed`。
++
++当前环境没有用户服务器上的 WOMD cache、双 GPU 与对应 CUDA 环境，因此无法在本地完整复现 502 个 validation batch 的真实 smoke 流程；代码级故障路径和所有直接 DataLoader 入口已经覆盖。

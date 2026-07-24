@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="${COWP_CODE_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 cd "$ROOT"
-export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026}"
+export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_2_engineering_smoke_v9labels_seed2026_ancdatafix}"
 mkdir -p "$OUT_ROOT/logs"
 export BACKGROUND="${BACKGROUND:-1}"
 if [[ "$BACKGROUND" == "1" && "${COWP_V16_2_SMOKE_BACKGROUND_CHILD:-0}" != "1" ]]; then

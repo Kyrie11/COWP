@@ -49,10 +49,19 @@ PREFETCH_FACTOR="${PREFETCH_FACTOR:-1}"
 # conservative memory settings that avoided earlier pin/prefetch failures.
 NATURAL_NUM_WORKERS="${NATURAL_NUM_WORKERS:-8}"
 NATURAL_PREFETCH_FACTOR="${NATURAL_PREFETCH_FACTOR:-2}"
+# Validation creates a second worker pool per DDP rank.  Keep it intentionally
+# smaller and non-persistent; this only changes input-pipeline resource usage.
+NATURAL_VAL_NUM_WORKERS="${NATURAL_VAL_NUM_WORKERS:-2}"
+NATURAL_VAL_PREFETCH_FACTOR="${NATURAL_VAL_PREFETCH_FACTOR:-1}"
 TRANSPORT_NUM_WORKERS="${TRANSPORT_NUM_WORKERS:-$NUM_WORKERS}"
 TRANSPORT_PREFETCH_FACTOR="${TRANSPORT_PREFETCH_FACTOR:-$PREFETCH_FACTOR}"
+TRANSPORT_VAL_NUM_WORKERS="${TRANSPORT_VAL_NUM_WORKERS:-2}"
+TRANSPORT_VAL_PREFETCH_FACTOR="${TRANSPORT_VAL_PREFETCH_FACTOR:-1}"
 PLANNER_NUM_WORKERS="${PLANNER_NUM_WORKERS:-$NUM_WORKERS}"
 PLANNER_PREFETCH_FACTOR="${PLANNER_PREFETCH_FACTOR:-$PREFETCH_FACTOR}"
+PLANNER_VAL_NUM_WORKERS="${PLANNER_VAL_NUM_WORKERS:-2}"
+PLANNER_VAL_PREFETCH_FACTOR="${PLANNER_VAL_PREFETCH_FACTOR:-1}"
+TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
 FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-1}"
 NATURAL_LR="${NATURAL_LR:-3.0e-5}"
 TRANSPORT_LR="${TRANSPORT_LR:-1.5e-5}"
@@ -371,6 +380,8 @@ if [[ "$RUN_NATURAL" == "1" ]]; then
       --cache-dir "$RAW_TRAIN_CACHE" --val-cache-dir "$RAW_VAL_CACHE" \
       --stage natural --epochs "$NATURAL_EPOCHS" --batch-size "$BATCH_PER_GPU" \
       --lr "$NATURAL_LR" --num-workers "$NATURAL_NUM_WORKERS" --prefetch-factor "$NATURAL_PREFETCH_FACTOR" \
+      --val-num-workers "$NATURAL_VAL_NUM_WORKERS" --val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR" \
+      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
       --device cuda --output-dir "$OUT_ROOT/checkpoints/natural" \
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
       --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
@@ -437,6 +448,8 @@ if [[ "$RUN_TRANSPORT" == "1" ]]; then
       --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
       --stage witness --epochs "$TRANSPORT_EPOCHS" --batch-size "$BATCH_PER_GPU" \
       --lr "$TRANSPORT_LR" --num-workers "$TRANSPORT_NUM_WORKERS" --prefetch-factor "$TRANSPORT_PREFETCH_FACTOR" \
+      --val-num-workers "$TRANSPORT_VAL_NUM_WORKERS" --val-prefetch-factor "$TRANSPORT_VAL_PREFETCH_FACTOR" \
+      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
       --device cuda --output-dir "$OUT_ROOT/checkpoints/transport" \
       --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
@@ -464,6 +477,8 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
       --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
       --stage planner --epochs "$PLANNER_EPOCHS" --batch-size "$BATCH_PER_GPU" \
       --lr "$PLANNER_LR" --num-workers "$PLANNER_NUM_WORKERS" --prefetch-factor "$PLANNER_PREFETCH_FACTOR" \
+      --val-num-workers "$PLANNER_VAL_NUM_WORKERS" --val-prefetch-factor "$PLANNER_VAL_PREFETCH_FACTOR" \
+      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
       --device cuda --output-dir "$OUT_ROOT/checkpoints/planner" \
       --with-waymax-outcome-labels --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \

@@ -17,6 +17,7 @@ from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_bat
 from cowp.external_baselines.rule_based import RULE_BASELINES, select_rule_indices
 from cowp.external_baselines.rule_waymax_policy import make_rule_waymax_policy
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
@@ -171,6 +172,7 @@ def main() -> None:
     ap.add_argument("--mode", choices=["learned_offline", "waymax"], default="learned_offline")
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
     ap.add_argument("--no-conventional-filter", action="store_true", help="Allow all valid candidates instead of filtering to conventional-safe candidates.")
     ap.add_argument("--dump-selections", action="store_true")
     ap.add_argument("--max-dump-rows", type=int, default=50)
@@ -192,7 +194,9 @@ def main() -> None:
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
     args = ap.parse_args()
+    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
     _log(f"rule baseline eval entry mode={args.mode} baseline={args.baseline} pid={os.getpid()} python={sys.executable}")
+    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)

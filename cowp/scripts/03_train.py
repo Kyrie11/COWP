@@ -47,6 +47,7 @@ from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
 
 
@@ -311,6 +312,7 @@ def _make_loader(
     sampler_cache: bool = True,
     pin_memory: bool = False,
     prefetch_factor: int | None = None,
+    persistent_workers: bool = True,
     distributed: bool = False,
     rank: int = 0,
     world_size: int = 1,
@@ -335,7 +337,7 @@ def _make_loader(
     nw = int(cfg["train"].get("num_workers", 0) if num_workers is None else num_workers)
     kwargs: dict[str, Any] = {}
     if nw > 0:
-        kwargs["persistent_workers"] = True
+        kwargs["persistent_workers"] = bool(persistent_workers)
         pf = int(cfg["train"].get("prefetch_factor", 2) if prefetch_factor is None else prefetch_factor)
         kwargs["prefetch_factor"] = max(1, pf)
     return DataLoader(
@@ -950,8 +952,13 @@ def main() -> None:
     ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
     ap.add_argument("--output-dir", default="outputs/checkpoints")
     ap.add_argument("--device", default=None, help="Training device: auto, cuda, cuda:0, cpu. Overrides configs/train.yaml.")
-    ap.add_argument("--num-workers", type=int, default=None, help="Override DataLoader num_workers.")
-    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override DataLoader prefetch_factor when num_workers > 0. For response/planner/all stages, default is capped to 1 to avoid huge queued batches.")
+    ap.add_argument("--num-workers", type=int, default=None, help="Override training DataLoader num_workers.")
+    ap.add_argument("--val-num-workers", type=int, default=None, help="Override validation DataLoader num_workers independently. Keeping validation smaller reduces DDP shared-storage pressure without changing metrics.")
+    ap.add_argument("--prefetch-factor", type=int, default=None, help="Override training DataLoader prefetch_factor when num_workers > 0. For response/planner/all stages, default is capped to 1 to avoid huge queued batches.")
+    ap.add_argument("--val-prefetch-factor", type=int, default=None, help="Override validation DataLoader prefetch_factor independently.")
+    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None, help="PyTorch CPU tensor sharing strategy. auto prefers file_system on Linux to prevent 'received 0 items of ancdata'.")
+    ap.add_argument("--no-persistent-workers", action="store_true", help="Disable persistent DataLoader workers for both train and validation.")
+    ap.add_argument("--persistent-val-workers", action="store_true", help="Keep validation workers alive across validation passes. Disabled by default to release IPC resources after each pass.")
     ap.add_argument("--no-positive-oversampling", action="store_true")
     ap.add_argument("--force-positive-oversampling", action="store_true", help="Force witness/candidate positive oversampling even for representation/natural stages.")
     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
@@ -989,6 +996,7 @@ def main() -> None:
         loss_weights["response_components_l1"] = 0.0
 
     device_arg = args.device or tcfg.get("device", "auto")
+    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
     distributed, rank, world_size, local_rank = _setup_distributed(str(device_arg))
     if distributed and str(device_arg).lower() != "cpu" and torch.cuda.is_available():
         device = torch.device(f"cuda:{local_rank}")
@@ -1034,6 +1042,16 @@ def main() -> None:
             "Use --prefetch-factor 1 if host RAM or pinned-memory errors appear."
         )
 
+    train_num_workers = int(tcfg.get("num_workers", 0) if args.num_workers is None else args.num_workers)
+    val_num_workers = int(train_num_workers if args.val_num_workers is None else args.val_num_workers)
+    if train_num_workers < 0 or val_num_workers < 0:
+        raise ValueError(f"DataLoader worker counts must be >= 0, got train={train_num_workers}, val={val_num_workers}")
+    val_prefetch = effective_prefetch if args.val_prefetch_factor is None else max(1, int(args.val_prefetch_factor))
+    train_persistent_workers = bool(train_num_workers > 0 and not args.no_persistent_workers)
+    val_persistent_workers = bool(
+        val_num_workers > 0 and not args.no_persistent_workers and args.persistent_val_workers
+    )
+
     compile_enabled = bool(args.compile or tcfg.get("compile", False))
     # Respect response-head disabling flags in both response-only and all-head
     # training.  Without this, ``--stage all --response-traj-weight 0`` still
@@ -1048,7 +1066,8 @@ def main() -> None:
     if distributed and compile_enabled:
         _rank0_print("Warning: disabling torch.compile under DDP for staged training stability.")
         compile_enabled = False
-    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, prefetch_factor={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}, cuda_alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '')!r}")
+    _rank0_print(f"COWP train startup: stage={stage}, device={device}, distributed={distributed}, rank={rank}/{world_size}, cuda_available={torch.cuda.is_available()}, amp={args.amp}, compile={compile_enabled}, batch_size_per_gpu={batch_size}, global_batch_size={batch_size * world_size if distributed else batch_size}, pin_memory={pin_memory}, train_workers={train_num_workers}, val_workers={val_num_workers}, train_prefetch={effective_prefetch if effective_prefetch is not None else tcfg.get('prefetch_factor', 2)}, val_prefetch={val_prefetch if val_prefetch is not None else tcfg.get('prefetch_factor', 2)}, train_persistent={train_persistent_workers}, val_persistent={val_persistent_workers}, sharing_strategy={loader_runtime['selected']}, response_traj_l1={float(loss_weights.get('response_traj_l1', 0.0))}, load_response_traj={include_response_traj}, load_waymax_outcomes={bool(args.with_waymax_outcome_labels)}, cuda_alloc_conf={os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '')!r}")
+    _rank0_print("DataLoader IPC runtime: " + json.dumps(loader_runtime, ensure_ascii=False, sort_keys=True))
     if device.type == "cuda":
         try:
             _rank0_print(f"CUDA device: {torch.cuda.get_device_name(device)}")
@@ -1101,10 +1120,11 @@ def main() -> None:
         oversample=oversample_enabled,
         use_cuda=device.type == "cuda",
         progress=(not args.no_progress) and _is_main_process(),
-        num_workers=args.num_workers,
+        num_workers=train_num_workers,
         sampler_cache=not args.no_sampler_cache,
         pin_memory=pin_memory,
         prefetch_factor=effective_prefetch,
+        persistent_workers=train_persistent_workers,
         distributed=distributed,
         rank=rank,
         world_size=world_size,
@@ -1114,11 +1134,21 @@ def main() -> None:
         dist.barrier()
     val_dl = _make_loader(
         val_ds, cfg, batch_size, shuffle=False, oversample=False, use_cuda=device.type == "cuda",
-        progress=(not args.no_progress) and _is_main_process(), num_workers=args.num_workers, pin_memory=pin_memory,
-        prefetch_factor=effective_prefetch, distributed=distributed, rank=rank, world_size=world_size, seed=seed,
+        progress=(not args.no_progress) and _is_main_process(), num_workers=val_num_workers, pin_memory=pin_memory,
+        prefetch_factor=val_prefetch, persistent_workers=val_persistent_workers,
+        distributed=distributed, rank=rank, world_size=world_size, seed=seed,
     ) if val_ds is not None else None
 
-    _rank0_print(f"DataLoader: num_workers={train_dl.num_workers}, pin_memory={train_dl.pin_memory}, prefetch_factor={getattr(train_dl, 'prefetch_factor', None)}, train_batches_per_rank={len(train_dl)}" + (f", val_batches_per_rank={len(val_dl)}" if val_dl is not None else ""))
+    _rank0_print(
+        f"DataLoader: train_workers={train_dl.num_workers}, train_persistent={getattr(train_dl, 'persistent_workers', False)}, "
+        f"train_pin_memory={train_dl.pin_memory}, train_prefetch={getattr(train_dl, 'prefetch_factor', None)}, "
+        f"train_batches_per_rank={len(train_dl)}"
+        + (
+            f", val_workers={val_dl.num_workers}, val_persistent={getattr(val_dl, 'persistent_workers', False)}, "
+            f"val_prefetch={getattr(val_dl, 'prefetch_factor', None)}, val_batches_per_rank={len(val_dl)}"
+            if val_dl is not None else ""
+        )
+    )
     model = COWPModel(cfg).to(device)
     resume_ckpt: dict[str, Any] | None = None
     if args.resume:

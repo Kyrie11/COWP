@@ -17,6 +17,7 @@ from cowp.data.dataset import collate_torch
 from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_batch_item, make_external_batch
 from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
@@ -174,6 +175,7 @@ def main() -> None:
     ap.add_argument("--mode", choices=["learned_offline", "waymax"], default="learned_offline")
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--max-neighbors", type=int, default=None)
     ap.add_argument("--max-candidates", type=int, default=None)
@@ -199,7 +201,9 @@ def main() -> None:
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
     args = ap.parse_args()
+    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
     _log(f"external eval entry mode={args.mode} pid={os.getpid()} python={sys.executable} torch={torch.__version__}")
+    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)

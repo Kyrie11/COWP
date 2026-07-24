@@ -20,6 +20,7 @@ from cowp.external_baselines.adapters import ExternalCOWPDataset, best_candidate
 from cowp.external_baselines.dtpp_cowp import COWPDTPP, dtpp_loss
 from cowp.external_baselines.gameformer_cowp import COWPGameFormer, gameformer_loss
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
 
 def _now() -> str:
@@ -214,6 +215,7 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--val-num-workers", type=int, default=2)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--device", default="auto")
@@ -228,13 +230,17 @@ def main() -> None:
     ap.add_argument("--grad-clip", type=float, default=5.0)
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
+    ap.add_argument("--val-prefetch-factor", type=int, default=1)
+    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
     ap.add_argument("--no-persistent-workers", action="store_true")
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-progress", action="store_true")
     ap.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")), help="Emit one line per N batches even when tqdm is disabled. Use 0 to disable heartbeat lines.")
     args = ap.parse_args()
+    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
 
     _log(f"external training entry baseline={args.baseline} pid={os.getpid()} python={sys.executable} torch={torch.__version__}")
+    _log(f"DataLoader IPC runtime={json.dumps(loader_runtime, sort_keys=True)}")
     _log(f"args={json.dumps(vars(args), sort_keys=True)}")
     cfg = load_config(args.label_config, args.data_config, args.train_config)
     device = _device(args.device)
@@ -268,7 +274,15 @@ def main() -> None:
         val_ds = ExternalCOWPDataset(args.val_cache_dir, include_waymax_outcomes=True)
         _log(f"val dataset ready scenes={len(val_ds)}")
         val_loader_kwargs = dict(loader_kwargs)
+        val_workers = max(int(args.val_num_workers), 0)
+        val_loader_kwargs["num_workers"] = val_workers
         val_loader_kwargs["pin_memory"] = False
+        if val_workers > 0:
+            val_loader_kwargs["persistent_workers"] = False
+            val_loader_kwargs["prefetch_factor"] = max(int(args.val_prefetch_factor), 1)
+        else:
+            val_loader_kwargs.pop("persistent_workers", None)
+            val_loader_kwargs.pop("prefetch_factor", None)
         val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, **val_loader_kwargs)
         _log(f"val loader ready batches={len(val_loader)}")
 

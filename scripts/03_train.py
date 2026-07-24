@@ -17,6 +17,7 @@ from cowp.core.config import load_config
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.models.losses import candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_ranking_loss, response_loss, witness_loss
 
 
@@ -520,6 +521,7 @@ def main() -> None:
     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     args = ap.parse_args()
+    configure_dataloader_runtime()
 
     cfg = load_config(args.model_config, args.train_config, args.data_config)
     tcfg = cfg["train"]

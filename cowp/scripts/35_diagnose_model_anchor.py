@@ -14,6 +14,7 @@ from cowp.core.constants import NaturalSource
 from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
 
 def _indices(n: int, limit: int) -> list[int]:
@@ -71,6 +72,7 @@ def main() -> None:
     ap.add_argument("--max-scenes", type=int, default=2000)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--num-workers", type=int, default=4)
+    ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--max-1s-minade-m", type=float, default=3.0)
     ap.add_argument("--max-8s-minade-m", type=float, default=8.5)
@@ -78,6 +80,8 @@ def main() -> None:
     ap.add_argument("--max-critical-unmapped-rate", type=float, default=0.02)
     ap.add_argument("--no-progress", action="store_true")
     args = ap.parse_args()
+    loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
+    print("DataLoader IPC runtime: " + json.dumps(loader_runtime, sort_keys=True), flush=True)
 
     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
     device = torch.device(args.device)

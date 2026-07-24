@@ -12,6 +12,7 @@ import numpy as np
 from cowp.core.constants import MacroType
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_batch
 from cowp.utils.progress import tqdm_iter
+from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, _progress_reference_m, _trajectory_progress_m
 from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator
@@ -1316,6 +1317,7 @@ def _learned_offline_candidate_eval_many(
     from torch.utils.data import DataLoader
 
     from cowp.data.dataset import TorchCOWPDataset, collate_torch
+    configure_dataloader_runtime()
     from cowp.models.cowp_model import COWPModel
 
     thresholds = sorted({float(t) for t in witness_thresholds})
