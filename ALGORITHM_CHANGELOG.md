@@ -1015,3 +1015,67 @@ algorithm rather than a new moving target.
 - A strict run that stops on a quality gate is an algorithmic result, not a pipeline
   failure, provided `pipeline_preflight.json` and tests pass.
 - Do not call the pipeline complete unless `pipeline_completion_report.json` passes.
+
+## v16.3 — numerical-integrity recovery, evidence-gated attribution, and root-wise NCF correction (2026-07-24)
+
+### Triggering evidence from the uploaded v16.2 engineering smoke
+
+This revision is based on `cowp_v16_2_engineering_smoke_v9labels_seed2026_ancdatafix` and must not be interpreted as a paper-result run. It used one epoch per stage, only 20 Waymax scenarios, `ALLOW_QUALITY_GATE_FAILURE=1`, `STOP_AFTER_STAGE=probe`, `RUN_FULL=0`, and the `v9_reuse` data protocol. The causal audit passed its engineering checks but explicitly reported `full_v15_label_protocol_pass=false` because v15 label tensors were not materialized.
+
+The natural history contains an internally inconsistent pattern: epoch `-1` and epoch `0` have exactly identical validation metrics; `natural/residual_l2=0` and `natural/control_smoothness=0`; the learned-natural diagnostic reproduces the analytic basis exactly and reports zero gain; nevertheless `base_deviation` is about 34.29 m. The best checkpoint therefore remains the initialization checkpoint. Downstream transport/planner/selector results are mechanism probes on an unverified basis, not evidence for their algorithmic effectiveness.
+
+### Root cause and engineering fix
+
+The failure pattern is highly consistent with FP16 autocast overflow in the scene graph followed by `0 * Inf -> NaN` in the zero-initialized natural residual/control heads. The previous loss path could silently sanitize non-finite predictions through `nan_to_num`, while `GradScaler` could skip optimizer steps without exposing that fact. This yields finite-looking losses, zero residual/control statistics, and no actual learning.
+
+Changes:
+
+1. `cowp/models/cowp_model.py`
+   - Natural decoder and integration now execute in an explicit FP32 precision island.
+   - Graph features and anchor state are cast to FP32 before the zero-initialized residual/control heads.
+
+2. `cowp/scripts/03_train.py`
+   - Added `--amp-dtype {auto,bfloat16,float16}`; `auto` prefers BF16 on supported CUDA hardware.
+   - Natural/representation stages automatically fall back to full FP32 when only FP16 is available.
+   - Added recursive pre-loss NaN/Inf detection on model outputs. Non-finite predictions now fail fast and are never converted into zeros.
+   - Added synchronized DDP non-finite checks, gradient-norm checks, optimizer-step counters, AMP-skip counters, and a hard failure when no optimizer step is executed or more than 2% of attempted AMP steps are skipped.
+   - The GradScaler now follows the effective stage AMP policy rather than the raw CLI flag.
+
+3. Launch/status scripts
+   - Added `run_cowp_v16_3_dual_gpu.sh` with natural FP32 by default and downstream BF16-auto policy.
+   - Added `NEXT_RUN_COMMANDS_V16_3_RECOVERY_CN.sh`, `NEXT_RUN_COMMANDS_V16_3_FULL_CN.sh`, `NEXT_RUN_COMMANDS_V16_3_ENGINEERING_SMOKE_CN.sh`, and `CHECK_RUN_STATUS_V16_3.sh`.
+   - Status detection checks both historical and current locations of `QUALITY_GATES_BYPASSED.txt` and reports optimizer/AMP-skip evidence.
+
+4. Controlled attribution
+   - Added `RUN_NATURAL_ABLATIONS_V16_3_CN.sh`.
+   - Main, `no_effectiveness_loss`, and `no_obs_capacity_boost` runs use fresh outputs and identical natural-stage precision. The full pipeline is blocked until both the natural-effectiveness gate and component-attribution gate pass.
+
+### Status of the six requested claims after v16.2
+
+- **v15/v16 decoder effective:** not established. The trained checkpoint did not deviate from initialization.
+- **new loss effective:** not established. No valid learned main model and no controlled ablation were available.
+- **OBS residual capacity effective:** not established. Residual/control outputs were exactly zero and no valid capacity ablation existed.
+- **natural gate effective:** established only as an engineering safeguard. It correctly rejected an inert natural checkpoint and prevented it from being promoted as evidence.
+- **planner effective:** not established. One epoch, invalid natural foundation, and mixed 20-scenario results cannot isolate planner contribution.
+- **selector effective:** not established. BCOT improved some conventional quantities versus pair-max but was worse than Pareto on collision/progress, while predicted FSR remained about 0.92 and fallback remained 0.80.
+
+### Theoretical correction retained in the revised manuscript
+
+The old existential witness condition—there exists a high-burden safe response—is logically insufficient because emergency responses usually exist. The revised definition uses stable natural roots with probability mass, same-root response transport, conflict mass, retained low-burden root mass, and a conflict-conditioned tail burden. Option preservation is removed from the primitive burden to avoid circularity. Burden thresholds are calibrated on a disjoint split and frozen, preventing the certificate from learning to raise its own acceptance threshold. Logged-replay online runs are labeled as proxy/mechanism diagnostics; reactive-agent and human-audited protocols are mandatory for causal burden claims.
+
+### Promotion rules
+
+No downstream result may be used in the paper unless all of the following are true:
+
+1. `train/runtime/optimizer_steps > 0`, AMP skip ratio <= 2%, and no non-finite prediction is observed.
+2. Learned natural basis improves over the analytic basis on the preregistered overall and OBS metrics without unacceptable neutral/priority degradation, across at least three seeds.
+3. New-loss and OBS-capacity one-factor ablations pass the attribution gate.
+4. Transport/root recovery and BCOT calibration pass; no `least_violation` operating point is accepted as a result.
+5. Closed-loop evaluation uses at least 1,000 interaction-heavy scenarios per seed, three seeds, paired bootstrap confidence intervals, and separately reports logged-replay and reactive-agent protocols.
+
+### v16.3 local validation
+
+- `python -m compileall -q cowp tests/test_v16_3_numeric_safety.py`: passed.
+- `pytest -q`: **107 passed**.
+- `CHECK_RUN_STATUS_V16_3.sh` on the uploaded v16.2 smoke correctly reports `ENGINEERING-ONLY`, all three failed/bypassed gates, missing v16.3 optimizer-step evidence, and `INTENTIONAL_PARTIAL_RUN` after probe.
+- Revised TeX static consistency: balanced braces, no unresolved `ref/eqref`, no literal traceback, no stray Markdown fence, and no undeclared `mathbbm` command.

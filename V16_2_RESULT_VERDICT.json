@@ -1,0 +1,38 @@
+{
+  "run_kind": "engineering_smoke",
+  "paper_evidence_eligible": false,
+  "intentional_stop_after_stage": "probe",
+  "quality_gates_bypassed": [
+    "natural_basis",
+    "natural_effectiveness",
+    "mechanism_verification"
+  ],
+  "data_protocol": "v9_reuse",
+  "full_v15_label_protocol_pass": false,
+  "claims": {
+    "v15_v16_decoder_effective": {"verdict": "not_validated", "reason": "validation unchanged from initialization; learned equals analytic; zero gain"},
+    "new_loss_effective": {"verdict": "not_validated", "reason": "no valid learned main checkpoint and no controlled ablation"},
+    "obs_residual_capacity_effective": {"verdict": "not_validated", "reason": "residual/control outputs remained zero and no valid capacity ablation"},
+    "natural_gate_effective": {"verdict": "engineering_safeguard_validated", "reason": "correctly rejected an inert natural checkpoint"},
+    "planner_effective": {"verdict": "not_validated", "reason": "one epoch, invalid natural basis, and mixed 20-scenario evidence"},
+    "selector_effective": {"verdict": "not_validated", "reason": "mixed pairmax/Pareto results, least-violation calibration, high FSR/fallback"}
+  },
+  "key_metrics": {
+    "natural_val_minade_m": 8.539937572563412,
+    "natural_val_obs_minade_m": 10.54679231416385,
+    "natural_residual_l2": 0.0,
+    "root_transport_conflict_conditioned_auprc": 0.1247294586203833,
+    "bcot_false_safe_auprc": 0.4309660848813474,
+    "ncf_recall": 0.21456476225421425,
+    "accepted_candidate_rate": 0.09254990957767455,
+    "selected_false_safe_rate": 0.46080191502094553,
+    "waymax_probe_cr": 0.4,
+    "waymax_probe_predicted_fsr": 0.9166666666666666,
+    "waymax_probe_fallback_rate": 0.8
+  },
+  "primary_engineering_diagnosis": "FP16 autocast overflow followed by non-finite sanitization and silent GradScaler step skipping is highly consistent with the observed inert natural decoder",
+  "v16_3_validation": {
+    "pytest": "107 passed",
+    "tex_static_checks": "passed"
+  }
+}

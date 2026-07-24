@@ -184,17 +184,43 @@ def _make_grad_scaler(enabled: bool):
     return None
 
 
-def _autocast_context(device: torch.device, enabled: bool):
+def _resolve_amp_dtype(device: torch.device, requested: str) -> torch.dtype:
+    """Resolve a numerically safe CUDA autocast dtype.
+
+    v16.2 used PyTorch's implicit CUDA AMP default (fp16).  On A30-class GPUs
+    the graph encoder can overflow before the zero-initialized natural head.  A
+    zero linear applied to an infinite activation produces NaN (``0 * Inf``),
+    which was later hidden by loss-side ``nan_to_num``.  Prefer bfloat16 because
+    it keeps fp32's exponent range; retain fp16 only as an explicit/legacy
+    fallback.
+    """
+    name = str(requested).strip().lower()
+    if name not in {"auto", "bfloat16", "float16"}:
+        raise ValueError(f"Unknown AMP dtype {requested!r}; choose auto, bfloat16, or float16")
+    if name == "bfloat16":
+        return torch.bfloat16
+    if name == "float16":
+        return torch.float16
+    if device.type == "cuda" and hasattr(torch.cuda, "is_bf16_supported"):
+        try:
+            if torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+        except Exception:
+            pass
+    return torch.float16
+
+
+def _autocast_context(device: torch.device, enabled: bool, dtype: torch.dtype = torch.bfloat16):
     if not enabled:
         return nullcontext()
     if device.type == "cuda":
         if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
             try:
-                return torch.amp.autocast("cuda", enabled=True)
+                return torch.amp.autocast("cuda", enabled=True, dtype=dtype)
             except TypeError:
-                return torch.amp.autocast(device_type="cuda", enabled=True)
+                return torch.amp.autocast(device_type="cuda", enabled=True, dtype=dtype)
         if hasattr(torch, "cuda") and hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
-            return torch.cuda.amp.autocast(enabled=True)
+            return torch.cuda.amp.autocast(enabled=True, dtype=dtype)
     return nullcontext()
 
 
@@ -552,6 +578,47 @@ def _finite_scalar(x: torch.Tensor) -> bool:
     except Exception:
         return False
 
+
+def _nonfinite_tensor_paths(value: Any, prefix: str = "pred", limit: int = 16) -> list[str]:
+    """Return model-output paths containing NaN/Inf.
+
+    This check deliberately runs *before* loss construction.  Loss helpers may
+    sanitize legacy labels, but model predictions must never be silently
+    repaired because that can turn an entirely skipped optimization run into a
+    superficially finite training history.
+    """
+    bad: list[str] = []
+
+    def visit(x: Any, path: str) -> None:
+        if len(bad) >= limit:
+            return
+        if torch.is_tensor(x):
+            if x.is_floating_point() or x.is_complex():
+                try:
+                    if not bool(torch.isfinite(x.detach()).all().item()):
+                        bad.append(path)
+                except Exception:
+                    bad.append(path)
+            return
+        if isinstance(x, dict):
+            for key, item in x.items():
+                visit(item, f"{path}.{key}")
+        elif isinstance(x, (list, tuple)):
+            for idx, item in enumerate(x):
+                visit(item, f"{path}[{idx}]")
+
+    visit(value, prefix)
+    return bad
+
+
+def _distributed_any(flag: bool, device: torch.device) -> bool:
+    """Synchronize a fatal numeric condition so every DDP rank exits together."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return bool(flag)
+    tensor = torch.tensor([1 if flag else 0], device=device, dtype=torch.int32)
+    dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+    return bool(int(tensor.item()))
+
 def _run_epoch(
     model: COWPModel,
     dl: DataLoader,
@@ -563,6 +630,7 @@ def _run_epoch(
     epoch: int = 0,
     progress: bool = True,
     amp: bool = False,
+    amp_dtype: str = "auto",
     non_blocking_transfer: bool = False,
     decode_response_traj: bool = True,
     grad_clip: float = 5.0,
@@ -571,8 +639,21 @@ def _run_epoch(
     model.train(is_train)
     sums: dict[str, float] = {}
     count = 0
-    scaler_enabled = bool(amp and is_train and device.type == "cuda")
+    resolved_amp_dtype = _resolve_amp_dtype(device, amp_dtype)
+    # Natural-basis learning is the highest-risk stage because its zero-initialized
+    # residual head is fed by the scene graph.  If bf16 is unavailable, execute
+    # the whole natural/representation forward in fp32 rather than accepting the
+    # fp16 overflow mode observed in v16.2.
+    stage_amp = bool(amp and device.type == "cuda")
+    if stage in {"natural", "representation"} and resolved_amp_dtype == torch.float16:
+        stage_amp = False
+    # The scaler must follow the effective stage policy rather than the raw CLI
+    # flag; otherwise a forced-fp32 natural stage could still be misreported as
+    # AMP training.
+    scaler_enabled = bool(stage_amp and is_train)
     scaler = _make_grad_scaler(scaler_enabled)
+    optimizer_steps = 0
+    amp_skipped_steps = 0
     context = torch.enable_grad() if is_train else torch.no_grad()
     desc = f"{'train' if is_train else 'val'} {stage} epoch {epoch}"
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
@@ -581,13 +662,21 @@ def _run_epoch(
             batch = _to_device(batch, device, non_blocking=non_blocking_transfer)
             if is_train:
                 opt.zero_grad(set_to_none=True)
-            autocast_enabled = bool(amp and device.type == "cuda")
+            autocast_enabled = stage_amp
             # Only the model forward runs under AMP.  Losses are intentionally
             # computed in fp32 outside autocast: this prevents CUDA AMP from
             # rejecting unsafe probability-space BCE kernels and keeps scatter /
             # masked reductions numerically stable.
-            with _autocast_context(device, autocast_enabled):
+            with _autocast_context(device, autocast_enabled, resolved_amp_dtype):
                 pred = model(batch, stage=stage, decode_response_traj=decode_response_traj)
+            local_bad_paths = _nonfinite_tensor_paths(pred)
+            if _distributed_any(bool(local_bad_paths), device):
+                raise FloatingPointError(
+                    "Non-finite model output before loss construction at "
+                    f"stage={stage} epoch={epoch} step={step}; "
+                    f"local_bad_paths={local_bad_paths or ['reported_on_another_ddp_rank']}. "
+                    "The batch/checkpoint must be fixed; predictions are never nan_to_num-sanitized."
+                )
             batch_for_loss = _masked_batch_with_pred_critical(batch, pred)
             losses = _compute_losses(pred, batch_for_loss, stage, loss_weights)
             loss = losses["loss"]
@@ -602,22 +691,54 @@ def _run_epoch(
                 continue
             if is_train:
                 if scaler is not None:
+                    scale_before = float(scaler.get_scale())
                     scaler.scale(loss).backward()
                     scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
+                    if _distributed_any(not _finite_scalar(grad_norm), device):
+                        raise FloatingPointError(
+                            f"Non-finite gradient norm at stage={stage} epoch={epoch} step={step}."
+                        )
                     scaler.step(opt)
                     scaler.update()
+                    scale_after = float(scaler.get_scale())
+                    if scale_after < scale_before:
+                        amp_skipped_steps += 1
+                    else:
+                        optimizer_steps += 1
                 else:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
+                    if _distributed_any(not _finite_scalar(grad_norm), device):
+                        raise FloatingPointError(
+                            f"Non-finite gradient norm at stage={stage} epoch={epoch} step={step}."
+                        )
                     opt.step()
+                    optimizer_steps += 1
             bs = int(next(iter(batch.values())).shape[0]) if batch else 1
             count += bs
             for k, v in losses.items():
                 sums[k] = sums.get(k, 0.0) + float(v.detach().cpu()) * bs
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(loss=f"{float(loss.detach().cpu()):.4f}", seen=count, refresh=(step == 1 or step % 10 == 0))
-    return {k: v / max(count, 1) for k, v in sums.items()}
+    result = {k: v / max(count, 1) for k, v in sums.items()}
+    if is_train:
+        result["runtime/optimizer_steps"] = float(optimizer_steps)
+        result["runtime/amp_skipped_steps"] = float(amp_skipped_steps)
+        result["runtime/amp_bfloat16"] = float(stage_amp and resolved_amp_dtype == torch.bfloat16)
+        result["runtime/amp_float16"] = float(stage_amp and resolved_amp_dtype == torch.float16)
+        if optimizer_steps <= 0:
+            raise RuntimeError(
+                f"Stage {stage} completed no optimizer steps at epoch {epoch}; "
+                f"AMP skipped={amp_skipped_steps}. Refusing to write a misleading checkpoint."
+            )
+        attempted = optimizer_steps + amp_skipped_steps
+        if attempted > 0 and amp_skipped_steps / attempted > 0.02:
+            raise RuntimeError(
+                f"Stage {stage} AMP skipped {amp_skipped_steps}/{attempted} optimizer steps (>2%). "
+                "Use --amp-dtype bfloat16 or disable AMP and inspect the first non-finite batch."
+            )
+    return result
 
 
 def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor]:
@@ -963,6 +1084,10 @@ def main() -> None:
     ap.add_argument("--force-positive-oversampling", action="store_true", help="Force witness/candidate positive oversampling even for representation/natural stages.")
     ap.add_argument("--no-sampler-cache", action="store_true", help="Do not read/write cached sampler weights for positive oversampling.")
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision for lower memory and faster training.")
+    ap.add_argument(
+        "--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto",
+        help="CUDA autocast dtype. auto prefers bfloat16 to avoid fp16 overflow in the graph/natural basis.",
+    )
     ap.add_argument("--pin-memory", action="store_true", help="Force DataLoader pin_memory on when using CUDA.")
     ap.add_argument("--no-pin-memory", action="store_true", help="Force DataLoader pin_memory off. Useful for CUDA invalid-argument pinning errors.")
     ap.add_argument("--no-progress", action="store_true", help="Disable per-epoch tqdm progress bars.")
@@ -1218,7 +1343,7 @@ def main() -> None:
         init_metrics = _run_epoch(
             model, val_dl, device, stage, loss_weights, None, epoch=-1,
             progress=(not args.no_progress) and _is_main_process(),
-            amp=args.amp, non_blocking_transfer=pin_memory,
+            amp=args.amp, amp_dtype=args.amp_dtype, non_blocking_transfer=pin_memory,
             decode_response_traj=include_response_traj, grad_clip=args.grad_clip,
         )
         init_metrics = _distributed_mean_metrics(init_metrics, device)
@@ -1287,6 +1412,7 @@ def main() -> None:
                 epoch=epoch,
                 progress=(not args.no_progress) and _is_main_process(),
                 amp=args.amp,
+                amp_dtype=args.amp_dtype,
                 non_blocking_transfer=pin_memory,
                 decode_response_traj=include_response_traj,
                 grad_clip=args.grad_clip,
@@ -1306,6 +1432,7 @@ def main() -> None:
                     epoch=epoch,
                     progress=(not args.no_progress) and _is_main_process(),
                     amp=args.amp,
+                    amp_dtype=args.amp_dtype,
                     non_blocking_transfer=pin_memory,
                     decode_response_traj=include_response_traj,
                     grad_clip=args.grad_clip,

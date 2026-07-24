@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 from torch import nn
 
@@ -339,13 +341,25 @@ class COWPModel(nn.Module):
         natural_out = None
         if need_natural:
             assert enc_scene is not None
-            natural_out = self.natural_decoder(
-                enc_scene["z_agent"],
-                critical_idx,
-                decode_traj=decode_natural_traj,
-                anchor7=anchor7,
-                dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
+            # CNOB is a physical integration module whose zero-initialized final
+            # layer is especially vulnerable to fp16 ``0 * Inf -> NaN``.  Keep
+            # the decoder/integrator in fp32 even when the surrounding graph and
+            # planner use bf16 autocast.  The training entrypoint separately
+            # prevents fp16 overflow in the natural-stage graph itself.
+            device_type = enc_scene["z_agent"].device.type
+            fp32_context = (
+                torch.autocast(device_type=device_type, enabled=False)
+                if device_type in {"cuda", "cpu"}
+                else nullcontext()
             )
+            with fp32_context:
+                natural_out = self.natural_decoder(
+                    enc_scene["z_agent"].float(),
+                    critical_idx,
+                    decode_traj=decode_natural_traj,
+                    anchor7=anchor7.float() if anchor7 is not None else None,
+                    dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
+                )
             if decode_natural_traj:
                 assert anchor7 is not None
                 natural_out = self._add_natural_anchor(natural_out, anchor7)
