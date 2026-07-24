@@ -948,3 +948,70 @@ only when the matrix shows a reproducible label contribution.
 - Do not reuse an experiment root after code/config changes by bypassing provenance.
 - Do not use fast diagnostics as the final paper data audit; run the full audit once
   for the frozen code/data release.
+
+## v16.2 — old-PyTorch compatibility and end-to-end pipeline completion guards (2026-07-24)
+
+### Triggering evidence
+
+Both `driver.nohup.log` and `full_driver.nohup.log` stopped during the startup pytest
+suite. Five tests failed in `_natural_mode_usage_loss` because the server PyTorch build
+does not support `Tensor.any(dim=(0, 1))`. This was a compatibility regression introduced
+while fixing the earlier `[B,A]` versus `[B,A,M]` broadcast bug. No model training or
+evaluation started, so these logs contain no algorithm or closed-loop evidence.
+
+A second static pipeline defect was found: `NEXT_RUN_COMMANDS_V16_1_FULL_CN.sh` did not
+set `RUN_FULL=1`. Even after training and probe success, that script would not have
+produced the nominal full Waymax results.
+
+### Engineering fixes
+
+1. Replaced the unsupported tuple-dimension boolean reduction with the equivalent
+   old/new-PyTorch-compatible chain `mode_mask.any(dim=0).any(dim=0)`.
+2. Added a source-level regression that forbids reintroducing `.any(dim=(...))` in the
+   natural loss and retained the realistic `B=2, A=6, M=24, R=24` forward/loss/backward
+   regression.
+3. Added `43_pipeline_preflight.py`, which validates YAML configs, imports every critical
+   train/eval/gate module, records Python/PyTorch/CUDA/JAX/TensorFlow/Waymax availability,
+   checks `torchrun`, and executes a realistic natural forward/loss/backward before GPU
+   hours are consumed.
+4. Added `44_validate_pipeline_outputs.py`. A run cannot print `complete` unless required
+   checkpoints and JSON reports exist; probe/full validation additionally requires
+   usable CR, offroad, and EP/progress values.
+5. Fixed the v16.2 full wrapper so `RUN_FULL=1` and Waymax dependency preflight are enabled
+   by default.
+6. Added robust `wait_all` handling for parallel diagnostics, offline evaluation, Waymax
+   waves, and full shards. The driver waits for every child and reports failure instead
+   of exiting on the first failed child while leaving sibling processes running.
+7. Full COWP shards are now resumable independently; valid shard JSON files are reused
+   after an interrupted run.
+8. Added explicit engineering-only quality-gate bypass support and a separate
+   `NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh`. This path exists only to exercise
+   downstream planner/Waymax code with tiny epochs/scenario counts; bypassed outputs are
+   marked and are prohibited as paper evidence. Strict scripts keep all gates enabled.
+9. Added `Offroad` as a supported alias in planner-delta summaries, while retaining
+   `OffroadRate`, so different Waymax metric adapters still produce the requested
+   offroad comparison.
+10. All v16.2 scripts use a fresh default output root to prevent provenance conflicts
+    with failed v16/v16.1 runs.
+
+### Algorithm decision
+
+No decoder, loss, planner, selector, or label semantics were changed. This release is an
+engineering-only repair so the next completed run remains attributable to the v16
+algorithm rather than a new moving target.
+
+### Local validation
+
+- complete unit/regression suite: **100 passed**;
+- Python compilation: pass;
+- all v16.2 shell scripts: `bash -n` pass;
+- all pipeline CLI modules: import/`--help` pass;
+- realistic natural preflight: pass;
+- completion-validator CR/offroad/EP fixture: pass.
+
+### Prohibited claims
+
+- Engineering-smoke closed-loop numbers are not paper results.
+- A strict run that stops on a quality gate is an algorithmic result, not a pipeline
+  failure, provided `pipeline_preflight.json` and tests pass.
+- Do not call the pipeline complete unless `pipeline_completion_report.json` passes.

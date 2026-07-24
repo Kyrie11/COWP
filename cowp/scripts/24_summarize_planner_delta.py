@@ -3,7 +3,7 @@ import argparse, json
 from pathlib import Path
 
 KEYS = (
-    "CR", "EP", "KinematicsInfeasibilityRate", "OffroadRate", "WrongWayRate",
+    "CR", "EP", "KinematicsInfeasibilityRate", "OffroadRate", "Offroad", "WrongWayRate",
     "OffRouteRate", "PredFSR_episode", "PredCBS_episode", "PredOPR_min_episode",
     "PredHBCR_episode", "FallbackEpisodeRate",
 )

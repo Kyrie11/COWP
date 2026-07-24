@@ -646,7 +646,7 @@ def _natural_mode_usage_loss(
         # collapsing the mode axis and producing a [B,A] mask.  The error was
         # hidden by unit tests with A=1, but fails on real batches (A=6, M=24).
         mode_mask = psrc == branch
-        eligible_modes = mode_mask.any(dim=(0, 1))  # [M], robust to expanded/static source ids
+        eligible_modes = mode_mask.any(dim=0).any(dim=0)  # [M], compatible with older PyTorch
         n_modes = int(eligible_modes.sum().item())
         root_mask = valid & (gt_source == branch)
         if n_modes <= 1 or not bool(root_mask.any()):
