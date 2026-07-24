@@ -22,14 +22,14 @@ pytest -q
 # 先扫描服务器上“当前实际存在”的 raw cache。上传的旧报告中 train=14640，
 # 而 v14 训练日志加载了 20440，因此不能直接假定旧报告代表当前目录。
 CACHE_SUFF_REPORT="$OUT_ROOT/eval/cache_sufficiency_current.json"
-if [[ "${FORCE_CACHE_AUDIT:-0}" == "1" || ! -s "$CACHE_SUFF_REPORT" ]]; then
-  python -u -m cowp.scripts.19_diagnose_waymax_cache_sufficiency \
-    --train-cache "$RAW_TRAIN_CACHE" \
-    --val-cache "$RAW_VAL_CACHE" \
-    --workers "${CACHE_AUDIT_WORKERS:-8}" \
-    --output-json "$CACHE_SUFF_REPORT" \
-    | tee "$OUT_ROOT/logs/cache_sufficiency_current.log"
-fi
+#if [[ "${FORCE_CACHE_AUDIT:-0}" == "1" || ! -s "$CACHE_SUFF_REPORT" ]]; then
+#  python -u -m cowp.scripts.19_diagnose_waymax_cache_sufficiency \
+#    --train-cache "$RAW_TRAIN_CACHE" \
+#    --val-cache "$RAW_VAL_CACHE" \
+#    --workers "${CACHE_AUDIT_WORKERS:-8}" \
+#    --output-json "$CACHE_SUFF_REPORT" \
+#    | tee "$OUT_ROOT/logs/cache_sufficiency_current.log"
+#fi
 
 # 对 raw/v9 overlay 做独立门禁：数量、关键字段、SDC、critical mapping、
 # response-root 范围、train/val 重叠及 logdiv 状态。
