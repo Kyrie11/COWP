@@ -642,17 +642,21 @@ def _natural_mode_usage_loss(
     total = _zero_like_loss(ref)
     branches = 0
     for branch in (int(NaturalSource.OBS), int(NaturalSource.NEU), int(NaturalSource.PRIO)):
-        mode_mask = (psrc[..., 0] == branch)  # [1,1,M]
-        n_modes = int(mode_mask.sum().item())
+        # ``psrc`` is [B,A,M].  v16 accidentally indexed ``[..., 0]`` here,
+        # collapsing the mode axis and producing a [B,A] mask.  The error was
+        # hidden by unit tests with A=1, but fails on real batches (A=6, M=24).
+        mode_mask = psrc == branch
+        eligible_modes = mode_mask.any(dim=(0, 1))  # [M], robust to expanded/static source ids
+        n_modes = int(eligible_modes.sum().item())
         root_mask = valid & (gt_source == branch)
-        if n_modes <= 1 or not root_mask.any():
+        if n_modes <= 1 or not bool(root_mask.any()):
             continue
         logits = -_safe_float(typed_pairwise) / max(float(tau), 1e-3)
         logits = torch.where(mode_mask[..., None], logits, torch.full_like(logits, -1.0e9))
         assignment = F.softmax(logits, dim=2)
         root_w = _nonnegative_weight(weight) * root_mask.float()
         mass = (assignment * root_w[:, :, None, :]).sum(dim=(0, 1, 3))
-        mass = mass[mode_mask.reshape(-1)].clamp_min(1e-12)
+        mass = mass[eligible_modes].clamp_min(1e-12)
         prob = mass / mass.sum().clamp_min(1e-12)
         entropy = -(prob * prob.log()).sum()
         total = total + (1.0 - entropy / torch.log(prob.new_tensor(float(n_modes))))

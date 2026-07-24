@@ -865,3 +865,86 @@ were empirically evaluated by that run.
 - Do not call logged-replay non-ego Waymax a reactive-agent evaluation.
 - Do not claim SOTA before full-validation, multi-seed paired results and confidence
   intervals are available.
+
+## v16.1 — natural-loss hotfix, provenance isolation, and fast diagnostics (2026-07-24)
+
+### Triggering evidence
+
+The v16 run passed cache alignment, causal engineering audit, natural oracle, and the
+exact model-facing anchor preflight. It then failed before optimization at validation
+epoch `-1`, batch `0`, inside `_natural_mode_usage_loss`. The real tensor shapes were
+approximately `[B=5, A=6, M=24, R=24]`. The implementation used
+`psrc[..., 0]`, which removed the mode axis and created a `[B,A]` mask; broadcasting
+that mask against `[B,A,M,R]` failed with `A=6` versus `M=24`.
+
+Because the failure occurred before the first validation batch completed, the run
+contains no trained natural checkpoint/history and supplies no evidence about decoder,
+new-loss, OBS-capacity, planner, selector, or online Waymax gains.
+
+### Engineering fixes
+
+1. Fixed source-specific mode-usage masking to retain `[B,A,M]` and aggregate only
+   eligible modes. The implementation also supports an explicitly expanded
+   batch-dependent `mode_source` tensor rather than assuming a one-dimensional buffer.
+2. Added real-dimension forward/loss/backward regressions with six critical agents,
+   24 typed modes, and 24 natural roots. This exact shape would have failed in v16.
+3. Added strict experiment provenance (`42_write_run_provenance.py`). Reusing an
+   `OUT_ROOT` with a different hash of critical model/loss/evaluation code or copied
+   configs now fails instead of silently mixing stale checkpoints and reports. Candidate
+   configs are hashed under stable logical names and checked before canonical config
+   files are overwritten, so a rejected reuse attempt cannot corrupt the old record.
+4. Changed the top-level execution script to detach the entire workflow by default,
+   not only the inner dual-GPU driver. Global output is written to
+   `logs/driver.nohup.log`, the PID to `logs/driver.pid`, and each stage retains its
+   own log file.
+5. Added `CHECK_RUN_STATUS_V16_1.sh` for PID and recent-log inspection.
+6. Added stage-specific DataLoader settings: natural training defaults to 8 workers
+   and prefetch 2; transport/planner retain conservative 4/1 defaults because their
+   dense tensors previously caused host/pinned-memory failures.
+7. Added `DIAG_PROFILE=fast|full`. The default fast preflight samples 2,048 train and
+   1,024 validation transport scenes, 1,024 alignment/oracle/anchor scenes, while the
+   paper-facing full audit remains available separately.
+8. Reworked transport diagnostics with threaded NPZ reads, exact streaming means and
+   MAEs, and a bounded 10,000-bin histogram for root-recovery quantiles. This removes
+   Python lists containing millions of scalar values; the quantile resolution is
+   explicitly reported (default bin width `1e-4`).
+9. Cache sufficiency and v9 reuse reports are no longer recomputed when valid reports
+   already exist. New runs use sampled cache sufficiency by default; `FULL_CACHE_AUDIT=1`
+   retains the complete scan.
+10. Added `RUN_FULL_DATA_AUDIT_V16_1_CN.sh` for a background full data audit without
+    launching model training.
+
+### Algorithm decision
+
+No additional model or loss change is promoted in v16.1. The v16 dynamics decoder,
+effectiveness losses, and OBS capacity must first complete training and controlled
+ablations. A code crash is not evidence that these components are ineffective, and
+changing them again before obtaining metrics would destroy attribution.
+
+### Data decision
+
+The v15 causal-label dataset is not architecture-locked to the CNOB decoder. It changes
+the semantic targets and weights (especially OBS contamination/map filtering) and the
+downstream response/witness labels. If CNOB fails on v9 labels, the v15 dataset is not
+automatically useless. Use a small interaction-heavy v15 pilot and a model/data matrix:
+CNOB+v9, CNOB+v15-pilot, simpler typed residual+v15-pilot. Rebuild the full v15 dataset
+only when the matrix shows a reproducible label contribution.
+
+### Local validation
+
+- Python compilation: pass;
+- shell syntax: pass;
+- realistic natural forward/loss/backward regression: pass;
+- threaded transport diagnostic regression: pass;
+- strict provenance regression: pass;
+- full unit/regression suite: **96 passed**.
+
+### Prohibited claims
+
+- Do not report any v16 algorithm improvement from the failed run.
+- Do not label preflight analytic-basis metrics as learned decoder metrics.
+- Do not attribute later main-model gains to the new loss or OBS capacity until the
+  controlled ablations pass.
+- Do not reuse an experiment root after code/config changes by bypassing provenance.
+- Do not use fast diagnostics as the final paper data audit; run the full audit once
+  for the frozen code/data release.

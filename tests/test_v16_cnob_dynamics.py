@@ -151,3 +151,59 @@ def test_natural_ablation_comparison_attributes_components() -> None:
     assert result["pass"] is True
     assert result["checks"]["new_loss_improves_obs"] is True
     assert result["checks"]["obs_capacity_improves_obs"] is True
+
+
+def test_mode_usage_loss_supports_realistic_agent_mode_root_dimensions() -> None:
+    """Regression for the v16 A=6/M=24 broadcast failure seen before epoch -1."""
+    torch.manual_seed(7)
+    B, A, M, R, T = 2, 6, 24, 24, 8
+    decoder = NaturalDecoder(
+        d_model=16, modes=M, future_steps=T, decoder_type="typed_causal_dynamics"
+    )
+    z = torch.randn(B, A + 1, 16)
+    critical_indices = torch.arange(A).repeat(B, 1)
+    anchor = torch.zeros(B, A, 7)
+    anchor[..., 3] = 5.0
+    pred = decoder(z, critical_indices, anchor7=anchor, dt=0.1)
+
+    source = torch.tensor([0] * 8 + [1] * 8 + [2] * 8).view(1, 1, R).expand(B, A, -1)
+    gt = pred["base_traj"].detach().clone()  # [B,A,M,T,7]
+    batch = {
+        "cowp/natural/traj": gt,
+        "cowp/natural/valid": torch.ones(B, A, R, dtype=torch.bool),
+        "cowp/natural/weight": torch.ones(B, A, R),
+        "cowp/natural/source": source,
+        "cowp/natural/priority_preserved": (source == int(NaturalSource.PRIO)).float(),
+        "cowp/critical/valid": torch.ones(B, A, dtype=torch.bool),
+    }
+    losses = natural_loss(pred, batch, {"natural_dt": 0.1, "natural_mode_usage": 0.03})
+    assert losses["loss"].ndim == 0
+    assert torch.isfinite(losses["loss"])
+    assert torch.isfinite(losses["mode_usage"])
+    losses["loss"].backward()
+
+
+def test_mode_usage_loss_handles_batch_varying_expanded_mode_source() -> None:
+    B, A, M, R, T = 2, 3, 6, 6, 3
+    mode_source = torch.tensor([0, 0, 1, 1, 2, 2]).view(1, 1, M).expand(B, A, -1).clone()
+    pred = {
+        "traj": torch.zeros(B, A, M, T, 7, requires_grad=True),
+        "base_traj": torch.zeros(B, A, M, T, 7),
+        "residual": torch.zeros(B, A, M, T, 7),
+        "controls": torch.zeros(B, A, M, T, 5),
+        "logits": torch.zeros(B, A, M, requires_grad=True),
+        "source_logits": torch.zeros(B, A, M, 4),
+        "priority_logits": torch.zeros(B, A, M),
+        "mode_source": mode_source,
+    }
+    source = torch.tensor([0, 0, 1, 1, 2, 2]).view(1, 1, R).expand(B, A, -1)
+    batch = {
+        "cowp/natural/traj": torch.zeros(B, A, R, T, 7),
+        "cowp/natural/valid": torch.ones(B, A, R, dtype=torch.bool),
+        "cowp/natural/weight": torch.ones(B, A, R),
+        "cowp/natural/source": source,
+        "cowp/natural/priority_preserved": (source == 2).float(),
+        "cowp/critical/valid": torch.ones(B, A, dtype=torch.bool),
+    }
+    losses = natural_loss(pred, batch, {"natural_dt": 0.1})
+    assert torch.isfinite(losses["mode_usage"])
