@@ -21,6 +21,18 @@ def masked_mean(value: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> t
     return safe_value.sum() / mask_b.float().sum().clamp_min(eps)
 
 
+def weighted_masked_mean(
+    value: torch.Tensor, mask: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6
+) -> torch.Tensor:
+    """Finite weighted mean over a boolean mask."""
+    mask_b = torch.broadcast_to(mask.bool(), value.shape) if mask.shape != value.shape else mask.bool()
+    weight_f = torch.broadcast_to(_nonnegative_weight(weight), value.shape) if weight.shape != value.shape else _nonnegative_weight(weight)
+    use = mask_b & torch.isfinite(value) & torch.isfinite(weight_f) & (weight_f > 0.0)
+    safe = torch.where(use, value.float(), torch.zeros_like(value, dtype=torch.float32))
+    w = torch.where(use, weight_f.float(), torch.zeros_like(weight_f, dtype=torch.float32))
+    return (safe * w).sum() / w.sum().clamp_min(eps)
+
+
 def _binary_target(x: torch.Tensor) -> torch.Tensor:
     """Finite [0,1] target for CUDA BCE kernels."""
     return torch.nan_to_num(x.float(), nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
@@ -536,12 +548,116 @@ def _branch_minade_from_pairwise(
     source: torch.Tensor,
     branch: int,
     ref: torch.Tensor,
+    weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     branch_gt = valid & (source == int(branch))
     if not branch_gt.any():
         return _zero_like_loss(ref)
     d_min = typed_pairwise_ade.min(dim=2).values
-    return masked_mean(d_min, branch_gt)
+    if weight is None:
+        return masked_mean(d_min, branch_gt)
+    return weighted_masked_mean(d_min, branch_gt, weight)
+
+
+def _natural_residual_effectiveness_losses(
+    pred: dict[str, torch.Tensor],
+    gt_traj: torch.Tensor,
+    valid: torch.Tensor,
+    weight: torch.Tensor,
+    gt_source: torch.Tensor,
+    pred_mode_source: torch.Tensor | None,
+    learned_pairwise: torch.Tensor,
+    cfg: dict[str, float],
+) -> dict[str, torch.Tensor]:
+    """Require residual learning to improve OBS without erasing causal priors."""
+    z = _zero_like_loss(pred["traj"])
+    if "base_traj" not in pred:
+        return {"obs_shortfall": z, "neutral_degradation": z, "priority_degradation": z,
+                "obs_gain": z, "neutral_gain": z, "priority_gain": z}
+    base_pair = _typed_pairwise_ade(_pairwise_ade(pred["base_traj"], gt_traj), gt_source, pred_mode_source)
+    learned_best = learned_pairwise.min(dim=2).values
+    base_best = base_pair.min(dim=2).values
+    delta = base_best - learned_best  # positive means the learned residual helped
+
+    def wmean(branch: int, values: torch.Tensor, extra: torch.Tensor | None = None) -> torch.Tensor:
+        m = valid & (gt_source == int(branch))
+        if extra is not None:
+            m = m & extra
+        return weighted_masked_mean(values, m, weight) if m.any() else z
+
+    obs_difficult = base_best >= float(cfg.get("natural_obs_gain_min_base_ade_m", 0.50))
+    obs_margin = float(cfg.get("natural_obs_gain_margin_m", 0.05))
+    preserve_tol = float(cfg.get("natural_prior_degradation_tolerance_m", 0.10))
+    obs_shortfall = wmean(int(NaturalSource.OBS), torch.relu(obs_margin - delta), obs_difficult)
+    neu_degrade = wmean(int(NaturalSource.NEU), torch.relu(-delta - preserve_tol))
+    prio_degrade = wmean(int(NaturalSource.PRIO), torch.relu(-delta - preserve_tol))
+    return {
+        "obs_shortfall": obs_shortfall,
+        "neutral_degradation": neu_degrade,
+        "priority_degradation": prio_degrade,
+        "obs_gain": wmean(int(NaturalSource.OBS), delta),
+        "neutral_gain": wmean(int(NaturalSource.NEU), delta),
+        "priority_gain": wmean(int(NaturalSource.PRIO), delta),
+    }
+
+
+def _natural_kinematic_consistency_losses(
+    pred: dict[str, torch.Tensor], critical_mask: torch.Tensor, dt: float
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    traj = _safe_float(pred["traj"])
+    z = _zero_like_loss(traj)
+    if traj.shape[-2] < 2:
+        return z, z, z
+    dt = max(float(dt), 1e-4)
+    pos = traj[..., 0:2]
+    vel = traj[..., 3:5]
+    fd_vel = (pos[..., 1:, :] - pos[..., :-1, :]) / dt
+    midpoint_vel = 0.5 * (vel[..., 1:, :] + vel[..., :-1, :])
+    mode_time_mask = critical_mask[:, :, None, None].expand_as(fd_vel[..., 0])
+    velocity_loss = masked_mean(torch.linalg.norm(fd_vel - midpoint_vel, dim=-1), mode_time_mask)
+
+    speed = torch.linalg.norm(vel[..., 1:, :], dim=-1)
+    velocity_yaw = torch.atan2(vel[..., 1:, 1], vel[..., 1:, 0])
+    yaw = traj[..., 1:, 2]
+    yaw_error = torch.abs(torch.atan2(torch.sin(yaw - velocity_yaw), torch.cos(yaw - velocity_yaw)))
+    yaw_mask = mode_time_mask & (speed > 0.5)
+    yaw_loss = masked_mean(yaw_error, yaw_mask) if yaw_mask.any() else z
+
+    if "controls" in pred and pred["controls"].shape[-2] >= 2:
+        controls = _safe_float(pred["controls"])
+        smooth = torch.linalg.norm(controls[..., 1:, :] - controls[..., :-1, :], dim=-1)
+        control_loss = masked_mean(smooth, critical_mask[:, :, None, None].expand_as(smooth))
+    else:
+        control_loss = z
+    return velocity_loss, yaw_loss, control_loss
+
+
+def _natural_mode_usage_loss(
+    typed_pairwise: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor,
+    gt_source: torch.Tensor, pred_mode_source: torch.Tensor | None, tau: float, ref: torch.Tensor
+) -> torch.Tensor:
+    psrc = _mode_source_tensor(pred_mode_source, typed_pairwise)
+    if psrc is None:
+        return _zero_like_loss(ref)
+    total = _zero_like_loss(ref)
+    branches = 0
+    for branch in (int(NaturalSource.OBS), int(NaturalSource.NEU), int(NaturalSource.PRIO)):
+        mode_mask = (psrc[..., 0] == branch)  # [1,1,M]
+        n_modes = int(mode_mask.sum().item())
+        root_mask = valid & (gt_source == branch)
+        if n_modes <= 1 or not root_mask.any():
+            continue
+        logits = -_safe_float(typed_pairwise) / max(float(tau), 1e-3)
+        logits = torch.where(mode_mask[..., None], logits, torch.full_like(logits, -1.0e9))
+        assignment = F.softmax(logits, dim=2)
+        root_w = _nonnegative_weight(weight) * root_mask.float()
+        mass = (assignment * root_w[:, :, None, :]).sum(dim=(0, 1, 3))
+        mass = mass[mode_mask.reshape(-1)].clamp_min(1e-12)
+        prob = mass / mass.sum().clamp_min(1e-12)
+        entropy = -(prob * prob.log()).sum()
+        total = total + (1.0 - entropy / torch.log(prob.new_tensor(float(n_modes))))
+        branches += 1
+    return total / max(branches, 1)
 
 
 def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float = 4.0) -> torch.Tensor:
@@ -600,9 +716,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         else:
             source_distribution = _zero_like_loss(pred["traj"])
 
-        obs_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.OBS), pred["traj"])
-        neu_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.NEU), pred["traj"])
-        prio_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.PRIO), pred["traj"])
+        obs_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.OBS), pred["traj"], nat_weight)
+        neu_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.NEU), pred["traj"], nat_weight)
+        prio_minade = _branch_minade_from_pairwise(typed_pairwise, mask, gt_source, int(NaturalSource.PRIO), pred["traj"], nat_weight)
         w_obs = float(weights.get("obs_prediction", 1.0))
         w_neu = float(weights.get("neutral", 0.5))
         w_prio = float(weights.get("priority_rule", 0.5))
@@ -650,7 +766,18 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         else:
             residual_l2 = _zero_like_loss(pred["traj"])
 
+        effectiveness = _natural_residual_effectiveness_losses(
+            pred, gt_traj, mask, nat_weight, gt_source, pred_mode_source, typed_pairwise, weights
+        )
         dt = float(weights.get("natural_dt", 0.1))
+        kin_velocity, kin_yaw, control_smoothness = _natural_kinematic_consistency_losses(
+            pred, crit & mask.any(dim=-1), dt
+        )
+        mode_usage = _natural_mode_usage_loss(
+            typed_pairwise, mask, nat_weight, gt_source, pred_mode_source,
+            tau=float(weights.get("natural_mode_usage_tau_m", 1.5)), ref=pred["traj"],
+        )
+
         h1 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(1.0 / dt)))
         h3 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(3.0 / dt)))
         h5 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(5.0 / dt)))
@@ -659,6 +786,11 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         obs_minade = neu_minade = prio_minade = base_dev = residual_l2 = _zero_like_loss(pred["traj"])
         base_dev_obs = base_dev_neu = base_dev_prio = base_dev
         h1 = h3 = h5 = _zero_like_loss(pred["traj"])
+        kin_velocity = kin_yaw = control_smoothness = mode_usage = _zero_like_loss(pred["traj"])
+        effectiveness = {k: _zero_like_loss(pred["traj"]) for k in (
+            "obs_shortfall", "neutral_degradation", "priority_degradation",
+            "obs_gain", "neutral_gain", "priority_gain",
+        )}
 
     total = (
         weights.get("natural_traj_l1", weights.get("obs_prediction", 1.0)) * traj
@@ -676,6 +808,13 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         + weights.get("natural_base_deviation_neu", weights.get("natural_base_deviation", 0.05)) * base_dev_neu
         + weights.get("natural_base_deviation_prio", weights.get("natural_base_deviation", 0.05)) * base_dev_prio
         + weights.get("natural_residual_l2", 0.001) * residual_l2
+        + weights.get("natural_obs_gain", 0.40) * effectiveness["obs_shortfall"]
+        + weights.get("natural_neutral_preservation", 0.15) * effectiveness["neutral_degradation"]
+        + weights.get("natural_priority_preservation", 0.15) * effectiveness["priority_degradation"]
+        + weights.get("natural_kinematic_velocity", 0.10) * kin_velocity
+        + weights.get("natural_kinematic_yaw", 0.05) * kin_yaw
+        + weights.get("natural_control_smoothness", 0.01) * control_smoothness
+        + weights.get("natural_mode_usage", 0.02) * mode_usage
     )
     return {
         "loss": total,
@@ -696,6 +835,16 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         "base_deviation_neu": base_dev_neu,
         "base_deviation_prio": base_dev_prio,
         "residual_l2": residual_l2,
+        "residual_obs_shortfall": effectiveness["obs_shortfall"],
+        "residual_neutral_degradation": effectiveness["neutral_degradation"],
+        "residual_priority_degradation": effectiveness["priority_degradation"],
+        "residual_obs_gain": effectiveness["obs_gain"],
+        "residual_neutral_gain": effectiveness["neutral_gain"],
+        "residual_priority_gain": effectiveness["priority_gain"],
+        "kinematic_velocity": kin_velocity,
+        "kinematic_yaw": kin_yaw,
+        "control_smoothness": control_smoothness,
+        "mode_usage": mode_usage,
         "minade_1s": h1,
         "minade_3s": h3,
         "minade_5s": h5,

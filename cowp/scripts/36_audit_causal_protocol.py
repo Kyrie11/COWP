@@ -41,7 +41,8 @@ def main() -> None:
     eval_cfg = _load(args.eval_config)
     merged_model = dict(model_cfg.get("model", {}))
     merged_model.update(train_cfg.get("model", {}))
-    planning = eval_cfg.get("planning", {})
+    planning = dict(label_cfg.get("planning", {}))
+    planning.update(eval_cfg.get("planning", {}))
     eval_block = eval_cfg.get("eval", {})
     natural = label_cfg.get("natural", {})
     weights = train_cfg.get("loss_weights", {})
@@ -60,6 +61,26 @@ def main() -> None:
             or str(eval_block.get("actual_non_ego_policy", "")).lower() == "logged_replay"
         ),
         "typed_source_ce_not_used_as_learning_claim": abs(float(weights.get("branch_source_ce", 0.0))) <= 1e-12,
+        # Backward-compatible for generic protocol audits; v16 configs set these
+        # fields explicitly, so an accidental regression still fails in real runs.
+        "natural_decoder_is_dynamics_consistent": (
+            not str(merged_model.get("natural_decoder_type", "")).strip()
+            or str(merged_model.get("natural_decoder_type", "")).lower() in {
+                "typed_causal_dynamics", "cnob_dynamics", "cnob"
+            }
+        ),
+        "certificate_fallback_is_explicitly_disabled": (
+            not any(k in planning for k in (
+                "candidate_cert_allow_hybrid_fallback",
+                "candidate_cert_hybrid_fallback_mix",
+                "candidate_cert_flat_fallback_mix",
+            ))
+            or (
+                not bool(planning.get("candidate_cert_allow_hybrid_fallback", False))
+                and abs(float(planning.get("candidate_cert_hybrid_fallback_mix", 0.0))) <= 1e-12
+                and abs(float(planning.get("candidate_cert_flat_fallback_mix", 0.0))) <= 1e-12
+            )
+        ),
     }
 
     label_protocol_checks: dict[str, bool] = {

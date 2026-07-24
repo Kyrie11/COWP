@@ -9,6 +9,17 @@ from cowp.core.constants import NaturalSource
 
 
 class NaturalDecoder(nn.Module):
+    # Centralized decoder families prevent the v15 failure where training and
+    # preflight maintained separate string whitelists.
+    TYPED_DECODER_TYPES = frozenset({
+        "typed", "typed_kinematic", "typed_kinematic_residual",
+        "typed_causal_residual", "typed_causal_dynamics",
+        "cnob", "cnob_dynamics", "tnob",
+    })
+    DYNAMIC_TYPED_DECODER_TYPES = frozenset({
+        "typed_causal_dynamics", "cnob_dynamics", "cnob",
+    })
+
     """Counterfactual natural-option decoder with stable typed root identities.
 
     ``typed_kinematic_residual`` (v14) assigns every mode a permanent semantic
@@ -30,12 +41,18 @@ class NaturalDecoder(nn.Module):
         future_steps: int = 80,
         source_count: int = 4,
         decoder_type: str = "typed_kinematic_residual",
+        obs_capacity_scale: float = 1.0,
     ):
         super().__init__()
         self.modes = int(modes)
         self.future_steps = int(future_steps)
         self.source_count = int(source_count)
         self.decoder_type = str(decoder_type).lower()
+        self.obs_capacity_scale = float(obs_capacity_scale)
+        if not 0.0 <= self.obs_capacity_scale <= 2.0:
+            raise ValueError(f"obs_capacity_scale must be in [0, 2], got {self.obs_capacity_scale}")
+        if self.decoder_type not in self.TYPED_DECODER_TYPES | {"legacy", "legacy_linear", "linear", "temporal", "temporal_kinematic"}:
+            raise ValueError(f"Unknown natural decoder type: {self.decoder_type!r}")
 
         self.shared = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.LayerNorm(d_model))
         # Kept under the old name for checkpoint-compatible legacy ablations.
@@ -91,13 +108,41 @@ class NaturalDecoder(nn.Module):
         vel_scale[obs_mask] = 5.0
         xy_scale[prio_mask] = 0.10
         yaw_scale[prio_mask] = 0.010
-        gate_bias[obs_mask] = 1.5
+        gate_bias[obs_mask] = 1.5 * self.obs_capacity_scale
         gate_bias[neu_mask] = 0.0
         gate_bias[prio_mask] = -0.25
         self.register_buffer("residual_xy_step_scale", xy_scale, persistent=True)
         self.register_buffer("residual_yaw_step_scale", yaw_scale, persistent=True)
         self.register_buffer("residual_velocity_scale", vel_scale, persistent=True)
         self.register_buffer("typed_residual_gate_bias", gate_bias, persistent=True)
+
+        # v16 Causal Natural Option Basis (CNOB): predict bounded control
+        # corrections and integrate them, rather than independently editing
+        # position, yaw, velocity and box size.  OBS receives more capacity,
+        # while NEU/PRIO remain close to their interpretable priors.
+        accel_long = torch.full((self.modes,), 1.25, dtype=torch.float32)
+        accel_lat = torch.full((self.modes,), 0.45, dtype=torch.float32)
+        jerk_long = torch.full((self.modes,), 0.75, dtype=torch.float32)
+        jerk_lat = torch.full((self.modes,), 0.30, dtype=torch.float32)
+        yaw_rate_delta = torch.full((self.modes,), 0.10, dtype=torch.float32)
+        # ``obs_capacity_scale=0`` is the controlled ablation: OBS receives
+        # the same capacity as NEU, while PRIO protection is unchanged.
+        # ``1`` is the proposed source-adaptive capacity and values in (0, 2]
+        # support a bounded sensitivity study.
+        obs_s = self.obs_capacity_scale
+        accel_long[obs_mask] = 1.25 + obs_s * (3.0 - 1.25)
+        accel_lat[obs_mask] = 0.45 + obs_s * (2.0 - 0.45)
+        jerk_long[obs_mask] = 0.75 + obs_s * (1.5 - 0.75)
+        jerk_lat[obs_mask] = 0.30 + obs_s * (1.0 - 0.30)
+        yaw_rate_delta[obs_mask] = 0.10 + obs_s * (0.30 - 0.10)
+        accel_long[prio_mask], accel_lat[prio_mask] = 0.9, 0.35
+        jerk_long[prio_mask], jerk_lat[prio_mask] = 0.45, 0.20
+        yaw_rate_delta[prio_mask] = 0.07
+        self.register_buffer("control_accel_long_scale", accel_long, persistent=True)
+        self.register_buffer("control_accel_lat_scale", accel_lat, persistent=True)
+        self.register_buffer("control_jerk_long_scale", jerk_long, persistent=True)
+        self.register_buffer("control_jerk_lat_scale", jerk_lat, persistent=True)
+        self.register_buffer("control_yaw_rate_scale", yaw_rate_delta, persistent=True)
 
     @staticmethod
     def _make_typed_specs(modes: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -139,6 +184,14 @@ class NaturalDecoder(nn.Module):
             torch.tensor([s[3] for s in specs], dtype=torch.float32),
         )
 
+    @property
+    def uses_typed_basis(self) -> bool:
+        return self.decoder_type in self.TYPED_DECODER_TYPES
+
+    @property
+    def uses_dynamic_residual(self) -> bool:
+        return self.decoder_type in self.DYNAMIC_TYPED_DECODER_TYPES
+
     def typed_kinematic_basis(self, anchor7: torch.Tensor, dt: float) -> torch.Tensor:
         """Return typed prototype offsets with shape ``[B,A,M,T,7]``."""
         if anchor7.ndim != 3 or anchor7.shape[-1] != 7:
@@ -153,7 +206,10 @@ class NaturalDecoder(nn.Module):
         vx0 = anchor7[..., 3]
         vy0 = anchor7[..., 4]
         speed0 = torch.sqrt(vx0.square() + vy0.square()).clamp_min(0.0)[..., None, None]
-        speed = (speed0 + speed_offset + accel * t[None, None, None, :]).clamp_min(0.0)
+        # A smooth one-second transition avoids an instantaneous velocity jump
+        # from prototype_speed_offset at the first predicted frame.
+        speed_ramp = 1.0 - torch.exp(-t[None, None, None, :] / 0.75)
+        speed = (speed0 + speed_offset * speed_ramp + accel * t[None, None, None, :]).clamp_min(0.0)
         yaw = yaw0 + yaw_rate * t[None, None, None, :]
         vx = speed * torch.cos(yaw)
         vy = speed * torch.sin(yaw)
@@ -162,8 +218,11 @@ class NaturalDecoder(nn.Module):
             anchor7.shape[0], anchor7.shape[1], self.modes, self.future_steps, 7,
             device=device, dtype=dtype,
         )
-        out[..., 0] = torch.cumsum(vx * float(dt), dim=-1)
-        out[..., 1] = torch.cumsum(vy * float(dt), dim=-1)
+        v0 = torch.stack([vx0, vy0], dim=-1)[:, :, None, None, :]
+        vt = torch.stack([vx, vy], dim=-1)
+        prev_v = torch.cat([v0.expand(-1, -1, self.modes, 1, -1), vt[..., :-1, :]], dim=3)
+        pos_step = 0.5 * (prev_v + vt) * float(dt)
+        out[..., 0:2] = torch.cumsum(pos_step, dim=3)
         out[..., 2] = yaw - yaw0
         out[..., 3] = vx - vx0[..., None, None]
         out[..., 4] = vy - vy0[..., None, None]
@@ -186,6 +245,79 @@ class NaturalDecoder(nn.Module):
         vel_res = torch.tanh(raw[..., 3:5]) * vel_scale
         size_res = torch.tanh(raw[..., 5:7]) * 0.10
         return torch.cat([pos_res, yaw_res, vel_res, size_res], dim=-1) * gate
+
+    @staticmethod
+    def _wrap_angle(x: torch.Tensor) -> torch.Tensor:
+        return torch.atan2(torch.sin(x), torch.cos(x))
+
+    def _learned_dynamics_residual(
+        self,
+        mode_latent: torch.Tensor,
+        anchor7: torch.Tensor,
+        base: torch.Tensor,
+        dt: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Integrate bounded local control corrections around the typed basis.
+
+        The returned residual has exactly zero length/width offsets and derives
+        yaw from the integrated velocity whenever the agent is moving.  Hence the
+        decoder cannot create a trajectory whose position, velocity and heading
+        contradict one another merely because three unrelated heads disagree.
+        """
+        time = self.time_embedding[None, None, None, :, :]
+        h_mt = self.temporal_norm(mode_latent[:, :, :, None, :] + time)
+        raw = self.temporal_head(h_mt)
+        gate_bias = self.typed_residual_gate_bias.to(mode_latent)[None, None, :, None]
+        gate = torch.sigmoid(self.residual_gate(mode_latent) + gate_bias)[..., None, :]
+
+        def scale(buf: torch.Tensor) -> torch.Tensor:
+            return buf.to(raw)[None, None, :, None, None]
+
+        accel_cmd = torch.cat([
+            torch.tanh(raw[..., 0:1]) * scale(self.control_accel_long_scale),
+            torch.tanh(raw[..., 1:2]) * scale(self.control_accel_lat_scale),
+        ], dim=-1)
+        jerk_cmd = torch.cat([
+            torch.tanh(raw[..., 3:4]) * scale(self.control_jerk_long_scale),
+            torch.tanh(raw[..., 4:5]) * scale(self.control_jerk_lat_scale),
+        ], dim=-1)
+        accel_local = accel_cmd + torch.cumsum(jerk_cmd * float(dt), dim=3)
+        accel_limit = torch.cat([
+            1.5 * scale(self.control_accel_long_scale),
+            1.5 * scale(self.control_accel_lat_scale),
+        ], dim=-1)
+        accel_local = torch.maximum(torch.minimum(accel_local, accel_limit), -accel_limit) * gate
+
+        yaw_rate_delta = (
+            torch.tanh(raw[..., 2:3]) + 0.35 * torch.tanh(raw[..., 5:6])
+        ) * scale(self.control_yaw_rate_scale) * gate
+        heading_corr = torch.cumsum(yaw_rate_delta * float(dt), dim=3)
+        base_yaw_abs = anchor7[:, :, None, None, 2:3] + base[..., 2:3]
+        control_heading = base_yaw_abs + heading_corr
+        c, sn = torch.cos(control_heading), torch.sin(control_heading)
+        a_world = torch.cat([
+            accel_local[..., 0:1] * c - accel_local[..., 1:2] * sn,
+            accel_local[..., 0:1] * sn + accel_local[..., 1:2] * c,
+        ], dim=-1)
+
+        velocity_residual = torch.cumsum(a_world * float(dt), dim=3)
+        prev_vr = torch.cat([torch.zeros_like(velocity_residual[..., :1, :]), velocity_residual[..., :-1, :]], dim=3)
+        position_residual = torch.cumsum(0.5 * (prev_vr + velocity_residual) * float(dt), dim=3)
+
+        base_vel_abs = anchor7[:, :, None, None, 3:5] + base[..., 3:5]
+        total_vel = base_vel_abs + velocity_residual
+        speed = torch.linalg.norm(total_vel, dim=-1, keepdim=True)
+        velocity_yaw = torch.atan2(total_vel[..., 1:2], total_vel[..., 0:1])
+        base_velocity_yaw = torch.atan2(base_vel_abs[..., 1:2], base_vel_abs[..., 0:1])
+        velocity_yaw_delta = self._wrap_angle(velocity_yaw - base_velocity_yaw)
+        yaw_residual = torch.where(speed > 0.5, velocity_yaw_delta, heading_corr)
+
+        residual = torch.zeros_like(base)
+        residual[..., 0:2] = position_residual
+        residual[..., 2:3] = yaw_residual
+        residual[..., 3:5] = velocity_residual
+        controls = torch.cat([accel_local, yaw_rate_delta, jerk_cmd * gate], dim=-1)
+        return residual, controls
 
     def _temporal_kinematic_offsets(
         self,
@@ -233,13 +365,19 @@ class NaturalDecoder(nn.Module):
             if self.decoder_type in {"legacy", "legacy_linear", "linear"}:
                 traj = self.head(h).reshape(B, A, self.modes, self.future_steps, 7)
                 out.update({"traj": traj, "base_traj": torch.zeros_like(traj), "residual": traj})
-            elif self.decoder_type in {"typed", "typed_kinematic", "typed_kinematic_residual", "typed_causal_residual", "tnob"}:
+            elif self.uses_typed_basis:
                 if anchor7 is None:
                     base = torch.zeros(B, A, self.modes, self.future_steps, 7, device=h.device, dtype=h.dtype)
                 else:
                     base = self.typed_kinematic_basis(anchor7, dt)
-                residual = self._learned_residual(mode_latent)
-                out.update({"traj": base + residual, "base_traj": base, "residual": residual})
+                if self.uses_dynamic_residual:
+                    if anchor7 is None:
+                        raise ValueError(f"decoder_type={self.decoder_type!r} requires anchor7 for dynamics integration")
+                    residual, controls = self._learned_dynamics_residual(mode_latent, anchor7, base, dt)
+                    out.update({"traj": base + residual, "base_traj": base, "residual": residual, "controls": controls})
+                else:
+                    residual = self._learned_residual(mode_latent)
+                    out.update({"traj": base + residual, "base_traj": base, "residual": residual})
             else:
                 traj, base, residual = self._temporal_kinematic_offsets(mode_latent, anchor7, dt)
                 out.update({"traj": traj, "base_traj": base, "residual": residual})

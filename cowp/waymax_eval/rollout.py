@@ -185,6 +185,9 @@ def _candidate_certificate_scores(pred, scores, cfg: dict | None = None, mask=No
     fb_fs = fallback_risk.clamp(0.02, 0.98)
     fb_q = (1.0 - fallback_risk).clamp(0.02, 0.98)
 
+    allow_hybrid = bool(pcfg.get("candidate_cert_allow_hybrid_fallback", False))
+    if has_head and not allow_hybrid:
+        return ncf_prob.clamp(0.0, 1.0), false_safe_prob.clamp(0.0, 1.0), quality_prob.clamp(0.0, 1.0)
     if has_head:
         raw_risk = _candidate_certificate_risk(ncf_prob, false_safe_prob, quality_prob, cfg)
         raw_spread = torch.zeros(raw_risk.shape[0], device=raw_risk.device, dtype=raw_risk.dtype)

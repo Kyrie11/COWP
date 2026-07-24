@@ -45,6 +45,7 @@ class COWPModel(nn.Module):
             modes=int(m.get("max_natural_alternatives", 24)),
             future_steps=int(m.get("future_steps", 80)),
             decoder_type=str(m.get("natural_decoder_type", "temporal_kinematic")),
+            obs_capacity_scale=float(m.get("natural_obs_capacity_scale", 1.0)),
         )
         self.response_decoder = ResponseDecoder(
             d_model=d_model,

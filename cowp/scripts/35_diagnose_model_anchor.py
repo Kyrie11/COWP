@@ -82,10 +82,10 @@ def main() -> None:
     cfg = load_config(args.model_config, args.label_config, args.train_config, args.data_config)
     device = torch.device(args.device)
     model = COWPModel(cfg).to(device).eval()
-    if model.natural_decoder.decoder_type not in {"typed", "typed_kinematic", "typed_kinematic_residual", "tnob"}:
+    if not model.natural_decoder.uses_typed_basis:
         raise ValueError(
-            f"Preflight expects typed natural decoder, got {model.natural_decoder.decoder_type!r}. "
-            "Use configs/train_cowp_v14.yaml."
+            f"Preflight requires a decoder with a typed analytic basis, got "
+            f"{model.natural_decoder.decoder_type!r}. Configure a typed/CNOB decoder."
         )
 
     base = TorchCOWPDataset(args.cache_dir, stage="natural")
@@ -171,6 +171,7 @@ def main() -> None:
         "cache_dir": str(Path(args.cache_dir)),
         "sampled_scenes": len(idxs),
         "decoder_type": model.natural_decoder.decoder_type,
+        "decoder_family": "typed_causal_dynamics" if model.natural_decoder.uses_dynamic_residual else "typed_residual",
         "mode_source": model.natural_decoder.mode_source.detach().cpu().tolist(),
         "counts": dict(counts),
         "rates": {"critical_unmapped_or_invisible": unmapped_rate},

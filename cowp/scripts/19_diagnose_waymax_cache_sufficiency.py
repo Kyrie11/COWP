@@ -447,6 +447,11 @@ class Aggregate:
         }
 
 
+def _scenario_paths(cache_dir: Path) -> list[Path]:
+    """Return only real scenario archives, matching COWPNpzDataset."""
+    return sorted(p for p in cache_dir.glob("*.npz") if not p.name.startswith("."))
+
+
 def _scan_cache(
     name: str,
     cache_dir: Path,
@@ -455,7 +460,9 @@ def _scan_cache(
     seed: int,
     logdiv_unsafe_threshold: float,
 ) -> tuple[dict[str, Any], set[str]]:
-    paths = sorted(cache_dir.glob("*.npz"))
+    # Hidden sampler/metadata NPZ files are not scenarios. Counting them created
+    # the false 20441-vs-20440 discrepancy and one apparently incomplete scene.
+    paths = _scenario_paths(cache_dir)
     if not paths:
         raise FileNotFoundError(f"No *.npz files found in {cache_dir}")
     if sample_scenes is not None and sample_scenes > 0 and sample_scenes < len(paths):

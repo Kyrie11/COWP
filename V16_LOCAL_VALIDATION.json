@@ -1,0 +1,52 @@
+{
+  "version": "v16_cnob_dynamics",
+  "source_run_status": {
+    "diagnose_model_anchor_root_cause": "stale decoder whitelist before numerical preflight",
+    "natural_training_started": false,
+    "decoder_effectiveness": "NOT_EVALUATED",
+    "new_loss_effectiveness": "NOT_EVALUATED",
+    "obs_capacity_effectiveness": "NOT_EVALUATED",
+    "natural_gate_improvement": "NOT_EVALUATED",
+    "planner_improvement": "NOT_EVALUATED",
+    "selector_improvement": "NOT_EVALUATED",
+    "online_waymax_cr_offroad_progress": "NOT_EVALUATED"
+  },
+  "uploaded_v9_evidence": {
+    "train_raw_overlay_files": [
+      20440,
+      20440
+    ],
+    "val_raw_overlay_files": [
+      5013,
+      5013
+    ],
+    "alignment_pass": true,
+    "critical_mapping_error_rate": 0.0,
+    "response_root_out_of_range_rate": 0.0,
+    "waymax_selected_rollout_success": 1.0,
+    "finite_logdiv_rate": 0.0,
+    "analytic_oracle_8s_m": {
+      "all": 2.465539965009164,
+      "OBS": 3.010403316409464,
+      "NEU": 2.1132722533181383,
+      "PRIO": 2.5943367426438524
+    }
+  },
+  "local_validation": {
+    "pytest": {
+      "pass": true,
+      "count": 90
+    },
+    "compileall": true,
+    "bash_syntax": true,
+    "causal_engineering_audit": true,
+    "full_v15_label_protocol_on_v9": false,
+    "expected_missing_label_check": "v15_label_tensors_materialized"
+  },
+  "data_decision": {
+    "next_run": "reuse_v9",
+    "true_v15_required_for_model_test": false,
+    "true_v15_required_for_label_novelty_claim": true,
+    "recommended_next_label_step": "targeted interaction/OBS-heavy v15 pilot after v16 model passes"
+  }
+}

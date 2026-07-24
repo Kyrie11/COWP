@@ -703,12 +703,15 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
             except Exception:
                 return default
         score = (
-            0.55 * gn("natural/traj")
-            + 0.20 * gn("natural/branch_minade")
-            + 0.10 * gn("natural/neutral_consistency")
-            + 0.05 * gn("natural/mode", 5.0)
-            + 0.05 * gn("natural/source", 5.0)
-            + 0.05 * total
+            0.40 * gn("natural/traj")
+            + 0.20 * gn("natural/obs_minade")
+            + 0.12 * gn("natural/branch_minade")
+            + 0.08 * gn("natural/residual_obs_shortfall")
+            + 0.06 * gn("natural/neutral_consistency")
+            + 0.05 * gn("natural/kinematic_velocity")
+            + 0.03 * gn("natural/kinematic_yaw")
+            + 0.03 * gn("natural/mode_usage")
+            + 0.03 * total
         )
         return float(score), "natural_basis_composite"
     if stage == "witness":
@@ -746,23 +749,21 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         except Exception:
             return default
     score = (
-        0.10 * total
-        + 1.00 * g("candidate_cert/risk_rank", 2.0)
-        + 0.75 * g("candidate_cert/risk_bce", 2.0)
-        + 0.35 * g("candidate_cert/rank", 2.0)
-        + 0.20 * g("candidate_cert/ncf", 2.0)
-        + 0.20 * g("candidate_cert/false_safe", 2.0)
-        + 0.35 * g("set_transport/witness", 1.0)
-        + 0.25 * g("set_transport/opr", 1.0)
-        + 0.20 * g("set_transport/conflict", 1.0)
-        + 0.15 * g("set_transport/burden", 1.0)
-        + 0.25 * g("set_transport/mode_conflict", 1.0)
-        + 0.25 * g("set_transport/mode_retain", 1.0)
-        + 0.20 * g("set_transport/mode_recovery", 1.0)
-        + 0.10 * g("set_transport/root_recovery", 1.0)
-        + 0.35 * g("set_transport/candidate_budget", 1.0)
-        + 0.10 * g("planner/outcome_cls", 1.0)
-        + 0.10 * g("planner/ranking", 1.0)
+        0.08 * total
+        + 0.20 * g("candidate_cert/risk_rank", 2.0)
+        + 0.15 * g("candidate_cert/risk_bce", 2.0)
+        + 0.10 * g("candidate_cert/rank", 2.0)
+        + 0.45 * g("set_transport/witness", 1.0)
+        + 0.35 * g("set_transport/opr", 1.0)
+        + 0.30 * g("set_transport/conflict", 1.0)
+        + 0.20 * g("set_transport/burden", 1.0)
+        + 0.35 * g("set_transport/mode_conflict", 1.0)
+        + 0.35 * g("set_transport/mode_retain", 1.0)
+        + 0.30 * g("set_transport/mode_recovery", 1.0)
+        + 0.20 * g("set_transport/root_recovery", 1.0)
+        + 0.55 * g("set_transport/candidate_budget", 1.0)
+        + 0.08 * g("planner/outcome_cls", 1.0)
+        + 0.15 * g("planner/ranking", 1.0)
     )
     return float(score), "planner_certificate_composite"
 

@@ -751,3 +751,117 @@ Not validated in the supplied environment:
     and the later v14 alignment result (20,440 train). The new default script therefore
     audits the current server directory before training and defaults to a 20,000-scene
     minimum rather than trusting stale reports.
+
+## v16 — CNOB dynamics and evidence-gated attribution (2026-07-23)
+
+### Triggering evidence
+
+The uploaded v15/v9-reuse run stopped before training in the mandatory model-anchor
+preflight. `35_diagnose_model_anchor.py` maintained its own decoder string whitelist
+and rejected `typed_causal_residual`, even though `NaturalDecoder` accepted that
+name. Consequently the run produced no natural checkpoint/history, no planner or
+selector result, and no online Waymax result. None of the claimed v15 model changes
+were empirically evaluated by that run.
+
+### Engineering fixes
+
+1. Centralized typed decoder identity in `NaturalDecoder.uses_typed_basis` and
+   `uses_dynamic_residual`; preflight and protocol audit now query the model rather
+   than maintaining independent string lists.
+2. Corrected cache-sufficiency enumeration so hidden sampler/metadata `.npz` files
+   are not counted as scenarios. This removes the false `20441` versus `20440`
+   discrepancy and the associated one-scene missing-label warning.
+3. Fixed candidate-certificate fallback semantics: when
+   `candidate_cert_allow_hybrid_fallback=false`, no generic certificate is silently
+   mixed into the set-transport score.
+4. Added automatic learned-natural diagnostics and a hard effectiveness gate before
+   transport/planner training.
+5. Added full Waymax delta summaries against both conventional safety and planner-
+   score-only baselines.
+
+### Algorithm changes: Causal Natural Option Basis dynamics decoder
+
+1. Replaced the paper-facing `typed_causal_residual` alias with
+   `typed_causal_dynamics` / `cnob_dynamics`.
+2. The learned branch predicts bounded local longitudinal/lateral acceleration,
+   jerk, and yaw-rate corrections around the typed OBS/NEU/PRIO basis.
+3. Position and velocity are obtained by integration; heading is derived from the
+   integrated velocity when moving; box dimensions are invariant. Independent,
+   mutually inconsistent position/yaw/velocity/size residual heads are prohibited.
+4. Zero initialization exactly reproduces the analytic typed basis, preserving a
+   safe and interpretable initialization.
+5. OBS receives configurable additional control capacity. The
+   `natural_obs_capacity_scale=0` ablation gives OBS the same control bounds as NEU
+   while retaining PRIO protection, enabling a controlled capacity claim.
+
+### Natural-loss and evidence changes
+
+1. Source-restricted branch minADE now uses `cowp/natural/weight`; v15 contamination
+   downweights are therefore respected when a true v15 dataset is used.
+2. Added direct OBS-improvement shortfall loss relative to the exact analytic basis.
+3. Added NEU/PRIO preservation losses, finite-difference velocity consistency,
+   velocity-heading consistency, control smoothness, and source-specific mode-usage
+   entropy.
+4. Added `39_diagnose_learned_natural.py`, which measures learned versus analytic
+   minADE by source and horizon, residual magnitude, controls, physical consistency,
+   and effective mode usage.
+5. Added `40_gate_natural_effectiveness.py`. A natural checkpoint must now improve
+   the analytic basis, improve OBS, preserve NEU/PRIO, remain physical, use multiple
+   modes, and keep residuals bounded. Passing only the old absolute gate is no longer
+   sufficient.
+6. Added controlled component attribution:
+   - `train_cowp_v16_no_effectiveness_loss.yaml` removes the new loss bundle;
+   - `model_cowp_v16_no_obs_capacity.yaml` removes only the OBS capacity boost;
+   - `RUN_NATURAL_ABLATIONS_V16_CN.sh` trains both;
+   - `41_compare_natural_ablations.py` hard-gates the new-loss and OBS-capacity claims.
+
+### Planner/selector changes
+
+1. Planner checkpoint selection now prioritizes the claimed set-transport mechanism,
+   candidate budget, and same-root recovery rather than allowing the generic
+   candidate classifier to dominate.
+2. Sparse attached Waymax collision/offroad labels remain auxiliary only; their loss
+   weights are reduced and `outcome_logdiv=0` remains mandatory because finite
+   log-divergence coverage is zero.
+3. Online evaluation remains honest logged-replay non-ego Waymax. It can establish
+   SDC CR/offroad/progress effects, but it is not a reactive-agent burden experiment.
+
+### Data decision
+
+- Reuse `tensor_cache_*_waymax_transport_v9` for the next v16 model/loss/capacity,
+  planner, selector, and online Waymax experiment.
+- Do not claim v15 OBS decontamination or map-filtered label generation from v9 data.
+- A true v15 dataset is required only after the v16 model passes, to validate the
+  revised natural roots/weights and the paper's causal-label contribution. Prefer a
+  targeted OBS/interaction-heavy pilot before a full rebuild.
+
+### v16 promotion order
+
+1. exact-path model-anchor and causal-protocol preflight;
+2. legacy absolute natural gate;
+3. learned-versus-analytic natural effectiveness gate;
+4. controlled natural component attribution gate;
+5. transport/planner mechanism verification;
+6. paired online Waymax probe;
+7. full-validation multi-seed Waymax evaluation;
+8. true-v15-label pilot/full rebuild and an independent reactive-agent protocol for
+   the final causal burden claim.
+
+### Local validation
+
+- Python compilation: pass;
+- executable shell syntax: pass;
+- causal engineering audit: pass;
+- full v15 label protocol on v9 caches: intentionally false;
+- unit/regression suite: **90 passed** after v16 component-ablation coverage.
+
+### Prohibited claims
+
+- Do not call the uploaded failed v15 run evidence that the decoder, new losses,
+  planner, selector, or Waymax metrics improved.
+- Do not attribute a main-model gain to the new loss or OBS capacity without the two
+  controlled natural ablations.
+- Do not call v9-reuse a true v15 causal-label experiment.
+- Do not call logged-replay non-ego Waymax a reactive-agent evaluation.
+- Do not claim SOTA before full-validation, multi-seed paired results and confidence
+  intervals are available.
