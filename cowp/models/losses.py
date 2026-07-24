@@ -46,6 +46,15 @@ def _safe_float(x: torch.Tensor) -> torch.Tensor:
     return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _safe_velocity_atan2(y: torch.Tensor, x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
+    """Avoid the undefined backward derivative of atan2 at zero speed."""
+    finite = torch.isfinite(x) & torch.isfinite(y)
+    near_zero = finite & ((x.square() + y.square()) <= float(eps) ** 2)
+    safe_x = torch.where(near_zero, torch.ones_like(x), x)
+    safe_y = torch.where(near_zero, torch.zeros_like(y), y)
+    return torch.atan2(safe_y, safe_x)
+
+
 def _zero_like_loss(ref: torch.Tensor | dict | None = None, *, device=None) -> torch.Tensor:
     """Finite scalar zero for optional/disabled loss branches.
 
@@ -617,7 +626,7 @@ def _natural_kinematic_consistency_losses(
     velocity_loss = masked_mean(torch.linalg.norm(fd_vel - midpoint_vel, dim=-1), mode_time_mask)
 
     speed = torch.linalg.norm(vel[..., 1:, :], dim=-1)
-    velocity_yaw = torch.atan2(vel[..., 1:, 1], vel[..., 1:, 0])
+    velocity_yaw = _safe_velocity_atan2(vel[..., 1:, 1], vel[..., 1:, 0])
     yaw = traj[..., 1:, 2]
     yaw_error = torch.abs(torch.atan2(torch.sin(yaw - velocity_yaw), torch.cos(yaw - velocity_yaw)))
     yaw_mask = mode_time_mask & (speed > 0.5)

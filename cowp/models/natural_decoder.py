@@ -247,6 +247,22 @@ class NaturalDecoder(nn.Module):
         return torch.cat([pos_res, yaw_res, vel_res, size_res], dim=-1) * gate
 
     @staticmethod
+    def _safe_velocity_atan2(y: torch.Tensor, x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
+        """atan2 with a well-defined zero-velocity backward path.
+
+        Some older CUDA/PyTorch combinations return finite ``atan2(0, 0)`` in
+        the forward pass but produce NaN gradients in backward.  CNOB starts
+        with an exactly-zero residual and legitimately contains stopped modes,
+        so mask the zero vector *before* atan2.  Non-finite inputs are preserved
+        and remain visible to the model-output safety check.
+        """
+        finite = torch.isfinite(x) & torch.isfinite(y)
+        near_zero = finite & ((x.square() + y.square()) <= float(eps) ** 2)
+        safe_x = torch.where(near_zero, torch.ones_like(x), x)
+        safe_y = torch.where(near_zero, torch.zeros_like(y), y)
+        return torch.atan2(safe_y, safe_x)
+
+    @staticmethod
     def _wrap_angle(x: torch.Tensor) -> torch.Tensor:
         return torch.atan2(torch.sin(x), torch.cos(x))
 
@@ -307,8 +323,8 @@ class NaturalDecoder(nn.Module):
         base_vel_abs = anchor7[:, :, None, None, 3:5] + base[..., 3:5]
         total_vel = base_vel_abs + velocity_residual
         speed = torch.linalg.norm(total_vel, dim=-1, keepdim=True)
-        velocity_yaw = torch.atan2(total_vel[..., 1:2], total_vel[..., 0:1])
-        base_velocity_yaw = torch.atan2(base_vel_abs[..., 1:2], base_vel_abs[..., 0:1])
+        velocity_yaw = self._safe_velocity_atan2(total_vel[..., 1:2], total_vel[..., 0:1])
+        base_velocity_yaw = self._safe_velocity_atan2(base_vel_abs[..., 1:2], base_vel_abs[..., 0:1])
         velocity_yaw_delta = self._wrap_angle(velocity_yaw - base_velocity_yaw)
         yaw_residual = torch.where(speed > 0.5, velocity_yaw_delta, heading_corr)
 

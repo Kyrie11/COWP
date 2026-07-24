@@ -619,6 +619,70 @@ def _distributed_any(flag: bool, device: torch.device) -> bool:
     dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
     return bool(int(tensor.item()))
 
+
+def _nonfinite_gradient_paths(model: torch.nn.Module, limit: int = 16) -> list[str]:
+    bad: list[str] = []
+    for name, param in model.named_parameters():
+        grad = param.grad
+        if grad is None:
+            continue
+        try:
+            if not bool(torch.isfinite(grad.detach()).all().item()):
+                bad.append(name)
+        except Exception:
+            bad.append(name)
+        if len(bad) >= limit:
+            break
+    return bad
+
+
+def _clip_grad_norm_stable(
+    model: torch.nn.Module, max_norm: float
+) -> tuple[torch.Tensor, list[str]]:
+    """Clip exactly as global L2 clipping, with a float64 overflow fallback.
+
+    ``clip_grad_norm_`` normally reduces in the gradient dtype.  A very large but
+    finite fp32 gradient can therefore overflow only the norm accumulator.  Use
+    ``error_if_nonfinite=True`` so gradients are not modified before diagnosis;
+    true NaN/Inf entries are reported, while finite gradients are clipped from a
+    float64 norm.
+    """
+    params = [p for p in model.parameters() if p.grad is not None]
+    if not params:
+        ref = next(model.parameters(), None)
+        device = ref.device if ref is not None else torch.device("cpu")
+        return torch.zeros((), dtype=torch.float32, device=device), []
+    max_norm = max(float(max_norm), 1.0e-6)
+    try:
+        norm = torch.nn.utils.clip_grad_norm_(
+            params, max_norm, error_if_nonfinite=True
+        )
+        return norm, []
+    except TypeError:
+        # ``error_if_nonfinite`` exists in all supported production versions,
+        # but retain compatibility with older local test environments.
+        bad = _nonfinite_gradient_paths(model)
+        if bad:
+            return torch.full((), float("nan"), device=params[0].grad.device), bad
+    except RuntimeError:
+        bad = _nonfinite_gradient_paths(model)
+        if bad:
+            return torch.full((), float("nan"), device=params[0].grad.device), bad
+
+    # Every gradient entry is finite; only the fp32 norm reduction overflowed.
+    device = params[0].grad.device
+    total_sq = torch.zeros((), dtype=torch.float64, device=device)
+    for param in params:
+        total_sq = total_sq + param.grad.detach().to(torch.float64).square().sum()
+    norm64 = total_sq.sqrt()
+    if not bool(torch.isfinite(norm64).item()):
+        return norm64, ["<finite entries but non-finite float64 norm>"]
+    clip_coef = min(1.0, max_norm / (float(norm64.item()) + 1.0e-6))
+    if clip_coef < 1.0:
+        for param in params:
+            param.grad.mul_(clip_coef)
+    return norm64, []
+
 def _run_epoch(
     model: COWPModel,
     dl: DataLoader,
@@ -694,10 +758,13 @@ def _run_epoch(
                     scale_before = float(scaler.get_scale())
                     scaler.scale(loss).backward()
                     scaler.unscale_(opt)
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
-                    if _distributed_any(not _finite_scalar(grad_norm), device):
+                    grad_norm, bad_grad_paths = _clip_grad_norm_stable(model, grad_clip)
+                    local_bad_grad = bool(bad_grad_paths) or not _finite_scalar(grad_norm)
+                    if _distributed_any(local_bad_grad, device):
                         raise FloatingPointError(
-                            f"Non-finite gradient norm at stage={stage} epoch={epoch} step={step}."
+                            "Non-finite gradient at "
+                            f"stage={stage} epoch={epoch} step={step}; "
+                            f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}."
                         )
                     scaler.step(opt)
                     scaler.update()
@@ -708,10 +775,13 @@ def _run_epoch(
                         optimizer_steps += 1
                 else:
                     loss.backward()
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max(float(grad_clip), 1.0e-6))
-                    if _distributed_any(not _finite_scalar(grad_norm), device):
+                    grad_norm, bad_grad_paths = _clip_grad_norm_stable(model, grad_clip)
+                    local_bad_grad = bool(bad_grad_paths) or not _finite_scalar(grad_norm)
+                    if _distributed_any(local_bad_grad, device):
                         raise FloatingPointError(
-                            f"Non-finite gradient norm at stage={stage} epoch={epoch} step={step}."
+                            "Non-finite gradient at "
+                            f"stage={stage} epoch={epoch} step={step}; "
+                            f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}."
                         )
                     opt.step()
                     optimizer_steps += 1
