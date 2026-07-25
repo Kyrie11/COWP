@@ -1079,3 +1079,103 @@ No downstream result may be used in the paper unless all of the following are tr
 - `pytest -q`: **107 passed**.
 - `CHECK_RUN_STATUS_V16_3.sh` on the uploaded v16.2 smoke correctly reports `ENGINEERING-ONLY`, all three failed/bypassed gates, missing v16.3 optimizer-step evidence, and `INTENTIONAL_PARTIAL_RUN` after probe.
 - Revised TeX static consistency: balanced braces, no unresolved `ref/eqref`, no literal traceback, no stray Markdown fence, and no undeclared `mathbbm` command.
+
+## v16.4 — integrated residual trust region, yaw-frame correction, and strict calibration promotion (2026-07-25)
+
+### Triggering evidence from the uploaded v16.3 natural recovery
+
+The strict v16.3 run is materially different from the earlier inert v16.2 smoke. The
+natural optimizer executed normally (`optimizer_steps=2044` at epoch 0 and no AMP
+skips), validation loss decreased, and the learned CNOB decoder improved the exact
+analytic basis. On 2,000 validation scenes, source-restricted weighted 8-second error
+improved from 1.8862 m to 1.1779 m overall. The OBS branch improved from 4.1038 m to
+2.6402 m, while NEU and PRIO also retained positive gains. The absolute natural-basis
+gate therefore passed.
+
+The strict natural-effectiveness gate nevertheless failed for two localized physical
+reasons:
+
+1. velocity--heading consistency was 0.17497 rad, slightly above the registered
+   0.15 rad threshold; and
+2. the integrated residual endpoint had a 45.218 m p99, above the 25 m bound, with a
+   highly skewed distribution (p50 0.588 m, p90 31.912 m).
+
+The full pipeline stopped at this gate before transport/planner training. The uploaded
+archive contains no separate natural-ablation output root, so it supplies no evidence
+for or against the new-loss or OBS-capacity attribution claims. It also contains no
+v16.3 planner or selector result.
+
+### Root-cause analysis
+
+1. The dynamic decoder formed the moving yaw residual as
+   `velocity_yaw - base_velocity_yaw`, although the final trajectory is represented as
+   `base_absolute_yaw + yaw_residual`. For low-speed prototypes, base velocity direction
+   is not guaranteed to equal the stored absolute heading. This creates a frame mismatch
+   and can double-count the heading offset. The correct residual is
+   `velocity_yaw - base_absolute_yaw`.
+2. Bounded instantaneous acceleration, jerk, and yaw-rate do not bound the displacement
+   accumulated over eight seconds. A small subset of OBS modes can therefore use the
+   residual as a second unconstrained trajectory decoder, undermining stable root
+   identity despite improving minADE.
+3. A soft loss evaluated only on a radially hard-projected endpoint has zero radial
+   gradient outside the feasible ball. The interior loss must use the pre-projection
+   integrated endpoint, while the projected trajectory is used for prediction and
+   physical diagnostics.
+
+### Algorithm and engineering changes
+
+1. Corrected the yaw reference frame. Moving-state heading is now derived from the final
+   absolute velocity relative to the base absolute yaw. Exact zero-residual initialization
+   is preserved by using velocity heading only when the learned velocity correction is
+   non-negligible.
+2. Added source-conditioned integrated endpoint budgets: OBS 20 m, NEU 8 m, PRIO 6 m.
+   The complete local acceleration/jerk sequence is scaled and re-integrated, preserving
+   position--velocity consistency rather than clipping the final position.
+3. Added a dimensionless soft interior loss on the **pre-projection** endpoint/budget
+   ratio, with a default interior threshold of 0.75. This gives over-budget controls a
+   radial gradient back toward the feasible interior.
+4. Added diagnostics for projected endpoint, raw endpoint, raw budget ratio, per-source
+   endpoint distributions, and raw boundary-saturation rate. The effectiveness gate now
+   additionally rejects a model when more than 25% of valid modes are at or beyond 95%
+   of their source budget.
+5. Added a controlled `no_integrated_trust_region` ablation. Attribution requires at
+   least 5 m p99 tail reduction without more than 0.15 m OBS regression.
+6. Tightened mechanism promotion: a BCOT operating point with calibration status
+   `least_violation` is no longer accepted. Only a genuinely constraint-satisfying
+   calibration may pass the mechanism gate.
+7. Added v16.4 recovery/full/status/ablation launchers and a revised manuscript that
+   states the model-based intervention limitation, the integrated trust region, the
+   pre-projection interior loss, and the impossibility of replacing a feasibility
+   certificate by an arbitrary finite soft burden penalty.
+
+### Status of the six requested claims after v16.3
+
+- **v15/v16 decoder:** partially supported for the trained v16 CNOB natural module. It
+  clearly improves the analytic basis, but the architecture claim is not fully promoted
+  until the v16.4 physical gate and architecture-level ablations pass.
+- **new loss:** not yet identifiable; the uploaded ablation result root is absent.
+- **OBS residual capacity:** not yet identifiable for the same reason.
+- **natural gate:** validated as an effective safeguard. It accepted useful prediction
+  gains but correctly blocked a physically invalid long-tail solution.
+- **planner:** not evaluated in this strict run because the pipeline stopped before it.
+- **selector:** not evaluated in this strict run for the same reason.
+
+### Local validation
+
+- Full Python unit/regression suite: **113 passed**.
+- Added stopped-agent/rotated-anchor yaw regression.
+- Added hard endpoint-budget and finite-gradient regression.
+- Added regression proving the soft trust loss receives a nonzero gradient from the
+  pre-projection endpoint.
+- Python compilation and all v16.4 shell syntax checks: pass.
+- Revised TeX raw brace balance: zero.
+
+### Promotion rules
+
+- Do not relax the 0.15 rad yaw threshold or 25 m residual-tail threshold to make v16.3
+  pass; rerun v16.4 from a fresh output root.
+- Do not claim the new loss, source-adaptive capacity, or trust region independently
+  effective unless the four-way attribution run passes across at least three seeds.
+- Do not use a `least_violation` calibration as the paper operating point.
+- Do not interpret logged replay as causal evidence that burden was transferred; report
+  it as a learned-mechanism proxy and add reactive-agent plus human-audited stress tests.

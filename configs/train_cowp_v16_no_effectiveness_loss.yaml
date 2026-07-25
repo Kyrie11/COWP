@@ -138,6 +138,8 @@ loss_weights:
   natural_kinematic_yaw: 0.0
   natural_control_smoothness: 0.0
   natural_mode_usage: 0.0
+  natural_residual_trust_region: 0.0
+  natural_residual_trust_soft_ratio: 0.75
   natural_mode_usage_tau_m: 1.5
 model:
   natural_decoder_type: typed_causal_dynamics

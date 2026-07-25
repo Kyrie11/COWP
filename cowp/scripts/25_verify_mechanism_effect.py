@@ -29,8 +29,10 @@ def main():
     unique=len(set(signatures)) if signatures else 0
     main=d.get(args.method,{})
     evaluated_threshold=float(main.get(sweep_kind, float('nan')) or float('nan'))
+    calibration_status='not_provided'
     if args.calibration_json:
         cal=json.load(open(args.calibration_json))
+        calibration_status=str(cal.get('status','unknown'))
         selected=cal.get('selection_metrics', {})
         if isinstance(selected, dict) and selected:
             main=selected
@@ -49,6 +51,8 @@ def main():
         'threshold_points':len(rows),'unique_selection_points':unique,
         'operating_point_kind':sweep_kind,
         'evaluated_operating_point':evaluated_threshold,
+        'calibration_status':calibration_status,
+        'calibration_feasible': calibration_status in {'constraints_satisfied','not_provided'},
         'threshold_connected_to_selection': unique>=args.min_unique_selection_points,
         'learned_accept_ncf_recall':recall,'ncf_recall_pass':recall>=args.min_ncf_recall,
         'witness_auprc':auprc,'witness_auprc_pass':auprc>=args.min_witness_auprc,
@@ -62,7 +66,8 @@ def main():
         'false_safe_improvement_pass':fs_gain>=args.min_false_safe_improvement,
     }
     report['pass']=bool(
-        report['threshold_connected_to_selection'] and report['ncf_recall_pass']
+        report['calibration_feasible']
+        and report['threshold_connected_to_selection'] and report['ncf_recall_pass']
         and report['witness_auprc_pass'] and report['bcot_auprc_pass']
         and report['root_transport_auprc_pass'] and report['accepted_rate_pass']
         and report['fallback_pass'] and report['false_safe_improvement_pass']

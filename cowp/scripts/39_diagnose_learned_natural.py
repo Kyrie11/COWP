@@ -157,6 +157,26 @@ def main() -> None:
             mode_mask = full["critical_mask"][:, :, None]
             vals["residual/endpoint_m"].extend(endpoint[mode_mask.expand_as(endpoint)].cpu().tolist())
             vals["residual/rms_state"].extend(rms[mode_mask.expand_as(rms)].cpu().tolist())
+            if "residual_endpoint_budget_m" in natural:
+                budget = natural["residual_endpoint_budget_m"].float().to(endpoint)[None, None, :]
+                projected_ratio = endpoint / budget.clamp_min(1.0e-6)
+                raw_endpoint = natural.get("raw_residual_endpoint_m", endpoint).float().to(endpoint)
+                raw_ratio = raw_endpoint / budget.clamp_min(1.0e-6)
+                vals["residual/budget_ratio"].extend(raw_ratio[mode_mask.expand_as(raw_ratio)].cpu().tolist())
+                vals["residual/projected_budget_ratio"].extend(
+                    projected_ratio[mode_mask.expand_as(projected_ratio)].cpu().tolist()
+                )
+                vals["residual/raw_endpoint_m"].extend(
+                    raw_endpoint[mode_mask.expand_as(raw_endpoint)].cpu().tolist()
+                )
+                vals["residual/budget_saturated"].extend(
+                    (raw_ratio[mode_mask.expand_as(raw_ratio)] >= 0.95).float().cpu().tolist()
+                )
+                for src in (int(NaturalSource.OBS), int(NaturalSource.NEU), int(NaturalSource.PRIO)):
+                    sm = (mode_source == src)[None, None, :].expand_as(endpoint) & mode_mask.expand_as(endpoint)
+                    vals[f"source_{src}/residual_endpoint_m"].extend(endpoint[sm].cpu().tolist())
+                    vals[f"source_{src}/residual_raw_endpoint_m"].extend(raw_endpoint[sm].cpu().tolist())
+                    vals[f"source_{src}/residual_budget_ratio"].extend(raw_ratio[sm].cpu().tolist())
             if "controls" in natural:
                 controls = natural["controls"].float()
                 ctrl = torch.linalg.norm(controls, dim=-1)

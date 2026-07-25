@@ -641,6 +641,54 @@ def _natural_kinematic_consistency_losses(
     return velocity_loss, yaw_loss, control_loss
 
 
+def _natural_residual_trust_region_losses(
+    pred: dict[str, torch.Tensor],
+    critical_mask: torch.Tensor,
+    soft_ratio: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Penalize residual modes that live close to the hard endpoint boundary.
+
+    The decoder already projects integrated controls into a source-conditioned
+    hard trust region.  This soft interior penalty prevents the optimizer from
+    solving difficult OBS roots by parking a large fraction of modes exactly at
+    that boundary.  Ratios are dimensionless, so unlike the legacy state-space
+    L2 term this objective does not mix metres, radians and m/s in one scale.
+    """
+    traj = _safe_float(pred["traj"])
+    z = _zero_like_loss(traj)
+    residual = pred.get("residual")
+    raw_endpoint = pred.get("raw_residual_endpoint_m")
+    budget = pred.get("residual_endpoint_budget_m")
+    if residual is None or budget is None:
+        return z, z, z
+    # Penalize the *pre-projection* endpoint whenever available.  A loss on the
+    # hard-projected endpoint has zero radial gradient outside the trust region
+    # because ||budget * x / ||x|||| is constant.  Using the raw endpoint lets
+    # the soft term pull saturated controls back into the interior.
+    endpoint = (
+        _safe_float(raw_endpoint)
+        if raw_endpoint is not None
+        else torch.linalg.norm(_safe_float(residual)[..., -1, 0:2], dim=-1)
+    )
+    budget_t = _safe_float(budget).to(endpoint)
+    if budget_t.ndim == 1:
+        budget_t = budget_t[None, None, :]
+    try:
+        budget_t = torch.broadcast_to(budget_t, endpoint.shape)
+    except RuntimeError as exc:
+        raise ValueError(
+            f"residual_endpoint_budget_m shape {tuple(budget_t.shape)} cannot broadcast to {tuple(endpoint.shape)}"
+        ) from exc
+    ratio = endpoint / budget_t.clamp_min(1.0e-6)
+    mode_mask = critical_mask[:, :, None].expand_as(ratio)
+    soft_ratio = min(max(float(soft_ratio), 0.0), 0.99)
+    interior = torch.relu((ratio - soft_ratio) / max(1.0 - soft_ratio, 1.0e-3)).square()
+    penalty = masked_mean(interior, mode_mask)
+    mean_ratio = masked_mean(ratio, mode_mask)
+    saturation_rate = masked_mean((ratio >= 0.95).float(), mode_mask)
+    return penalty, mean_ratio, saturation_rate
+
+
 def _natural_mode_usage_loss(
     typed_pairwise: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor,
     gt_source: torch.Tensor, pred_mode_source: torch.Tensor | None, tau: float, ref: torch.Tensor
@@ -790,6 +838,11 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
             typed_pairwise, mask, nat_weight, gt_source, pred_mode_source,
             tau=float(weights.get("natural_mode_usage_tau_m", 1.5)), ref=pred["traj"],
         )
+        trust_region, trust_ratio, trust_saturation = _natural_residual_trust_region_losses(
+            pred,
+            crit & mask.any(dim=-1),
+            soft_ratio=float(weights.get("natural_residual_trust_soft_ratio", 0.75)),
+        )
 
         h1 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(1.0 / dt)))
         h3 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(3.0 / dt)))
@@ -800,6 +853,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         base_dev_obs = base_dev_neu = base_dev_prio = base_dev
         h1 = h3 = h5 = _zero_like_loss(pred["traj"])
         kin_velocity = kin_yaw = control_smoothness = mode_usage = _zero_like_loss(pred["traj"])
+        trust_region = trust_ratio = trust_saturation = _zero_like_loss(pred["traj"])
         effectiveness = {k: _zero_like_loss(pred["traj"]) for k in (
             "obs_shortfall", "neutral_degradation", "priority_degradation",
             "obs_gain", "neutral_gain", "priority_gain",
@@ -828,6 +882,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         + weights.get("natural_kinematic_yaw", 0.05) * kin_yaw
         + weights.get("natural_control_smoothness", 0.01) * control_smoothness
         + weights.get("natural_mode_usage", 0.02) * mode_usage
+        + weights.get("natural_residual_trust_region", 0.0) * trust_region
     )
     return {
         "loss": total,
@@ -858,6 +913,9 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         "kinematic_yaw": kin_yaw,
         "control_smoothness": control_smoothness,
         "mode_usage": mode_usage,
+        "residual_trust_region": trust_region,
+        "residual_budget_ratio": trust_ratio,
+        "residual_budget_saturation": trust_saturation,
         "minade_1s": h1,
         "minade_3s": h3,
         "minade_5s": h5,

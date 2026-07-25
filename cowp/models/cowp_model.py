@@ -48,6 +48,9 @@ class COWPModel(nn.Module):
             future_steps=int(m.get("future_steps", 80)),
             decoder_type=str(m.get("natural_decoder_type", "temporal_kinematic")),
             obs_capacity_scale=float(m.get("natural_obs_capacity_scale", 1.0)),
+            residual_endpoint_budget_obs_m=float(m.get("natural_residual_endpoint_budget_obs_m", 20.0)),
+            residual_endpoint_budget_neu_m=float(m.get("natural_residual_endpoint_budget_neu_m", 8.0)),
+            residual_endpoint_budget_prio_m=float(m.get("natural_residual_endpoint_budget_prio_m", 6.0)),
         )
         self.response_decoder = ResponseDecoder(
             d_model=d_model,

@@ -25,6 +25,7 @@ def main() -> None:
     ap.add_argument("--max-yaw-error-rad", type=float, default=0.15)
     ap.add_argument("--min-effective-modes", type=float, default=2.0)
     ap.add_argument("--max-residual-endpoint-p99-m", type=float, default=25.0)
+    ap.add_argument("--max-residual-budget-saturation-rate", type=float, default=0.25)
     args = ap.parse_args()
 
     src = json.loads(Path(args.report).read_text(encoding="utf-8"))
@@ -38,6 +39,8 @@ def main() -> None:
         "velocity_error_mps": _mean(src, "kinematic/velocity_error_mps"),
         "yaw_error_rad": _mean(src, "kinematic/yaw_error_rad"),
         "residual_endpoint_p99_m": src.get("distributions", {}).get("residual/endpoint_m", {}).get("p99"),
+        "residual_budget_ratio_p99": src.get("distributions", {}).get("residual/budget_ratio", {}).get("p99"),
+        "residual_budget_saturation_rate": _mean(src, "residual/budget_saturated"),
     }
     eff = [float(v.get("effective_modes", 0.0)) for v in src.get("mode_usage", {}).values()]
     metrics["min_effective_modes"] = min(eff) if eff else 0.0
@@ -59,6 +62,10 @@ def main() -> None:
         "yaw_consistency": present("yaw_error_rad") <= args.max_yaw_error_rad,
         "mode_bank_is_used": present("min_effective_modes") >= args.min_effective_modes,
         "residual_is_bounded": present("residual_endpoint_p99_m") <= args.max_residual_endpoint_p99_m,
+        "residual_not_boundary_saturated": (
+            True if metrics.get("residual_budget_saturation_rate") is None
+            else present("residual_budget_saturation_rate") <= args.max_residual_budget_saturation_rate
+        ),
     }
     report = {
         "pass": bool(all(checks.values())),

@@ -42,6 +42,9 @@ class NaturalDecoder(nn.Module):
         source_count: int = 4,
         decoder_type: str = "typed_kinematic_residual",
         obs_capacity_scale: float = 1.0,
+        residual_endpoint_budget_obs_m: float = 20.0,
+        residual_endpoint_budget_neu_m: float = 8.0,
+        residual_endpoint_budget_prio_m: float = 6.0,
     ):
         super().__init__()
         self.modes = int(modes)
@@ -143,6 +146,24 @@ class NaturalDecoder(nn.Module):
         self.register_buffer("control_jerk_long_scale", jerk_long, persistent=True)
         self.register_buffer("control_jerk_lat_scale", jerk_lat, persistent=True)
         self.register_buffer("control_yaw_rate_scale", yaw_rate_delta, persistent=True)
+
+        # v16.4 source-conditioned trust region.  A bounded instantaneous
+        # acceleration is not enough to bound an 8 s integrated displacement:
+        # a saturated OBS control can still move a mode tens of metres away from
+        # its causal prototype.  The endpoint budget bounds the *integrated*
+        # residual while retaining more freedom for observed motion than for
+        # neutral/priority-preserving roots.  This buffer is non-persistent so
+        # v16.3 checkpoints remain load-compatible and the budget is controlled
+        # entirely by the audited configuration.
+        endpoint_budget = torch.empty(self.modes, dtype=torch.float32)
+        endpoint_budget[obs_mask] = float(residual_endpoint_budget_obs_m)
+        endpoint_budget[neu_mask] = float(residual_endpoint_budget_neu_m)
+        endpoint_budget[prio_mask] = float(residual_endpoint_budget_prio_m)
+        if bool((~(obs_mask | neu_mask | prio_mask)).any()):
+            endpoint_budget[~(obs_mask | neu_mask | prio_mask)] = float(residual_endpoint_budget_neu_m)
+        if not bool(torch.isfinite(endpoint_budget).all()) or bool((endpoint_budget <= 0).any()):
+            raise ValueError(f"Residual endpoint budgets must be finite and positive, got {endpoint_budget.tolist()}")
+        self.register_buffer("residual_endpoint_budget_m", endpoint_budget, persistent=False)
 
     @staticmethod
     def _make_typed_specs(modes: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -272,7 +293,7 @@ class NaturalDecoder(nn.Module):
         anchor7: torch.Tensor,
         base: torch.Tensor,
         dt: float,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Integrate bounded local control corrections around the typed basis.
 
         The returned residual has exactly zero length/width offsets and derives
@@ -316,24 +337,58 @@ class NaturalDecoder(nn.Module):
             accel_local[..., 0:1] * sn + accel_local[..., 1:2] * c,
         ], dim=-1)
 
+        # First integrate the unconstrained correction, then project the complete
+        # control sequence into a source-conditioned trajectory trust region and
+        # re-integrate.  Scaling acceleration/jerk as a whole keeps position and
+        # velocity mutually consistent; clipping position alone would not.
+        velocity_residual_raw = torch.cumsum(a_world * float(dt), dim=3)
+        prev_vr_raw = torch.cat([
+            torch.zeros_like(velocity_residual_raw[..., :1, :]),
+            velocity_residual_raw[..., :-1, :],
+        ], dim=3)
+        position_residual_raw = torch.cumsum(
+            0.5 * (prev_vr_raw + velocity_residual_raw) * float(dt), dim=3
+        )
+        endpoint_raw = torch.linalg.norm(position_residual_raw[..., -1, :], dim=-1)
+        endpoint_budget = self.residual_endpoint_budget_m.to(endpoint_raw)[None, None, :]
+        trust_scale = torch.clamp(endpoint_budget / endpoint_raw.clamp_min(1.0e-6), max=1.0)
+        a_world = a_world * trust_scale[..., None, None]
+        accel_local = accel_local * trust_scale[..., None, None]
+        jerk_cmd = jerk_cmd * trust_scale[..., None, None]
+
         velocity_residual = torch.cumsum(a_world * float(dt), dim=3)
-        prev_vr = torch.cat([torch.zeros_like(velocity_residual[..., :1, :]), velocity_residual[..., :-1, :]], dim=3)
-        position_residual = torch.cumsum(0.5 * (prev_vr + velocity_residual) * float(dt), dim=3)
+        prev_vr = torch.cat([
+            torch.zeros_like(velocity_residual[..., :1, :]),
+            velocity_residual[..., :-1, :],
+        ], dim=3)
+        position_residual = torch.cumsum(
+            0.5 * (prev_vr + velocity_residual) * float(dt), dim=3
+        )
 
         base_vel_abs = anchor7[:, :, None, None, 3:5] + base[..., 3:5]
         total_vel = base_vel_abs + velocity_residual
         speed = torch.linalg.norm(total_vel, dim=-1, keepdim=True)
+        residual_speed = torch.linalg.norm(velocity_residual, dim=-1, keepdim=True)
         velocity_yaw = self._safe_velocity_atan2(total_vel[..., 1:2], total_vel[..., 0:1])
-        base_velocity_yaw = self._safe_velocity_atan2(base_vel_abs[..., 1:2], base_vel_abs[..., 0:1])
-        velocity_yaw_delta = self._wrap_angle(velocity_yaw - base_velocity_yaw)
-        yaw_residual = torch.where(speed > 0.5, velocity_yaw_delta, heading_corr)
+        # ``base`` stores yaw as an offset from the current absolute anchor.  The
+        # final trajectory is ``base_yaw_abs + yaw_residual``.  Therefore the
+        # moving-state residual must be measured against ``base_yaw_abs`` itself,
+        # not against the angle of ``base_vel_abs``.  The old formula double-counted
+        # the anchor heading for stopped/near-stopped prototypes and caused the
+        # observed 0.175 rad yaw-consistency gate failure.
+        velocity_yaw_delta = self._wrap_angle(velocity_yaw - base_yaw_abs)
+        # Preserve the exact analytic-basis initialization: when the learned
+        # velocity correction is identically zero, use the (also zero) integrated
+        # heading correction instead of exposing atan2 round-off at 1e-8 scale.
+        use_velocity_heading = (speed > 0.5) & (residual_speed > 1.0e-6)
+        yaw_residual = torch.where(use_velocity_heading, velocity_yaw_delta, heading_corr)
 
         residual = torch.zeros_like(base)
         residual[..., 0:2] = position_residual
         residual[..., 2:3] = yaw_residual
         residual[..., 3:5] = velocity_residual
         controls = torch.cat([accel_local, yaw_rate_delta, jerk_cmd * gate], dim=-1)
-        return residual, controls
+        return residual, controls, endpoint_raw
 
     def _temporal_kinematic_offsets(
         self,
@@ -389,8 +444,15 @@ class NaturalDecoder(nn.Module):
                 if self.uses_dynamic_residual:
                     if anchor7 is None:
                         raise ValueError(f"decoder_type={self.decoder_type!r} requires anchor7 for dynamics integration")
-                    residual, controls = self._learned_dynamics_residual(mode_latent, anchor7, base, dt)
-                    out.update({"traj": base + residual, "base_traj": base, "residual": residual, "controls": controls})
+                    residual, controls, raw_endpoint = self._learned_dynamics_residual(mode_latent, anchor7, base, dt)
+                    out.update({
+                        "traj": base + residual,
+                        "base_traj": base,
+                        "residual": residual,
+                        "controls": controls,
+                        "raw_residual_endpoint_m": raw_endpoint,
+                        "residual_endpoint_budget_m": self.residual_endpoint_budget_m,
+                    })
                 else:
                     residual = self._learned_residual(mode_latent)
                     out.update({"traj": base + residual, "base_traj": base, "residual": residual})

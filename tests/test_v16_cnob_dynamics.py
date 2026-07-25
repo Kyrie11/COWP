@@ -207,3 +207,94 @@ def test_mode_usage_loss_handles_batch_varying_expanded_mode_source() -> None:
     }
     losses = natural_loss(pred, batch, {"natural_dt": 0.1})
     assert torch.isfinite(losses["mode_usage"])
+
+
+def test_cnob_stopped_agent_yaw_uses_absolute_velocity_heading() -> None:
+    """Regression for the v16.3 stopped-root heading double-counting bug."""
+    decoder = NaturalDecoder(
+        d_model=8,
+        modes=24,
+        future_steps=12,
+        decoder_type="typed_causal_dynamics",
+    )
+    with torch.no_grad():
+        # Produce a forward/lateral acceleration from a stopped, rotated anchor.
+        decoder.temporal_head[-1].bias.copy_(
+            torch.tensor([0.8, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0])
+        )
+    z = torch.randn(1, 1, 8)
+    idx = torch.tensor([[0]])
+    anchor = torch.tensor([[[0.0, 0.0, 0.7, 0.0, 0.0, 4.5, 1.8]]])
+    out = decoder(z, idx, anchor7=anchor, dt=0.1)
+    absolute = out["traj"] + anchor[:, :, None, None, :]
+    speed = torch.linalg.norm(absolute[..., 3:5], dim=-1)
+    moving = speed > 0.5
+    assert bool(moving.any())
+    vel_yaw = torch.atan2(absolute[..., 4], absolute[..., 3])
+    yaw_err = torch.abs(torch.atan2(
+        torch.sin(absolute[..., 2] - vel_yaw),
+        torch.cos(absolute[..., 2] - vel_yaw),
+    ))
+    assert torch.max(yaw_err[moving]).item() < 2.0e-5
+
+
+def test_cnob_integrated_residual_respects_source_endpoint_budgets_and_gradients() -> None:
+    decoder = NaturalDecoder(
+        d_model=8,
+        modes=24,
+        future_steps=80,
+        decoder_type="typed_causal_dynamics",
+        residual_endpoint_budget_obs_m=20.0,
+        residual_endpoint_budget_neu_m=8.0,
+        residual_endpoint_budget_prio_m=6.0,
+    )
+    with torch.no_grad():
+        decoder.temporal_head[-1].bias.copy_(
+            torch.tensor([8.0, 8.0, 0.5, 8.0, 8.0, 0.5, 0.0])
+        )
+    z = torch.randn(2, 2, 8, requires_grad=True)
+    idx = torch.tensor([[0], [1]])
+    anchor = torch.tensor([
+        [[0.0, 0.0, 0.2, 3.0, 0.5, 4.5, 1.8]],
+        [[1.0, 2.0, -0.4, 1.0, -0.2, 4.0, 1.7]],
+    ])
+    out = decoder(z, idx, anchor7=anchor, dt=0.1)
+    endpoint = torch.linalg.norm(out["residual"][..., -1, 0:2], dim=-1)
+    budget = out["residual_endpoint_budget_m"][None, None, :]
+    assert torch.all(endpoint <= budget + 2.0e-4)
+    loss = out["traj"].square().mean() + out["controls"].square().mean()
+    loss.backward()
+    assert z.grad is not None and torch.isfinite(z.grad).all()
+
+
+def test_cnob_soft_trust_region_has_radial_gradient_before_projection() -> None:
+    from cowp.models.losses import _natural_residual_trust_region_losses
+
+    decoder = NaturalDecoder(
+        d_model=8,
+        modes=24,
+        future_steps=80,
+        decoder_type="typed_causal_dynamics",
+        residual_endpoint_budget_obs_m=0.5,
+        residual_endpoint_budget_neu_m=0.5,
+        residual_endpoint_budget_prio_m=0.5,
+    )
+    with torch.no_grad():
+        decoder.temporal_head[-1].bias.copy_(
+            torch.tensor([2.0, 1.5, 0.2, 1.0, 0.8, 0.2, 0.0])
+        )
+    z = torch.randn(1, 1, 8, requires_grad=True)
+    idx = torch.tensor([[0]])
+    anchor = torch.tensor([[[0.0, 0.0, 0.3, 2.0, 0.5, 4.5, 1.8]]])
+    out = decoder(z, idx, anchor7=anchor, dt=0.1)
+    assert torch.max(out["raw_residual_endpoint_m"]).item() > 0.5
+    penalty, mean_ratio, saturation = _natural_residual_trust_region_losses(
+        out, torch.ones(1, 1, dtype=torch.bool), soft_ratio=0.75
+    )
+    assert penalty.item() > 0.0
+    assert mean_ratio.item() > 1.0
+    assert saturation.item() > 0.0
+    penalty.backward()
+    bias_grad = decoder.temporal_head[-1].bias.grad
+    assert bias_grad is not None and torch.isfinite(bias_grad).all()
+    assert bias_grad.abs().sum().item() > 0.0

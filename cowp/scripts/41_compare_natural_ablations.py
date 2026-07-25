@@ -22,6 +22,8 @@ def _metrics(report: dict[str, Any]) -> dict[str, float | None]:
         "obs_gain_8s_m": _mean(report, "source_0/8s/gain"),
         "velocity_error_mps": _mean(report, "kinematic/velocity_error_mps"),
         "yaw_error_rad": _mean(report, "kinematic/yaw_error_rad"),
+        "residual_endpoint_p99_m": report.get("distributions", {}).get("residual/endpoint_m", {}).get("p99"),
+        "residual_budget_saturation_rate": _mean(report, "residual/budget_saturated"),
     }
 
 
@@ -29,17 +31,22 @@ def compare_reports(
     main: dict[str, Any],
     no_loss: dict[str, Any],
     no_obs_capacity: dict[str, Any],
+    no_trust_region: dict[str, Any] | None = None,
     *,
     min_loss_obs_gain_m: float = 0.05,
     min_loss_overall_gain_m: float = 0.02,
     min_capacity_obs_gain_m: float = 0.05,
     max_prior_regression_m: float = 0.15,
+    min_trust_tail_reduction_m: float = 5.0,
+    max_trust_obs_regression_m: float = 0.15,
 ) -> dict[str, Any]:
     rows = {
         "main": _metrics(main),
         "no_effectiveness_loss": _metrics(no_loss),
         "no_obs_capacity_boost": _metrics(no_obs_capacity),
     }
+    if no_trust_region is not None:
+        rows["no_trust_region"] = _metrics(no_trust_region)
 
     def req(group: str, key: str) -> float:
         value = rows[group].get(key)
@@ -66,6 +73,25 @@ def compare_reports(
         "obs_capacity_preserves_neutral": deltas["main_vs_no_capacity_neutral_delta_m"] <= float(max_prior_regression_m),
         "obs_capacity_preserves_priority": deltas["main_vs_no_capacity_priority_delta_m"] <= float(max_prior_regression_m),
     }
+    if no_trust_region is not None:
+        deltas.update({
+            "trust_region_tail_reduction_m": (
+                req("no_trust_region", "residual_endpoint_p99_m")
+                - req("main", "residual_endpoint_p99_m")
+            ),
+            # Positive means the trust region improved OBS error.
+            "trust_region_obs_improvement_m": (
+                req("no_trust_region", "obs_8s_m") - req("main", "obs_8s_m")
+            ),
+        })
+        checks.update({
+            "trust_region_reduces_residual_tail": (
+                deltas["trust_region_tail_reduction_m"] >= float(min_trust_tail_reduction_m)
+            ),
+            "trust_region_does_not_harm_obs": (
+                deltas["trust_region_obs_improvement_m"] >= -float(max_trust_obs_regression_m)
+            ),
+        })
     return {
         "pass": bool(all(checks.values())),
         "checks": checks,
@@ -76,6 +102,8 @@ def compare_reports(
             "min_loss_overall_gain_m": float(min_loss_overall_gain_m),
             "min_capacity_obs_gain_m": float(min_capacity_obs_gain_m),
             "max_prior_regression_m": float(max_prior_regression_m),
+            "min_trust_tail_reduction_m": float(min_trust_tail_reduction_m),
+            "max_trust_obs_regression_m": float(max_trust_obs_regression_m),
         },
         "interpretation": (
             "This is the attribution gate. The main CNOB model must beat a same-decoder loss ablation "
@@ -89,26 +117,37 @@ def main() -> None:
     ap.add_argument("--main", required=True)
     ap.add_argument("--no-effectiveness-loss", required=True)
     ap.add_argument("--no-obs-capacity", required=True)
+    ap.add_argument("--no-trust-region")
     ap.add_argument("--output", required=True)
     ap.add_argument("--min-loss-obs-gain-m", type=float, default=0.05)
     ap.add_argument("--min-loss-overall-gain-m", type=float, default=0.02)
     ap.add_argument("--min-capacity-obs-gain-m", type=float, default=0.05)
     ap.add_argument("--max-prior-regression-m", type=float, default=0.15)
+    ap.add_argument("--min-trust-tail-reduction-m", type=float, default=5.0)
+    ap.add_argument("--max-trust-obs-regression-m", type=float, default=0.15)
     args = ap.parse_args()
     report = compare_reports(
         json.loads(Path(args.main).read_text(encoding="utf-8")),
         json.loads(Path(args.no_effectiveness_loss).read_text(encoding="utf-8")),
         json.loads(Path(args.no_obs_capacity).read_text(encoding="utf-8")),
+        (
+            json.loads(Path(args.no_trust_region).read_text(encoding="utf-8"))
+            if args.no_trust_region else None
+        ),
         min_loss_obs_gain_m=args.min_loss_obs_gain_m,
         min_loss_overall_gain_m=args.min_loss_overall_gain_m,
         min_capacity_obs_gain_m=args.min_capacity_obs_gain_m,
         max_prior_regression_m=args.max_prior_regression_m,
+        min_trust_tail_reduction_m=args.min_trust_tail_reduction_m,
+        max_trust_obs_regression_m=args.max_trust_obs_regression_m,
     )
     report["sources"] = {
         "main": args.main,
         "no_effectiveness_loss": args.no_effectiveness_loss,
         "no_obs_capacity": args.no_obs_capacity,
     }
+    if args.no_trust_region:
+        report["sources"]["no_trust_region"] = args.no_trust_region
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report, indent=2, ensure_ascii=False))

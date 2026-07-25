@@ -20,6 +20,11 @@ model:
   set_transport_response_topk: 8
   natural_decoder_type: typed_causal_dynamics
   natural_obs_capacity_scale: 1.0
+  # v16.4 source-conditioned integrated-residual trust region.  OBS retains
+  # enough room to fit logged curvature; NEU/PRIO stay closer to causal priors.
+  natural_residual_endpoint_budget_obs_m: 20.0
+  natural_residual_endpoint_budget_neu_m: 8.0
+  natural_residual_endpoint_budget_prio_m: 6.0
   allow_label_only_state_fallback: false
   require_explicit_sdc_index: true
 ablation:
