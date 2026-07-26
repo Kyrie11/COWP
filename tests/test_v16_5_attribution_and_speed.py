@@ -52,3 +52,21 @@ def test_frozen_graph_encoding_is_deterministic_and_has_no_grad_graph() -> None:
     assert model.graph.training is False
     assert torch.equal(a["z_agent"], b["z_agent"])
     assert a["z_agent"].requires_grad is False
+
+
+def test_optimizer_excludes_frozen_parameters_and_typed_legacy_head() -> None:
+    import importlib
+
+    train_mod = importlib.import_module("cowp.scripts.03_train")
+    model = COWPModel(_tiny_cfg())
+    frozen = train_mod._freeze_inactive_architecture_branches(model)
+    assert "natural_decoder.head" in frozen
+    assert all(not p.requires_grad for p in model.natural_decoder.head.parameters())
+    for p in model.graph.parameters():
+        p.requires_grad_(False)
+    opt = train_mod._make_adamw_optimizer(model, lr=1e-3, weight_decay=0.0)
+    optimized = {id(p) for group in opt.param_groups for p in group["params"]}
+    assert optimized
+    assert all(id(p) not in optimized for p in model.graph.parameters())
+    assert all(id(p) not in optimized for p in model.natural_decoder.head.parameters())
+    assert all(p.requires_grad for group in opt.param_groups for p in group["params"])

@@ -136,7 +136,7 @@ def test_natural_ablation_comparison_attributes_components() -> None:
     module = importlib.import_module("cowp.scripts.41_compare_natural_ablations")
 
     def report(
-        all_8s: float, obs: float, soft_ratio: float, violation: float,
+        all_8s: float, obs: float, excess_sq: float, violation: float,
         neu: float = 1.0, prio: float = 1.1,
     ) -> dict:
         dist = {}
@@ -144,25 +144,89 @@ def test_natural_ablation_comparison_attributes_components() -> None:
             "all/8s/learned": all_8s, "source_0/8s/learned": obs,
             "source_1/8s/learned": neu, "source_2/8s/learned": prio,
             "all/8s/gain": 0.1, "source_0/8s/gain": 0.2,
-            "residual/soft_path_ratio": soft_ratio,
+            "residual/soft_path_ratio": 0.8,
             "residual/soft_path_violation": violation,
-            "residual/projection_active": 0.01,
+            "residual/soft_path_excess_sq": excess_sq,
+            "residual/projection_active": 0.0,
         }.items():
             dist[key] = {"weighted_mean": value}
         dist["residual/projected_emergency_path_ratio"] = {"p99": 1.0}
-        return {"distributions": dist}
+        ids = list(range(20))
+        return {
+            "checkpoint_epoch": 15,
+            "sampled_scenes": len(ids),
+            "sample_indices_sha256": "same",
+            "decoder_type": "typed_causal_dynamics",
+            "diagnostic_protocol": {"paired_scene_metrics": True},
+            "distributions": dist,
+            "paired_scene_metrics": {
+                "scene_index": ids,
+                "all_8s_m": [all_8s] * len(ids),
+                "obs_8s_m": [obs] * len(ids),
+                "neutral_8s_m": [neu] * len(ids),
+                "priority_8s_m": [prio] * len(ids),
+                "mass_soft_path_ratio": [0.8] * len(ids),
+                "mass_soft_path_violation": [violation] * len(ids),
+                "mass_soft_path_excess_sq": [excess_sq] * len(ids),
+            },
+        }
 
     result = module.compare_reports(
-        report(2.0, 3.0, 0.80, 0.10),
-        report(2.05, 3.1, 0.82, 0.11),
-        report(2.03, 3.05, 0.90, 0.16),
-        min_capacity_obs_gain_m=0.05,
-        min_mass_ratio_reduction=0.03,
-        min_mass_violation_reduction=0.02,
+        report(2.0, 3.0, 0.10, 0.10),
+        report(2.01, 3.05, 0.11, 0.11),
+        report(2.03, 3.08, 0.16, 0.16),
+        bootstrap_samples=200,
     )
     assert result["pass"] is True
-    assert result["checks"]["obs_capacity_improves_obs"] is True
-    assert result["checks"]["mass_envelope_reduces_probability_weighted_ratio"] is True
+    assert result["checks"]["same_checkpoint_epoch"] is True
+    assert result["checks"]["obs_capacity_directionally_improves_obs"] is True
+    assert result["checks"]["mass_envelope_reduces_exact_excess_objective"] is True
+    assert result["paper_claim_ready"] is False
+
+
+def test_natural_ablation_comparison_rejects_mismatched_epoch() -> None:
+    import importlib
+
+    module = importlib.import_module("cowp.scripts.41_compare_natural_ablations")
+    ids = list(range(5))
+
+    def report(epoch: int, obs: float, excess: float, violation: float) -> dict:
+        def row(v: float) -> dict:
+            return {"weighted_mean": v}
+        return {
+            "checkpoint_epoch": epoch,
+            "sampled_scenes": len(ids),
+            "sample_indices_sha256": "same",
+            "decoder_type": "typed_causal_dynamics",
+            "diagnostic_protocol": {"paired_scene_metrics": True},
+            "distributions": {
+                "all/8s/learned": row(obs), "source_0/8s/learned": row(obs),
+                "source_1/8s/learned": row(1.0), "source_2/8s/learned": row(1.0),
+                "all/8s/gain": row(0.1), "source_0/8s/gain": row(0.1),
+                "residual/soft_path_ratio": row(0.8),
+                "residual/soft_path_violation": row(violation),
+                "residual/soft_path_excess_sq": row(excess),
+                "residual/projection_active": row(0.0),
+                "residual/projected_emergency_path_ratio": {"p99": 1.0},
+            },
+            "paired_scene_metrics": {
+                "scene_index": ids, "all_8s_m": [obs] * len(ids),
+                "obs_8s_m": [obs] * len(ids), "neutral_8s_m": [1.0] * len(ids),
+                "priority_8s_m": [1.0] * len(ids),
+                "mass_soft_path_ratio": [0.8] * len(ids),
+                "mass_soft_path_violation": [violation] * len(ids),
+                "mass_soft_path_excess_sq": [excess] * len(ids),
+            },
+        }
+
+    result = module.compare_reports(
+        report(15, 2.0, 0.1, 0.1),
+        report(19, 2.1, 0.11, 0.11),
+        report(19, 2.1, 0.2, 0.2),
+        bootstrap_samples=200,
+    )
+    assert result["pass"] is False
+    assert result["checks"]["same_checkpoint_epoch"] is False
 
 def test_mode_usage_loss_supports_realistic_agent_mode_root_dimensions() -> None:
     """Regression for the v16 A=6/M=24 broadcast failure seen before epoch -1."""

@@ -911,18 +911,17 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
                 return value if math.isfinite(value) else default
             except Exception:
                 return default
+        # Component-neutral checkpoint score.  v16.5 included total loss and
+        # regularizers that are intentionally absent in an ablation, so every arm
+        # selected a different training time for partly tautological reasons.  The
+        # score below uses only prediction quantities shared by every arm; the
+        # attribution script still enforces the exact same checkpoint epoch.
         score = (
-            0.40 * gn("natural/traj")
-            + 0.20 * gn("natural/obs_minade")
-            + 0.12 * gn("natural/branch_minade")
-            + 0.08 * gn("natural/residual_obs_shortfall")
-            + 0.06 * gn("natural/neutral_consistency")
-            + 0.05 * gn("natural/kinematic_velocity")
-            + 0.03 * gn("natural/kinematic_yaw")
-            + 0.03 * gn("natural/mode_usage")
-            + 0.03 * total
+            0.55 * gn("natural/traj")
+            + 0.30 * gn("natural/obs_minade")
+            + 0.15 * gn("natural/branch_minade")
         )
-        return float(score), "natural_basis_composite"
+        return float(score), "natural_common_prediction_composite"
     if stage == "witness":
         def gw(name: str, default: float = 1.0) -> float:
             try:
@@ -1032,6 +1031,32 @@ def _set_stage_freeze(
             param.requires_grad_(not frozen)
 
 
+def _freeze_inactive_architecture_branches(model: torch.nn.Module) -> list[str]:
+    """Freeze checkpoint-compatible branches unused by the selected architecture.
+
+    The typed natural decoders retain the legacy dense trajectory head only so old
+    checkpoints can be loaded.  Keeping those parameters trainable forces DDP to
+    search for unused parameters every iteration and makes the AdamW parameter
+    groups larger without changing a single output.
+    """
+    core = model.module if hasattr(model, "module") else model
+    frozen: list[str] = []
+    decoder = getattr(core, "natural_decoder", None)
+    if decoder is not None and bool(getattr(decoder, "uses_typed_basis", False)):
+        legacy_head = getattr(decoder, "head", None)
+        if legacy_head is not None:
+            for param in legacy_head.parameters():
+                param.requires_grad_(False)
+            frozen.append("natural_decoder.head")
+    return frozen
+
+
+def _parameter_counts(model: torch.nn.Module) -> tuple[int, int]:
+    total = sum(int(p.numel()) for p in model.parameters())
+    trainable = sum(int(p.numel()) for p in model.parameters() if p.requires_grad)
+    return trainable, total
+
+
 def _load_existing_history(path: Path, *, before_epoch: int | None = None) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -1098,16 +1123,27 @@ def _make_checkpoint_payload(
 
 
 def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: float, fused: bool = False) -> torch.optim.Optimizer:
-    """Create AdamW, using fused CUDA implementation when available/requested."""
+    """Create AdamW over trainable parameters only.
+
+    Natural-stage v16.5 froze the graph after constructing AdamW, so optimizer
+    state and foreach/fused bookkeeping still included millions of permanently
+    frozen parameters.  Filtering here is safe for the natural stage because its
+    permanent freeze is now applied before optimizer construction.  Witness and
+    planner warm-up parameters remain trainable at construction and therefore stay
+    in the optimizer for their later unfreeze.
+    """
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        raise ValueError("Cannot create AdamW: model has no trainable parameters")
     kwargs: dict[str, Any] = {"lr": float(lr), "weight_decay": float(weight_decay)}
     if fused and torch.cuda.is_available():
         try:
-            return torch.optim.AdamW(model.parameters(), fused=True, **kwargs)
+            return torch.optim.AdamW(params, fused=True, **kwargs)
         except TypeError:
             pass
         except RuntimeError as exc:
             print(f"Warning: fused AdamW unavailable, falling back to standard AdamW: {exc}")
-    return torch.optim.AdamW(model.parameters(), **kwargs)
+    return torch.optim.AdamW(params, **kwargs)
 
 
 def _maybe_compile_model(model: COWPModel, enabled: bool, backend: str | None = None) -> torch.nn.Module:
@@ -1366,12 +1402,64 @@ def main() -> None:
     if args.resume:
         resume_ckpt = torch.load(args.resume, map_location=device)
         _load_model_state_robust(model, resume_ckpt["model"], reset_prefixes=tuple(args.reset_checkpoint_prefix))
+
+    # Apply architecture and permanent stage freezes *before* DDP and AdamW.
+    # v16.5 did this only inside the epoch loop, so DDP searched for unused
+    # parameters every batch and AdamW still tracked permanently frozen modules.
+    inactive_branches = _freeze_inactive_architecture_branches(model)
+    natural_unfreeze_epoch = int(
+        args.natural_graph_unfreeze_epoch
+        if args.natural_graph_unfreeze_epoch is not None
+        else tcfg.get("natural_graph_unfreeze_epoch", -1)
+    )
+    permanent_natural_freeze = bool(
+        stage in {"natural", "representation"}
+        and bool(tcfg.get("freeze_graph_during_natural", False))
+        and natural_unfreeze_epoch < 0
+    )
+    if stage in {"natural", "representation"}:
+        _set_stage_freeze(
+            model,
+            stage,
+            False,
+            freeze_natural_during_witness=bool(tcfg.get("freeze_natural_during_witness", False)),
+            freeze_graph_during_natural=permanent_natural_freeze,
+        )
+    trainable_params, total_params = _parameter_counts(model)
+    _rank0_print(
+        f"Parameter policy before DDP: trainable={trainable_params:,}/{total_params:,} "
+        f"({100.0 * trainable_params / max(total_params, 1):.2f}%), "
+        f"permanent_natural_freeze={permanent_natural_freeze}, "
+        f"inactive_branches={inactive_branches}"
+    )
+
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
-        ddp_kwargs = {"find_unused_parameters": True}
+        # A permanently frozen natural stage has a static trainable graph after
+        # the legacy head is disabled, so the expensive unused-parameter graph
+        # traversal is unnecessary.  Other stages retain the conservative mode
+        # because their warm-up freeze changes over time.
+        static_natural_ddp = bool(permanent_natural_freeze and stage in {"natural", "representation"})
+        ddp_kwargs: dict[str, Any] = {
+            "find_unused_parameters": not static_natural_ddp,
+        }
+        if static_natural_ddp:
+            ddp_kwargs.update({"static_graph": True, "gradient_as_bucket_view": True})
         if device.type == "cuda":
             ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
-        model = DDP(model, **ddp_kwargs)
+        try:
+            model = DDP(model, **ddp_kwargs)
+        except TypeError:
+            # Compatibility with older PyTorch versions lacking static_graph or
+            # gradient_as_bucket_view.  Keep the safe no-unused traversal choice.
+            ddp_kwargs.pop("static_graph", None)
+            ddp_kwargs.pop("gradient_as_bucket_view", None)
+            model = DDP(model, **ddp_kwargs)
+        _rank0_print(
+            f"DDP policy: find_unused_parameters={ddp_kwargs.get('find_unused_parameters')}, "
+            f"static_graph={ddp_kwargs.get('static_graph', False)}, "
+            f"gradient_as_bucket_view={ddp_kwargs.get('gradient_as_bucket_view', False)}"
+        )
     opt = _make_adamw_optimizer(
         model,
         lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),

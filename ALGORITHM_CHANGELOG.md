@@ -5,6 +5,119 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.6 — Protocol-Aligned Attribution, Exact Identity Objective, and Natural-Stage Systems Repair
+
+### Why the v16.5 attribution gate failed
+
+The uploaded v16.5 artifacts are numerically healthy: the strict natural-basis and
+natural-effectiveness gates passed, optimizer steps were non-zero, AMP skips were zero,
+and the graph remained frozen.  The failed attribution JSON nevertheless mixed two
+engineering/protocol defects with the component question:
+
+1. The main external diagnostic evaluated the selected **epoch 15** checkpoint, while
+   both ablations evaluated their own **epoch 19** best checkpoints.  The result was
+   therefore not an equal-training-time comparison.  At the shared validation epoch 15,
+   main versus no-OBS-capacity improved OBS minADE by **0.05149 m** and overall natural
+   trajectory loss by **0.02718 m**.  Main versus no-envelope improved OBS minADE by
+   **0.11406 m**, overall trajectory loss by **0.03647 m**, and the exact validation
+   identity penalty by **0.32689**.
+2. The v16.5 gate required the probability-weighted *mean path ratio* to fall by 0.03,
+   although the implemented loss optimizes the floor-smoothed probability-weighted
+   **squared excess above the interior margin**.  The uploaded own-best reports showed
+   only 0.01119 mean-ratio reduction, but a 0.06651 absolute reduction in violating
+   probability mass (about 32.5%) and simultaneous OBS/overall improvement.  The old
+   primary check was therefore not aligned with the trained objective.
+
+Consequently, the uploaded gate failure does **not** establish that either component is
+ineffective.  It establishes that the v16.5 attribution protocol was insufficient to
+make the claim.  Final component evidence must be regenerated at a common checkpoint
+and on paired scenes.
+
+### Attribution correction
+
+- All three arms are diagnosed at the epoch selected by the main model; an ablation may
+  no longer substitute its own best epoch.
+- Reports include a deterministic sampled-scene hash and scene-level paired metrics.
+- The identity component is evaluated with the exact squared-excess objective optimized
+  in training, probability mass outside the soft envelope, emergency-envelope p99, and
+  prediction non-regression.  Mean path ratio remains diagnostic only.
+- Paired bootstrap confidence intervals are emitted for OBS/overall error, exact excess,
+  and violation mass.
+- `pass` is explicitly a **development continuation gate**: it allows transport/planner
+  evidence collection when isolated components are active and non-harmful.  A separate
+  `paper_claim_ready` field remains false until at least three independent seeds provide
+  publication-level evidence.
+- `RUN_NATURAL_ATTRIBUTION_V16_6_CN.sh` can reuse existing epoch checkpoints and rerun
+  only the aligned diagnostics; if an exact ablation checkpoint is absent, it retrains
+  that arm only to the main-selected epoch with `save-every=1`.
+
+### Natural-stage training-system corrections
+
+- Permanent natural-stage freezing and inactive architecture freezing are applied before
+  DDP and AdamW construction.
+- The checkpoint-compatible legacy dense natural head is frozen for typed decoders.
+- AdamW tracks only trainable parameters; permanently frozen graph/candidate/witness
+  modules no longer allocate optimizer bookkeeping.
+- Permanently frozen natural training uses static DDP with unused-parameter traversal
+  disabled when supported by the installed PyTorch.
+- Natural checkpoint selection now uses a component-neutral common prediction score
+  (`traj`, `OBS minADE`, and branch minADE) rather than total loss or terms removed by an
+  ablation.  Attribution still requires an identical epoch even with this fairer score.
+
+### Held-out calibration and downstream evidence repair
+
+The v16.5 full-pipeline launcher swept and calibrated the candidate BCOT budget on
+`VAL_CACHE`, then reported selector/mechanism metrics on the same cache.  Moreover,
+`25_verify_mechanism_effect.py` replaced the held-out method metrics with
+`calibration.selection_metrics`, and `30_diagnose_bcot_result.py` did the same.  This
+created calibration/evaluation leakage and could overstate AUPRC, NCF recall, accepted
+rate, fallback and false-safe improvement.
+
+v16.6 therefore:
+
+- deterministically partitions learned-offline validation scenes by dataset index;
+  remainder 0 of modulo 2 is calibration-only and remainder 1 is held-out-only;
+- records partition modulus, remainder, scene count and an index SHA-256 in every
+  learned-offline metrics row;
+- chooses the BCOT operating point only from the calibration partition;
+- evaluates COWP and internal baselines only on the disjoint held-out partition;
+- rejects mechanism verification unless the deterministic partitions prove
+  calibration/held-out disjointness and the held-out operating point equals the
+  calibrated budget;
+- prevents calibration metrics from overriding held-out metrics in readiness/gate
+  reports.
+- reports scene-level proposal/certificate coverage (`AnyNCF`, `AnyAccepted`,
+  `AnyAcceptedNCF`, empty-certificate rate and NCF scene retention) so low accepted
+  rate or high fallback can be attributed to the proposal bank versus the certificate.
+
+This is an evaluation-validity correction, not an algorithmic performance claim.  It
+may lower reported numbers, but those numbers are the ones suitable for deciding which
+selector or transport component actually needs improvement.
+
+### Paper correction
+
+The v16.5 main text correctly introduced a probability-mass-aware multi-horizon semantic
+envelope, but its appendix still described the rejected v16.4 endpoint trust ball and
+referenced a deleted equation.  v16.6 makes the manuscript match the code:
+
+- defines the pre-projection maximum path ratio and the normalized squared-excess loss;
+- uses the same floor-smoothed detached mass as OPR;
+- distinguishes the semantic soft envelope from the wider emergency projection;
+- evaluates exact excess and violating mass in attribution;
+- labels conformal expansion as an unimplemented optional extension;
+- prevents single-seed continuation gates from being presented as paper-level evidence.
+
+### Current status and decision
+
+- **OBS capacity:** directionally supported across the common validation trajectory, but
+  external paired epoch-15 diagnostics are still required before a component claim.
+- **Mass-aware root envelope:** strongly supported as an active regularizer by lower
+  exact validation penalty and violation mass without prediction harm; paired aligned
+  diagnostics remain required for formal attribution.
+- **Full pipeline:** may run only after the v16.6 aligned development gate passes.  The
+  resulting transport/planner/Waymax outputs are evidence collection, not automatic SOTA.
+- **Regression tests:** 119 passed; TeX compiles successfully (bibliography not bundled).
+
 ## v16.5 — Probability-Mass-Aware Natural Root Identity and Fair Attribution
 
 ### Why v16.4 was not promoted

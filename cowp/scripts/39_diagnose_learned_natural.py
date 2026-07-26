@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from collections import defaultdict
@@ -106,6 +107,10 @@ def main() -> None:
     weighted_den: dict[str, float] = defaultdict(float)
     assignment_mass = np.zeros(model.natural_decoder.modes, dtype=np.float64)
     counts = defaultdict(int)
+    paired_scene: dict[str, list[float | int | None]] = defaultdict(list)
+    scene_cursor = 0
+    loss_cfg = cfg.get("loss_weights", {})
+    trust_soft_ratio = min(max(float(loss_cfg.get("natural_residual_trust_soft_ratio", 0.75)), 0.0), 0.99)
 
     iterator = tqdm_iter(dl, enabled=not args.no_progress, total=len(dl), desc="learned natural", unit="batch")
     with torch.no_grad():
@@ -125,8 +130,12 @@ def main() -> None:
             valid = batch["cowp/natural/valid"].bool() & full["critical_mask"][:, :, None]
             weight = torch.nan_to_num(batch["cowp/natural/weight"].float(), nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
             mode_source = natural["mode_source"]
-            counts["scenes"] += int(learned.shape[0])
+            batch_scenes = int(learned.shape[0])
+            batch_scene_indices = idxs[scene_cursor: scene_cursor + batch_scenes]
+            scene_cursor += batch_scenes
+            counts["scenes"] += batch_scenes
             counts["roots"] += int(valid.sum())
+            paired_scene["scene_index"].extend(int(x) for x in batch_scene_indices)
 
             for sec, steps in horizons.items():
                 lp = _typed_pairwise(learned, gt, source, mode_source, steps)
@@ -150,6 +159,17 @@ def main() -> None:
                     best_mode = lp.argmin(dim=2)
                     for m in range(model.natural_decoder.modes):
                         assignment_mass[m] += float((weight * valid.float() * (best_mode == m).float()).sum().cpu())
+                    for b in range(batch_scenes):
+                        for key, src in (("all_8s_m", None), ("obs_8s_m", int(NaturalSource.OBS)),
+                                         ("neutral_8s_m", int(NaturalSource.NEU)),
+                                         ("priority_8s_m", int(NaturalSource.PRIO))):
+                            sm = valid[b] if src is None else (valid[b] & (source[b] == src))
+                            sw = weight[b][sm]
+                            sv = lb[b][sm]
+                            if int(sw.numel()) and float(sw.sum().cpu()) > 0.0:
+                                paired_scene[key].append(float((sv * sw).sum().cpu() / sw.sum().cpu()))
+                            else:
+                                paired_scene[key].append(None)
 
             residual = natural["residual"].float()
             endpoint = torch.linalg.norm(residual[..., -1, :2], dim=-1)
@@ -191,19 +211,35 @@ def main() -> None:
                     "residual_projection_scale", torch.ones_like(soft_path_ratio)
                 ).float()
                 mm = mode_mask.expand_as(soft_path_ratio)
+                violation = (soft_path_ratio > 1.0).float()
+                excess = torch.relu((soft_path_ratio - trust_soft_ratio) / max(1.0 - trust_soft_ratio, 1.0e-3))
+                excess_sq = excess.square()
                 vals["residual/soft_path_ratio"].extend(soft_path_ratio[mm].cpu().tolist())
-                vals["residual/soft_path_violation"].extend((soft_path_ratio[mm] > 1.0).float().cpu().tolist())
+                vals["residual/soft_path_violation"].extend(violation[mm].cpu().tolist())
+                vals["residual/soft_path_excess"].extend(excess[mm].cpu().tolist())
+                vals["residual/soft_path_excess_sq"].extend(excess_sq[mm].cpu().tolist())
                 vals["residual/projected_emergency_path_ratio"].extend(emergency_path_ratio[mm].cpu().tolist())
                 vals["residual/projection_active"].extend((projection_scale[mm] < 0.999).float().cpu().tolist())
                 mode_prob = torch.softmax(natural["logits"].float(), dim=-1)
+                mass = mode_prob * mm.float()
                 for key, tensor in (
                     ("residual/soft_path_ratio", soft_path_ratio),
-                    ("residual/soft_path_violation", (soft_path_ratio > 1.0).float()),
+                    ("residual/soft_path_violation", violation),
+                    ("residual/soft_path_excess", excess),
+                    ("residual/soft_path_excess_sq", excess_sq),
                     ("residual/projected_emergency_path_ratio", emergency_path_ratio),
                     ("residual/projection_active", (projection_scale < 0.999).float()),
                 ):
-                    weighted_sum[key] += float((tensor * mode_prob * mm.float()).sum().cpu())
-                    weighted_den[key] += float((mode_prob * mm.float()).sum().cpu())
+                    weighted_sum[key] += float((tensor * mass).sum().cpu())
+                    weighted_den[key] += float(mass.sum().cpu())
+                den_scene = mass.sum(dim=(1, 2)).clamp_min(1.0e-6)
+                for key, tensor in (
+                    ("mass_soft_path_ratio", soft_path_ratio),
+                    ("mass_soft_path_violation", violation),
+                    ("mass_soft_path_excess_sq", excess_sq),
+                ):
+                    scene_value = (tensor * mass).sum(dim=(1, 2)) / den_scene
+                    paired_scene[key].extend(float(x) for x in scene_value.detach().cpu().tolist())
 
             if "controls" in natural:
                 controls = natural["controls"].float()
@@ -241,11 +277,18 @@ def main() -> None:
         "checkpoint_epoch": ckpt.get("epoch"),
         "cache_dir": str(Path(args.cache_dir)),
         "sampled_scenes": len(idxs),
+        "sample_indices_sha256": hashlib.sha256(np.asarray(idxs, dtype=np.int64).tobytes()).hexdigest(),
+        "diagnostic_protocol": {
+            "paired_scene_metrics": True,
+            "trust_soft_ratio": trust_soft_ratio,
+            "source_restricted_matching": True,
+        },
         "decoder_type": model.natural_decoder.decoder_type,
         "decoder_family": "typed_causal_dynamics" if model.natural_decoder.uses_dynamic_residual else "typed_residual",
         "counts": dict(counts),
         "distributions": distributions,
         "mode_usage": usage,
+        "paired_scene_metrics": dict(paired_scene),
         "interpretation": (
             "Positive gain means the learned decoder improves the exact analytic basis under source-restricted matching. "
             "This diagnostic is required before attributing performance to residual capacity or the new losses."

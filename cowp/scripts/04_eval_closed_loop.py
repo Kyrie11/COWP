@@ -76,6 +76,9 @@ def main() -> None:
     ap.add_argument("--num-workers", type=int, default=0, help="DataLoader workers for learned_offline cache loading.")
     ap.add_argument("--prefetch-factor", type=int, default=2, help="Batches prefetched per learned_offline DataLoader worker.")
     ap.add_argument("--pin-memory", action=argparse.BooleanOptionalAction, default=None, help="Pin learned_offline host tensors. Default: enabled only for CUDA evaluation.")
+    ap.add_argument("--learned-subset-modulo", type=int, default=1, help="Deterministic learned_offline partition modulus; use disjoint remainders for calibration and held-out evaluation.")
+    ap.add_argument("--learned-subset-remainder", type=int, default=0, help="Deterministic learned_offline partition remainder in [0, modulo).")
+    ap.add_argument("--learned-max-scenes", type=int, default=None, help="Optional cap after deterministic learned_offline partitioning.")
     ap.add_argument("--witness-threshold", type=float, default=0.5, help="Pair-level coercion witness threshold; independent of the candidate BCOT risk budget.")
     ap.add_argument("--bcot-risk-budget", type=float, default=None, help="Candidate-level BCOT risk budget. Defaults to planning.candidate_transport_budget.")
     ap.add_argument("--bcot-risk-budget-sweep", default=None, help="Comma-separated candidate BCOT budgets. Keeps the pair-witness threshold fixed and reuses one model/cache pass.")
@@ -166,6 +169,9 @@ def main() -> None:
                 adaptive_frontier_margin=args.adaptive_frontier_margin,
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
+                subset_modulo=args.learned_subset_modulo,
+                subset_remainder=args.learned_subset_remainder,
+                max_scenes=args.learned_max_scenes,
             )
             target_budget = float(
                 args.bcot_risk_budget
@@ -212,6 +218,9 @@ def main() -> None:
                 adaptive_frontier_margin=args.adaptive_frontier_margin,
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
+                subset_modulo=args.learned_subset_modulo,
+                subset_remainder=args.learned_subset_remainder,
+                max_scenes=args.learned_max_scenes,
             )
             payload = {
                 method_name: min(rows, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
@@ -253,6 +262,9 @@ def main() -> None:
                 adaptive_frontier_margin=args.adaptive_frontier_margin,
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
+                subset_modulo=args.learned_subset_modulo,
+                subset_remainder=args.learned_subset_remainder,
+                max_scenes=args.learned_max_scenes,
             )
             metrics = min(sweep, key=lambda m: abs(float(m.get("witness_threshold", 0.5)) - float(args.witness_threshold)))
             payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "priority_hard_threshold": args.priority_hard_threshold, "offline_fallback": args.offline_fallback, "witness_threshold_sweep": sweep}
@@ -279,6 +291,9 @@ def main() -> None:
                 adaptive_frontier_margin=args.adaptive_frontier_margin,
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
+                subset_modulo=args.learned_subset_modulo,
+                subset_remainder=args.learned_subset_remainder,
+                max_scenes=args.learned_max_scenes,
             )
             payload = {args.method: metrics, "mode": "learned_offline", "checkpoint": args.checkpoint, "ncf_gate_mode": args.ncf_gate_mode, "priority_hard_threshold": args.priority_hard_threshold, "offline_fallback": args.offline_fallback}
     else:

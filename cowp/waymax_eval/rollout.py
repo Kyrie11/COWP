@@ -1186,6 +1186,14 @@ class _LearnedMetricsAccumulator:
         self.cert_accepted_count = 0
         self.cert_accepted_risk_sum = 0.0
         self.cert_accepted_pressure_sum = 0.0
+        # Scene-level coverage decomposition. Candidate-level acceptance alone
+        # cannot tell whether fallback is caused by proposal coverage or by an
+        # over-restrictive certificate/selector.
+        self.scene_any_valid = 0
+        self.scene_any_conventional_safe = 0
+        self.scene_any_ncf = 0
+        self.scene_any_accepted = 0
+        self.scene_any_accepted_ncf = 0
 
     def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
         self.selected_total += 1
@@ -1197,6 +1205,11 @@ class _LearnedMetricsAccumulator:
         fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & valid
         conv = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool) & valid
         accepted = _align_candidate_vector(accepted_mask, len(valid), fill_value=False, dtype=bool) & valid
+        self.scene_any_valid += int(bool(valid.any()))
+        self.scene_any_conventional_safe += int(bool(conv.any()))
+        self.scene_any_ncf += int(bool(ncf.any()))
+        self.scene_any_accepted += int(bool(accepted.any()))
+        self.scene_any_accepted_ncf += int(bool((accepted & ncf).any()))
         if selected_idx >= 0 and selected_idx < len(valid):
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
@@ -1258,6 +1271,13 @@ class _LearnedMetricsAccumulator:
         metrics["LearnedAcceptedCandidateRate"] = float(self.accepted_total / max(self.valid_total, 1))
         metrics["LearnedAcceptNCFRecall"] = float(self.accepted_ncf / max(self.total_ncf, 1))
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
+        metrics["ProposalCoverage/AnyValidSceneRate"] = float(self.scene_any_valid / max(self.selected_total, 1))
+        metrics["ProposalCoverage/AnyConventionalSafeSceneRate"] = float(self.scene_any_conventional_safe / max(self.selected_total, 1))
+        metrics["ProposalCoverage/AnyNCFSceneRate"] = float(self.scene_any_ncf / max(self.selected_total, 1))
+        metrics["CertificateCoverage/AnyAcceptedSceneRate"] = float(self.scene_any_accepted / max(self.selected_total, 1))
+        metrics["CertificateCoverage/AnyAcceptedNCFSceneRate"] = float(self.scene_any_accepted_ncf / max(self.selected_total, 1))
+        metrics["CertificateCoverage/EmptySceneRate"] = float(1.0 - self.scene_any_accepted / max(self.selected_total, 1))
+        metrics["CertificateCoverage/NCFSceneRetention"] = float(self.scene_any_accepted_ncf / max(self.scene_any_ncf, 1))
         metrics["WitnessQuality/AUPRC"] = float(auprc)
         metrics["PlannerRankingPairAccuracy"] = float(rank_good / max(rank_total, 1)) if rank_total else 0.0
         if self.selected_waymax_valid > 0:
@@ -1312,9 +1332,12 @@ def _learned_offline_candidate_eval_many(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    subset_modulo: int = 1,
+    subset_remainder: int = 0,
+    max_scenes: int | None = None,
 ) -> dict | dict[str, dict]:
     import torch
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, Subset
 
     from cowp.data.dataset import TorchCOWPDataset, collate_torch
     configure_dataloader_runtime()
@@ -1348,10 +1371,25 @@ def _learned_offline_candidate_eval_many(
 
     # Use the stage-filtered evaluation view.  This avoids reading dense response
     # targets and broad waymax/* tensors that are irrelevant for planner eval.
-    ds = TorchCOWPDataset(
+    base_ds = TorchCOWPDataset(
         cache_dir, stage="planner_eval",
         include_response_traj=False, include_response_components=False,
     )
+    modulo = max(int(subset_modulo), 1)
+    remainder = int(subset_remainder)
+    if not 0 <= remainder < modulo:
+        raise ValueError(f"subset_remainder must be in [0, subset_modulo), got {remainder}/{modulo}")
+    subset_indices = [i for i in range(len(base_ds)) if i % modulo == remainder]
+    if max_scenes is not None and int(max_scenes) > 0:
+        subset_indices = subset_indices[: int(max_scenes)]
+    if not subset_indices:
+        raise ValueError(
+            f"learned-offline subset is empty: size={len(base_ds)} modulo={modulo} remainder={remainder}"
+        )
+    ds = base_ds if modulo == 1 and len(subset_indices) == len(base_ds) else Subset(base_ds, subset_indices)
+    subset_signature = __import__("hashlib").sha256(
+        np.asarray(subset_indices, dtype=np.int64).tobytes()
+    ).hexdigest()
     workers = max(int(num_workers), 0)
     use_pin_memory = bool(dev.type == "cuda") if pin_memory is None else bool(pin_memory)
     dl_kwargs = {
@@ -1585,6 +1623,10 @@ def _learned_offline_candidate_eval_many(
             row["BCOT/RiskRankingPairAccuracy"] = float(
                 transport_rank_good / max(transport_rank_total, 1)
             ) if transport_rank_total else 0.0
+            row["EvaluationSubset/Modulo"] = int(modulo)
+            row["EvaluationSubset/Remainder"] = int(remainder)
+            row["EvaluationSubset/Scenes"] = int(len(subset_indices))
+            row["EvaluationSubset/IndexSHA256"] = subset_signature
     if all_pair_scores.size:
         qs = np.quantile(all_pair_scores, [0.1, 0.5, 0.9, 0.99])
         for method_out in out_by_method.values():
@@ -1626,6 +1668,9 @@ def learned_offline_candidate_eval(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    subset_modulo: int = 1,
+    subset_remainder: int = 0,
+    max_scenes: int | None = None,
 ) -> dict[str, object]:
     return _learned_offline_candidate_eval_many(
         cache_dir,
@@ -1649,6 +1694,9 @@ def learned_offline_candidate_eval(
         adaptive_frontier_margin=adaptive_frontier_margin,
         outcome_risk_penalty=outcome_risk_penalty,
         outcome_risk_threshold=outcome_risk_threshold,
+        subset_modulo=subset_modulo,
+        subset_remainder=subset_remainder,
+        max_scenes=max_scenes,
     )[float(witness_threshold)]
 
 
@@ -1675,6 +1723,9 @@ def learned_offline_candidate_eval_sweep(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    subset_modulo: int = 1,
+    subset_remainder: int = 0,
+    max_scenes: int | None = None,
 ) -> list[dict[str, object]]:
     out = _learned_offline_candidate_eval_many(
         cache_dir,
@@ -1698,6 +1749,9 @@ def learned_offline_candidate_eval_sweep(
         adaptive_frontier_margin=adaptive_frontier_margin,
         outcome_risk_penalty=outcome_risk_penalty,
         outcome_risk_threshold=outcome_risk_threshold,
+        subset_modulo=subset_modulo,
+        subset_remainder=subset_remainder,
+        max_scenes=max_scenes,
     )
     return [out[th] for th in sorted(out)]
 
@@ -1725,6 +1779,9 @@ def learned_offline_candidate_eval_budget_sweep(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    subset_modulo: int = 1,
+    subset_remainder: int = 0,
+    max_scenes: int | None = None,
 ) -> list[dict[str, object]]:
     """Sweep the candidate BCOT budget from one shared model/cache pass.
 
@@ -1755,6 +1812,9 @@ def learned_offline_candidate_eval_budget_sweep(
         adaptive_frontier_margin=adaptive_frontier_margin,
         outcome_risk_penalty=outcome_risk_penalty,
         outcome_risk_threshold=outcome_risk_threshold,
+        subset_modulo=subset_modulo,
+        subset_remainder=subset_remainder,
+        max_scenes=max_scenes,
     )
     rows = [row for (_, _), row in sorted(nested.items(), key=lambda kv: kv[0][1])]
     return rows
@@ -1783,6 +1843,9 @@ def learned_offline_candidate_eval_methods(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    subset_modulo: int = 1,
+    subset_remainder: int = 0,
+    max_scenes: int | None = None,
 ) -> dict[str, list[dict[str, object]]]:
     """Evaluate multiple internal methods from one shared model/cache pass."""
     nested = _learned_offline_candidate_eval_many(
@@ -1807,6 +1870,9 @@ def learned_offline_candidate_eval_methods(
         adaptive_frontier_margin=adaptive_frontier_margin,
         outcome_risk_penalty=outcome_risk_penalty,
         outcome_risk_threshold=outcome_risk_threshold,
+        subset_modulo=subset_modulo,
+        subset_remainder=subset_remainder,
+        max_scenes=max_scenes,
     )
     return {
         method_name: [method_out[th] for th in sorted(method_out)]
