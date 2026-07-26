@@ -99,10 +99,37 @@ def _masked_softmax_low_score(scores: torch.Tensor, mask: torch.Tensor) -> torch
 
 
 def _pairwise_ade(pred_traj: torch.Tensor, gt_traj: torch.Tensor) -> torch.Tensor:
-    """Pairwise ADE [B,A,M_pred,M_gt], computed once and reused."""
+    """Pairwise ADE [B,A,M_pred,M_gt]."""
     pred_f = _safe_float(pred_traj)
     gt_f = _safe_float(gt_traj)
-    return torch.linalg.norm(pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1).mean(dim=-1)
+    return torch.linalg.norm(
+        pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1
+    ).mean(dim=-1)
+
+
+def _pairwise_ade_horizons(
+    pred_traj: torch.Tensor,
+    gt_traj: torch.Tensor,
+    horizon_steps: tuple[int, ...],
+) -> dict[int, torch.Tensor]:
+    """Compute all requested ADE horizons from one pairwise distance tensor.
+
+    v16.4 materialized the same [B,A,M_pred,M_gt,T] displacement tensor four
+    times (8 s plus 1/3/5 s).  The cumulative reduction below keeps the exact
+    objective while removing three large repeated kernels and allocations.
+    """
+    pred_f = _safe_float(pred_traj)
+    gt_f = _safe_float(gt_traj)
+    distance = torch.linalg.norm(
+        pred_f[:, :, :, None, :, :2] - gt_f[:, :, None, :, :, :2], dim=-1
+    )
+    cumulative = distance.cumsum(dim=-1)
+    total_steps = int(distance.shape[-1])
+    out: dict[int, torch.Tensor] = {}
+    for requested in sorted(set(int(x) for x in horizon_steps)):
+        steps = max(1, min(requested, total_steps))
+        out[requested] = cumulative[..., steps - 1] / float(steps)
+    return out
 
 
 def _focal_bce_values(logits: torch.Tensor, target: torch.Tensor, gamma: float = 2.0, alpha: float = 0.25) -> torch.Tensor:
@@ -645,49 +672,47 @@ def _natural_residual_trust_region_losses(
     pred: dict[str, torch.Tensor],
     critical_mask: torch.Tensor,
     soft_ratio: float,
+    *,
+    mode_temperature: float = 1.0,
+    probability_floor: float = 0.02,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Penalize residual modes that live close to the hard endpoint boundary.
+    """Probability-mass-aware, multi-horizon root-identity regularization.
 
-    The decoder already projects integrated controls into a source-conditioned
-    hard trust region.  This soft interior penalty prevents the optimizer from
-    solving difficult OBS roots by parking a large fraction of modes exactly at
-    that boundary.  Ratios are dimensionless, so unlike the legacy state-space
-    L2 term this objective does not mix metres, radians and m/s in one scale.
+    The v16.4 endpoint ball treated every root identically and hard-clipped OBS
+    modes that needed a larger physically plausible deviation.  COWP's OPR is a
+    retained *probability mass* statement, so identity protection should focus on
+    probability-carrying roots over the whole horizon.  The decoder separately
+    enforces a wider emergency envelope for every mode.
+
+    Mode probabilities are detached in this regularizer.  The mixture NLL still
+    learns the logits, but the network cannot evade the geometric constraint by
+    simply assigning zero probability to a violating trajectory.
     """
     traj = _safe_float(pred["traj"])
     z = _zero_like_loss(traj)
-    residual = pred.get("residual")
-    raw_endpoint = pred.get("raw_residual_endpoint_m")
-    budget = pred.get("residual_endpoint_budget_m")
-    if residual is None or budget is None:
+    ratio = pred.get("raw_residual_soft_path_ratio")
+    logits = pred.get("logits")
+    if ratio is None or logits is None:
         return z, z, z
-    # Penalize the *pre-projection* endpoint whenever available.  A loss on the
-    # hard-projected endpoint has zero radial gradient outside the trust region
-    # because ||budget * x / ||x|||| is constant.  Using the raw endpoint lets
-    # the soft term pull saturated controls back into the interior.
-    endpoint = (
-        _safe_float(raw_endpoint)
-        if raw_endpoint is not None
-        else torch.linalg.norm(_safe_float(residual)[..., -1, 0:2], dim=-1)
-    )
-    budget_t = _safe_float(budget).to(endpoint)
-    if budget_t.ndim == 1:
-        budget_t = budget_t[None, None, :]
-    try:
-        budget_t = torch.broadcast_to(budget_t, endpoint.shape)
-    except RuntimeError as exc:
+    ratio_f = _safe_float(ratio)
+    logits_f = _safe_float(logits)
+    if ratio_f.shape != logits_f.shape:
         raise ValueError(
-            f"residual_endpoint_budget_m shape {tuple(budget_t.shape)} cannot broadcast to {tuple(endpoint.shape)}"
-        ) from exc
-    ratio = endpoint / budget_t.clamp_min(1.0e-6)
-    mode_mask = critical_mask[:, :, None].expand_as(ratio)
+            f"raw_residual_soft_path_ratio shape {tuple(ratio_f.shape)} must match logits {tuple(logits_f.shape)}"
+        )
+    temperature = max(float(mode_temperature), 1.0e-3)
+    prob = F.softmax(logits_f / temperature, dim=-1).detach()
+    floor = min(max(float(probability_floor), 0.0), 0.25)
+    if floor > 0.0:
+        uniform = torch.full_like(prob, 1.0 / max(int(prob.shape[-1]), 1))
+        prob = (1.0 - floor) * prob + floor * uniform
+    mode_mask = critical_mask[:, :, None].expand_as(ratio_f)
     soft_ratio = min(max(float(soft_ratio), 0.0), 0.99)
-    interior = torch.relu((ratio - soft_ratio) / max(1.0 - soft_ratio, 1.0e-3)).square()
-    penalty = masked_mean(interior, mode_mask)
-    mean_ratio = masked_mean(ratio, mode_mask)
-    saturation_rate = masked_mean((ratio >= 0.95).float(), mode_mask)
-    return penalty, mean_ratio, saturation_rate
-
+    excess = torch.relu((ratio_f - soft_ratio) / max(1.0 - soft_ratio, 1.0e-3))
+    penalty = weighted_masked_mean(excess.square(), mode_mask, prob)
+    mean_ratio = weighted_masked_mean(ratio_f, mode_mask, prob)
+    saturation = weighted_masked_mean((ratio_f >= 1.0).float(), mode_mask, prob)
+    return penalty, mean_ratio, saturation
 
 def _natural_mode_usage_loss(
     typed_pairwise: torch.Tensor, valid: torch.Tensor, weight: torch.Tensor,
@@ -721,12 +746,20 @@ def _natural_mode_usage_loss(
     return total / max(branches, 1)
 
 
-def _diversity_loss(pred_traj: torch.Tensor, crit_mask: torch.Tensor, tau: float = 4.0) -> torch.Tensor:
+def _diversity_loss(
+    pred_traj: torch.Tensor,
+    crit_mask: torch.Tensor,
+    tau: float = 4.0,
+    temporal_stride: int = 4,
+) -> torch.Tensor:
     B, A, M = pred_traj.shape[:3]
     if M <= 1 or not crit_mask.any():
         return _zero_like_loss(pred_traj)
-    xy = _safe_float(pred_traj)[..., :2]
-    d = torch.linalg.norm(xy[:, :, :, None, :, :] - xy[:, :, None, :, :, :], dim=-1).mean(dim=-1)
+    stride = max(int(temporal_stride), 1)
+    xy = _safe_float(pred_traj)[..., ::stride, :2]
+    d = torch.linalg.norm(
+        xy[:, :, :, None, :, :] - xy[:, :, None, :, :, :], dim=-1
+    ).mean(dim=-1)
     eye = torch.eye(M, device=pred_traj.device, dtype=torch.bool)[None, None]
     pair_mask = crit_mask[:, :, None, None] & ~eye
     collapse = torch.exp(-d / max(float(tau), 1e-6))
@@ -747,7 +780,15 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
             posinf=float(NaturalSource.PAD), neginf=float(NaturalSource.PAD),
         ).long().clamp(0, int(NaturalSource.PAD))
         nat_weight = _nonnegative_weight(batch["cowp/natural/weight"])
-        pairwise_ade = _pairwise_ade(pred["traj"], gt_traj)
+        dt = float(weights.get("natural_dt", 0.1))
+        total_steps = int(min(pred["traj"].shape[-2], gt_traj.shape[-2]))
+        h1_steps = max(1, round(1.0 / dt))
+        h3_steps = max(1, round(3.0 / dt))
+        h5_steps = max(1, round(5.0 / dt))
+        pairwise_by_horizon = _pairwise_ade_horizons(
+            pred["traj"], gt_traj, (total_steps, h1_steps, h3_steps, h5_steps)
+        )
+        pairwise_ade = pairwise_by_horizon[total_steps]
         typed_pairwise = _typed_pairwise_ade(pairwise_ade, gt_source, pred_mode_source)
 
         # Untyped coverage is retained as a diagnostic; the optimized objective is
@@ -798,7 +839,14 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         else:
             neu_cons = _zero_like_loss(pred["traj"])
 
-        div = _diversity_loss(pred["traj"], crit & mask.any(dim=-1), tau=float(weights.get("natural_diversity_tau", 4.0)))
+        if float(weights.get("diversity_loss", weights.get("diversity", 0.05))) > 0.0:
+            div = _diversity_loss(
+                pred["traj"], crit & mask.any(dim=-1),
+                tau=float(weights.get("natural_diversity_tau", 4.0)),
+                temporal_stride=int(weights.get("natural_diversity_temporal_stride", 4)),
+            )
+        else:
+            div = _zero_like_loss(pred["traj"])
         if "base_traj" in pred:
             base_per_mode = _trajectory_ade(pred["traj"], pred["base_traj"])
             mode_valid = (crit & mask.any(dim=-1))[:, :, None]
@@ -827,26 +875,56 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         else:
             residual_l2 = _zero_like_loss(pred["traj"])
 
-        effectiveness = _natural_residual_effectiveness_losses(
-            pred, gt_traj, mask, nat_weight, gt_source, pred_mode_source, typed_pairwise, weights
+        effectiveness_enabled = bool(weights.get("natural_compute_effectiveness_metrics", True)) or any(
+            float(weights.get(k, 0.0)) > 0.0
+            for k in (
+                "natural_obs_gain", "natural_neutral_preservation",
+                "natural_priority_preservation",
+            )
         )
-        dt = float(weights.get("natural_dt", 0.1))
-        kin_velocity, kin_yaw, control_smoothness = _natural_kinematic_consistency_losses(
-            pred, crit & mask.any(dim=-1), dt
+        if effectiveness_enabled:
+            effectiveness = _natural_residual_effectiveness_losses(
+                pred, gt_traj, mask, nat_weight, gt_source, pred_mode_source, typed_pairwise, weights
+            )
+        else:
+            effectiveness = {k: _zero_like_loss(pred["traj"]) for k in (
+                "obs_shortfall", "neutral_degradation", "priority_degradation",
+                "obs_gain", "neutral_gain", "priority_gain",
+            )}
+
+        kinematic_enabled = any(
+            float(weights.get(k, 0.0)) > 0.0
+            for k in ("natural_kinematic_velocity", "natural_kinematic_yaw", "natural_control_smoothness")
         )
-        mode_usage = _natural_mode_usage_loss(
-            typed_pairwise, mask, nat_weight, gt_source, pred_mode_source,
-            tau=float(weights.get("natural_mode_usage_tau_m", 1.5)), ref=pred["traj"],
-        )
+        if kinematic_enabled:
+            kin_velocity, kin_yaw, control_smoothness = _natural_kinematic_consistency_losses(
+                pred, crit & mask.any(dim=-1), dt
+            )
+        else:
+            kin_velocity = kin_yaw = control_smoothness = _zero_like_loss(pred["traj"])
+
+        if float(weights.get("natural_mode_usage", 0.0)) > 0.0:
+            mode_usage = _natural_mode_usage_loss(
+                typed_pairwise, mask, nat_weight, gt_source, pred_mode_source,
+                tau=float(weights.get("natural_mode_usage_tau_m", 1.5)), ref=pred["traj"],
+            )
+        else:
+            mode_usage = _zero_like_loss(pred["traj"])
+
         trust_region, trust_ratio, trust_saturation = _natural_residual_trust_region_losses(
             pred,
             crit & mask.any(dim=-1),
             soft_ratio=float(weights.get("natural_residual_trust_soft_ratio", 0.75)),
+            mode_temperature=float(weights.get("natural_residual_trust_mode_temperature", 1.0)),
+            probability_floor=float(weights.get("natural_residual_trust_probability_floor", 0.02)),
         )
 
-        h1 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(1.0 / dt)))
-        h3 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(3.0 / dt)))
-        h5 = _set_minade_at_steps(pred["traj"], gt_traj, mask, nat_weight, gt_source, pred_mode_source, max(1, round(5.0 / dt)))
+        h1_pair = _typed_pairwise_ade(pairwise_by_horizon[h1_steps], gt_source, pred_mode_source)
+        h3_pair = _typed_pairwise_ade(pairwise_by_horizon[h3_steps], gt_source, pred_mode_source)
+        h5_pair = _typed_pairwise_ade(pairwise_by_horizon[h5_steps], gt_source, pred_mode_source)
+        h1 = _weighted_set_minade_from_pairwise(h1_pair, mask, nat_weight, pred["traj"])
+        h3 = _weighted_set_minade_from_pairwise(h3_pair, mask, nat_weight, pred["traj"])
+        h5 = _weighted_set_minade_from_pairwise(h5_pair, mask, nat_weight, pred["traj"])
     else:
         traj = untyped_traj = mode = source_ce = source_distribution = priority_loss = branch_minade = neu_cons = div = _zero_like_loss(pred["traj"])
         obs_minade = neu_minade = prio_minade = base_dev = residual_l2 = _zero_like_loss(pred["traj"])

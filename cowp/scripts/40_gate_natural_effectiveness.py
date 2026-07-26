@@ -11,8 +11,13 @@ def _mean(report: dict, key: str) -> float | None:
     return None if value is None else float(value)
 
 
+def _p99(report: dict, key: str) -> float | None:
+    value = report.get("distributions", {}).get(key, {}).get("p99")
+    return None if value is None else float(value)
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Hard gate proving that the learned natural residual is useful and physical.")
+    ap = argparse.ArgumentParser(description="Hard gate for a useful, physical, root-identifiable natural decoder.")
     ap.add_argument("--report", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--max-learned-8s-m", type=float, default=2.5)
@@ -24,8 +29,9 @@ def main() -> None:
     ap.add_argument("--max-velocity-error-mps", type=float, default=0.25)
     ap.add_argument("--max-yaw-error-rad", type=float, default=0.15)
     ap.add_argument("--min-effective-modes", type=float, default=2.0)
-    ap.add_argument("--max-residual-endpoint-p99-m", type=float, default=25.0)
-    ap.add_argument("--max-residual-budget-saturation-rate", type=float, default=0.25)
+    ap.add_argument("--max-mass-soft-path-ratio", type=float, default=1.20)
+    ap.add_argument("--max-mass-soft-path-violation", type=float, default=0.25)
+    ap.add_argument("--max-emergency-path-ratio-p99", type=float, default=1.001)
     args = ap.parse_args()
 
     src = json.loads(Path(args.report).read_text(encoding="utf-8"))
@@ -38,33 +44,41 @@ def main() -> None:
         "priority_gain_8s_m": _mean(src, "source_2/8s/gain"),
         "velocity_error_mps": _mean(src, "kinematic/velocity_error_mps"),
         "yaw_error_rad": _mean(src, "kinematic/yaw_error_rad"),
-        "residual_endpoint_p99_m": src.get("distributions", {}).get("residual/endpoint_m", {}).get("p99"),
-        "residual_budget_ratio_p99": src.get("distributions", {}).get("residual/budget_ratio", {}).get("p99"),
-        "residual_budget_saturation_rate": _mean(src, "residual/budget_saturated"),
+        "mass_soft_path_ratio": _mean(src, "residual/soft_path_ratio"),
+        "mass_soft_path_violation": _mean(src, "residual/soft_path_violation"),
+        "emergency_path_ratio_p99": _p99(src, "residual/projected_emergency_path_ratio"),
+        "projection_active_mass": _mean(src, "residual/projection_active"),
+        "residual_endpoint_p99_m": _p99(src, "residual/endpoint_m"),
     }
     eff = [float(v.get("effective_modes", 0.0)) for v in src.get("mode_usage", {}).values()]
     metrics["min_effective_modes"] = min(eff) if eff else 0.0
 
-    def present(name: str) -> float:
+    def le(name: str, threshold: float) -> bool:
         value = metrics.get(name)
-        if value is None:
-            raise ValueError(f"Required learned-natural metric is absent: {name}")
-        return float(value)
+        return value is not None and float(value) <= float(threshold)
+
+    def ge(name: str, threshold: float) -> bool:
+        value = metrics.get(name)
+        return value is not None and float(value) >= float(threshold)
 
     checks = {
-        "learned_absolute_quality": present("learned_8s_m") <= args.max_learned_8s_m,
-        "obs_absolute_quality": present("obs_8s_m") <= args.max_obs_8s_m,
-        "residual_improves_overall": present("overall_gain_8s_m") >= args.min_overall_gain_8s_m,
-        "residual_improves_obs": present("obs_gain_8s_m") >= args.min_obs_gain_8s_m,
-        "neutral_prior_preserved": present("neutral_gain_8s_m") >= -args.max_neutral_degradation_8s_m,
-        "priority_prior_preserved": present("priority_gain_8s_m") >= -args.max_priority_degradation_8s_m,
-        "velocity_consistency": present("velocity_error_mps") <= args.max_velocity_error_mps,
-        "yaw_consistency": present("yaw_error_rad") <= args.max_yaw_error_rad,
-        "mode_bank_is_used": present("min_effective_modes") >= args.min_effective_modes,
-        "residual_is_bounded": present("residual_endpoint_p99_m") <= args.max_residual_endpoint_p99_m,
-        "residual_not_boundary_saturated": (
-            True if metrics.get("residual_budget_saturation_rate") is None
-            else present("residual_budget_saturation_rate") <= args.max_residual_budget_saturation_rate
+        "learned_absolute_quality": le("learned_8s_m", args.max_learned_8s_m),
+        "obs_absolute_quality": le("obs_8s_m", args.max_obs_8s_m),
+        "residual_improves_overall": ge("overall_gain_8s_m", args.min_overall_gain_8s_m),
+        "residual_improves_obs": ge("obs_gain_8s_m", args.min_obs_gain_8s_m),
+        "neutral_prior_preserved": ge("neutral_gain_8s_m", -args.max_neutral_degradation_8s_m),
+        "priority_prior_preserved": ge("priority_gain_8s_m", -args.max_priority_degradation_8s_m),
+        "velocity_consistency": le("velocity_error_mps", args.max_velocity_error_mps),
+        "yaw_consistency": le("yaw_error_rad", args.max_yaw_error_rad),
+        "mode_bank_is_used": ge("min_effective_modes", args.min_effective_modes),
+        "probability_mass_stays_in_soft_root_envelope": le(
+            "mass_soft_path_ratio", args.max_mass_soft_path_ratio
+        ),
+        "soft_root_envelope_violation_is_limited": le(
+            "mass_soft_path_violation", args.max_mass_soft_path_violation
+        ),
+        "all_modes_respect_emergency_physical_envelope": le(
+            "emergency_path_ratio_p99", args.max_emergency_path_ratio_p99
         ),
     }
     report = {
@@ -74,8 +88,8 @@ def main() -> None:
         "thresholds": vars(args) | {"report": None, "output": None},
         "source_report": args.report,
         "failure_interpretation": (
-            "A failure means the decoder/loss/capacity claim is not supported. Do not continue to transport/planner "
-            "merely because the absolute natural gate passed."
+            "A failure means the natural foundation is not yet both predictive and root-identifiable. "
+            "Do not continue to transport/planner for a paper claim."
         ),
     }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

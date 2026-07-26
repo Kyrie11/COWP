@@ -98,6 +98,9 @@ def test_effectiveness_gate_rejects_inert_residual(tmp_path):
             "kinematic/velocity_error_mps": {"mean": 0.01},
             "kinematic/yaw_error_rad": {"mean": 0.01},
             "residual/endpoint_m": {"p99": 0.0},
+            "residual/soft_path_ratio": {"weighted_mean": 0.0},
+            "residual/soft_path_violation": {"weighted_mean": 0.0},
+            "residual/projected_emergency_path_ratio": {"p99": 0.0},
         },
         "mode_usage": {f"source_{i}": {"effective_modes": 3.0} for i in range(3)},
     }
@@ -132,26 +135,34 @@ def test_natural_ablation_comparison_attributes_components() -> None:
 
     module = importlib.import_module("cowp.scripts.41_compare_natural_ablations")
 
-    def report(all_8s: float, obs: float, neu: float = 1.0, prio: float = 1.1) -> dict:
+    def report(
+        all_8s: float, obs: float, soft_ratio: float, violation: float,
+        neu: float = 1.0, prio: float = 1.1,
+    ) -> dict:
         dist = {}
         for key, value in {
             "all/8s/learned": all_8s, "source_0/8s/learned": obs,
             "source_1/8s/learned": neu, "source_2/8s/learned": prio,
             "all/8s/gain": 0.1, "source_0/8s/gain": 0.2,
-            "kinematic/velocity_error_mps": 0.02, "kinematic/yaw_error_rad": 0.01,
+            "residual/soft_path_ratio": soft_ratio,
+            "residual/soft_path_violation": violation,
+            "residual/projection_active": 0.01,
         }.items():
-            dist[key] = {"mean": value}
+            dist[key] = {"weighted_mean": value}
+        dist["residual/projected_emergency_path_ratio"] = {"p99": 1.0}
         return {"distributions": dist}
 
     result = module.compare_reports(
-        report(2.0, 3.0), report(2.1, 3.1), report(2.05, 3.1),
-        min_loss_obs_gain_m=0.05, min_loss_overall_gain_m=0.02,
-        min_capacity_obs_gain_m=0.05, max_prior_regression_m=0.15,
+        report(2.0, 3.0, 0.80, 0.10),
+        report(2.05, 3.1, 0.82, 0.11),
+        report(2.03, 3.05, 0.90, 0.16),
+        min_capacity_obs_gain_m=0.05,
+        min_mass_ratio_reduction=0.03,
+        min_mass_violation_reduction=0.02,
     )
     assert result["pass"] is True
-    assert result["checks"]["new_loss_improves_obs"] is True
     assert result["checks"]["obs_capacity_improves_obs"] is True
-
+    assert result["checks"]["mass_envelope_reduces_probability_weighted_ratio"] is True
 
 def test_mode_usage_loss_supports_realistic_agent_mode_root_dimensions() -> None:
     """Regression for the v16 A=6/M=24 broadcast failure seen before epoch -1."""
@@ -260,8 +271,9 @@ def test_cnob_integrated_residual_respects_source_endpoint_budgets_and_gradients
     ])
     out = decoder(z, idx, anchor7=anchor, dt=0.1)
     endpoint = torch.linalg.norm(out["residual"][..., -1, 0:2], dim=-1)
-    budget = out["residual_endpoint_budget_m"][None, None, :]
-    assert torch.all(endpoint <= budget + 2.0e-4)
+    emergency_budget = out["residual_emergency_budget_m"][None, None, :]
+    assert torch.all(endpoint <= emergency_budget + 2.0e-4)
+    assert torch.max(out["projected_residual_emergency_path_ratio"]).item() <= 1.0 + 2.0e-4
     loss = out["traj"].square().mean() + out["controls"].square().mean()
     loss.backward()
     assert z.grad is not None and torch.isfinite(z.grad).all()

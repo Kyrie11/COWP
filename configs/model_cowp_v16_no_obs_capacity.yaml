@@ -23,6 +23,11 @@ model:
   natural_residual_endpoint_budget_obs_m: 20.0
   natural_residual_endpoint_budget_neu_m: 8.0
   natural_residual_endpoint_budget_prio_m: 6.0
+  natural_residual_emergency_budget_obs_m: 48.0
+  natural_residual_emergency_budget_neu_m: 16.0
+  natural_residual_emergency_budget_prio_m: 12.0
+  natural_residual_envelope_exponent: 1.35
+  natural_residual_envelope_floor_ratio: 0.10
   allow_label_only_state_fallback: false
   require_explicit_sdc_index: true
 ablation:

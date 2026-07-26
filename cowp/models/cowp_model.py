@@ -51,6 +51,11 @@ class COWPModel(nn.Module):
             residual_endpoint_budget_obs_m=float(m.get("natural_residual_endpoint_budget_obs_m", 20.0)),
             residual_endpoint_budget_neu_m=float(m.get("natural_residual_endpoint_budget_neu_m", 8.0)),
             residual_endpoint_budget_prio_m=float(m.get("natural_residual_endpoint_budget_prio_m", 6.0)),
+            residual_emergency_budget_obs_m=float(m.get("natural_residual_emergency_budget_obs_m", 48.0)),
+            residual_emergency_budget_neu_m=float(m.get("natural_residual_emergency_budget_neu_m", 16.0)),
+            residual_emergency_budget_prio_m=float(m.get("natural_residual_emergency_budget_prio_m", 12.0)),
+            residual_envelope_exponent=float(m.get("natural_residual_envelope_exponent", 1.35)),
+            residual_envelope_floor_ratio=float(m.get("natural_residual_envelope_floor_ratio", 0.10)),
         )
         self.response_decoder = ResponseDecoder(
             d_model=d_model,
@@ -247,6 +252,27 @@ class COWPModel(nn.Module):
         safe_mask = critical_mask.bool() & in_range & visible
         return safe_idx, safe_mask
 
+    @staticmethod
+    def _module_is_frozen(module: nn.Module) -> bool:
+        params = tuple(module.parameters())
+        return bool(params) and all(not p.requires_grad for p in params)
+
+    def _encode_graph(self, *args, **kwargs) -> dict[str, torch.Tensor]:
+        """Run a frozen graph without autograd or dropout noise.
+
+        v16.4 changed ``requires_grad`` but then called ``model.train(True)``,
+        which re-enabled graph dropout and still built unnecessary autograd
+        bookkeeping.  A natural-stage component ablation must see the same fixed
+        representation in every arm.  This helper makes the implementation match
+        that experimental contract and reduces backward memory/time.
+        """
+        frozen = self._module_is_frozen(self.graph)
+        if frozen:
+            self.graph.eval()
+        ctx = torch.no_grad() if frozen else nullcontext()
+        with ctx:
+            return self.graph(*args, **kwargs)
+
     def forward(
         self,
         batch: dict[str, torch.Tensor],
@@ -300,7 +326,7 @@ class COWPModel(nn.Module):
         )
 
         if need_natural:
-            enc_scene = self.graph(
+            enc_scene = self._encode_graph(
                 enc_history,
                 agent_mask,
                 None,
@@ -312,7 +338,7 @@ class COWPModel(nn.Module):
 
         if need_candidate_context:
             assert cand_traj is not None and cand_mask is not None and enc_candidates is not None
-            enc_cond = self.graph(
+            enc_cond = self._encode_graph(
                 enc_history,
                 agent_mask,
                 enc_candidates,

@@ -177,6 +177,34 @@ def main() -> None:
                     vals[f"source_{src}/residual_endpoint_m"].extend(endpoint[sm].cpu().tolist())
                     vals[f"source_{src}/residual_raw_endpoint_m"].extend(raw_endpoint[sm].cpu().tolist())
                     vals[f"source_{src}/residual_budget_ratio"].extend(raw_ratio[sm].cpu().tolist())
+            # v16.5 mass-aware root-identity diagnostics.  OPR is defined on
+            # retained probability mass, so the weighted mean/violation rate is
+            # the relevant semantic metric; the unweighted distribution remains
+            # useful for detecting pathological low-mass exploratory modes.
+            if "raw_residual_soft_path_ratio" in natural:
+                soft_path_ratio = natural["raw_residual_soft_path_ratio"].float()
+                emergency_path_ratio = natural.get(
+                    "projected_residual_emergency_path_ratio",
+                    torch.zeros_like(soft_path_ratio),
+                ).float()
+                projection_scale = natural.get(
+                    "residual_projection_scale", torch.ones_like(soft_path_ratio)
+                ).float()
+                mm = mode_mask.expand_as(soft_path_ratio)
+                vals["residual/soft_path_ratio"].extend(soft_path_ratio[mm].cpu().tolist())
+                vals["residual/soft_path_violation"].extend((soft_path_ratio[mm] > 1.0).float().cpu().tolist())
+                vals["residual/projected_emergency_path_ratio"].extend(emergency_path_ratio[mm].cpu().tolist())
+                vals["residual/projection_active"].extend((projection_scale[mm] < 0.999).float().cpu().tolist())
+                mode_prob = torch.softmax(natural["logits"].float(), dim=-1)
+                for key, tensor in (
+                    ("residual/soft_path_ratio", soft_path_ratio),
+                    ("residual/soft_path_violation", (soft_path_ratio > 1.0).float()),
+                    ("residual/projected_emergency_path_ratio", emergency_path_ratio),
+                    ("residual/projection_active", (projection_scale < 0.999).float()),
+                ):
+                    weighted_sum[key] += float((tensor * mode_prob * mm.float()).sum().cpu())
+                    weighted_den[key] += float((mode_prob * mm.float()).sum().cpu())
+
             if "controls" in natural:
                 controls = natural["controls"].float()
                 ctrl = torch.linalg.norm(controls, dim=-1)

@@ -5,6 +5,92 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.5 — Probability-Mass-Aware Natural Root Identity and Fair Attribution
+
+### Why v16.4 was not promoted
+
+The v16.4 natural recovery checkpoint learned successfully, and the yaw reference-frame
+repair removed the v16.3 heading inconsistency.  However, the v16.4 attribution gate did
+not isolate all claimed components and therefore could not support the paper claims:
+
+- v16.4 main 8 s weighted ADE: **1.2339 m**; OBS: **2.9174 m**;
+- `no_effectiveness_loss`: **1.2159 m** overall; **2.8724 m** OBS;
+- `no_obs_capacity_boost`: **1.2599 m** overall; **3.0522 m** OBS;
+- `no_integrated_trust_region`: **1.1700 m** overall; **2.6159 m** OBS;
+- the fixed endpoint trust region reduced residual endpoint p99 from **46.709 m**
+  to **20.000 m**, but worsened OBS ADE by **0.3014 m**;
+- the OBS capacity boost improved OBS ADE by **0.1348 m** and is retained.
+
+Two engineering defects invalidated a literal interpretation of the v16.4 loss ablation:
+
+1. `train_cowp_v16_no_effectiveness_loss.yaml` removed several unrelated terms at once
+   (OBS gain, neutral/priority preservation, kinematic, smoothness, mode-use and trust),
+   so it was not a one-factor control.
+2. Natural launchers claimed to freeze the graph backbone but silently unfroze it after
+   two epochs.  Frozen epochs also inherited training-mode dropout after `model.train()`,
+   making representations stochastic and forcing unnecessary graph gradients later.
+
+### Algorithm change
+
+v16.5 keeps the typed causal dynamics decoder and source-adaptive OBS capacity, but
+replaces the fixed endpoint trust ball with **probability-mass-aware, multi-horizon root
+identity preservation**:
+
+1. Each source receives a soft multi-horizon envelope over 1/3/5/8 s displacement.
+2. The soft identity loss is weighted by detached mode probability (with a small floor),
+   so probability-carrying roots are constrained consistently with OPR retained-mass
+   semantics and the network cannot evade the constraint by changing logits.
+3. A wider emergency envelope is applied to every mode as a hard projection.  It is a
+   numerical/physical guard, not the semantic definition of a natural root.
+4. The unsupported explicit OBS-gain and prior-preservation bundle is disabled in the
+   main v16.5 objective.  Source-adaptive capacity is tested by an isolated control.
+5. Redundant velocity/yaw consistency losses are disabled because the dynamics
+   integration now enforces them by construction; a small control-smoothness term remains.
+
+Default soft endpoint budgets are OBS/NEU/PRIO = 20/8/6 m and emergency budgets are
+48/16/12 m.  These are development settings and must be frozen before test evaluation;
+they are not paper claims by themselves.
+
+### Engineering and speed changes
+
+- The graph encoder remains frozen and in deterministic `eval()` mode for the entire
+  natural stage by default (`natural_graph_unfreeze_epoch=-1`).
+- Frozen graph inference uses `torch.no_grad()`, avoiding graph activation storage and
+  backward computation.
+- 1/3/5/8 s pairwise trajectory losses are computed from one distance tensor and one
+  cumulative sum instead of four repeated broadcasts.
+- Diversity computation temporally subsamples the 80-step horizon (default stride 4).
+- Expensive in-training base-effectiveness pair comparisons are disabled; the external
+  2,000-scene learned-natural diagnostic remains the authoritative effectiveness test.
+- Validation defaults to every two epochs instead of every epoch.
+- Attribution is reduced from three auxiliary full trainings to two isolated controls:
+  no OBS capacity and no mass-aware root envelope.
+- Main and ablation runs now use the same seed, initialization, DDP topology, workers,
+  prefetch, precision, epoch count and validation schedule.
+
+### New promotion gates
+
+The natural gate now separates prediction quality, physical sanity and root identity:
+
+- learned 8 s quality/gain thresholds;
+- source-prior non-regression;
+- finite controls and kinematic consistency;
+- probability-mass-weighted soft-envelope ratio and violation rate;
+- projected emergency-envelope p99.
+
+The attribution gate promotes only when:
+
+- source-adaptive OBS capacity improves OBS without unacceptable NEU/PRIO regression;
+- mass-aware root preservation reduces probability-weighted envelope violation/ratio;
+- that identity improvement does not impose excessive OBS or overall prediction cost.
+
+### Status
+
+- **Engineering regression tests:** 115 passed in the delivery environment.
+- **Algorithm performance:** not yet claimed.  v16.5 must be retrained and pass both
+  natural effectiveness and isolated attribution gates before transport/planner/selector.
+- **Do not reuse v16.4 attribution results as v16.5 evidence.**
+
 ## v8 — Aggregate structured certificate
 
 - Added a threshold-connected hard certificate and a candidate-level classifier.

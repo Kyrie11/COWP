@@ -45,6 +45,11 @@ class NaturalDecoder(nn.Module):
         residual_endpoint_budget_obs_m: float = 20.0,
         residual_endpoint_budget_neu_m: float = 8.0,
         residual_endpoint_budget_prio_m: float = 6.0,
+        residual_emergency_budget_obs_m: float = 48.0,
+        residual_emergency_budget_neu_m: float = 16.0,
+        residual_emergency_budget_prio_m: float = 12.0,
+        residual_envelope_exponent: float = 1.35,
+        residual_envelope_floor_ratio: float = 0.10,
     ):
         super().__init__()
         self.modes = int(modes)
@@ -147,14 +152,16 @@ class NaturalDecoder(nn.Module):
         self.register_buffer("control_jerk_lat_scale", jerk_lat, persistent=True)
         self.register_buffer("control_yaw_rate_scale", yaw_rate_delta, persistent=True)
 
-        # v16.4 source-conditioned trust region.  A bounded instantaneous
-        # acceleration is not enough to bound an 8 s integrated displacement:
-        # a saturated OBS control can still move a mode tens of metres away from
-        # its causal prototype.  The endpoint budget bounds the *integrated*
-        # residual while retaining more freedom for observed motion than for
-        # neutral/priority-preserving roots.  This buffer is non-persistent so
-        # v16.3 checkpoints remain load-compatible and the budget is controlled
-        # entirely by the audited configuration.
+        # v16.5 separates the *soft semantic envelope* from an emergency hard
+        # envelope.  v16.4 used the same 20/8/6 m value both as a semantic target
+        # and as a hard endpoint clip.  The controlled ablation showed that this
+        # did bound the tail, but degraded OBS accuracy by about 0.30 m because
+        # every mode -- including low-mass exploratory modes -- was clipped at the
+        # same endpoint.  Root identity is instead protected over the whole
+        # trajectory: high-probability roots are regularized against the soft
+        # envelope in the loss, while every root is constrained only by the wider
+        # emergency envelope here.  This preserves certificate semantics without
+        # turning the natural decoder into a fixed-radius endpoint predictor.
         endpoint_budget = torch.empty(self.modes, dtype=torch.float32)
         endpoint_budget[obs_mask] = float(residual_endpoint_budget_obs_m)
         endpoint_budget[neu_mask] = float(residual_endpoint_budget_neu_m)
@@ -164,6 +171,35 @@ class NaturalDecoder(nn.Module):
         if not bool(torch.isfinite(endpoint_budget).all()) or bool((endpoint_budget <= 0).any()):
             raise ValueError(f"Residual endpoint budgets must be finite and positive, got {endpoint_budget.tolist()}")
         self.register_buffer("residual_endpoint_budget_m", endpoint_budget, persistent=False)
+
+        emergency_budget = torch.empty(self.modes, dtype=torch.float32)
+        emergency_budget[obs_mask] = float(residual_emergency_budget_obs_m)
+        emergency_budget[neu_mask] = float(residual_emergency_budget_neu_m)
+        emergency_budget[prio_mask] = float(residual_emergency_budget_prio_m)
+        if bool((~(obs_mask | neu_mask | prio_mask)).any()):
+            emergency_budget[~(obs_mask | neu_mask | prio_mask)] = float(residual_emergency_budget_neu_m)
+        if not bool(torch.isfinite(emergency_budget).all()) or bool((emergency_budget <= 0).any()):
+            raise ValueError(
+                f"Residual emergency budgets must be finite and positive, got {emergency_budget.tolist()}"
+            )
+        if bool((emergency_budget < endpoint_budget).any()):
+            raise ValueError(
+                "Residual emergency budgets must be >= the soft endpoint budgets; "
+                f"soft={endpoint_budget.tolist()} emergency={emergency_budget.tolist()}"
+            )
+        self.register_buffer("residual_emergency_budget_m", emergency_budget, persistent=False)
+
+        exponent = float(residual_envelope_exponent)
+        floor_ratio = float(residual_envelope_floor_ratio)
+        if not math.isfinite(exponent) or exponent <= 0.0:
+            raise ValueError(f"residual_envelope_exponent must be finite and positive, got {exponent}")
+        if not math.isfinite(floor_ratio) or not 0.0 <= floor_ratio < 1.0:
+            raise ValueError(
+                f"residual_envelope_floor_ratio must be in [0,1), got {floor_ratio}"
+            )
+        frac = torch.arange(1, self.future_steps + 1, dtype=torch.float32) / max(float(self.future_steps), 1.0)
+        envelope_shape = floor_ratio + (1.0 - floor_ratio) * frac.pow(exponent)
+        self.register_buffer("residual_envelope_shape", envelope_shape, persistent=False)
 
     @staticmethod
     def _make_typed_specs(modes: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -293,7 +329,7 @@ class NaturalDecoder(nn.Module):
         anchor7: torch.Tensor,
         base: torch.Tensor,
         dt: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         """Integrate bounded local control corrections around the typed basis.
 
         The returned residual has exactly zero length/width offsets and derives
@@ -337,10 +373,10 @@ class NaturalDecoder(nn.Module):
             accel_local[..., 0:1] * sn + accel_local[..., 1:2] * c,
         ], dim=-1)
 
-        # First integrate the unconstrained correction, then project the complete
-        # control sequence into a source-conditioned trajectory trust region and
-        # re-integrate.  Scaling acceleration/jerk as a whole keeps position and
-        # velocity mutually consistent; clipping position alone would not.
+        # First integrate the unconstrained correction.  The hard constraint is
+        # evaluated against a multi-horizon emergency envelope rather than only
+        # the final endpoint.  Endpoint-only clipping can miss a trajectory that
+        # makes a large excursion and returns close to its root at T.
         velocity_residual_raw = torch.cumsum(a_world * float(dt), dim=3)
         prev_vr_raw = torch.cat([
             torch.zeros_like(velocity_residual_raw[..., :1, :]),
@@ -349,9 +385,19 @@ class NaturalDecoder(nn.Module):
         position_residual_raw = torch.cumsum(
             0.5 * (prev_vr_raw + velocity_residual_raw) * float(dt), dim=3
         )
-        endpoint_raw = torch.linalg.norm(position_residual_raw[..., -1, :], dim=-1)
-        endpoint_budget = self.residual_endpoint_budget_m.to(endpoint_raw)[None, None, :]
-        trust_scale = torch.clamp(endpoint_budget / endpoint_raw.clamp_min(1.0e-6), max=1.0)
+        raw_path_norm = torch.linalg.norm(position_residual_raw, dim=-1)
+        endpoint_raw = raw_path_norm[..., -1]
+        soft_budget = self.residual_endpoint_budget_m.to(raw_path_norm)[None, None, :, None]
+        emergency_budget = self.residual_emergency_budget_m.to(raw_path_norm)[None, None, :, None]
+        envelope_shape = self.residual_envelope_shape.to(raw_path_norm)[None, None, None, :]
+        soft_envelope = soft_budget * envelope_shape
+        emergency_envelope = emergency_budget * envelope_shape
+        raw_soft_ratio_t = raw_path_norm / soft_envelope.clamp_min(1.0e-6)
+        raw_emergency_ratio_t = raw_path_norm / emergency_envelope.clamp_min(1.0e-6)
+        max_emergency_ratio = raw_emergency_ratio_t.amax(dim=-1)
+        # Avoid 1/0 followed by clamp: the forward value is finite, but the
+        # reciprocal's backward at exactly zero can produce NaN gradients.
+        trust_scale = max_emergency_ratio.clamp_min(1.0).reciprocal()
         a_world = a_world * trust_scale[..., None, None]
         accel_local = accel_local * trust_scale[..., None, None]
         jerk_cmd = jerk_cmd * trust_scale[..., None, None]
@@ -364,6 +410,10 @@ class NaturalDecoder(nn.Module):
         position_residual = torch.cumsum(
             0.5 * (prev_vr + velocity_residual) * float(dt), dim=3
         )
+        projected_path_norm = torch.linalg.norm(position_residual, dim=-1)
+        projected_emergency_ratio = (
+            projected_path_norm / emergency_envelope.clamp_min(1.0e-6)
+        ).amax(dim=-1)
 
         base_vel_abs = anchor7[:, :, None, None, 3:5] + base[..., 3:5]
         total_vel = base_vel_abs + velocity_residual
@@ -388,7 +438,15 @@ class NaturalDecoder(nn.Module):
         residual[..., 2:3] = yaw_residual
         residual[..., 3:5] = velocity_residual
         controls = torch.cat([accel_local, yaw_rate_delta, jerk_cmd * gate], dim=-1)
-        return residual, controls, endpoint_raw
+        diagnostics = {
+            "raw_endpoint_m": endpoint_raw,
+            "raw_path_max_m": raw_path_norm.amax(dim=-1),
+            "raw_soft_path_ratio": raw_soft_ratio_t.amax(dim=-1),
+            "raw_emergency_path_ratio": max_emergency_ratio,
+            "projected_emergency_path_ratio": projected_emergency_ratio,
+            "projection_scale": trust_scale,
+        }
+        return residual, controls, diagnostics
 
     def _temporal_kinematic_offsets(
         self,
@@ -444,14 +502,20 @@ class NaturalDecoder(nn.Module):
                 if self.uses_dynamic_residual:
                     if anchor7 is None:
                         raise ValueError(f"decoder_type={self.decoder_type!r} requires anchor7 for dynamics integration")
-                    residual, controls, raw_endpoint = self._learned_dynamics_residual(mode_latent, anchor7, base, dt)
+                    residual, controls, trust_diag = self._learned_dynamics_residual(mode_latent, anchor7, base, dt)
                     out.update({
                         "traj": base + residual,
                         "base_traj": base,
                         "residual": residual,
                         "controls": controls,
-                        "raw_residual_endpoint_m": raw_endpoint,
+                        "raw_residual_endpoint_m": trust_diag["raw_endpoint_m"],
+                        "raw_residual_path_max_m": trust_diag["raw_path_max_m"],
+                        "raw_residual_soft_path_ratio": trust_diag["raw_soft_path_ratio"],
+                        "raw_residual_emergency_path_ratio": trust_diag["raw_emergency_path_ratio"],
+                        "projected_residual_emergency_path_ratio": trust_diag["projected_emergency_path_ratio"],
+                        "residual_projection_scale": trust_diag["projection_scale"],
                         "residual_endpoint_budget_m": self.residual_endpoint_budget_m,
+                        "residual_emergency_budget_m": self.residual_emergency_budget_m,
                     })
                 else:
                     residual = self._learned_residual(mode_latent)

@@ -7,7 +7,7 @@ train:
   num_workers: 4
   stage: all
   freeze_graph_during_natural: true
-  natural_graph_warmup_epochs: 1
+  natural_graph_unfreeze_epoch: -1
   freeze_natural_during_witness: true
   device: auto
   positive_pair_oversampling: true
@@ -26,6 +26,7 @@ loss_weights:
   neutral_consistency: 0.4
   diversity_loss: 0.02
   natural_diversity_tau: 4.0
+  natural_diversity_temporal_stride: 4
   source_distribution_aux: 0.03
   natural_dt: 0.1
   natural_mode_tau_m: 2.0
@@ -128,6 +129,7 @@ loss_weights:
   natural_base_deviation_obs: 0.0
   natural_base_deviation_neu: 0.05
   natural_base_deviation_prio: 0.08
+  natural_compute_effectiveness_metrics: false
   natural_obs_gain: 0.0
   natural_obs_gain_margin_m: 0.05
   natural_obs_gain_min_base_ade_m: 0.5
@@ -136,11 +138,13 @@ loss_weights:
   natural_prior_degradation_tolerance_m: 0.1
   natural_kinematic_velocity: 0.0
   natural_kinematic_yaw: 0.0
-  natural_control_smoothness: 0.0
-  natural_mode_usage: 0.0
-  natural_residual_trust_region: 0.0
-  natural_residual_trust_soft_ratio: 0.75
+  natural_control_smoothness: 0.01
+  natural_mode_usage: 0.02
   natural_mode_usage_tau_m: 1.5
+  natural_residual_trust_region: 0.05
+  natural_residual_trust_soft_ratio: 0.75
+  natural_residual_trust_mode_temperature: 1.0
+  natural_residual_trust_probability_floor: 0.02
 model:
   natural_decoder_type: typed_causal_dynamics
   set_transport_hidden: 96

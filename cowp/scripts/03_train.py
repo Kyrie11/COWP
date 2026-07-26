@@ -683,6 +683,20 @@ def _clip_grad_norm_stable(
             param.grad.mul_(clip_coef)
     return norm64, []
 
+def _set_fully_frozen_modules_eval(model: torch.nn.Module) -> None:
+    """Keep frozen top-level modules deterministic during a training epoch.
+
+    v16.4 changed ``requires_grad`` but ``model.train(True)`` re-enabled dropout
+    in the graph, so component-ablation arms did not receive a deterministic
+    fixed representation.  This also removes needless training-mode overhead.
+    """
+    core = model.module if hasattr(model, "module") else model
+    for module in core.children():
+        params = tuple(module.parameters())
+        if params and all(not p.requires_grad for p in params):
+            module.eval()
+
+
 def _run_epoch(
     model: COWPModel,
     dl: DataLoader,
@@ -701,6 +715,8 @@ def _run_epoch(
 ) -> dict[str, float]:
     is_train = opt is not None
     model.train(is_train)
+    if is_train:
+        _set_fully_frozen_modules_eval(model)
     sums: dict[str, float] = {}
     count = 0
     resolved_amp_dtype = _resolve_amp_dtype(device, amp_dtype)
@@ -1170,7 +1186,8 @@ def main() -> None:
     ap.add_argument("--with-waymax-outcome-labels", action="store_true", help="For planner training, load optional waymax/candidate_{collision,offroad,log_divergence} labels if present. Default keeps broad waymax tensors out of batches.")
     ap.add_argument("--val-every", type=int, default=1, help="Run validation every N epochs. Use 0 to disable validation during quick smoke training.")
     ap.add_argument("--freeze-backbone-epochs", type=int, default=0, help="For planner training, freeze graph/candidate/witness backbones for the first N epochs so new certificate/outcome heads warm up without erasing pretrained representations.")
-    ap.add_argument("--natural-graph-warmup-epochs", type=int, default=None, help="Freeze the graph only for the first N natural-stage epochs, then unfreeze it at low LR. Overrides train.natural_graph_warmup_epochs.")
+    ap.add_argument("--natural-graph-warmup-epochs", type=int, default=None, help="Deprecated v16.4 alias; ignored unless explicitly mapped by an old launcher.")
+    ap.add_argument("--natural-graph-unfreeze-epoch", type=int, default=None, help="Explicit epoch at which to unfreeze the graph in natural training. Negative/default keeps it frozen for the whole stage.")
     ap.add_argument("--grad-clip", type=float, default=1.0, help="Global gradient-norm clip. Typed residual training uses 1.0 by default.")
     ap.add_argument("--early-stop-patience", type=int, default=0, help="Stop after this many validation checks without composite-score improvement. 0 disables early stopping.")
     ap.add_argument("--early-stop-min-delta", type=float, default=1.0e-4, help="Minimum checkpoint-score decrease counted as an improvement.")
@@ -1458,19 +1475,36 @@ def main() -> None:
                 ),
                 freeze_graph_during_natural=(
                     bool(tcfg.get("freeze_graph_during_natural", False))
-                    and epoch < int(
-                        args.natural_graph_warmup_epochs
-                        if args.natural_graph_warmup_epochs is not None
-                        else tcfg.get("natural_graph_warmup_epochs", epochs)
+                    and (
+                        int(
+                            args.natural_graph_unfreeze_epoch
+                            if args.natural_graph_unfreeze_epoch is not None
+                            else tcfg.get("natural_graph_unfreeze_epoch", -1)
+                        ) < 0
+                        or epoch < int(
+                            args.natural_graph_unfreeze_epoch
+                            if args.natural_graph_unfreeze_epoch is not None
+                            else tcfg.get("natural_graph_unfreeze_epoch", -1)
+                        )
                     )
                 ),
             )
             if _is_main_process() and stage in {"witness", "planner"} and (epoch == start_epoch or epoch == int(args.freeze_backbone_epochs)):
                 _rank0_print(f"{stage} warmup_frozen={freeze_now} at epoch={epoch}")
             if _is_main_process() and stage in {"natural", "representation"}:
-                ngw = int(args.natural_graph_warmup_epochs if args.natural_graph_warmup_epochs is not None else tcfg.get("natural_graph_warmup_epochs", epochs))
-                if epoch == start_epoch or epoch == ngw:
-                    _rank0_print(f"natural graph_frozen={bool(tcfg.get('freeze_graph_during_natural', False)) and epoch < ngw} at epoch={epoch}; warmup_epochs={ngw}")
+                unfreeze_epoch = int(
+                    args.natural_graph_unfreeze_epoch
+                    if args.natural_graph_unfreeze_epoch is not None
+                    else tcfg.get("natural_graph_unfreeze_epoch", -1)
+                )
+                graph_frozen = bool(tcfg.get("freeze_graph_during_natural", False)) and (
+                    unfreeze_epoch < 0 or epoch < unfreeze_epoch
+                )
+                if epoch == start_epoch or epoch == unfreeze_epoch:
+                    _rank0_print(
+                        f"natural graph_frozen={graph_frozen} at epoch={epoch}; "
+                        f"explicit_unfreeze_epoch={unfreeze_epoch}"
+                    )
             _set_sampler_epoch(train_dl, epoch)
             train_metrics = _run_epoch(
                 model,

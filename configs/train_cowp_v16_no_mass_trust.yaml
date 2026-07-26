@@ -141,7 +141,7 @@ loss_weights:
   natural_control_smoothness: 0.01
   natural_mode_usage: 0.02
   natural_mode_usage_tau_m: 1.5
-  natural_residual_trust_region: 0.05
+  natural_residual_trust_region: 0.0
   natural_residual_trust_soft_ratio: 0.75
   natural_residual_trust_mode_temperature: 1.0
   natural_residual_trust_probability_floor: 0.02
