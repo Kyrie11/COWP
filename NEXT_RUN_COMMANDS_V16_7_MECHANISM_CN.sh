@@ -119,6 +119,6 @@ if [[ -s "$OUT_ROOT/configs/run_provenance.json" \
       && ! -s "$OUT_ROOT/checkpoints/transport/cowp_witness_best.pt" \
       && ! -s "$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt" ]]; then
   export ALLOW_COMPATIBLE_RESUME="${ALLOW_COMPATIBLE_RESUME:-1}"
-  export PROVENANCE_RESUME_REASON="${PROVENANCE_RESUME_REASON:-v16.7 natural-checkpoint compatibility hotfix before transport training}"
+  export PROVENANCE_RESUME_REASON="${PROVENANCE_RESUME_REASON:-v16.7 checkpoint migration and dynamic-DDP hotfix before transport training}"
 fi
 exec bash "$ROOT/NEXT_RUN_COMMANDS_V16_7_CN.sh"
