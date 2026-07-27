@@ -54,6 +54,24 @@ class SetTransportCertificateHead(nn.Module):
         self.calibration = nn.Sequential(
             nn.Linear(d_model * 3, h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, 1), nn.Tanh()
         )
+        # v16.7: monotone, interpretable candidate-level calibration.  The old
+        # fixed 0.55/0.30/0.15 convex combination could not adapt to the actual
+        # false-safe boundary and produced an over-conservative risk distribution.
+        # Positive weights are enforced with softplus, so calibration cannot make
+        # risk decrease when any mechanistic deficit increases.
+        init_w = torch.tensor([0.45, 0.25, 0.15, 0.15], dtype=torch.float32)
+        self.candidate_risk_raw_weight = nn.Parameter(torch.log(torch.expm1(init_w)))
+        self.candidate_risk_threshold_logit = nn.Parameter(torch.logit(torch.tensor(0.35)))
+        self.candidate_risk_log_scale = nn.Parameter(torch.log(torch.tensor(4.0)))
+        self.global_risk_raw_weight = nn.Parameter(torch.log(torch.expm1(init_w)))
+        self.global_risk_threshold_logit = nn.Parameter(torch.logit(torch.tensor(0.35)))
+        self.global_risk_log_scale = nn.Parameter(torch.log(torch.tensor(4.0)))
+        # Monotone learned composition of the three pair-level mechanism terms:
+        # unrecovered conflict mass, burden-tail activation and option loss.
+        # This replaces a hand-tuned fixed mixture without allowing a black-box
+        # feature to bypass the COWP mechanism.
+        pair_init = torch.tensor([0.55, 0.25, 0.20], dtype=torch.float32)
+        self.pair_deficit_raw_weight = nn.Parameter(torch.log(torch.expm1(pair_init)))
 
     @staticmethod
     def _soft_min_burden(
@@ -136,6 +154,21 @@ class SetTransportCertificateHead(nn.Module):
         cvar = (take * v_sorted).sum(dim=-1) / denom
         return torch.where(total.squeeze(-1) > 1.0e-8, cvar, torch.zeros_like(cvar))
 
+    @staticmethod
+    def _monotone_calibrate(
+        features: torch.Tensor,
+        raw_weight: torch.Tensor,
+        threshold_logit: torch.Tensor,
+        log_scale: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Positive-weight monotone calibration over mechanistic deficits."""
+        positive = torch.nn.functional.softplus(raw_weight)
+        weight = positive / positive.sum().clamp_min(1.0e-6)
+        threshold = torch.sigmoid(threshold_logit)
+        scale = torch.exp(log_scale).clamp(1.0, 20.0)
+        logit = scale * ((features * weight).sum(dim=-1) - threshold)
+        return logit, torch.sigmoid(logit), weight
+
     def _relative_geometry(
         self,
         candidate_traj: torch.Tensor | None,
@@ -171,7 +204,6 @@ class SetTransportCertificateHead(nn.Module):
         dist = torch.linalg.vector_norm(delta, dim=-1)
         min_dist, min_idx = dist.min(dim=-1)
         mean_dist = dist.mean(dim=-1)
-        final_dist = dist[..., -1]
         tmin = min_idx.float() / max(float(dist.shape[-1] - 1), 1.0)
         approach = dist[..., 0] - min_dist
 
@@ -184,26 +216,40 @@ class SetTransportCertificateHead(nn.Module):
         if cand.shape[-1] >= 5 and nat.shape[-1] >= 5:
             cv = cand[..., 3:5][:, :, None, None, :, :]
             nv = nat[..., 3:5][:, None, :, :, :, :]
-            rel_speed = torch.linalg.vector_norm(cv - nv, dim=-1).mean(dim=-1)
+            rel_v = cv - nv
+            unit = delta / dist.clamp_min(1.0e-3)[..., None]
+            closing_speed = torch.relu(-(rel_v * unit).sum(dim=-1)).amax(dim=-1)
         else:
-            rel_speed = torch.zeros_like(min_dist)
+            closing_speed = torch.zeros_like(min_dist)
         if cand.shape[-1] >= 7 and nat.shape[-1] >= 7:
             cr = 0.5 * torch.linalg.vector_norm(cand[..., 5:7], dim=-1)[:, :, None, None, :]
             nr = 0.5 * torch.linalg.vector_norm(nat[..., 5:7], dim=-1)[:, None, :, :, :]
-            clearance = (dist - cr - nr).min(dim=-1).values
+            clearance_t = dist - cr - nr
+            # Mid-point swept clearance catches short conflicts between sampled
+            # states without increasing the geometry feature dimension.
+            if dist.shape[-1] > 1:
+                c_mid = 0.5 * (cxy[..., 1:, :] + cxy[..., :-1, :])
+                n_mid = 0.5 * (nxy[..., 1:, :] + nxy[..., :-1, :])
+                d_mid = torch.linalg.vector_norm(c_mid - n_mid, dim=-1)
+                r_mid = 0.5 * (cr[..., 1:] + cr[..., :-1] + nr[..., 1:] + nr[..., :-1])
+                swept_clearance = torch.minimum(clearance_t.min(dim=-1).values, (d_mid - r_mid).min(dim=-1).values)
+            else:
+                swept_clearance = clearance_t.min(dim=-1).values
+            near_fraction = torch.sigmoid((2.0 - clearance_t) / 1.5).mean(dim=-1)
         else:
-            clearance = min_dist
+            swept_clearance = min_dist
+            near_fraction = torch.sigmoid((4.0 - dist) / 2.0).mean(dim=-1)
 
         feat = torch.stack(
             [
                 min_dist / 20.0,
                 mean_dist / 30.0,
-                final_dist / 30.0,
+                near_fraction,
                 tmin,
                 approach / 20.0,
                 heading_agreement,
-                rel_speed / 10.0,
-                clearance / 10.0,
+                closing_speed / 10.0,
+                swept_clearance / 10.0,
             ],
             dim=-1,
         )
@@ -222,6 +268,7 @@ class SetTransportCertificateHead(nn.Module):
         candidate_traj: torch.Tensor | None = None,
         natural_traj: torch.Tensor | None = None,
         critical_mask: torch.Tensor | None = None,
+        priority_relation: torch.Tensor | None = None,
         alpha_opr: float = 0.35,
         gamma: float = 0.10,
         conflict_mass_floor: float = 0.10,
@@ -394,19 +441,36 @@ class SetTransportCertificateHead(nn.Module):
             torch.relu(torch.as_tensor(float(alpha_opr), device=opr.device, dtype=opr.dtype) - opr)
             / max(float(alpha_opr), 1.0e-6)
         ).clamp(0.0, 1.0)
-        priority_support = (natural_weight * priority_prob).sum(dim=-1).clamp(0.0, 1.0)
-        pair_transport_deficit = (
-            0.55 * unrecovered_conflict_mass
-            + 0.25 * natural_conflict_mass * burden_gate
-            + 0.20 * option_shortfall
-        ).clamp(0.0, 1.0)
-        pair_severe_prob = (
+        learned_priority_support = (natural_weight * priority_prob).sum(dim=-1).clamp(0.0, 1.0)
+        if priority_relation is not None:
+            rho = priority_relation.long()
+            rule_support = torch.where(
+                rho == 2, torch.ones_like(learned_priority_support),
+                torch.where(rho == 3, torch.full_like(learned_priority_support, 0.65),
+                            torch.where(rho == 1, torch.full_like(learned_priority_support, 0.10),
+                                        torch.full_like(learned_priority_support, 0.25)))
+            )
+            priority_support = (0.50 * learned_priority_support + 0.50 * rule_support).clamp(0.0, 1.0)
+        else:
+            priority_support = learned_priority_support
+        pair_components = torch.stack(
+            [
+                unrecovered_conflict_mass,
+                natural_conflict_mass * burden_gate,
+                option_shortfall,
+            ],
+            dim=-1,
+        )
+        pair_positive = torch.nn.functional.softplus(self.pair_deficit_raw_weight)
+        pair_deficit_weight = pair_positive / pair_positive.sum().clamp_min(1.0e-6)
+        pair_transport_deficit = (pair_components * pair_deficit_weight).sum(dim=-1).clamp(0.0, 1.0)
+        pair_global_severe_prob = (
             conflict_gate
             * response_absence_gate
             * burden_gate
-            * priority_support
             * (1.0 - 0.5 * uncertainty)
         ).clamp(0.0, 1.0)
+        pair_severe_prob = (pair_global_severe_prob * priority_support).clamp(0.0, 1.0)
 
         if critical_mask is None:
             cmask = torch.ones(B, A, device=pair_transport_deficit.device, dtype=torch.bool)
@@ -415,31 +479,45 @@ class SetTransportCertificateHead(nn.Module):
         cm = cmask[:, None, :].expand(B, K, A)
         priority_weight = torch.where(
             cm,
-            0.25 + 0.75 * priority_support,
+            0.05 + 0.95 * priority_support,
             torch.zeros_like(priority_support),
         )
+        global_weight = cm.float()
         weight_denom = priority_weight.sum(dim=-1).clamp_min(1.0e-6)
-        candidate_mean_deficit = (
-            priority_weight * pair_transport_deficit
-        ).sum(dim=-1) / weight_denom
+        global_denom = global_weight.sum(dim=-1).clamp_min(1.0)
+        candidate_mean_deficit = (priority_weight * pair_transport_deficit).sum(dim=-1) / weight_denom
+        candidate_global_mean_deficit = (global_weight * pair_transport_deficit).sum(dim=-1) / global_denom
 
         tail_tau = max(float(candidate_tail_temperature), 1.0e-3)
         tail_logits = pair_transport_deficit / tail_tau + torch.log(priority_weight.clamp_min(1.0e-8))
         tail_logits = torch.where(cm, tail_logits, torch.full_like(tail_logits, -1.0e4))
         tail_weight = torch.softmax(tail_logits, dim=-1) * cm.float()
         tail_weight = tail_weight / tail_weight.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
+        global_tail_logits = torch.where(cm, pair_transport_deficit / tail_tau, torch.full_like(pair_transport_deficit, -1.0e4))
+        global_tail_weight = torch.softmax(global_tail_logits, dim=-1) * cm.float()
+        global_tail_weight = global_tail_weight / global_tail_weight.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
         candidate_tail_deficit = (tail_weight * pair_transport_deficit).sum(dim=-1)
-        candidate_severe_prob = torch.where(
-            cm, pair_severe_prob, torch.zeros_like(pair_severe_prob)
-        ).amax(dim=-1)
-        candidate_transport_risk = (
-            0.55 * candidate_mean_deficit
-            + 0.30 * candidate_tail_deficit
-            + 0.15 * candidate_severe_prob
-        ).clamp(0.0, 1.0)
-        candidate_mean_uncertainty = (
-            priority_weight * uncertainty
-        ).sum(dim=-1) / weight_denom
+        candidate_global_tail_deficit = (global_tail_weight * pair_transport_deficit).sum(dim=-1)
+        candidate_severe_prob = torch.where(cm, pair_severe_prob, torch.zeros_like(pair_severe_prob)).amax(dim=-1)
+        candidate_max_deficit = torch.where(cm, pair_transport_deficit, torch.zeros_like(pair_transport_deficit)).amax(dim=-1)
+
+        priority_features = torch.stack([
+            candidate_mean_deficit, candidate_tail_deficit, candidate_severe_prob, candidate_max_deficit
+        ], dim=-1)
+        global_features = torch.stack([
+            candidate_global_mean_deficit, candidate_global_tail_deficit,
+            torch.where(cm, pair_global_severe_prob, torch.zeros_like(pair_global_severe_prob)).amax(dim=-1),
+            candidate_max_deficit,
+        ], dim=-1)
+        candidate_transport_logit, candidate_transport_risk, candidate_risk_weight = self._monotone_calibrate(
+            priority_features, self.candidate_risk_raw_weight,
+            self.candidate_risk_threshold_logit, self.candidate_risk_log_scale,
+        )
+        candidate_global_transport_logit, candidate_global_transport_risk, global_risk_weight = self._monotone_calibrate(
+            global_features, self.global_risk_raw_weight,
+            self.global_risk_threshold_logit, self.global_risk_log_scale,
+        )
+        candidate_mean_uncertainty = (priority_weight * uncertainty).sum(dim=-1) / weight_denom
         candidate_tail_uncertainty = (tail_weight * uncertainty).sum(dim=-1)
         candidate_transport_uncertainty = (
             0.60 * candidate_mean_uncertainty + 0.40 * candidate_tail_uncertainty
@@ -479,11 +557,20 @@ class SetTransportCertificateHead(nn.Module):
             "geometry_clearance_norm": geometry_feat[..., 7],
             "unrecovered_conflict_mass": unrecovered_conflict_mass,
             "pair_transport_deficit": pair_transport_deficit,
+            "pair_deficit_weights": pair_deficit_weight,
             "pair_severe_prob": pair_severe_prob,
+            "pair_global_severe_prob": pair_global_severe_prob,
             "priority_support": priority_support,
+            "learned_priority_support": learned_priority_support,
             "candidate_mean_deficit": candidate_mean_deficit,
             "candidate_tail_deficit": candidate_tail_deficit,
             "candidate_severe_prob": candidate_severe_prob,
+            "candidate_max_deficit": candidate_max_deficit,
+            "candidate_transport_logit": candidate_transport_logit,
             "candidate_transport_risk": candidate_transport_risk,
+            "candidate_global_transport_logit": candidate_global_transport_logit,
+            "candidate_global_transport_risk": candidate_global_transport_risk,
+            "candidate_risk_weights": candidate_risk_weight,
+            "candidate_global_risk_weights": global_risk_weight,
             "candidate_transport_uncertainty": candidate_transport_uncertainty,
         }

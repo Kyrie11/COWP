@@ -16,6 +16,17 @@ limits:
   max_conflict_regions: 64
   max_roadgraph_points: 20000
 candidate:
+  # Proposal-level map screening.  This is not advertised as a full lattice-MPC;
+  # it prevents fixed lateral/terminal primitives from leaving all lane corridors.
+  map_filter_enabled: true
+  map_filter_require_available: false
+  map_filter_stride: 4
+  map_filter_lane_point_stride: 2
+  map_filter_min_lane_points: 64
+  map_filter_local_radius_m: 140.0
+  map_max_distance_vehicle_m: 5.0
+  map_min_compliant_fraction: 0.80
+  map_hard_max_distance_m: 12.0
   terminal_speed_offsets_mps:
   - -5
   - -3

@@ -449,6 +449,7 @@ class COWPModel(nn.Module):
                     candidate_traj=cand_traj,
                     natural_traj=natural_out.get("traj"),
                     critical_mask=critical_mask,
+                    priority_relation=batch.get("cowp/witness/rho"),
                     alpha_opr=float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     gamma=float(pcfg.get("ncf_gamma_infer", self.cfg.get("ncf", {}).get("gamma", 0.10))),
                     conflict_mass_floor=float(pcfg.get("set_transport_conflict_mass_floor", self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))),
@@ -478,6 +479,9 @@ class COWPModel(nn.Module):
                 # excess, not conflict probability mass.
                 witness["c_i"] = set_certificate["tail_burden_excess"]
                 out["candidate_transport_risk"] = set_certificate["candidate_transport_risk"]
+                out["candidate_transport_logit"] = set_certificate["candidate_transport_logit"]
+                out["candidate_global_transport_risk"] = set_certificate["candidate_global_transport_risk"]
+                out["candidate_global_transport_logit"] = set_certificate["candidate_global_transport_logit"]
                 out["candidate_transport_uncertainty"] = set_certificate["candidate_transport_uncertainty"]
                 out["candidate_transport_severe_prob"] = set_certificate["candidate_severe_prob"]
             out["witness"] = witness

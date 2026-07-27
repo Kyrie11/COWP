@@ -8,7 +8,55 @@ from cowp.geometry.lane_graph import build_conflict_regions, tta_to_region
 from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged, smooth_stop_trajectory
 
 
-def _candidate_valid(traj: np.ndarray, cfg: dict) -> bool:
+def _candidate_map_compliant(traj: np.ndarray, lane_points: np.ndarray, cfg: dict) -> bool:
+    """Cheap map-screening for generated ego primitives.
+
+    This is deliberately a proposal filter rather than a claim of route-optimal
+    kinodynamic planning.  It removes fixed lateral/terminal primitives that leave
+    every nearby lane corridor, a major source of cached off-road outcomes.  The
+    point cloud is local and subsampled once per scene, so the filter affects
+    label/cache construction but not training-time throughput.
+    """
+    cand_cfg = cfg.get("candidate", {})
+    if not bool(cand_cfg.get("map_filter_enabled", True)):
+        return True
+    min_points = int(cand_cfg.get("map_filter_min_lane_points", 64))
+    # A single sparse polyline does not define a drivable corridor.  Applying a
+    # nearest-point filter in that case rejects valid synthetic proposals and
+    # makes toy/incomplete-map scenes protocol-dependent.
+    if lane_points.size == 0 or int(lane_points.shape[0]) < min_points:
+        return not bool(cand_cfg.get("map_filter_require_available", False))
+    stride = max(1, int(cand_cfg.get("map_filter_stride", 4)))
+    xy = np.asarray(traj, dtype=np.float32)[::stride, :2]
+    if xy.size == 0 or not np.all(np.isfinite(xy)):
+        return False
+    # Chunk over trajectory samples to avoid a large temporary when dense WOMD
+    # roadgraphs are present.  Lane points are already locally cropped below.
+    d2 = ((xy[:, None, :] - lane_points[None, :, :]) ** 2).sum(axis=-1)
+    dist = np.sqrt(np.min(d2, axis=1))
+    threshold = float(cand_cfg.get("map_max_distance_vehicle_m", 5.0))
+    min_fraction = float(cand_cfg.get("map_min_compliant_fraction", 0.80))
+    hard_max = float(cand_cfg.get("map_hard_max_distance_m", 12.0))
+    return bool(float(np.mean(dist <= threshold)) >= min_fraction and float(np.max(dist)) <= hard_max)
+
+
+def _local_lane_point_cloud(scene: ScenarioData, center_xy: np.ndarray, cfg: dict) -> np.ndarray:
+    cand_cfg = cfg.get("candidate", {})
+    radius = float(cand_cfg.get("map_filter_local_radius_m", 140.0))
+    sample_stride = max(1, int(cand_cfg.get("map_filter_lane_point_stride", 2)))
+    chunks: list[np.ndarray] = []
+    for lane in scene.map_data.lanes.values():
+        xy = np.asarray(lane.xy, dtype=np.float32)
+        if xy.size == 0:
+            continue
+        xy = xy[::sample_stride, :2]
+        local = np.linalg.norm(xy - np.asarray(center_xy, dtype=np.float32)[None, :2], axis=-1) <= radius
+        if local.any():
+            chunks.append(xy[local])
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 2), dtype=np.float32)
+
+
+def _candidate_valid(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None = None) -> bool:
     cand_cfg = cfg.get("candidate", {})
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     if len(traj) < int(cand_cfg.get("min_valid_horizon_steps", 50)):
@@ -25,6 +73,8 @@ def _candidate_valid(traj: np.ndarray, cfg: dict) -> bool:
     if np.nanmax(np.abs(jerk)) > float(cand_cfg.get("max_jerk_mps3", 6.0)) + 2.0:
         # Lattice primitives can have a step at the first time; allow a small numerical slack.
         return False
+    if lane_points is not None and not _candidate_map_compliant(traj, lane_points, cfg):
+        return False
     return True
 
 
@@ -36,6 +86,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     K = int(limits.get("max_candidates", 64))
     cur = scene.current_time_index
     ego_cur = scene.states[scene.sdc_track_index, cur]
+    lane_points = _local_lane_point_cloud(scene, ego_cur[:2], cfg)
     logged_full = future_states_to_traj7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :], horizon, current_state=ego_cur)
     candidates: list[np.ndarray] = []
     macro: list[int] = []
@@ -68,7 +119,10 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         if len(candidates) >= K:
             return
         traj = traj[:horizon].astype(np.float32)
-        if len(traj) == horizon and _candidate_valid(traj, cfg) and not _near_duplicate(traj, m):
+        # Logged replay is retained as an observed reference even if map geometry
+        # is incomplete; all synthetic proposals are map-screened.
+        proposal_lane_points = None if logged else lane_points
+        if len(traj) == horizon and _candidate_valid(traj, cfg, proposal_lane_points) and not _near_duplicate(traj, m):
             candidates.append(traj)
             macro.append(int(m))
             speed = np.linalg.norm(traj[:, 3:5], axis=-1)

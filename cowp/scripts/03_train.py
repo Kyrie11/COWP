@@ -509,10 +509,13 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         st = pred.get("set_certificate")
         natural_pred = pred.get("natural")
         natural_pred_traj = natural_pred.get("traj") if isinstance(natural_pred, dict) else None
+        natural_pred_source_logits = natural_pred.get("source_logits") if isinstance(natural_pred, dict) else None
         if isinstance(st, dict):
             st_for_loss = dict(st)
             if torch.is_tensor(natural_pred_traj):
                 st_for_loss["_natural_pred_traj"] = natural_pred_traj
+            if torch.is_tensor(natural_pred_source_logits):
+                st_for_loss["_natural_pred_source_logits"] = natural_pred_source_logits
             stl = set_transport_loss(st_for_loss, batch, loss_weights)
             out.update({f"set_transport/{k}": v for k, v in stl.items() if k != "loss"})
             losses.append(float(loss_weights.get("set_transport", 1.0)) * stl["loss"])
@@ -537,6 +540,8 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
                 response_for_loss = dict(pred["response"])
                 if torch.is_tensor(natural_pred_traj):
                     response_for_loss["_natural_pred_traj"] = natural_pred_traj
+                if torch.is_tensor(natural_pred_source_logits):
+                    response_for_loss["_natural_pred_source_logits"] = natural_pred_source_logits
                 rl = response_loss(response_for_loss, batch, loss_weights)
                 out.update({f"response_aux/{k}": v for k, v in rl.items() if k != "loss"})
                 losses.append(response_scale * rl["loss"])
@@ -1625,15 +1630,25 @@ def main() -> None:
 
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
-        # A permanently frozen natural stage has a static trainable graph after
-        # the legacy head is disabled, so the expensive unused-parameter graph
-        # traversal is unnecessary.  Other stages retain the conservative mode
-        # because their warm-up freeze changes over time.
-        static_natural_ddp = bool(permanent_natural_freeze and stage in {"natural", "representation"})
+        # Static DDP is valid whenever the set of trainable/unused parameters is
+        # fixed for the whole run.  v16.6 restricted this optimization to natural
+        # training, while transport/planner still paid an unused-parameter graph
+        # traversal every batch.  v16.7 launchers use zero warm-up freeze, making
+        # those stage graphs static as well.  Keep find_unused=True outside the
+        # fully frozen natural decoder because stage-specific heads can remain
+        # checkpoint-compatible but unused; static_graph caches that set safely.
+        no_freeze_transition = int(args.freeze_backbone_epochs) <= 0
+        static_stage_ddp = bool(
+            (permanent_natural_freeze and stage in {"natural", "representation"})
+            or (no_freeze_transition and stage in {"witness", "planner"})
+        )
+        fully_used_static_natural = bool(
+            permanent_natural_freeze and stage in {"natural", "representation"}
+        )
         ddp_kwargs: dict[str, Any] = {
-            "find_unused_parameters": not static_natural_ddp,
+            "find_unused_parameters": not fully_used_static_natural,
         }
-        if static_natural_ddp:
+        if static_stage_ddp:
             ddp_kwargs.update({"static_graph": True, "gradient_as_bucket_view": True})
         if device.type == "cuda":
             ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})

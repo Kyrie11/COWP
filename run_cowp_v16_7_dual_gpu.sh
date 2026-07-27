@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}"
-OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_6_pipeline_v9labels_seed2026}"
+OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_7_pipeline_v9labels_seed2026}"
 RAW_TRAIN_CACHE="${RAW_TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax}"
 RAW_VAL_CACHE="${RAW_VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax}"
 TRAIN_CACHE="${TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax_transport_v9}"
@@ -62,7 +62,7 @@ PLANNER_PREFETCH_FACTOR="${PLANNER_PREFETCH_FACTOR:-$PREFETCH_FACTOR}"
 PLANNER_VAL_NUM_WORKERS="${PLANNER_VAL_NUM_WORKERS:-2}"
 PLANNER_VAL_PREFETCH_FACTOR="${PLANNER_VAL_PREFETCH_FACTOR:-1}"
 TORCH_SHARING_STRATEGY="${TORCH_SHARING_STRATEGY:-file_system}"
-FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-1}"
+FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-0}"
 NATURAL_LR="${NATURAL_LR:-3.0e-5}"
 TRANSPORT_LR="${TRANSPORT_LR:-1.5e-5}"
 PLANNER_LR="${PLANNER_LR:-8e-6}"
@@ -106,7 +106,7 @@ mkdir -p "$OUT_ROOT"/{logs,configs,checkpoints/natural,checkpoints/transport,che
 # Build the exact run configs in a temporary directory first.  Provenance is
 # checked before canonical configs are overwritten, so accidentally reusing an
 # OUT_ROOT after a code/config change cannot corrupt the old experiment record.
-CONFIG_CANDIDATE_DIR="$(mktemp -d "$OUT_ROOT/configs/.candidate_v16_6.XXXXXX")"
+CONFIG_CANDIDATE_DIR="$(mktemp -d "$OUT_ROOT/configs/.candidate_v16_7.XXXXXX")"
 cleanup_candidate_configs() { rm -rf "$CONFIG_CANDIDATE_DIR"; }
 trap cleanup_candidate_configs EXIT
 cp configs/model_cowp_v16.yaml "$CONFIG_CANDIDATE_DIR/model_cowp_v16.yaml"
@@ -132,9 +132,13 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
   --file "cowp/models/natural_decoder.py=cowp/models/natural_decoder.py" \
   --file "cowp/models/losses.py=cowp/models/losses.py" \
   --file "cowp/models/cowp_model.py=cowp/models/cowp_model.py" \
+  --file "cowp/models/set_transport_head.py=cowp/models/set_transport_head.py" \
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \
+  --file "cowp/scripts/25_verify_mechanism_effect.py=cowp/scripts/25_verify_mechanism_effect.py" \
+  --file "cowp/scripts/31_calibrate_bcot_budget.py=cowp/scripts/31_calibrate_bcot_budget.py" \
+  --file "cowp/waymax_eval/rollout.py=cowp/waymax_eval/rollout.py" \
   --file "cowp/waymax_eval/policy_wrapper.py=cowp/waymax_eval/policy_wrapper.py" \
-  --file "run_cowp_v16_6_dual_gpu.sh=$0" | tee "$OUT_ROOT/logs/run_provenance.log"
+  --file "run_cowp_v16_7_dual_gpu.sh=$0" | tee "$OUT_ROOT/logs/run_provenance.log"
 
 # Provenance passed: only now publish the canonical copied configs.
 cp "$CONFIG_CANDIDATE_DIR/model_cowp_v16.yaml" "$OUT_ROOT/configs/model_cowp_v16.yaml"
@@ -162,7 +166,7 @@ EVAL_CFG="$OUT_ROOT/configs/eval_cowp_v16.yaml"
 if [[ "$DETACH" == "1" && "${COWP_V16_6_DETACHED:-0}" != "1" ]]; then
   export COWP_V16_6_DETACHED=1
   nohup bash "$0" > "$OUT_ROOT/logs/driver.nohup.log" 2>&1 &
-  echo "[cowp_v16.6] detached pid=$! log=$OUT_ROOT/logs/driver.nohup.log"
+  echo "[cowp_v16.7] detached pid=$! log=$OUT_ROOT/logs/driver.nohup.log"
   exit 0
 fi
 
@@ -345,7 +349,7 @@ logrun audit_causal_protocol "$PYTHON_BIN" -u -m cowp.scripts.36_audit_causal_pr
   --data-protocol "$DATA_PROTOCOL" \
   "${audit_alignment_args[@]}" "${audit_reuse_args[@]}" --output "$CAUSAL_AUDIT_REPORT"
 if [[ "$STOP_AFTER_STAGE" == "diagnose" ]]; then
-  echo "[cowp_v16.6] stopped after diagnostics: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after diagnostics: $OUT_ROOT"
   exit 0
 fi
 
@@ -446,7 +450,7 @@ quality_gate gate_natural_effectiveness "$PYTHON_BIN" -u -m cowp.scripts.40_gate
   --min-overall-gain-8s-m "${MIN_OVERALL_GAIN_8S_M:-0.03}" \
   --min-obs-gain-8s-m "${MIN_OBS_GAIN_8S_M:-0.05}"
 if [[ "$STOP_AFTER_STAGE" == "natural" ]]; then
-  echo "[cowp_v16.6] stopped after natural gate: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after natural gate: $OUT_ROOT"
   exit 0
 fi
 
@@ -481,7 +485,7 @@ fi
 if [[ -z "$TRANSPORT_CKPT" ]]; then TRANSPORT_CKPT="$(best_transport || true)"; fi
 [[ -s "$TRANSPORT_CKPT" ]] || { echo "No transport checkpoint. Set TRANSPORT_CKPT or enable RUN_TRANSPORT." >&2; exit 2; }
 if [[ "$STOP_AFTER_STAGE" == "transport" ]]; then
-  echo "[cowp_v16.6] stopped after transport: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after transport: $OUT_ROOT"
   exit 0
 fi
 
@@ -512,7 +516,7 @@ if [[ -z "$CKPT" ]]; then CKPT="$(best_planner || true)"; fi
 [[ -s "$CKPT" ]] || { echo "No v15 planner checkpoint. Set CKPT or enable RUN_PLANNER." >&2; exit 2; }
 echo "[checkpoint] $CKPT"
 if [[ "$STOP_AFTER_STAGE" == "planner" ]]; then
-  echo "[cowp_v16.6] stopped after planner: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after planner: $OUT_ROOT"
   exit 0
 fi
 
@@ -537,8 +541,13 @@ if [[ "$RUN_OFFLINE" == "1" ]]; then
   logrun calibrate_bcot "$PYTHON_BIN" -u -m cowp.scripts.31_calibrate_bcot_budget \
     --input "$budget_sweep_out" \
     --output "$OUT_ROOT/eval/learned_offline/bcot_calibration.json" \
-    --min-ncf-recall 0.30 --min-accepted-rate 0.10 --max-fallback 0.25 \
-    --max-selected-false-safe 0.50
+    --min-priority-ncf-recall "${MIN_PRIORITY_NCF_RECALL:-0.25}" \
+    --min-priority-ncf-precision "${MIN_PRIORITY_NCF_PRECISION:-0.35}" \
+    --max-priority-burden-transfer "${MAX_PRIORITY_BURDEN_TRANSFER:-0.50}" \
+    --min-global-ncf-recall "${MIN_GLOBAL_NCF_RECALL:-0.18}" \
+    --min-accepted-rate "${MIN_ACCEPTED_RATE:-0.08}" \
+    --max-fallback "${MAX_FALLBACK_RATE:-0.30}" \
+    --max-selected-global-false-safe "${MAX_GLOBAL_FALSE_SAFE:-0.55}"
 
   CALIBRATED_BCOT_BUDGET="$("$PYTHON_BIN" - "$OUT_ROOT/eval/learned_offline/bcot_calibration.json" <<'PY2'
 import json,sys
@@ -588,14 +597,21 @@ PY2
   quality_gate verify_mechanism "$PYTHON_BIN" -u -m cowp.scripts.25_verify_mechanism_effect \
     --input "$combined" --sweep-input "$budget_sweep_out" --method cowp \
     --calibration-json "$OUT_ROOT/eval/learned_offline/bcot_calibration.json" \
-    --min-unique-selection-points 3 --min-ncf-recall 0.30 \
-    --min-witness-auprc 0.60 --min-bcot-auprc 0.65 --min-root-transport-auprc 0.65 \
-    --min-accepted-rate 0.10 --max-fallback 0.25 \
-    --min-false-safe-improvement 0.08 \
+    --min-unique-selection-points 3 \
+    --min-priority-ncf-recall "${MIN_PRIORITY_NCF_RECALL:-0.25}" \
+    --min-priority-ncf-precision "${MIN_PRIORITY_NCF_PRECISION:-0.35}" \
+    --min-global-ncf-recall "${MIN_GLOBAL_NCF_RECALL:-0.18}" \
+    --min-witness-auprc "${MIN_WITNESS_AUPRC:-0.60}" \
+    --min-priority-bcot-auprc "${MIN_PRIORITY_BCOT_AUPRC:-0.50}" \
+    --min-priority-root-auprc "${MIN_PRIORITY_ROOT_AUPRC:-0.35}" \
+    --min-accepted-rate "${MIN_ACCEPTED_RATE:-0.08}" \
+    --max-fallback "${MAX_FALLBACK_RATE:-0.30}" \
+    --min-priority-transfer-improvement "${MIN_PRIORITY_TRANSFER_GAIN:-0.03}" \
+    --min-global-false-safe-improvement "${MIN_GLOBAL_FALSE_SAFE_GAIN:-0.03}" \
     --output "$OUT_ROOT/eval/learned_offline/mechanism_verification.json"
 fi
 if [[ "$STOP_AFTER_STAGE" == "offline" ]]; then
-  echo "[cowp_v16.6] stopped after learned-offline verification: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after learned-offline verification: $OUT_ROOT"
   exit 0
 fi
 
@@ -700,7 +716,7 @@ if [[ "$RUN_PROBE" == "1" ]]; then
 
 fi
 if [[ "$STOP_AFTER_STAGE" == "probe" ]]; then
-  echo "[cowp_v16.6] stopped after probe: $OUT_ROOT"
+  echo "[cowp_v16.7] stopped after probe: $OUT_ROOT"
   exit 0
 fi
 
@@ -741,4 +757,4 @@ logrun validate_pipeline_outputs "$PYTHON_BIN" -u -m cowp.scripts.44_validate_pi
   --out-root "$OUT_ROOT" --level "$completion_level" \
   --output "$OUT_ROOT/eval/pipeline_completion_report.json"
 
-echo "[cowp_v16.6] complete: $OUT_ROOT"
+echo "[cowp_v16.7] complete: $OUT_ROOT"

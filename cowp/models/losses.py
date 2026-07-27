@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from cowp.core.constants import NaturalSource
+from cowp.models.root_alignment import natural_root_alignment_cost
 
 
 def masked_mean(value: torch.Tensor, mask: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -391,6 +392,61 @@ def balanced_bce_all_pairs(
     return masked_mean(values, mask_b)
 
 
+def symmetric_class_balanced_bce_with_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    max_class_weight: float = 6.0,
+) -> torch.Tensor:
+    """BCE with symmetric inverse-frequency weights for both classes."""
+    mask_b = mask.bool()
+    if not mask_b.any():
+        return _zero_like_loss(logits)
+    y = _binary_target(target)
+    pos = ((y > 0.5) & mask_b).float().sum()
+    neg = ((y <= 0.5) & mask_b).float().sum()
+    total = (pos + neg).clamp_min(1.0)
+    pos_w = (0.5 * total / pos.clamp_min(1.0)).clamp(0.25, float(max_class_weight))
+    neg_w = (0.5 * total / neg.clamp_min(1.0)).clamp(0.25, float(max_class_weight))
+    cls_w = torch.where(y > 0.5, pos_w, neg_w)
+    raw = F.binary_cross_entropy_with_logits(_safe_float(logits), y, reduction="none")
+    return masked_mean(raw * cls_w, mask_b)
+
+
+def _within_pair_binary_rank_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    margin: float = 0.5,
+    max_roots_per_class: int = 8,
+) -> torch.Tensor:
+    """Vectorized hard-root ranking per candidate-agent pair.
+
+    The previous implementation entered three Python loops over ``B*K*A`` and
+    then materialized all positive/negative root pairs.  Natural/transport
+    training calls this every batch, so the host-side launch overhead was large.
+    The hard positive (lowest conflict logit) and hard negative (highest
+    non-conflict logit) define the same ordering violation while using only
+    reductions over the root axis. ``max_roots_per_class`` is retained in the
+    signature for checkpoint/config compatibility.
+    """
+    del max_roots_per_class
+    y = _binary_target(target) > 0.5
+    m = mask.bool()
+    z = _safe_float(logits)
+    pos_mask = m & y
+    neg_mask = m & ~y
+    valid = pos_mask.any(dim=-1) & neg_mask.any(dim=-1)
+    if not valid.any():
+        return _zero_like_loss(logits)
+    finfo = torch.finfo(z.dtype)
+    hardest_pos = torch.where(pos_mask, z, torch.full_like(z, finfo.max)).amin(dim=-1)
+    hardest_neg = torch.where(neg_mask, z, torch.full_like(z, finfo.min)).amax(dim=-1)
+    return torch.relu(float(margin) - hardest_pos[valid] + hardest_neg[valid]).mean()
+
+
 def witness_pair_ranking_loss(
     logits: torch.Tensor,
     target: torch.Tensor,
@@ -514,22 +570,34 @@ def witness_logit_l2_loss(logits: torch.Tensor, mask: torch.Tensor) -> torch.Ten
         return _zero_like_loss(logits)
     return masked_mean(_safe_float(logits).pow(2), mask_b)
 
-def _gt_to_pred_natural_assignment(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> torch.Tensor | None:
-    """Map each unordered GT natural mode to its nearest predicted mode.
+def _gt_to_pred_natural_assignment(
+    pred: dict[str, torch.Tensor],
+    batch: dict[str, torch.Tensor],
+    *,
+    source_penalty_m: float = 2.0,
+) -> torch.Tensor | None:
+    """Map each unordered GT root to a source-consistent predicted root.
 
-    Natural alternatives are trained as a set; raw mode indices have no semantic
-    correspondence.  Explicit transport labels must therefore be aligned before
-    per-mode BCE/root CE supervision.  The natural decoder is frozen during v9
-    transport/planner stages, so a hard nearest-ADE assignment is stable and does
-    not need gradients.
+    Transport labels describe *same-root* recovery, so a pure terminal/full-ADE
+    nearest neighbour is not sufficient: under intervention it may swap an OBS
+    root with a neutral or priority-preserving root.  Alignment therefore uses a
+    shared multi-horizon geometry cost plus the decoder's structural source
+    identity.  The natural decoder is frozen in transport/planner stages and the
+    discrete assignment intentionally carries no gradient.
     """
     pred_traj = pred.get("_natural_pred_traj")
     gt_traj = batch.get("cowp/natural/traj")
     if pred_traj is None or gt_traj is None:
         return None
     with torch.no_grad():
-        d = _pairwise_ade(pred_traj, gt_traj)  # [B,A,M_pred,M_gt]
-        assignment = d.argmin(dim=2)
+        cost, _ = natural_root_alignment_cost(
+            pred_traj,
+            gt_traj,
+            pred_source_logits=pred.get("_natural_pred_source_logits"),
+            gt_source=batch.get("cowp/natural/source"),
+            source_penalty_m=float(source_penalty_m),
+        )
+        assignment = cost.argmin(dim=2)
         gt_valid = batch.get("cowp/natural/valid")
         if gt_valid is not None:
             assignment = torch.where(gt_valid.bool(), assignment, torch.zeros_like(assignment))
@@ -1317,7 +1385,9 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     # response that actually certifies feasibility for a root option.
     if "root_logits" in pred and "cowp/transport/response_root_index" in batch and mask.any():
         root_target_gt = batch["cowp/transport/response_root_index"].long()
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = _gt_to_pred_natural_assignment(
+            pred, batch, source_penalty_m=float(weights.get("root_alignment_source_penalty_m", 2.0))
+        )
         if assignment is not None:
             gather_map = assignment[:, None, :, :].expand(
                 root_target_gt.shape[0], root_target_gt.shape[1], assignment.shape[1], assignment.shape[2]
@@ -1806,6 +1876,12 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     mode_valid = batch.get("cowp/transport/mode_valid")
     mode_conflict_target = batch.get("cowp/transport/mode_conflict")
     mode_retain_target = batch.get("cowp/transport/mode_retained_low_safe")
+    # Natural-mode alignment is trajectory-only and identical for every
+    # primitive supervision term.  v16.6 recomputed the full predicted-vs-GT
+    # pairwise ADE up to five times per batch; cache it once here.
+    natural_assignment = _gt_to_pred_natural_assignment(
+        pred, batch, source_penalty_m=float(weights.get("root_alignment_source_penalty_m", 2.0))
+    )
     def _balanced_mode_bce(logits: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         target = _binary_target(target)
         active = mask.float()
@@ -1818,18 +1894,24 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
 
     if mode_valid is not None and mode_conflict_target is not None and "mode_conflict_prob" in pred:
         mm = mode_valid.bool() & pair[..., None]
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = natural_assignment
         if "mode_conflict_logits" in pred:
             cp_logit = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_logits"]), assignment)
         else:
             cp = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
             cp_logit = torch.logit(cp)
         mode_conflict = _balanced_mode_bce(cp_logit, mode_conflict_target, mm)
+        mode_conflict_rank = _within_pair_binary_rank_loss(
+            cp_logit, mode_conflict_target, mm,
+            margin=float(weights.get("set_transport_mode_conflict_rank_margin", 0.5)),
+            max_roots_per_class=int(weights.get("set_transport_mode_conflict_rank_max_roots", 8)),
+        )
     else:
         mode_conflict = _zero_like_loss(pred)
+        mode_conflict_rank = _zero_like_loss(pred)
     if mode_valid is not None and mode_retain_target is not None and "mode_retain_prob" in pred:
         mm = mode_valid.bool() & pair[..., None]
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = natural_assignment
         if "mode_retain_logits" in pred:
             rp_logit = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_logits"]), assignment)
         else:
@@ -1841,7 +1923,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     if (mode_valid is not None and mode_conflict_target is not None and mode_retain_target is not None
             and "mode_uncertainty" in pred):
         mm = mode_valid.bool() & pair[..., None]
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = natural_assignment
         cp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment)
         rp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment)
         u_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_uncertainty"]), assignment)
@@ -1863,7 +1945,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     ) if "mode_recovery_logits" in pred else None
     if mode_valid is not None and root_low_safe_target is not None:
         mm = mode_valid.bool() & pair[..., None]
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = natural_assignment
         recovery_logit = _align_pred_modes_to_gt(
             _safe_float(pred["mode_recovery_logits"]), assignment
         )
@@ -1876,7 +1958,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     # visualization, but no longer defines the decision certificate.
     if root_low_safe_target is not None and "response_root_exist_aux" in pred and mode_valid is not None:
         mm = mode_valid.bool() & pair[..., None]
-        assignment = _gt_to_pred_natural_assignment(pred, batch)
+        assignment = natural_assignment
         aux_prob = _align_pred_modes_to_gt(
             _safe_float(pred["response_root_exist_aux"]), assignment
         ).clamp(1.0e-5, 1.0 - 1.0e-5)
@@ -1906,25 +1988,59 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     else:
         root_recovery = _zero_like_loss(pred)
 
-    # Candidate-level budget supervision.  Pair AUPRC can be high while an
-    # any/max reduction rejects nearly every candidate.  Supervise the monotone
-    # BCOT aggregate directly with the same disjoint NCF/false-safe labels used
-    # for evaluation.  The aggregate contains no generic candidate latent, so
-    # this objective calibrates option transport rather than replacing it.
+    # Candidate-level BCOT supervision.  v16.6 used one-sided pos_weight even
+    # though false-safe was the majority class, biasing risk high.  v16.7 uses
+    # symmetric balancing and separates priority-aware hard certification from
+    # the global burden-transfer diagnostic.
     candidate_transport = pred.get("candidate_transport_risk")
+    candidate_transport_logit = pred.get("candidate_transport_logit")
+    candidate_global_transport = pred.get("candidate_global_transport_risk")
+    candidate_global_logit = pred.get("candidate_global_transport_logit")
     candidate_budget_coverage = _zero_like_loss(pred)
     candidate_budget_ncf_rate = _zero_like_loss(pred)
     candidate_budget_false_safe_rate = _zero_like_loss(pred)
+    candidate_priority_coverage = _zero_like_loss(pred)
+    candidate_priority_false_safe_rate = _zero_like_loss(pred)
+    candidate_global_budget = _zero_like_loss(pred)
+    candidate_priority_budget = _zero_like_loss(pred)
     if candidate_transport is not None:
+        conventional = batch.get("cowp/candidates/conventional_safe", cand).bool()
+        exists_target = batch.get("cowp/witness/exists")
+        rho = batch.get("cowp/witness/rho")
+        if exists_target is not None and rho is not None:
+            protected = ((rho.long() == 2) | (rho.long() == 3)) & crit[:, None, :]
+            protected_available = protected.any(dim=-1)
+            priority_fs = cand & conventional & (exists_target.bool() & protected).any(dim=-1)
+            priority_good = cand & conventional & protected_available & ~priority_fs
+            priority_disc = priority_good | priority_fs
+            candidate_priority_coverage = priority_disc.float().sum() / cand.float().sum().clamp_min(1.0)
+            candidate_priority_false_safe_rate = priority_fs.float().sum() / priority_disc.float().sum().clamp_min(1.0)
+            if priority_disc.any():
+                plogit = (_safe_float(candidate_transport_logit) if candidate_transport_logit is not None
+                          else torch.logit(_safe_float(candidate_transport).clamp(1e-5, 1 - 1e-5)))
+                pbce = symmetric_class_balanced_bce_with_logits(
+                    plogit, priority_fs.float(), priority_disc,
+                    max_class_weight=float(weights.get("set_transport_candidate_max_class_weight", 6.0)),
+                )
+                prank_terms: list[torch.Tensor] = []
+                margin = float(weights.get("set_transport_candidate_margin", 0.10))
+                max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
+                risk = torch.sigmoid(plogit)
+                for b in range(cand.shape[0]):
+                    good = torch.where(priority_good[b])[0]
+                    bad = torch.where(priority_fs[b])[0]
+                    if not (good.numel() and bad.numel()):
+                        continue
+                    if good.numel() * bad.numel() > max_pairs:
+                        g_keep = max(1, int(max_pairs ** 0.5)); b_keep = max(1, max_pairs // g_keep)
+                        good = good[:g_keep]; bad = bad[:b_keep]
+                    prank_terms.append(torch.relu(margin + risk[b, good[:, None]] - risk[b, bad[None, :]]).mean())
+                prank = torch.stack(prank_terms).mean() if prank_terms else _zero_like_loss(plogit)
+                candidate_priority_budget = 0.65 * pbce + 0.35 * prank
+
         ncf_target = batch.get("cowp/candidates/noncoercive_feasible")
         fs_target = batch.get("cowp/candidates/false_safe")
-        # Missing supervision must not silently become all-negative labels.  The
-        # training entry point validates these keys for witness/planner stages;
-        # keeping the branch explicit also makes unit tests and custom callers
-        # expose the problem instead of reporting a misleading zero loss.
-        if ncf_target is None or fs_target is None:
-            candidate_budget = _zero_like_loss(candidate_transport)
-        else:
+        if ncf_target is not None and fs_target is not None:
             raw_ncf = _binary_target(ncf_target) > 0.5
             raw_fs = _binary_target(fs_target) > 0.5
             ncf_pos = cand & raw_ncf & ~raw_fs
@@ -1934,40 +2050,29 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
             candidate_budget_ncf_rate = ncf_pos.float().sum() / disc.float().sum().clamp_min(1.0)
             candidate_budget_false_safe_rate = fs_pos.float().sum() / disc.float().sum().clamp_min(1.0)
             if disc.any():
-                risk = _safe_float(candidate_transport).clamp(1.0e-5, 1.0 - 1.0e-5)
-                risk_logit = torch.logit(risk)
-                target = fs_pos.float()
-                pos_weight = (
-                    ncf_pos.float().sum() / fs_pos.float().sum().clamp_min(1.0)
-                ).clamp(1.0, float(weights.get("set_transport_candidate_max_pos_weight", 4.0)))
-                budget_bce = masked_mean(
-                    F.binary_cross_entropy_with_logits(
-                        risk_logit, target, reduction="none", pos_weight=pos_weight
-                    ),
-                    disc,
+                grisk = candidate_global_transport if candidate_global_transport is not None else candidate_transport
+                glogit = (_safe_float(candidate_global_logit) if candidate_global_logit is not None
+                          else torch.logit(_safe_float(grisk).clamp(1e-5, 1 - 1e-5)))
+                gbce = symmetric_class_balanced_bce_with_logits(
+                    glogit, fs_pos.float(), disc,
+                    max_class_weight=float(weights.get("set_transport_candidate_max_class_weight", 6.0)),
                 )
+                gr = torch.sigmoid(glogit)
                 rank_terms: list[torch.Tensor] = []
                 margin = float(weights.get("set_transport_candidate_margin", 0.10))
                 max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
                 for b in range(cand.shape[0]):
-                    good = torch.where(ncf_pos[b])[0]
-                    bad = torch.where(fs_pos[b])[0]
+                    good = torch.where(ncf_pos[b])[0]; bad = torch.where(fs_pos[b])[0]
                     if not (good.numel() and bad.numel()):
                         continue
                     if good.numel() * bad.numel() > max_pairs:
-                        g_keep = max(1, int(max_pairs ** 0.5))
-                        b_keep = max(1, max_pairs // g_keep)
-                        good = good[:g_keep]
-                        bad = bad[:b_keep]
-                    rank_terms.append(
-                        torch.relu(
-                            margin + risk[b, good[:, None]] - risk[b, bad[None, :]]
-                        ).mean()
-                    )
-                budget_rank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(risk)
-                candidate_budget = 0.65 * budget_bce + 0.35 * budget_rank
-            else:
-                candidate_budget = _zero_like_loss(candidate_transport)
+                        g_keep = max(1, int(max_pairs ** 0.5)); b_keep = max(1, max_pairs // g_keep)
+                        good = good[:g_keep]; bad = bad[:b_keep]
+                    rank_terms.append(torch.relu(margin + gr[b, good[:, None]] - gr[b, bad[None, :]]).mean())
+                grank = torch.stack(rank_terms).mean() if rank_terms else _zero_like_loss(glogit)
+                candidate_global_budget = 0.65 * gbce + 0.35 * grank
+        priority_mix = float(weights.get("set_transport_priority_budget_mix", 0.65))
+        candidate_budget = priority_mix * candidate_priority_budget + (1.0 - priority_mix) * candidate_global_budget
     else:
         candidate_budget = _zero_like_loss(pred)
 
@@ -1980,6 +2085,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_source", 0.75)) * source
         + float(weights.get("set_transport_response_exist", 0.5)) * response
         + float(weights.get("set_transport_mode_conflict", 1.5)) * mode_conflict
+        + float(weights.get("set_transport_mode_conflict_rank", 0.75)) * mode_conflict_rank
         + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
         + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
         + float(weights.get("set_transport_mode_recovery", 2.0)) * mode_recovery
@@ -1990,11 +2096,15 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     return {
         "loss": total, "witness": witness, "opr": opr, "burden": burden,
         "tail_burden": tail_burden, "conflict": conflict, "source": source, "response": response,
-        "mode_conflict": mode_conflict, "mode_retain": mode_retain,
+        "mode_conflict": mode_conflict, "mode_conflict_rank": mode_conflict_rank, "mode_retain": mode_retain,
         "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
         "response_root_aux": response_root_aux, "root_recovery": root_recovery,
         "candidate_budget": candidate_budget,
         "candidate_budget_coverage": candidate_budget_coverage.detach(),
         "candidate_budget_ncf_rate": candidate_budget_ncf_rate.detach(),
         "candidate_budget_false_safe_rate": candidate_budget_false_safe_rate.detach(),
+        "candidate_priority_budget": candidate_priority_budget,
+        "candidate_global_budget": candidate_global_budget,
+        "candidate_priority_coverage": candidate_priority_coverage.detach(),
+        "candidate_priority_false_safe_rate": candidate_priority_false_safe_rate.detach(),
     }

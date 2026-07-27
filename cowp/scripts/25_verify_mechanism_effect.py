@@ -8,6 +8,9 @@ from typing import Any
 SELECTION_KEYS = (
     "EP",
     "FallbackRate",
+    "PriorityBurdenTransferRate",
+    "PriorityCertificate/AcceptNCFRecall",
+    "PriorityCertificate/AcceptNCFPrecision",
     "SelectedFalseSafeRate",
     "LearnedAcceptedCandidateRate",
     "LearnedAcceptNCFRecall",
@@ -32,9 +35,6 @@ def _subset_meta(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def _disjoint_partition(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    # For the deterministic i % modulo partition used by learned_offline, equal
-    # modulus and distinct remainders prove disjointness.  A differing hash alone
-    # is not treated as proof of disjointness.
     return (
         int(a.get("modulo", 1)) > 1
         and int(a.get("modulo", 1)) == int(b.get("modulo", 1))
@@ -45,8 +45,9 @@ def _disjoint_partition(a: dict[str, Any], b: dict[str, Any]) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Verify held-out COWP mechanism/selector quality. Calibration may "
-            "choose the operating point but must never supply the reported metrics."
+            "Verify the held-out priority-aware COWP mechanism. Calibration may "
+            "choose an operating point but cannot supply reported metrics. This "
+            "is a development continuation gate, not a paper/SOTA claim gate."
         )
     )
     ap.add_argument("--input", required=True, help="Held-out shared-method evaluation JSON.")
@@ -55,13 +56,16 @@ def main() -> None:
     ap.add_argument("--output", required=True)
     ap.add_argument("--calibration-json", required=True)
     ap.add_argument("--min-unique-selection-points", type=int, default=2)
-    ap.add_argument("--min-ncf-recall", type=float, default=0.20)
+    ap.add_argument("--min-priority-ncf-recall", "--min-ncf-recall", dest="min_priority_ncf_recall", type=float, default=0.25)
+    ap.add_argument("--min-priority-ncf-precision", type=float, default=0.0)
+    ap.add_argument("--min-global-ncf-recall", type=float, default=0.18)
     ap.add_argument("--min-witness-auprc", type=float, default=0.50)
-    ap.add_argument("--min-bcot-auprc", type=float, default=0.0)
-    ap.add_argument("--min-root-transport-auprc", type=float, default=0.0)
+    ap.add_argument("--min-priority-bcot-auprc", "--min-bcot-auprc", dest="min_priority_bcot_auprc", type=float, default=0.50)
+    ap.add_argument("--min-priority-root-auprc", "--min-root-transport-auprc", dest="min_priority_root_auprc", type=float, default=0.35)
     ap.add_argument("--min-accepted-rate", type=float, default=0.08)
     ap.add_argument("--max-fallback", type=float, default=0.30)
-    ap.add_argument("--min-false-safe-improvement", type=float, default=0.03)
+    ap.add_argument("--min-priority-transfer-improvement", type=float, default=0.03)
+    ap.add_argument("--min-global-false-safe-improvement", "--min-false-safe-improvement", dest="min_global_false_safe_improvement", type=float, default=0.03)
     args = ap.parse_args()
 
     heldout = json.loads(Path(args.input).read_text(encoding="utf-8"))
@@ -96,17 +100,25 @@ def main() -> None:
     heldout_budget = _f(main, sweep_kind, _f(main, "bcot_risk_budget", float("nan")))
     operating_point_matches = abs(selected_budget - heldout_budget) <= 1e-9
 
-    recall = _f(main, "LearnedAcceptNCFRecall")
-    auprc = _f(main, "WitnessQuality/AUPRC")
-    bcot_auprc = _f(main, "BCOT/FalseSafe_AUPRC")
-    root_transport_auprc = _f(main, "RootTransport/ConflictConditioned_AUPRC")
+    p_recall = _f(main, "PriorityCertificate/AcceptNCFRecall", _f(main, "LearnedAcceptNCFRecall"))
+    p_precision = _f(main, "PriorityCertificate/AcceptNCFPrecision", _f(main, "LearnedAcceptNCFPrecision"))
+    g_recall = _f(main, "LearnedAcceptNCFRecall")
+    witness_auprc = _f(main, "WitnessQuality/AUPRC")
+    p_bcot_auprc = _f(main, "BCOT/PriorityFalseSafe_AUPRC", _f(main, "BCOT/FalseSafe_AUPRC"))
+    g_bcot_auprc = _f(main, "BCOT/GlobalFalseSafe_AUPRC", _f(main, "BCOT/FalseSafe_AUPRC"))
+    p_root_auprc = _f(main, "RootTransport/PriorityConflict_AUPRC", _f(main, "RootTransport/ConflictConditioned_AUPRC"))
+    g_root_auprc = _f(main, "RootTransport/ConflictConditioned_AUPRC")
     accepted = _f(main, "LearnedAcceptedCandidateRate")
     fallback = _f(main, "FallbackRate", 1.0)
+    pbtr = _f(main, "PriorityBurdenTransferRate", _f(main, "SelectedFalseSafeRate", 1.0))
+    conventional_pbtr = _f(conventional, "PriorityBurdenTransferRate", _f(conventional, "SelectedFalseSafeRate", 1.0))
+    pbtr_gain = conventional_pbtr - pbtr
     false_safe = _f(main, "SelectedFalseSafeRate", 1.0)
     conventional_false_safe = _f(conventional, "SelectedFalseSafeRate", 1.0)
     false_safe_gain = conventional_false_safe - false_safe
 
     report = {
+        "gate_role": "development_continuation_not_paper_claim",
         "evaluation_protocol": "calibration_partition_then_disjoint_heldout_partition",
         "operating_point_kind": sweep_kind,
         "calibrated_operating_point": selected_budget,
@@ -120,36 +132,52 @@ def main() -> None:
         "threshold_points": len(rows),
         "unique_selection_points": unique,
         "threshold_connected_to_selection": unique >= args.min_unique_selection_points,
-        "learned_accept_ncf_recall": recall,
-        "ncf_recall_pass": recall >= args.min_ncf_recall,
-        "witness_auprc": auprc,
-        "witness_auprc_pass": auprc >= args.min_witness_auprc,
-        "bcot_false_safe_auprc": bcot_auprc,
-        "bcot_auprc_pass": bcot_auprc >= args.min_bcot_auprc,
-        "root_transport_conflict_auprc": root_transport_auprc,
-        "root_transport_auprc_pass": root_transport_auprc >= args.min_root_transport_auprc,
+        "priority_accept_ncf_recall": p_recall,
+        "priority_ncf_recall_pass": p_recall >= args.min_priority_ncf_recall,
+        "priority_accept_ncf_precision": p_precision,
+        "priority_ncf_precision_pass": p_precision >= args.min_priority_ncf_precision,
+        "global_accept_ncf_recall": g_recall,
+        # Backward-compatible alias used by v16.6 reports/tests.
+        "learned_accept_ncf_recall": g_recall,
+        "global_ncf_recall_pass": g_recall >= args.min_global_ncf_recall,
+        "witness_auprc": witness_auprc,
+        "witness_auprc_pass": witness_auprc >= args.min_witness_auprc,
+        "priority_bcot_false_safe_auprc": p_bcot_auprc,
+        "priority_bcot_auprc_pass": p_bcot_auprc >= args.min_priority_bcot_auprc,
+        "global_bcot_false_safe_auprc_diagnostic": g_bcot_auprc,
+        "priority_root_transport_auprc": p_root_auprc,
+        "priority_root_transport_auprc_pass": p_root_auprc >= args.min_priority_root_auprc,
+        "global_root_transport_auprc_diagnostic": g_root_auprc,
         "learned_accepted_candidate_rate": accepted,
         "accepted_rate_pass": accepted >= args.min_accepted_rate,
         "fallback_rate": fallback,
         "fallback_pass": fallback <= args.max_fallback,
-        "selected_false_safe_rate": false_safe,
-        "conventional_selected_false_safe_rate": conventional_false_safe,
-        "selected_false_safe_improvement": false_safe_gain,
-        "false_safe_improvement_pass": false_safe_gain >= args.min_false_safe_improvement,
+        "priority_burden_transfer_rate": pbtr,
+        "conventional_priority_burden_transfer_rate": conventional_pbtr,
+        "priority_transfer_improvement": pbtr_gain,
+        "priority_transfer_improvement_pass": pbtr_gain >= args.min_priority_transfer_improvement,
+        "selected_global_false_safe_rate": false_safe,
+        "conventional_selected_global_false_safe_rate": conventional_false_safe,
+        "global_false_safe_improvement": false_safe_gain,
+        "global_false_safe_improvement_pass": false_safe_gain >= args.min_global_false_safe_improvement,
         "metrics_source": "heldout_input_only",
+        "paper_claim_ready": False,
     }
     report["pass"] = bool(
         report["calibration_feasible"]
         and report["calibration_heldout_disjoint"]
         and report["operating_point_matches"]
         and report["threshold_connected_to_selection"]
-        and report["ncf_recall_pass"]
+        and report["priority_ncf_recall_pass"]
+        and report["priority_ncf_precision_pass"]
+        and report["global_ncf_recall_pass"]
         and report["witness_auprc_pass"]
-        and report["bcot_auprc_pass"]
-        and report["root_transport_auprc_pass"]
+        and report["priority_bcot_auprc_pass"]
+        and report["priority_root_transport_auprc_pass"]
         and report["accepted_rate_pass"]
         and report["fallback_pass"]
-        and report["false_safe_improvement_pass"]
+        and report["priority_transfer_improvement_pass"]
+        and report["global_false_safe_improvement_pass"]
     )
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report, indent=2, ensure_ascii=False))

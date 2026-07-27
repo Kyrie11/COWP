@@ -122,6 +122,9 @@ loss_weights:
   response_root_ce: 0.4
   response_min_burden_bce: 0.35
   set_transport_mode_conflict: 2.5
+  set_transport_mode_conflict_rank: 0.75
+  set_transport_mode_conflict_rank_margin: 0.5
+  root_alignment_source_penalty_m: 2.0
   set_transport_mode_retain: 2.0
   set_transport_mode_uncertainty: 0.25
   set_transport_mode_recovery: 2.5
@@ -131,7 +134,8 @@ loss_weights:
   set_transport_recovery_max_pos_weight: 8.0
   set_transport_recovery_positive_floor: 0.0001
   set_transport_candidate_budget: 3.0
-  set_transport_candidate_max_pos_weight: 4.0
+  set_transport_candidate_max_class_weight: 6.0
+  set_transport_priority_budget_mix: 0.65
   set_transport_candidate_margin: 0.1
   set_transport_candidate_max_pairs: 256
   natural_base_deviation_obs: 0.0

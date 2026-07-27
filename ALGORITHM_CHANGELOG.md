@@ -5,6 +5,144 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.7 — Priority-Aware Mechanism Repair, Monotone Certification, and Paper-Grade Closed-Loop Protocol
+
+### Evidence from the uploaded v16.6 run
+
+The v16.6 natural foundation is healthy and is no longer the blocking stage:
+
+- natural-basis gate: `pass=true`;
+- natural-effectiveness gate: `pass=true`;
+- aligned component attribution: `pass=true`, `paper_claim_ready=false`;
+- OBS-capacity paired OBS gain: **0.07049 m**, 95% paired bootstrap CI
+  **[0.04353, 0.09871] m**;
+- mass-aware root envelope: exact squared-excess reduction **0.31165**, violation-mass
+  reduction **0.05373**, with both paired confidence intervals excluding zero.
+
+The full pipeline stopped at the held-out mechanism gate.  The calibrated budget was
+0.70 with `least_violation` status and no feasible calibration point.  On the disjoint
+held-out split:
+
+- pair-witness AUPRC: **0.71293** (the pair witness is usable);
+- RootTransport conflict-conditioned AUPRC: **0.22524**;
+- BCOT false-safe AUPRC: **0.40640**;
+- learned NCF recall: **0.20232**;
+- accepted candidate rate: **0.09036**;
+- fallback rate: **0.23464**;
+- selected false-safe rate: **0.47207**, versus **0.59737** for conventional safety.
+
+This is a downstream transport/certificate failure, not a natural-decoder failure.  The
+budget sweep from 0.05 to 0.70 contained no operating point satisfying recall, coverage,
+fallback and false-safe constraints simultaneously; threshold relaxation alone cannot
+repair the mechanism.
+
+### Confirmed engineering and label defects
+
+1. **Asymmetric BCOT class weighting.** False-safe examples constitute roughly 87--88%
+   of discriminative candidate labels, while the old implementation used positive-class
+   `pos_weight` clamped to at least one.  It could not downweight the majority class and
+   shifted candidate risks upward, explaining low acceptance and high fallback even at
+   the largest calibrated budget.
+2. **Broken arrival-order priority label.** `_first_arrival_to_close_points` searched
+   synchronous samples and returned the same timestamp for both agents.  Its arrival
+   comparison could never establish who reached a shared conflict region first.
+3. **Unsupported traffic-signal inference.** `controlled_by_signal` only indicates that
+   a lane is signal-controlled; without live phase association it does not establish
+   right-of-way.  The old rule injected systematic priority noise.
+4. **Root-assignment mismatch.** Training and evaluation used duplicated alignment logic
+   and full-horizon ADE, permitting source-root swaps.  v16.7 shares a multi-horizon,
+   source-aware alignment cost in training and evaluation.
+5. **Proposal/paper mismatch.** The implementation uses a finite kinematic primitive
+   bank, not route-conditioned lattice-MPC.  Fixed lateral and terminal primitives can
+   leave the local road corridor and contributed to the high cached off-road fraction.
+6. **Sparse outcome evidence.** Only about 23.9% of selected held-out candidates had
+   attached Waymax outcomes and no finite log-divergence labels were available.  These
+   cached outcomes are auxiliary diagnostics, not a substitute for a full online
+   closed-loop run.
+
+### Mechanism repair
+
+- Replace one-sided candidate BCE with symmetric inverse-frequency class balancing.
+- Separate protected-priority BCOT risk from the all-critical global diagnostic risk.
+- Preserve mechanism interpretability with positive, normalized, monotone weights over
+  unrecovered conflict mass, burden-tail activation and option shortfall.  No generic
+  candidate classifier is allowed to bypass the COWP mechanism.
+- Add candidate-level within-scene ranking so false-safe candidates must score above
+  non-coercive feasible candidates.
+- Add closing speed, near-conflict fraction and swept midpoint clearance to root
+  geometry; add root conflict ranking supervision.
+- Blend learned priority probability with corrected rule labels, while keeping the
+  all-critical diagnostic separate from the protected hard veto.
+- Use one shared source-aware multi-horizon root alignment implementation for training
+  and evaluation.
+
+### Priority-aware semantics and metrics
+
+The hard feasibility set now protects agent-priority and explicitly negotiated/equal
+relations.  Ego-priority relations remain in the all-critical diagnostic but do not
+create the same veto.  This prevents the priority-aware motivation from degenerating
+into a universal "never inconvenience anyone" rule.
+
+Primary mechanism metrics are reduced to a small set:
+
+- **PBTR:** protected-priority burden-transfer rate;
+- **protected OPR:** retained same-root low-burden probability mass;
+- **BTE-CVaR25:** worst-quartile severity of the worst protected relation per scene;
+- **NCF scene retention:** whether an existing non-coercive proposal survives the
+  certificate;
+- **non-coercive progress regret:** selector loss relative to the best available NCF
+  proposal;
+- **PBTR--coverage curve:** burden transfer versus certified scene coverage.
+
+Global FSR remains a stress diagnostic. CBS, HBCR, WLA and MTA are retained only as
+appendix or debugging metrics unless future experiments show unique explanatory value.
+
+### Proposal and data correction
+
+- Correct independent path-arrival times and remove signal-presence right-of-way labels.
+- Add a cheap local lane-corridor screen for synthetic kinematic proposals; skip the
+  screen when map geometry is too sparse to define a reliable corridor.
+- Keep the logged trajectory as an observed reference.
+- `PREPARE_COWP_V16_7_DATA_CN.sh` builds a fresh paper-grade `formal_v17` cache, because
+  corrected priority labels and map-screened proposals cannot be retrofitted into old
+  v9 overlays.  Candidate Waymax replay defaults to 24 balanced candidates per scene.
+
+### Evaluation gates
+
+The v16.7 mechanism gate is a development-continuation gate, not a paper-claim gate. It
+requires disjoint calibration/held-out partitions and checks protected NCF recall and
+precision, priority BCOT/root AUPRC, accepted rate, fallback and PBTR improvement. Global
+false-safe metrics remain anti-degeneration diagnostics. Publication claims additionally
+require at least three independent seeds and a real online Waymax run.
+
+### Efficiency changes
+
+- Vectorize hard root-ranking loss over the root axis instead of Python loops over
+  batch/candidate/agent triples.
+- Compute source-aware root alignment once and reuse it across transport losses.
+- Retain v16.6 frozen-backbone, trainable-parameter-only AdamW, static DDP and bucket-view
+  optimizations.
+- Perform lane-corridor screening only during label/cache construction, not training.
+- Reuse the validated natural checkpoint for the immediate mechanism rerun; transport
+  and planner are retrained from a fresh optimizer state.
+- Final package regression: **138 passed**; all shell scripts pass `bash -n`; Python
+  compileall and internal TeX label/reference checks pass. The uploaded source did not
+  include its `.bib` file, so citation resolution was not treated as a code failure.
+
+### Current decision
+
+- **Keep and deepen:** typed natural decoder, yaw fix, OBS capacity, mass-aware root
+  identity, same-root OPR, hard protected-priority certificate and fail-fast gates.
+- **Partially supported:** planner ranking and hard certificate; the offline certificate
+  reduces HBCR substantially but remains too conservative and has no online proof.
+- **Still unproven:** emergency hard projection contribution, conformal coverage,
+  reactive-agent causal burden transfer, final selector quality and CCF-A/SOTA closed-loop
+  performance.
+- The immediate v16.7 experiment may reuse the validated v16.6 natural checkpoint to
+  isolate the downstream repair. Final paper experiments must rebuild v17 data and rerun
+  natural attribution, mechanism training and three-seed online evaluation.
+
+
 ## v16.6 — Protocol-Aligned Attribution, Exact Identity Objective, and Natural-Stage Systems Repair
 
 ### Why the v16.5 attribution gate failed

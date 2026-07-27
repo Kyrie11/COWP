@@ -10,6 +10,7 @@ from typing import Callable
 import numpy as np
 
 from cowp.core.constants import MacroType
+from cowp.models.root_alignment import natural_root_alignment_cost
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_batch
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
@@ -702,12 +703,22 @@ def _select_from_learned(
             # priority head alone.
             rho = batch.get("cowp/witness/rho")
             if rho is not None and torch.is_tensor(rho):
-                # PriorityRelation.AGENT_PRIORITY == 2.
-                rule_priority = (rho.long() == 2).float()
+                rho_l = rho.long()
+                # PriorityRelation: ego=1, agent=2, equal/negotiated=3.  OPR is
+                # an outcome of option transport, not evidence that an agent owns
+                # right-of-way; mixing it into priority was circular and made the
+                # purported priority-aware gate approach universal NCF.
+                rule_priority = torch.where(
+                    rho_l == 2, torch.ones_like(witness_prob),
+                    torch.where(
+                        rho_l == 3, torch.full_like(witness_prob, 0.65),
+                        torch.where(rho_l == 1, torch.full_like(witness_prob, 0.10),
+                                    torch.full_like(witness_prob, 0.25)),
+                    ),
+                )
             else:
-                rule_priority = torch.zeros_like(witness_prob)
-            opr_collapse = (torch.relu(float(alpha_opr) - opr) / max(float(alpha_opr), 1e-6)).clamp(0.0, 1.0)
-            priority_proxy = (0.45 * learned_priority + 0.45 * rule_priority + 0.10 * opr_collapse).clamp(0.0, 1.0)
+                rule_priority = torch.full_like(witness_prob, 0.25)
+            priority_proxy = (0.50 * learned_priority + 0.50 * rule_priority).clamp(0.0, 1.0)
             priority_claim = priority_proxy >= float(priority_hard_threshold)
             pcfg_gate = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
             hard_max_unc = float(pcfg_gate.get("set_transport_hard_max_uncertainty", 0.40))
@@ -941,13 +952,15 @@ def _root_transport_eval_arrays(pred, batch):
         return None
 
     with torch.no_grad():
-        # [B,A,M_pred,M_gt]
-        pair_ade = torch.linalg.vector_norm(
-            pred_traj.float()[:, :, :, None, :, :2]
-            - gt_traj.float()[:, :, None, :, :, :2],
-            dim=-1,
-        ).mean(dim=-1)
-        assignment = pair_ade.argmin(dim=2).long()
+        # Source-aware multi-horizon alignment matches the training target and
+        # prevents geometric cross-source root swaps.
+        alignment_cost, pair_ade = natural_root_alignment_cost(
+            pred_traj,
+            gt_traj,
+            pred_source_logits=natural.get("source_logits"),
+            gt_source=batch.get("cowp/natural/source"),
+        )
+        assignment = alignment_cost.argmin(dim=2).long()
         natural_valid = batch.get("cowp/natural/valid")
         if torch.is_tensor(natural_valid):
             assignment = torch.where(
@@ -967,6 +980,12 @@ def _root_transport_eval_arrays(pred, batch):
         critical_valid = batch["cowp/critical/valid"].bool()[:, None, :, None]
         all_mask = mode_valid.bool() & candidate_valid & critical_valid
         conflict_mask = all_mask & mode_conflict.bool()
+        rho = batch.get("cowp/witness/rho")
+        if torch.is_tensor(rho):
+            protected = ((rho.long() == 2) | (rho.long() == 3))[:, :, :, None]
+            priority_conflict_mask = conflict_mask & protected
+        else:
+            priority_conflict_mask = torch.zeros_like(conflict_mask)
         nearest = pair_ade.min(dim=2).values
         nearest_mask = natural_valid.bool() if torch.is_tensor(natural_valid) else all_mask.any(dim=1)
         assignment_ade_sum = float(nearest[nearest_mask].sum().item()) if nearest_mask.any() else 0.0
@@ -977,6 +996,7 @@ def _root_transport_eval_arrays(pred, batch):
         "target": target.detach().cpu().numpy(),
         "all_mask": all_mask.detach().cpu().numpy(),
         "conflict_mask": conflict_mask.detach().cpu().numpy(),
+        "priority_conflict_mask": priority_conflict_mask.detach().cpu().numpy(),
         "assignment_ade_sum": assignment_ade_sum,
         "assignment_ade_count": assignment_ade_count,
     }
@@ -1040,8 +1060,11 @@ _EVAL_LABEL_KEYS = {
     "cowp/witness/token",
     "cowp/witness/burden_total",
     "cowp/witness/min_safe_burden",
+    "cowp/witness/tail_burden_excess",
+    "cowp/witness/root_min_safe_burden",
     "cowp/witness/opr",
     "cowp/witness/conflict_interval",
+    "cowp/witness/rho",
     "waymax/candidate_rollout_valid",
     "waymax/candidate_collision",
     "waymax/candidate_offroad",
@@ -1166,12 +1189,19 @@ class _LearnedMetricsAccumulator:
         self.selected_ncf = 0
         self.selected_false_safe = 0
         self.selected_conventional = 0
+        self.selected_priority_eligible = 0
+        self.selected_priority_false_safe = 0
         self.accepted_total = 0
         self.valid_total = 0
         self.accepted_ncf = 0
         self.total_ncf = 0
         self.accepted_false_safe = 0
         self.total_false_safe = 0
+        self.accepted_priority_total = 0
+        self.accepted_priority_ncf = 0
+        self.total_priority_ncf = 0
+        self.accepted_priority_false_safe = 0
+        self.total_priority_false_safe = 0
         self.selected_waymax_valid = 0
         self.selected_waymax_collision = 0
         self.selected_waymax_offroad = 0
@@ -1194,6 +1224,14 @@ class _LearnedMetricsAccumulator:
         self.scene_any_ncf = 0
         self.scene_any_accepted = 0
         self.scene_any_accepted_ncf = 0
+        self.scene_any_priority_ncf = 0
+        self.scene_any_accepted_priority_ncf = 0
+        # Per-scene protected burden-tail exposure.  Keep the samples so the
+        # reported upper-tail CVaR is an actual empirical tail statistic rather
+        # than a mean that is merely named CVaR.
+        self.protected_bte_values: list[float] = []
+        self.priority_progress_regret_sum = 0.0
+        self.priority_progress_regret_count = 0
 
     def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
         self.selected_total += 1
@@ -1204,16 +1242,63 @@ class _LearnedMetricsAccumulator:
         ncf = np.asarray(label.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool) & valid
         fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & valid
         conv = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool) & valid
+        crit = np.asarray(label.get("cowp/critical/valid", []), dtype=bool)
+        witness = np.asarray(label.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
+        rho = np.asarray(label.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
+        if witness.ndim == 2 and crit.size and witness.shape[1] == crit.size:
+            protected = ((rho == 2) | (rho == 3)) & crit[None, :]
+            priority_available = protected.any(axis=1)
+            priority_fs = valid & conv & (witness & protected).any(axis=1)
+            priority_ncf = valid & conv & priority_available & ~priority_fs
+        else:
+            protected = np.zeros((len(valid), len(crit)), dtype=bool)
+            priority_available = np.zeros_like(valid)
+            priority_fs = np.zeros_like(valid)
+            priority_ncf = np.zeros_like(valid)
         accepted = _align_candidate_vector(accepted_mask, len(valid), fill_value=False, dtype=bool) & valid
         self.scene_any_valid += int(bool(valid.any()))
         self.scene_any_conventional_safe += int(bool(conv.any()))
         self.scene_any_ncf += int(bool(ncf.any()))
         self.scene_any_accepted += int(bool(accepted.any()))
         self.scene_any_accepted_ncf += int(bool((accepted & ncf).any()))
+        self.scene_any_priority_ncf += int(bool(priority_ncf.any()))
+        self.scene_any_accepted_priority_ncf += int(bool((accepted & priority_ncf).any()))
+
+        # Non-coercive progress regret is conditional on the proposal bank
+        # containing a protected-priority feasible candidate.  A fallback in such
+        # a scene receives zero selected progress and is therefore diagnosed as
+        # certificate/selector conservatism rather than proposal failure.
+        if priority_ncf.any() and "cowp/candidates/trajectory" in label:
+            traj_all = np.asarray(label["cowp/candidates/trajectory"])
+            best_p = max((_trajectory_progress_m(traj_all[k]) for k in np.where(priority_ncf)[0]), default=0.0)
+            selected_p = 0.0
+            if 0 <= selected_idx < len(valid) and bool(valid[selected_idx]):
+                selected_p = _trajectory_progress_m(traj_all[selected_idx])
+            self.priority_progress_regret_sum += float(max(best_p - selected_p, 0.0) / max(best_p, 1.0e-6))
+            self.priority_progress_regret_count += 1
+
         if selected_idx >= 0 and selected_idx < len(valid):
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
             self.selected_conventional += int(bool(conv[selected_idx]))
+            self.selected_priority_eligible += int(bool(priority_available[selected_idx] and conv[selected_idx]))
+            self.selected_priority_false_safe += int(bool(priority_fs[selected_idx]))
+            tail = label.get("cowp/witness/tail_burden_excess")
+            if tail is not None and witness.ndim == 2:
+                tail_arr = np.asarray(tail, dtype=np.float32)
+                if tail_arr.ndim == 2 and selected_idx < tail_arr.shape[0]:
+                    protected_agent = protected[selected_idx] if protected.ndim == 2 else np.zeros_like(crit)
+                    if protected_agent.any():
+                        values = np.nan_to_num(
+                            tail_arr[selected_idx][protected_agent],
+                            nan=0.0,
+                            posinf=2.0,
+                            neginf=0.0,
+                        )
+                        # The selected plan is only as non-coercive as its worst
+                        # protected relation.  Store that candidate-level value;
+                        # finish() then aggregates the worst quartile of scenes.
+                        self.protected_bte_values.append(float(np.max(values)))
             if cert is not None:
                 try:
                     self.cert_selected_count += 1
@@ -1241,6 +1326,11 @@ class _LearnedMetricsAccumulator:
         self.total_ncf += int(ncf.sum())
         self.accepted_false_safe += int((accepted & fs).sum())
         self.total_false_safe += int(fs.sum())
+        self.accepted_priority_total += int((accepted & priority_available & conv).sum())
+        self.accepted_priority_ncf += int((accepted & priority_ncf).sum())
+        self.total_priority_ncf += int(priority_ncf.sum())
+        self.accepted_priority_false_safe += int((accepted & priority_fs).sum())
+        self.total_priority_false_safe += int(priority_fs.sum())
         rollout_valid = label.get("waymax/candidate_rollout_valid")
         if selected_idx >= 0 and rollout_valid is not None:
             rv = np.asarray(rollout_valid, dtype=bool)
@@ -1268,9 +1358,22 @@ class _LearnedMetricsAccumulator:
         metrics["SelectedNCFRate"] = float(self.selected_ncf / max(self.selected_total, 1))
         metrics["SelectedFalseSafeRate"] = float(self.selected_false_safe / max(self.selected_total, 1))
         metrics["SelectedConventionalSafeRate"] = float(self.selected_conventional / max(self.selected_total, 1))
+        metrics["PriorityBurdenTransferRate"] = float(
+            self.selected_priority_false_safe / max(self.selected_priority_eligible, 1)
+        )
         metrics["LearnedAcceptedCandidateRate"] = float(self.accepted_total / max(self.valid_total, 1))
         metrics["LearnedAcceptNCFRecall"] = float(self.accepted_ncf / max(self.total_ncf, 1))
+        metrics["LearnedAcceptNCFPrecision"] = float(self.accepted_ncf / max(self.accepted_total, 1))
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
+        metrics["PriorityCertificate/AcceptNCFRecall"] = float(
+            self.accepted_priority_ncf / max(self.total_priority_ncf, 1)
+        )
+        metrics["PriorityCertificate/AcceptNCFPrecision"] = float(
+            self.accepted_priority_ncf / max(self.accepted_priority_total, 1)
+        )
+        metrics["PriorityCertificate/AcceptFalseSafeRate"] = float(
+            self.accepted_priority_false_safe / max(self.total_priority_false_safe, 1)
+        )
         metrics["ProposalCoverage/AnyValidSceneRate"] = float(self.scene_any_valid / max(self.selected_total, 1))
         metrics["ProposalCoverage/AnyConventionalSafeSceneRate"] = float(self.scene_any_conventional_safe / max(self.selected_total, 1))
         metrics["ProposalCoverage/AnyNCFSceneRate"] = float(self.scene_any_ncf / max(self.selected_total, 1))
@@ -1278,6 +1381,22 @@ class _LearnedMetricsAccumulator:
         metrics["CertificateCoverage/AnyAcceptedNCFSceneRate"] = float(self.scene_any_accepted_ncf / max(self.selected_total, 1))
         metrics["CertificateCoverage/EmptySceneRate"] = float(1.0 - self.scene_any_accepted / max(self.selected_total, 1))
         metrics["CertificateCoverage/NCFSceneRetention"] = float(self.scene_any_accepted_ncf / max(self.scene_any_ncf, 1))
+        metrics["PriorityCertificate/NCFSceneRetention"] = float(
+            self.scene_any_accepted_priority_ncf / max(self.scene_any_priority_ncf, 1)
+        )
+        metrics["PriorityCertificate/NonCoerciveProgressRegret"] = float(
+            self.priority_progress_regret_sum / max(self.priority_progress_regret_count, 1)
+        )
+        if self.protected_bte_values:
+            protected_bte = np.sort(np.asarray(self.protected_bte_values, dtype=np.float64))
+            tail_count = max(1, int(np.ceil(0.25 * protected_bte.size)))
+            metrics["PriorityBurden/MeanWorstRelationBTE"] = float(protected_bte.mean())
+            metrics["PriorityBurden/BTE_CVaR_25"] = float(protected_bte[-tail_count:].mean())
+            metrics["PriorityBurden/BTE_CVaR_25_Count"] = int(tail_count)
+        else:
+            metrics["PriorityBurden/MeanWorstRelationBTE"] = 0.0
+            metrics["PriorityBurden/BTE_CVaR_25"] = 0.0
+            metrics["PriorityBurden/BTE_CVaR_25_Count"] = 0
         metrics["WitnessQuality/AUPRC"] = float(auprc)
         metrics["PlannerRankingPairAccuracy"] = float(rank_good / max(rank_total, 1)) if rank_total else 0.0
         if self.selected_waymax_valid > 0:
@@ -1419,18 +1538,24 @@ def _learned_offline_candidate_eval_many(
     cert_fs_targets: list[np.ndarray] = []
     cert_q_scores: list[np.ndarray] = []
     cert_q_targets: list[np.ndarray] = []
-    transport_scores: list[np.ndarray] = []
-    transport_targets: list[np.ndarray] = []
+    priority_transport_scores: list[np.ndarray] = []
+    priority_transport_targets: list[np.ndarray] = []
+    global_transport_scores: list[np.ndarray] = []
+    global_transport_targets: list[np.ndarray] = []
     root_direct_scores: list[np.ndarray] = []
     root_direct_targets: list[np.ndarray] = []
     root_conflict_scores: list[np.ndarray] = []
     root_conflict_targets: list[np.ndarray] = []
+    root_priority_conflict_scores: list[np.ndarray] = []
+    root_priority_conflict_targets: list[np.ndarray] = []
     root_aux_conflict_scores: list[np.ndarray] = []
     root_aux_conflict_targets: list[np.ndarray] = []
     root_assignment_ade_sum = 0.0
     root_assignment_ade_count = 0
-    transport_rank_good = 0
-    transport_rank_total = 0
+    priority_transport_rank_good = 0
+    priority_transport_rank_total = 0
+    global_transport_rank_good = 0
+    global_transport_rank_total = 0
     cert_rank_good = 0
     cert_rank_total = 0
     rank_good = 0
@@ -1488,6 +1613,26 @@ def _learned_offline_candidate_eval_many(
                 ).clamp(0.0, 1.0).cpu().numpy()
             else:
                 transport_np = cert_risk_np
+            global_transport_t = pred.get("candidate_global_transport_risk")
+            if torch.is_tensor(global_transport_t):
+                global_transport_np = torch.nan_to_num(
+                    global_transport_t.detach().float(), nan=1.0, posinf=1.0, neginf=0.0
+                ).clamp(0.0, 1.0).cpu().numpy()
+            else:
+                global_transport_np = transport_np
+            rho_t = batch.get("cowp/witness/rho")
+            if torch.is_tensor(rho_t):
+                protected_t = ((rho_t.long() == 2) | (rho_t.long() == 3)) & crit_mask[:, None, :]
+                protected_available_t = protected_t.any(dim=-1)
+                priority_fs_t = cand_mask & batch.get("cowp/candidates/conventional_safe", cand_mask).bool() & (
+                    batch["cowp/witness/exists"].bool() & protected_t
+                ).any(dim=-1)
+                priority_ncf_t = cand_mask & batch.get("cowp/candidates/conventional_safe", cand_mask).bool() & protected_available_t & ~priority_fs_t
+            else:
+                priority_fs_t = torch.zeros_like(cand_mask)
+                priority_ncf_t = torch.zeros_like(cand_mask)
+            priority_fs_np = priority_fs_t.detach().cpu().numpy()
+            priority_ncf_np = priority_ncf_t.detach().cpu().numpy()
             pressure_prior_np = pressure_prior_t.detach().cpu().numpy()
             rule_risk_np = rule_risk_t.detach().cpu().numpy()
             if valid_np.any():
@@ -1497,13 +1642,20 @@ def _learned_offline_candidate_eval_many(
                 cert_fs_targets.append(fs_np[valid_np])
                 cert_q_scores.append(cert_q_np[valid_np])
                 cert_q_targets.append(ncf_np[valid_np] & ~fs_np[valid_np])
-                transport_scores.append(transport_np[valid_np])
-                transport_targets.append(fs_np[valid_np])
+                priority_disc_np = valid_np & (priority_fs_np | priority_ncf_np)
+                if priority_disc_np.any():
+                    priority_transport_scores.append(transport_np[priority_disc_np])
+                    priority_transport_targets.append(priority_fs_np[priority_disc_np])
+                global_disc_np = valid_np & (fs_np | ncf_np)
+                if global_disc_np.any():
+                    global_transport_scores.append(global_transport_np[global_disc_np])
+                    global_transport_targets.append(fs_np[global_disc_np])
 
             root_eval = _root_transport_eval_arrays(pred, batch)
             if root_eval is not None:
                 all_root = root_eval["all_mask"]
                 conflict_root = root_eval["conflict_mask"]
+                priority_conflict_root = root_eval["priority_conflict_mask"]
                 if all_root.any():
                     root_direct_scores.append(root_eval["direct"][all_root])
                     root_direct_targets.append(root_eval["target"][all_root])
@@ -1513,6 +1665,9 @@ def _learned_offline_candidate_eval_many(
                     if root_eval["aux"] is not None:
                         root_aux_conflict_scores.append(root_eval["aux"][conflict_root])
                         root_aux_conflict_targets.append(root_eval["target"][conflict_root])
+                if priority_conflict_root.any():
+                    root_priority_conflict_scores.append(root_eval["direct"][priority_conflict_root])
+                    root_priority_conflict_targets.append(root_eval["target"][priority_conflict_root])
                 root_assignment_ade_sum += float(root_eval["assignment_ade_sum"])
                 root_assignment_ade_count += int(root_eval["assignment_ade_count"])
             g, t = _ranking_pair_accuracy(score_np, ncf_np, fs_np, valid_np)
@@ -1523,9 +1678,12 @@ def _learned_offline_candidate_eval_many(
             cg, ct = _ranking_pair_accuracy(cert_risk_np, ncf_np, fs_np, valid_np)
             cert_rank_good += cg
             cert_rank_total += ct
-            tg, tt = _ranking_pair_accuracy(transport_np, ncf_np, fs_np, valid_np)
-            transport_rank_good += tg
-            transport_rank_total += tt
+            ptg, ptt = _ranking_pair_accuracy(transport_np, priority_ncf_np, priority_fs_np, valid_np)
+            priority_transport_rank_good += ptg
+            priority_transport_rank_total += ptt
+            gtg, gtt = _ranking_pair_accuracy(global_transport_np, ncf_np, fs_np, valid_np)
+            global_transport_rank_good += gtg
+            global_transport_rank_total += gtt
 
             # Model inference and all host transfers above are shared across
             # methods.  Only the inexpensive candidate selection/aggregation is
@@ -1577,9 +1735,12 @@ def _learned_offline_candidate_eval_many(
     cert_ncf_auprc = _average_precision_binary(np.concatenate(cert_ncf_scores), np.concatenate(cert_ncf_targets)) if cert_ncf_scores else 0.0
     cert_fs_auprc = _average_precision_binary(np.concatenate(cert_fs_scores), np.concatenate(cert_fs_targets)) if cert_fs_scores else 0.0
     cert_q_auprc = _average_precision_binary(np.concatenate(cert_q_scores), np.concatenate(cert_q_targets)) if cert_q_scores else 0.0
-    transport_fs_auprc = _average_precision_binary(
-        np.concatenate(transport_scores), np.concatenate(transport_targets)
-    ) if transport_scores else 0.0
+    priority_transport_fs_auprc = _average_precision_binary(
+        np.concatenate(priority_transport_scores), np.concatenate(priority_transport_targets)
+    ) if priority_transport_scores else 0.0
+    global_transport_fs_auprc = _average_precision_binary(
+        np.concatenate(global_transport_scores), np.concatenate(global_transport_targets)
+    ) if global_transport_scores else 0.0
     root_all_score = np.concatenate(root_direct_scores) if root_direct_scores else np.asarray([], dtype=np.float32)
     root_all_target = np.concatenate(root_direct_targets) if root_direct_targets else np.asarray([], dtype=bool)
     root_conflict_score = np.concatenate(root_conflict_scores) if root_conflict_scores else np.asarray([], dtype=np.float32)
@@ -1589,6 +1750,10 @@ def _learned_offline_candidate_eval_many(
     root_all_auprc = _average_precision_binary(root_all_score, root_all_target)
     root_conflict_auprc = _average_precision_binary(root_conflict_score, root_conflict_target)
     root_conflict_recall = _binary_recall_at(root_conflict_score, root_conflict_target, 0.5)
+    root_priority_conflict_score = np.concatenate(root_priority_conflict_scores) if root_priority_conflict_scores else np.asarray([], dtype=np.float32)
+    root_priority_conflict_target = np.concatenate(root_priority_conflict_targets) if root_priority_conflict_targets else np.asarray([], dtype=bool)
+    root_priority_conflict_auprc = _average_precision_binary(root_priority_conflict_score, root_priority_conflict_target)
+    root_priority_conflict_recall = _binary_recall_at(root_priority_conflict_score, root_priority_conflict_target, 0.5)
     root_aux_conflict_auprc = _average_precision_binary(root_aux_conflict_score, root_aux_conflict_target)
     root_assignment_minade = root_assignment_ade_sum / max(root_assignment_ade_count, 1)
     out_by_method = {
@@ -1609,20 +1774,30 @@ def _learned_offline_candidate_eval_many(
             row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
             row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
             row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
-            row["BCOT/FalseSafe_AUPRC"] = float(transport_fs_auprc)
+            row["BCOT/PriorityFalseSafe_AUPRC"] = float(priority_transport_fs_auprc)
+            row["BCOT/GlobalFalseSafe_AUPRC"] = float(global_transport_fs_auprc)
+            # Backward-compatible alias now follows the decision certificate,
+            # which is priority-aware; global burden transfer is reported above.
+            row["BCOT/FalseSafe_AUPRC"] = float(priority_transport_fs_auprc)
             # Direct mechanism metrics: does the root-indexed head recover an
             # explicit low-burden safe response for each natural option?
             row["RootTransport/LowSafeExist_AUPRC"] = float(root_all_auprc)
             row["RootTransport/ConflictConditioned_AUPRC"] = float(root_conflict_auprc)
             row["RootTransport/ConflictConditioned_Recall@0.5"] = float(root_conflict_recall)
+            row["RootTransport/PriorityConflict_AUPRC"] = float(root_priority_conflict_auprc)
+            row["RootTransport/PriorityConflict_Recall@0.5"] = float(root_priority_conflict_recall)
             row["RootTransport/AuxConflictConditioned_AUPRC"] = float(root_aux_conflict_auprc)
             row["RootTransport/NaturalAssignmentMinADE_m"] = float(root_assignment_minade)
             row["RootTransport/EvaluatedConflictRoots"] = int(root_conflict_score.size)
             row["bcot_risk_budget"] = float(budget)
             row["pair_witness_threshold"] = float(th)
-            row["BCOT/RiskRankingPairAccuracy"] = float(
-                transport_rank_good / max(transport_rank_total, 1)
-            ) if transport_rank_total else 0.0
+            row["BCOT/PriorityRiskRankingPairAccuracy"] = float(
+                priority_transport_rank_good / max(priority_transport_rank_total, 1)
+            ) if priority_transport_rank_total else 0.0
+            row["BCOT/GlobalRiskRankingPairAccuracy"] = float(
+                global_transport_rank_good / max(global_transport_rank_total, 1)
+            ) if global_transport_rank_total else 0.0
+            row["BCOT/RiskRankingPairAccuracy"] = row["BCOT/PriorityRiskRankingPairAccuracy"]
             row["EvaluationSubset/Modulo"] = int(modulo)
             row["EvaluationSubset/Remainder"] = int(remainder)
             row["EvaluationSubset/Scenes"] = int(len(subset_indices))

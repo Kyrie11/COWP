@@ -8,16 +8,41 @@ from cowp.geometry.boxes import normalize_angle
 from cowp.geometry.map_projection import project_state_to_lane
 
 
-def _first_arrival_to_close_points(ego_traj: np.ndarray, agent_traj: np.ndarray, dt: float = 0.1, threshold: float = 8.0) -> tuple[float, float]:
-    T = min(len(ego_traj), len(agent_traj))
-    if T == 0:
+def _first_arrival_to_close_points(
+    ego_traj: np.ndarray,
+    agent_traj: np.ndarray,
+    dt: float = 0.1,
+    threshold: float = 8.0,
+) -> tuple[float, float]:
+    """Independent arrival times at the first shared conflict location.
+
+    The previous implementation searched only synchronous trajectory samples and
+    then returned the same index for both agents, so its arrival-order branches
+    could never fire.  Priority is about who reaches a shared path region first,
+    not whether the two logged states are close at the same timestamp.  We search
+    the pairwise path geometry, select the earliest credible shared region, and
+    return each trajectory's own arrival time.
+    """
+    ego = np.asarray(ego_traj, dtype=np.float32)
+    agent = np.asarray(agent_traj, dtype=np.float32)
+    if ego.ndim != 2 or agent.ndim != 2 or len(ego) == 0 or len(agent) == 0:
         return float("inf"), float("inf")
-    dist = np.linalg.norm(ego_traj[:T, :2] - agent_traj[:T, :2], axis=-1)
-    hit = np.where(dist < threshold)[0]
-    if len(hit) == 0:
+    exy = ego[:, :2]
+    axy = agent[:, :2]
+    finite_e = np.all(np.isfinite(exy), axis=-1)
+    finite_a = np.all(np.isfinite(axy), axis=-1)
+    if not finite_e.any() or not finite_a.any():
         return float("inf"), float("inf")
-    k = int(hit[0])
-    return float(k * dt), float(k * dt)
+    dist = np.linalg.norm(exy[:, None, :] - axy[None, :, :], axis=-1)
+    valid = finite_e[:, None] & finite_a[None, :] & (dist <= float(threshold))
+    if not valid.any():
+        return float("inf"), float("inf")
+    ii, jj = np.nonzero(valid)
+    # Prefer the earliest shared region; distance breaks ties.  A tiny temporal
+    # term avoids selecting a later repeated crossing with the same distance.
+    score = np.maximum(ii, jj).astype(np.float64) + 1.0e-3 * (ii + jj) + 1.0e-4 * dist[ii, jj]
+    q = int(np.argmin(score))
+    return float(ii[q] * dt), float(jj[q] * dt)
 
 
 def determine_priority(scene: ScenarioData, agent_index: int, ego_traj: np.ndarray | None, agent_traj: np.ndarray | None, cfg: dict) -> PriorityRelation:
@@ -34,10 +59,9 @@ def determine_priority(scene: ScenarioData, agent_index: int, ego_traj: np.ndarr
             return PriorityRelation.AGENT_PRIORITY
         if ag_lane.controlled_by_stop and not ego_lane.controlled_by_stop:
             return PriorityRelation.EGO_PRIORITY
-        if ego_lane.controlled_by_signal and not ag_lane.controlled_by_signal:
-            return PriorityRelation.AGENT_PRIORITY
-        if ag_lane.controlled_by_signal and not ego_lane.controlled_by_signal:
-            return PriorityRelation.EGO_PRIORITY
+        # Signal *presence* is not signal right-of-way.  ScenarioData does not
+        # carry the live phase associated with each lane, so inferring priority
+        # from controlled_by_signal alone creates systematic label noise.
         # Lane ownership: if ego is crossing laterally into the agent lane, the lane owner has priority.
         if ego_proj.lane_id != ag_proj.lane_id and abs(ag_proj.l) < 2.2:
             heading_diff = abs(float(normalize_angle(ego_state[6] - agent_state[6])))
@@ -54,17 +78,15 @@ def determine_priority(scene: ScenarioData, agent_index: int, ego_traj: np.ndarr
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     margin = float(cfg.get("priority", {}).get("arrival_order_margin_s", 0.5))
     if ego_traj is not None and agent_traj is not None and len(ego_traj) and len(agent_traj):
-        T = min(len(ego_traj), len(agent_traj))
-        dist = np.linalg.norm(ego_traj[:T, :2] - agent_traj[:T, :2], axis=-1)
-        hit = np.where(dist < 8.0)[0]
-        if len(hit):
-            # Use current longitudinal speeds to infer who is established at the conflict first.
-            k = int(hit[0])
-            ego_t = k * dt
-            ag_t = k * dt
-            # If the agent is already ahead along the common heading, prefer agent.
+        ego_t, ag_t = _first_arrival_to_close_points(ego_traj, agent_traj, dt=dt, threshold=8.0)
+        if np.isfinite(ego_t) and np.isfinite(ag_t):
+            # If the agent is already established ahead along a common heading,
+            # preserve the lane owner's claim before using path-arrival order.
             direction = np.array([np.cos(agent_state[6]), np.sin(agent_state[6])], dtype=np.float32)
-            if float((ego_state[:2] - agent_state[:2]) @ direction) < 0.0 and abs(normalize_angle(ego_state[6] - agent_state[6])) < np.deg2rad(45):
+            if (
+                float((ego_state[:2] - agent_state[:2]) @ direction) < 0.0
+                and abs(normalize_angle(ego_state[6] - agent_state[6])) < np.deg2rad(45)
+            ):
                 return PriorityRelation.AGENT_PRIORITY
             if ag_t + margin < ego_t:
                 return PriorityRelation.AGENT_PRIORITY

@@ -49,13 +49,22 @@
 
 \begin{abstract} Autonomous driving planners are typically evaluated by whether the ego vehicle remains collision-free, comfortable, and efficient. However, in interactive traffic, an ego plan can appear safe only because another road user is forced to absorb the conflict through hard braking, abrupt yielding, or surrendering a legitimate gap. We identify this overlooked failure mode as \emph{false-safe planning}: the ego rollout is collision-free, but its safety is contingent on another agent taking a high-burden ceding response. 
 
-We propose \textbf{COWP}, a coercion-witness planning framework that certifies whether an ego candidate is safe without shifting the conflict burden to others. Instead of treating social compliance as an auxiliary cost, COWP introduces \emph{non-coercive feasibility}: a plan is feasible only if each critical road user retains a sufficiently large set of low-burden safe responses. To operationalize this notion, COWP constructs counterfactual natural alternatives for surrounding agents, evaluates ego-conditioned safe response sets, and rejects collision-free candidates when a coercion witness shows that safety depends on high-burden ceding. We define an evidence-gated evaluation protocol on interaction-heavy Waymax scenarios that separately measures conventional closed-loop safety, ego progress, root-wise option preservation, and burden transfer. The current manuscript reports claims only after the corresponding natural-basis, transport, selector, and reactive-agent validation gates pass. \end{abstract} \section{Introduction} \label{sec:introduction} A central goal of autonomous driving planning is to produce trajectories that are safe, comfortable, and efficient. Existing planners have made significant progress by modeling interactions between the ego vehicle and surrounding road users, either through joint prediction and planning, game-theoretic reasoning, graph-based interaction modeling, or closed-loop simulation \cite{gameformer, jia2022hdgt, wang2024socialformer, renz2022plant, dauner2023parting}. Yet most planning objectives and benchmarks still judge a candidate primarily from the ego vehicle's perspective: whether the ego remains collision-free, follows the route, avoids hard braking, and reaches its goal. 
+We propose \textbf{COWP}, a coercion-witness planning framework that certifies whether an ego candidate is safe without shifting the conflict burden to others. Instead of treating social compliance as an auxiliary cost, COWP introduces \emph{non-coercive feasibility}: a plan is feasible only if each protected-priority road user retains a sufficiently large set of low-burden safe responses; an all-critical audit is reported separately as a stricter diagnostic. To operationalize this notion, COWP constructs counterfactual natural alternatives for surrounding agents, evaluates ego-conditioned safe response sets, and rejects collision-free candidates when a coercion witness shows that safety depends on high-burden ceding. We define an evidence-gated evaluation protocol on interaction-heavy Waymax scenarios that separately measures conventional closed-loop safety, ego progress, root-wise option preservation, and burden transfer. The current manuscript reports claims only after the corresponding natural-basis, transport, selector, and reactive-agent validation gates pass. \end{abstract} \section{Introduction} \label{sec:introduction} A central goal of autonomous driving planning is to produce trajectories that are safe, comfortable, and efficient. Existing planners have made significant progress by modeling interactions between the ego vehicle and surrounding road users, either through joint prediction and planning, game-theoretic reasoning, graph-based interaction modeling, or closed-loop simulation \cite{gameformer, jia2022hdgt, wang2024socialformer, renz2022plant, dauner2023parting}. Yet most planning objectives and benchmarks still judge a candidate primarily from the ego vehicle's perspective: whether the ego remains collision-free, follows the route, avoids hard braking, and reaches its goal. 
 
 This ego-centric view misses an important failure mode in interactive traffic. Consider an ego vehicle that cuts into a target lane and remains collision-free only because the rear vehicle in that lane brakes hard and gives up its gap. Standard collision metrics may score the ego plan as safe. Even interaction-aware prediction may regard the outcome as likely if the other vehicle is predicted to yield. However, such a plan is not truly safe in the sense of cooperative road use: the ego vehicle has not resolved the conflict, but has forced another road user to absorb it. We call this mode \emph{false-safe planning}. The plan appears safe in rollout, but its safety is contingent on another agent's high-burden ceding response. 
 
 This failure mode is related to, but distinct from, existing notions of social planning and formal safety. Courteous or socially aware planning penalizes the cost imposed on other agents, often through a soft objective or a social value orientation term \cite{sun2018courteous, schwarting2019social, crosato2022svo}. Formal safety models such as RSS specify mathematically grounded safety distances and proper responses \cite{shalev2017rss}. Causal responsibility metrics such as feasible action-space reduction study how one agent can restrict another agent's available actions \cite{george2023fear}. These ideas provide useful ingredients, but they do not directly answer the planning-time question we study: \emph{should a collision-free ego candidate be rejected because it is safe only by forcing another road user to take a high-burden ceding response?} 
 
-We answer this question by introducing \emph{non-coercive feasibility}. A candidate ego trajectory is non-coercively feasible if every critical road user retains at least one low-burden safe response and, more importantly, if the ego does not collapse that road user's natural action space into a narrow or high-burden escape maneuver. This changes the role of social interaction in planning. Instead of adding another courtesy-like soft penalty, we treat safety-by-coercion as a feasibility defect. A plan that relies on another vehicle's hard braking, abrupt yielding, priority abandonment, or gap surrender is not merely less polite; it is false-safe. 
+We answer this question by introducing \emph{non-coercive feasibility}. A candidate ego trajectory is non-coercively feasible if every protected-priority road user retains at least one low-burden safe response and, more importantly, if the ego does not collapse that road user's natural action space into a narrow or high-burden escape maneuver. We retain an all-critical version only as a stronger diagnostic, because an ego-priority relation should not create the same hard veto as an agent-priority or explicitly negotiated relation. This changes the role of social interaction in planning. Instead of adding another courtesy-like soft penalty, we treat safety-by-coercion as a feasibility defect. A plan that relies on another vehicle's hard braking, abrupt yielding, priority abandonment, or gap surrender is not merely less polite; it is false-safe. 
+
+\begin{proposition}[A finite soft burden penalty is not a feasibility guarantee]
+Let $k_c$ be a collision-free but coercive candidate and $k_n$ a non-coercive candidate, with ego costs $J_e(k)$ and transferred burdens $B(k)$. For any finite $\lambda>0$, minimizing $J_e(k)+\lambda B(k)$ can select $k_c$ whenever
+\begin{equation}
+    J_e(k_n)-J_e(k_c)>\lambda\bigl(B(k_c)-B(k_n)\bigr).
+\end{equation}
+By contrast, a hard non-coercive feasibility constraint rejects $k_c$ independently of its ego-utility advantage.
+\end{proposition}
+\noindent This elementary separation explains why COWP treats coercion as a feasibility defect rather than relying only on objective reweighting.
 
 To instantiate this idea, we propose \textbf{COWP} (\textbf{Coercion-Witness Planning}). COWP first constructs a burden-oriented interaction graph whose edges encode not only who interacts with whom, but who would have to absorb a potential conflict. The graph proposes critical ego-agent relations and candidate coercion witnesses. For each ego candidate, COWP then generates counterfactual natural alternatives for the affected agents, including observational futures, ego-neutral futures, and priority-preserving rule-constrained alternatives. These alternatives describe how an agent could reasonably behave without being pressured by the ego candidate. COWP next constructs ego-conditioned safe response sets and evaluates whether the remaining safe responses are low-burden. If a natural low-burden behavior becomes unsafe under the ego candidate and the only safe response requires excessive burden, COWP confirms a coercion witness and rejects the candidate. 
 
@@ -63,7 +72,7 @@ This design has three advantages. First, it separates \emph{prediction} from \em
 
 We make the following contributions: \begin{itemize} 
 \item We identify \emph{false-safe planning}, a collision-free but coercive failure mode in which ego safety depends on another road user's high-burden ceding response. 
-\item We formulate \emph{non-coercive feasibility}, a planning-time criterion requiring critical agents to retain sufficiently rich low-burden safe response sets, rather than being forced into narrow or costly evasive behavior. 
+\item We formulate \emph{non-coercive feasibility}, a planning-time criterion requiring protected-priority agents to retain sufficiently rich low-burden safe response sets, rather than being forced into narrow or costly evasive behavior. 
 \item We propose \textbf{COWP}, a coercion-witness planning framework that combines burden-oriented interaction graphs, counterfactual natural alternatives, ego-conditioned safe response sets, and witness-based candidate rejection. \end{itemize}
 
 
@@ -180,9 +189,18 @@ The ego candidate generator takes the scene and the burden-oriented graph as inp
     =
     \Pi_{\theta}(\mathcal{S}, \mathcal{G}_B),
 \end{equation}
-where $\tau^k_e$ is a continuous ego trajectory and $a^k_e$ is its macro intent. We use a graph-conditioned lattice-MPC proposal module: macro intents determine topological maneuver classes, while continuous trajectories are generated by solving short-horizon kinodynamic optimal control problems under route, lane, acceleration, jerk, and curvature constraints. 
+where $\tau^k_e$ is a continuous ego trajectory and $a^k_e$ is a proposal descriptor. In the evaluated implementation, the bank is a finite set of deterministic kinematic primitives: constant-acceleration, comfort-bounded stop/creep, conflict-timing, terminal-state, and delayed lateral-offset trajectories. Synthetic primitives are screened for acceleration, jerk, duplicate endpoints, and sampled lane-corridor compliance. The macro label describes how a primitive was generated; it is not itself evidence of route feasibility, right-of-way, or successful negotiation.
 
-For each ego candidate $\tau^k_e$, let $\mathcal{I}^k$ be the set of critical agents selected from $\mathcal{G}_B$. For each $i\in\mathcal{I}^k$, let $\mathcal{A}^{\mathrm{nat}}_i$ denote the non-coerced natural alternative set of agent $i$, and let $\mathcal{R}^{\mathrm{safe}}_i(\tau^k_e)$ denote the set of ego-conditioned safe responses. The low-burden safe response set is
+For each ego candidate $\tau^k_e$, let $\mathcal{I}^k$ be the set of critical agents selected from $\mathcal{G}_B$. We define the protected set
+\begin{equation}
+    \mathcal{P}^k
+    =
+    \left\{i\in\mathcal{I}^k:
+    \rho^k_{ei}\in\{\mathrm{AgentPriority},\mathrm{EqualOrNegotiated}\}
+    \right\},
+    \label{eq:protected_set}
+\end{equation}
+using rule-derived priority as an anchor and a learned priority score only as a calibrated refinement. Hard non-coercive feasibility is defined on $\mathcal{P}^k$; the all-critical set $\mathcal{I}^k$ is retained for global burden-transfer diagnostics. For each $i\in\mathcal{I}^k$, let $\mathcal{A}^{\mathrm{nat}}_i$ denote the non-coerced natural alternative set of agent $i$, and let $\mathcal{R}^{\mathrm{safe}}_i(\tau^k_e)$ denote the set of ego-conditioned safe responses. The low-burden safe response set is
 \begin{equation}
     \mathcal{R}^{\mathrm{low}}_i(\tau^k_e)
     =
@@ -207,7 +225,7 @@ where $r_{ikm}$ denotes low-burden retention without a conflict. The option-pres
     \widetilde p_{im}=(1-\varepsilon_p)p_{im}+\varepsilon_p/M,
     \label{eq:option_preservation}
 \end{equation}
-where the small mass floor $\varepsilon_p$ prevents a learned predictor from hiding a safety-relevant root by assigning it zero probability. A candidate is non-coercively feasible only if every critical agent has at least one same-root low-burden safe response and $O_i(\tau^k_e)\ge\alpha$. This finite, root-indexed definition replaces an ill-defined set intersection between continuous trajectory samples and matches the implemented transport labels.
+where the small mass floor $\varepsilon_p$ prevents a learned predictor from hiding a safety-relevant root by assigning it zero probability. A candidate is priority-aware non-coercively feasible only if every $i\in\mathcal{P}^k$ has at least one same-root low-burden safe response and $O_i(\tau^k_e)\ge\alpha$. The corresponding all-critical condition is reported as a global stress diagnostic rather than used as the primary hard veto. This finite, root-indexed definition replaces an ill-defined set intersection between continuous trajectory samples and matches the implemented transport labels.
 
 \subsection{Counterfactual Natural Alternatives}
 \label{sec:method_counterfactual}
@@ -224,27 +242,54 @@ A standard predictor may learn that surrounding agents often yield to the ego ve
     \label{eq:natural_union}
 \end{equation}
 
-The observational branch $\mathcal{A}^{\mathrm{obs}}_i$ uses a multimodal trajectory decoder conditioned on the full scene to keep the alternatives close to the empirical driving distribution. The ego-neutral branch $\mathcal{A}^{\mathrm{neu}}_i$ predicts the agent's response under an intervention in which the ego does not impose the candidate conflict:
+The observational branch $\mathcal{A}^{\mathrm{obs}}_i$ uses a multimodal trajectory decoder conditioned on the full scene to keep the alternatives close to the empirical driving distribution. The ego-neutral branch $\mathcal{A}^{\mathrm{neu}}_i$ predicts the agent's response under a \emph{model-based intervention proxy} in which candidate-specific ego pressure is removed:
 \begin{equation}
     \mathcal{A}^{\mathrm{neu}}_i
     \sim
-    p_\theta(\tau_i \mid \mathcal{S}, do(\tau_e=\tau^{\mathrm{neu}}_e)).
+    p_\theta\!\left(\tau_i \mid \operatorname{Neutralize}(\mathcal{S},\tau_e^k),\tau^{\mathrm{neu}}_e\right).
 \end{equation}
-The priority-preserving branch $\mathcal{A}^{\mathrm{prio}}_i$ generates rule-constrained alternatives that preserve the agent's local priority and comfort-bounded motion.
+We deliberately avoid interpreting this distribution as an identified causal effect from logged data alone; its validity is evaluated with independent reactive and human-audited protocols. The priority-preserving branch $\mathcal{A}^{\mathrm{prio}}_i$ generates rule-constrained alternatives that preserve the agent's local priority and comfort-bounded motion.
+
+Each source is represented by stable typed roots and a causal dynamics residual. For root $m$, the decoder predicts bounded local longitudinal/lateral acceleration, jerk, and yaw-rate corrections $\delta u_{im}(t)$ around an analytic source prototype, and obtains position and velocity by integration. Source-adaptive control capacity gives observational roots enough freedom to represent real curvature while neutral and priority-preserving roots remain more conservative.
+
+A fixed endpoint ball is not an adequate definition of root identity: it treats a low-probability exploratory root and a probability-carrying root equally, ignores large intermediate excursions that return near the endpoint, and can suppress a valid observational maneuver. Because OPR is defined on retained probability mass, COWP instead uses a probability-mass-aware, multi-horizon semantic envelope. Let
+\begin{equation}
+    \rho_{im}
+    =
+    \max_t
+    \frac{\|\widetilde{\delta p}_{im}(t)\|_2}{r_{s(m)}(t)}
+\end{equation}
+be the maximum pre-projection path ratio for root $m$, and let $\widetilde p_{im}=(1-\varepsilon_p)p_{im}+\varepsilon_p/M$ be the same floor-smoothed root mass used by OPR. The implemented identity loss is
+\begin{equation}
+    \mathcal{L}_{\mathrm{id}}
+    =
+    \frac{
+      \sum_{i,m}\operatorname{sg}(\widetilde p_{im})\,
+      \mathbf{1}[i\in\mathcal I]
+      \left[
+        \frac{\rho_{im}-\eta}{1-\eta}
+      \right]_+^2
+    }{
+      \sum_{i,m}\operatorname{sg}(\widetilde p_{im})\,
+      \mathbf{1}[i\in\mathcal I]
+    },
+    \label{eq:natural_mass_envelope}
+\end{equation}
+where $\eta<1$ defines an interior margin and $\operatorname{sg}$ denotes stop-gradient. Detaching the mass prevents the decoder from evading geometric regularization by suppressing a violating root's logit, while the probability floor prevents it from making that root completely invisible. Separately, every mode is constrained by a wider emergency envelope $\bar r_{s(m)}(t)>r_{s(m)}(t)$. If a raw integrated residual exceeds this envelope, the complete control sequence is scaled and re-integrated. Thus all modes remain physically bounded, while semantic root-identity pressure is concentrated on the probability mass that enters OPR.
 
 After generation, all alternatives are filtered by map compliance, dynamic feasibility, comfort bounds, and plausibility. The filtered set is used as the reference against which ego-conditioned coercion is evaluated. The natural alternative generator is trained with
 \begin{equation}
+\begin{aligned}
     \mathcal{L}_{\mathrm{nat}}
-    =
-    \lambda_o \mathcal{L}_{\mathrm{obs}}
-    +
-    \lambda_n \mathcal{L}_{\mathrm{neutral}}
-    +
-    \lambda_p \mathcal{L}_{\mathrm{prio}}
-    +
-    \lambda_d \mathcal{L}_{\mathrm{div}} ,
+    ={}&
+    \mathcal{L}_{\mathrm{set}}
+    +\lambda_{\mathrm{prior}}\mathcal{L}_{\mathrm{prior}}
+    +\lambda_{\mathrm{ctrl}}\mathcal{L}_{\mathrm{ctrl}}
+    +\lambda_{\mathrm{mode}}\mathcal{L}_{\mathrm{usage}}
+    +\lambda_{\mathrm{id}}\mathcal{L}_{\mathrm{id}}.
+\end{aligned}
 \end{equation}
-where the four terms correspond to observed trajectory supervision, ego-neutral masked prediction, rule-constrained imitation, and diversity/coverage regularization. Detailed construction is provided in Appendix~\ref{app:natural_alternatives}.
+Here $\mathcal{L}_{\mathrm{set}}$ contains source-restricted weighted set prediction and short-horizon terms; $\mathcal{L}_{\mathrm{prior}}$ softly protects neutral and priority-preserving typed roots; $\mathcal{L}_{\mathrm{ctrl}}$ regularizes control variation; $\mathcal{L}_{\mathrm{usage}}$ discourages root collapse; and $\mathcal{L}_{\mathrm{id}}$ is Eq.~\eqref{eq:natural_mass_envelope}. We do not add a separate observational ``gain'' loss to the main objective: observational accuracy is already optimized by the source-restricted set loss, and an additional basis-relative shortfall term is accepted only if an isolated ablation demonstrates incremental benefit. Component claims are made only under identical initialization, data order, encoder state, precision policy, and checkpoint-selection protocol. Detailed construction is provided in Appendix~\ref{app:natural_alternatives}.
 
 \subsection{Coercion-Witness Certification and Plan Selection}
 \label{sec:method_certification}
@@ -270,6 +315,10 @@ which avoids subtracting minima from unrelated roots. Let $M^{\mathrm{conf}}_{ik
 \end{equation}
 The earlier existential condition ``there exists a high-burden safe response'' is insufficient because nearly every scene admits an emergency maneuver; the certificate must depend on the minimum or tail of the best safe responses.
 
+To compress root-level evidence without replacing the mechanism by an unconstrained candidate classifier, we use a monotone Budgeted Counterfactual Option Transport (BCOT) head. For each protected pair, the deficit combines unrecovered conflicted mass, conflict-conditioned burden excess, and normalized OPR shortfall. Candidate risk aggregates a priority-weighted mean, a smooth upper tail, a severe-pair term, and the maximum pair deficit. All aggregation weights are constrained positive and normalized. A second all-critical BCOT output is trained and reported as a global diagnostic, but only the protected-priority output defines the primary hard certificate. This two-level construction matches the paper's priority-aware claim while preserving visibility into burden transferred to non-protected agents.
+
+Because natural roots form an unordered set, per-root transport supervision requires an alignment between generated roots and cached natural alternatives. We align only for supervision, without gradient, using a shared multi-horizon geometric cost over 1/3/5/8~s plus a penalty for crossing the structural source identity (observational, neutral, or priority-preserving). This prevents a geometrically similar yielding root from being relabeled as the same observational root after an intervention. The alignment is diagnostic and does not change the retained-mass definition itself.
+
 During inference, safety and non-coercive feasibility are applied in a hard-first manner:
 \begin{equation}
     \mathcal{K}_{\mathrm{safe}}
@@ -283,7 +332,7 @@ During inference, safety and non-coercive feasibility are applied in a hard-firs
     \mid
     C_i(\tau^k_e)\le \gamma,\ 
     O_i(\tau^k_e)\ge \alpha,\ 
-    \forall i\in\mathcal{I}^k
+    \forall i\in\mathcal{P}^k
     \}.
 \end{equation}
 High-confidence coercion witnesses cause rejection; uncertain witnesses are retained with an additional penalty. The final selected trajectory is
@@ -322,7 +371,7 @@ We evaluate COWP on interaction-heavy driving scenarios where conventional colli
 For each scenario, we initialize the ego and surrounding agents from logged states and evaluate the ego planner in closed loop. The primary Waymax protocol uses honest logged replay for non-ego agents; it supports conventional SDC collision, off-road, wrong-way, and route-progress measurements, but it does not provide ground-truth counterfactual burden. We therefore report learned burden quantities as mechanism diagnostics in this protocol. The final causal burden claim additionally requires a separately trained reactive-agent protocol and a held-out human-audited false-safe stress set; results from these protocols are never pooled with logged replay.
 
 \paragraph{Evidence protocol.}
-An engineering smoke run validates only data flow and numerical integrity. Decoder, loss, and residual-capacity claims require fresh controlled ablations with identical seeds, batches, initialization, and evaluator. Planner and selector claims require at least three seeds, paired scenario-level confidence intervals, no bypassed quality gate, and a natural-basis checkpoint that has already passed its gate. Downstream results are treated as mechanism probes rather than evidence when the natural basis is unverified.
+An engineering smoke run validates only data flow and numerical integrity. Decoder, loss, and residual-capacity claims require fresh one-factor ablations with identical initialization, data order, encoder state, precision policy, evaluator, sampled scene IDs, and checkpoint epoch. A single-seed natural-component gate is used only to decide whether downstream evidence collection is justified. Publication-level decoder, planner, and selector claims require at least three independent seeds, paired scenario-level confidence intervals, no bypassed quality gate, and a natural-basis checkpoint that has already passed its protocol-aligned gate. Downstream results are treated as mechanism probes rather than evidence when the natural basis is unverified.
 
 \paragraph{Baselines.}
 We compare COWP against two groups of baselines. The mechanism-controlled group shares the same candidate bank and model checkpoint: conventional physical-safety selection, planner-score-only selection, soft-burden ranking, pairwise-max witness rejection, and an epsilon-Pareto selector. This group isolates the contribution of root transport and hard non-coercive feasibility. The external planner group includes reproducible implementations of IDM/Lattice, PDM-Closed, PlanT, and GameFormer where their input and route-conditioning assumptions can be matched. All external comparisons use the same scenario IDs, horizon, action projection, and Waymax metric adapter.
@@ -358,67 +407,99 @@ The route-normalized ego progress:
 \end{equation}
 This metric verifies that reducing coercion does not simply produce an overly conservative planner.
 
-\paragraph{False-Safe Rate (FSR).}
-The fraction of collision-free selected ego plans that are certified as false-safe under counterfactual rollout:
+\paragraph{Priority Burden-Transfer Rate (PBTR).}
+PBTR is the primary task-specific metric. Among selected plans that are conventionally collision-free and contain at least one protected relation, it measures how often the plan still creates a coercion witness for a protected agent:
+\begin{equation}
+    \mathrm{PBTR}
+    =
+    \frac{
+      \sum_n \mathbf 1[
+      \mathrm{CollisionFree}_n
+      \wedge |\mathcal P^n|>0
+      \wedge \exists i\in\mathcal P^n:W^n_{ei}=1]
+    }{
+      \sum_n \mathbf 1[
+      \mathrm{CollisionFree}_n
+      \wedge |\mathcal P^n|>0]
+    }.
+\end{equation}
+PBTR most directly tests the paper's priority-aware claim: ego safety should not be obtained by transferring conflict-resolution burden to an agent whose priority must be protected or negotiated.
+
+\paragraph{Global False-Safe Rate (FSR).}
+For transparency, we also report the stricter all-critical diagnostic
 \begin{equation}
     \mathrm{FSR}
     =
     \frac{
-    \sum_{n=1}^{N}
+    \sum_{n}
     \mathbf{1}
     [
     \mathrm{CollisionFree}_n
     \wedge
-    \exists i: W^n_{ei}=1
+    \exists i\in\mathcal I^n: W^n_{ei}=1
     ]
     }{
-    \sum_{n=1}^{N}
-    \mathbf{1}
-    [
-    \mathrm{CollisionFree}_n
-    ]
+    \sum_{n}
+    \mathbf{1}[\mathrm{CollisionFree}_n]
     }.
 \end{equation}
-A lower FSR means that the planner is less likely to hide risk by relying on another road user's costly ceding response.
+FSR is intentionally broader than the hard certificate and reveals whether a priority-aware planner merely moves burden to non-protected agents.
 
-\paragraph{Ceding Burden Score (CBS).}
-The maximum burden imposed on any critical non-ego agent:
+\paragraph{Protected Option Preservation Ratio (OPR).}
+OPR is the retained probability mass of same-root low-burden responses, averaged over protected relations:
 \begin{equation}
-    \mathrm{CBS}
+    \mathrm{OPR}_{\mathcal P}
     =
     \frac{1}{N}
     \sum_{n=1}^{N}
-    \max_{i\in\mathcal{I}^n}
-    B_i^{\mathrm{prim}}(\tau_i^{\mathrm{cede}};\mathcal{S}^n,\tau^n_e).
-\end{equation}
-CBS measures how much conflict-resolution burden is transferred away from the ego vehicle.
-
-\paragraph{Option Preservation Ratio (OPR).}
-OPR is the average retained probability mass of same-root low-burden responses:
-\begin{equation}
-    \mathrm{OPR}
-    =
-    \frac{1}{N}
-    \sum_{n=1}^{N}
-    \frac{1}{|\mathcal{I}^n|}
-    \sum_{i\in\mathcal{I}^n}
+    \frac{1}{|\mathcal{P}^n|}
+    \sum_{i\in\mathcal{P}^n}
     \sum_m \widetilde p^n_{im}s^n_{im}.
 \end{equation}
-This finite root-indexed quantity is directly estimated by the transport model and avoids an undefined geometric intersection between independently sampled trajectory sets.
+We report the all-critical OPR only as an auxiliary diagnostic. OPR is not interpreted in isolation: a method can preserve options by stopping excessively, so it is paired with progress and coverage.
 
-\paragraph{High-Burden Ceding Rate (HBCR).}
-The fraction of episodes in which at least one non-ego agent must exceed the burden threshold to avoid conflict with the ego:
+\paragraph{Protected Tail Burden-Transfer Excess (BTE-CVaR$_{25}$).}
+PBTR measures frequency but not severity.  For a selected plan in scene $n$, we first compute the root-conditioned, probability-weighted burden-excess tail for every protected relation and retain the worst protected relation,
 \begin{equation}
-    \mathrm{HBCR}
+    e_n
     =
-    \frac{1}{N}
-    \sum_{n=1}^{N}
-    \mathbf{1}
-    [
-    \exists i\in\mathcal{I}^n:
-    B_i^{\mathrm{prim}}(\tau_i^{\mathrm{cede}})>\beta_i(\mathcal{S}^n)
-    ].
+    \max_{i\in\mathcal P^n}
+    \operatorname{CVaR}_{\rho}
+    \left(
+      \{[b^{\star,n}_{im}-\beta_i^n]_+\}_{m:c^n_{im}=1};
+      \widetilde p^n_{im}
+    \right).
 \end{equation}
+We then report the empirical mean of the worst quartile of $\{e_n\}$,
+\begin{equation}
+    \mathrm{BTE\mbox{-}CVaR}_{25}
+    =
+    \operatorname{CVaR}_{25\%}\left(\{e_n\}_{n:\,|\mathcal P^n|>0}\right).
+\end{equation}
+This two-level construction matches the implementation: root uncertainty is summarized within each protected relation, the most burdened protected agent represents the selected plan, and the outer tail prevents a small number of severe transfers from being hidden by an average.  CBS and HBCR are retained only as appendix diagnostics for continuity with earlier versions.
+
+\paragraph{NCF Scene Retention and Non-Coercive Progress Regret.}
+Proposal coverage and certificate conservatism are separated by
+\begin{equation}
+    \mathrm{NCF\mbox{-}Ret}
+    =
+    \frac{
+      \sum_n \mathbf 1[\mathcal K^n_{\mathrm{prop,ncf}}\neq\emptyset
+      \wedge \mathcal K^n_{\mathrm{cert,ncf}}\neq\emptyset]
+    }{
+      \sum_n \mathbf 1[\mathcal K^n_{\mathrm{prop,ncf}}\neq\emptyset]
+    },
+\end{equation}
+and, on scenes with at least one non-coercive proposal,
+\begin{equation}
+    \mathrm{NPR}
+    =
+    \frac{1}{N_{\mathrm{ncf}}}
+    \sum_n
+    \frac{[s^{n}_{\mathrm{best\mbox{-}ncf}}-s^{n}_{\mathrm{selected}}]_+}
+         {\max(s^{n}_{\mathrm{best\mbox{-}ncf}},\epsilon)}.
+\end{equation}
+NCF-Ret diagnoses certificate false rejection, while NPR detects whether the selector keeps a feasible candidate but ranks an unnecessarily conservative one. We additionally report a PBTR--coverage curve rather than relying on a single calibrated budget.
 
 \paragraph{Witness Localization Accuracy (WLA).}
 For scenarios with pseudo-label or human-verified witnesses, we evaluate whether the method identifies the correct burdened agent and conflict interval:
@@ -456,12 +537,12 @@ Table~\ref{tab:main_results} reports closed-loop results on interaction-heavy sc
 
 \begin{table}[t]
 \centering
-\caption{Closed-loop planning performance on interaction-heavy scenarios. Lower is better for CR, FSR, CBS, and HBCR. Higher is better for EP and OPR.}
+\caption{Closed-loop planning performance on interaction-heavy scenarios. Standard safety is reported with CR/OR; PBTR is the primary mechanism metric. OPR and NCF-Ret must be interpreted jointly with EP.}
 \label{tab:main_results}
 \resizebox{\linewidth}{!}{
 \begin{tabular}{lcccccc}
 \toprule
-Method & CR $\downarrow$ & EP $\uparrow$ & FSR $\downarrow$ & CBS $\downarrow$ & OPR $\uparrow$ & HBCR $\downarrow$ \\
+Method & CR $\downarrow$ & OR $\downarrow$ & EP $\uparrow$ & PBTR $\downarrow$ & OPR$_{\mathcal P}$ $\uparrow$ & NCF-Ret $\uparrow$ \\
 \midrule
 IDM/Lattice & -- & -- & -- & -- & -- & -- \\
 PDM-Closed \cite{dauner2023parting} & -- & -- & -- & -- & -- & -- \\
@@ -477,7 +558,7 @@ COWP w/o Witness Rejection & -- & -- & -- & -- & -- & -- \\
 }
 \end{table}
 
-We expect conventional planners to perform competitively on collision rate and ego progress, but to exhibit higher false-safe rate and ceding burden in dense interactions. COWP is designed to reduce FSR, CBS, and HBCR while maintaining comparable CR and EP.
+Conventional planners may remain competitive on collision rate and ego progress while exhibiting higher priority burden transfer in dense interactions. COWP is evaluated primarily by whether it reduces PBTR and BTE-CVaR$_{25}$ at comparable CR, OR, and EP, while retaining non-coercive proposal coverage.
 
 \subsection{False-Safe Stress Test}
 \label{sec:false_safe_stress}
@@ -517,7 +598,7 @@ Table~\ref{tab:ablation} evaluates the contribution of each component. Removing 
 \resizebox{\linewidth}{!}{
 \begin{tabular}{lcccc}
 \toprule
-Variant & FSR $\downarrow$ & CBS $\downarrow$ & OPR $\uparrow$ & EP $\uparrow$ \\
+Variant & PBTR $\downarrow$ & BTE-CVaR$_{25}$ $\downarrow$ & OPR$_{\mathcal P}$ $\uparrow$ & NCF-Ret $\uparrow$ \\
 \midrule
 Full COWP & -- & -- & -- & -- \\
 w/o Ego-Neutral Branch & -- & -- & -- & -- \\
@@ -530,7 +611,7 @@ Soft Burden Cost Only & -- & -- & -- & -- \\
 }
 \end{table}
 
-The key expected trend is that using burden as a soft cost reduces burden only partially, while witness-level rejection more reliably suppresses false-safe candidates.
+The key test is whether a hard protected-priority certificate reduces PBTR beyond a soft burden cost without collapsing NCF-Ret or ego progress. This trend is reported only after the held-out mechanism and online Waymax gates pass.
 
 \subsection{Witness Quality and Interpretability}
 \label{sec:witness_quality}
@@ -554,7 +635,7 @@ COWP w/o Conflict Query & -- & -- & -- & -- & -- & -- \\
 }
 \end{table}
 
-Qualitative results visualize the accepted ego trajectory, rejected false-safe candidates, the burdened agent, the natural alternative, the required ceding response, and the mechanism token. These visualizations demonstrate that COWP rejects plans not because they are slow or conservative, but because they transfer conflict-resolution responsibility to another road user.
+Qualitative results will visualize the accepted ego trajectory, rejected false-safe candidates, the burdened agent, the natural alternative, the required ceding response, and the mechanism token. These visualizations are used to test whether COWP rejects plans because they transfer conflict-resolution responsibility to another road user rather than merely because they are slow or conservative.
 
 \section{Conclusion}
 \label{sec:conclusion}
@@ -651,18 +732,18 @@ We use six burden mechanism tokens:
 \end{equation}
 They denote hard braking, abrupt yielding, priority abandonment, gap surrender, safety-reserve consumption, and option reduction. Tokens are used for intermediate supervision, selection constraints, and post-hoc explanations.
 
-\subsection{Macro Intent Set and Ego Candidate Generation}
+\subsection{Proposal Descriptors and Ego Candidate Generation}
 \label{app:ego_candidates}
 
-Each ego candidate is represented as a macro intent and a continuous trajectory:
+Each ego candidate is represented by a proposal descriptor and a continuous trajectory:
 \begin{equation}
     (\tau^k_e,a^k_e), \qquad
     \tau^k_e=\{x^k_e(t)\}_{t=1}^{T}.
 \end{equation}
-The macro intent set is
+The descriptor set is
 \begin{equation}
 \begin{aligned}
-    \mathcal{A}_{\mathrm{macro}}
+    \mathcal{A}_{\mathrm{prop}}
     =
     \{
     &\mathrm{KeepLane},
@@ -678,38 +759,18 @@ The macro intent set is
     \}.
 \end{aligned}
 \end{equation}
-The set covers longitudinal negotiation, merge ordering, lane-change, and crossing behaviors.
+These labels identify the primitive family and support stratified analysis; they do not certify that a lane change exists, that a gap is negotiable, or that a maneuver is map-feasible.
 
-For each macro intent, a nominal reference path $p^a(s)$ is extracted from the route and map topology. We sample terminal longitudinal offsets and speeds:
+The evaluated proposal bank contains: logged ego replay; constant-acceleration longitudinal primitives; smooth stop and creep primitives; conflict-region stopping margins; conflict-arrival timing offsets; delayed lateral-offset primitives; and terminal speed/position variants. For each generated trajectory we enforce finite state, acceleration, deceleration, jerk, and endpoint-diversity checks. We additionally screen sampled points against a locally cropped WOMD lane-centerline cloud:
 \begin{equation}
-    (s_T,v_T)\sim \mathcal{Q}_a,
+    \frac{1}{|\mathcal T_s|}
+    \sum_{t\in\mathcal T_s}
+    \mathbf 1[d(x_e(t),\mathcal M_{\mathrm{lane}})\le d_{\max}]
+    \ge \zeta,
+    \qquad
+    \max_{t\in\mathcal T_s}d(x_e(t),\mathcal M_{\mathrm{lane}})\le \bar d.
 \end{equation}
-where $\mathcal{Q}_a$ is intent-specific. A continuous candidate is generated by solving
-\begin{equation}
-\begin{aligned}
-    \min_{\tau_e}\quad
-    &
-    w_r J_{\mathrm{route}}(\tau_e)
-    +
-    w_c J_{\mathrm{comfort}}(\tau_e)
-    +
-    w_p J_{\mathrm{progress}}(\tau_e)
-    +
-    w_l J_{\mathrm{lane}}(\tau_e) \\
-    \mathrm{s.t.}\quad
-    &
-    x_e(0)=x_e, \\
-    &
-    |\dot{v}(t)|\le a^{\max}_e,\quad
-    |\ddot{v}(t)|\le j^{\max}_e,\\
-    &
-    |\kappa(t)|\le \kappa^{\max}_e,\quad
-    x_e(t)\in\mathcal{M}_{\mathrm{drivable}},\\
-    &
-    \tau_e \in \mathcal{C}_a .
-\end{aligned}
-\end{equation}
-Here $\mathcal{C}_a$ contains intent-specific constraints, e.g., stopping before the conflict region, merging before or behind a target gap, or remaining in the current lane. We retain the top $K$ candidates according to the proposal cost and diversity in terminal state and macro intent.
+This is a fast proposal-level map screen, not a claim of route-conditioned lattice-MPC optimality. Candidates are retained up to the fixed budget $K$ after validity and duplicate filtering. A stronger route-topology generator can replace this bank without changing the COWP certificate.
 
 \section{Counterfactual Natural Alternatives}
 \label{app:natural_alternatives}
@@ -839,7 +900,7 @@ Option-space measure $\mu(\cdot)$ is implemented as the weighted sample mass:
     \qquad
     \sum_m w_i^m=1 .
 \end{equation}
-If calibrated coverage is required, we enlarge the sampled alternatives using adaptive conformal radii:
+An optional extension would enlarge sampled alternatives using adaptive conformal radii,
 \begin{equation}
     \mathcal{A}^{\mathrm{nat,cp}}_i
     =
@@ -849,23 +910,25 @@ If calibrated coverage is required, we enlarge the sampled alternatives using ad
     d(\tau,\tau_i^m)\le q_{1-\delta}
     \right\},
 \end{equation}
-where $q_{1-\delta}$ is estimated on a calibration stream.
+where $q_{1-\delta}$ is estimated on an independent calibration stream. This extension is not used in the reported implementation or experiments unless explicitly stated; no conformal coverage claim is made from the current natural-stage results.
 
 \subsection{Natural Alternative Loss}
 \label{app:natural_loss}
 
-The natural alternative training loss is
+The natural alternative objective follows the source-restricted set, typed-prior, control, mode-usage, and root-identity decomposition in the main text. For every critical agent--root pair, the decoder first integrates the unconstrained control residual and computes the pre-projection multi-horizon ratio $\rho_{im}$ in Eq.~\eqref{eq:natural_mass_envelope}. With floor-smoothed detached mass $\widetilde p_{im}$, the exact optimized identity term is
 \begin{equation}
-    \mathcal{L}_{\mathrm{nat}}
+    \mathcal{L}_{\mathrm{id}}
     =
-    \lambda_o \mathcal{L}_{\mathrm{obs}}
-    +
-    \lambda_n \mathcal{L}_{\mathrm{neutral}}
-    +
-    \lambda_p \mathcal{L}_{\mathrm{prio}}
-    +
-    \lambda_d \mathcal{L}_{\mathrm{div}}.
+    \operatorname{WM}_{i,m}
+    \left(
+      \left[
+        \frac{\rho_{im}-\eta}{1-\eta}
+      \right]_+^2;
+      \operatorname{sg}(\widetilde p_{im})
+    \right),
+    \qquad 0<\eta<1,
 \end{equation}
+where $\operatorname{WM}$ is a normalized weighted mean over valid critical-agent roots. The loss is evaluated before emergency projection so that an over-envelope control retains a gradient toward the semantic interior. The wider emergency envelope is a separate numerical and physical safeguard: when activated, it scales the complete control sequence and re-integrates position, velocity, and heading consistently. Accordingly, component attribution evaluates both the exact squared-excess objective and probability mass outside the soft envelope; a change in the unoptimized global mean path ratio is reported only as a diagnostic.
 The rule imitation term is
 \begin{equation}
     \mathcal{L}_{\mathrm{prio}}
@@ -975,13 +1038,12 @@ The normative burden is
 \end{equation}
 where $B^{\mathrm{rule}}_i$ encodes explicit priority violations and $g_\theta$ captures scene-conditioned conventions.
 
-The burden threshold is context dependent but is not learned jointly with the certificate. We calibrate and freeze it on a held-out split:
+The burden threshold is context dependent but is not learned jointly with the certificate. In the evaluated implementation it is a frozen, pre-specified context table indexed by road-user type, local density/low-speed context, and priority relation:
 \begin{equation}
     \beta_i(\mathcal{S})
-    =Q_{1-\delta_\beta}
-    \left(B_i^{\mathrm{nat}}\mid \mathrm{context}(\mathcal{S},i)\right),
+    =\operatorname{clip}\!\left(\beta^{\mathrm{type}}_i+\Delta_{\mathrm{density}}(\mathcal{S})+\Delta_{\rho_i},\,\beta_{\min},\,\beta_{\max}\right).
 \end{equation}
-with a finite-sample conformal correction. Freezing $\beta_i$ prevents the model from explaining away coercive examples by increasing its own acceptance threshold.
+It is therefore independent of the certificate parameters and cannot be increased by the model to explain away coercive examples. A training-only empirical-quantile or conformal calibration is a reasonable future replacement, but the current implementation makes no finite-sample coverage claim for $\beta_i$.
 
 \subsection{Ego-Conditioned Safe Response Set}
 \label{app:safe_response}
@@ -1002,23 +1064,14 @@ The predicted responses are sampled from an ego-conditioned decoder:
     \sim
     p_\theta(\tau_i \mid \mathcal{S},\tau^k_e).
 \end{equation}
-The optimized responses are generated by minimizing burden subject to safety:
+The implementation does not solve an unrestricted continuous optimal-control problem for every candidate. Instead, it constructs a typed, comfort-bounded response bank $\mathcal{Q}_i(\tau_e^k)$ and retains the lowest-burden safe members with a finite beam search:
 \begin{equation}
-\begin{aligned}
-    \tau_i^{\mathrm{opt}}
-    =
-    \arg\min_{\tau_i}\quad
-    &
-    B_i^{\mathrm{prim}}(\tau_i;\mathcal{S},\tau^k_e) \\
-    \mathrm{s.t.}\quad
-    &
-    \mathrm{Collide}(\tau^k_e,\tau_i)=0,\\
-    &
-    \mathrm{DynOK}(\tau_i)=1,\quad
-    \mathrm{MapOK}(\tau_i)=1 .
-\end{aligned}
+    \mathcal{R}^{\mathrm{opt}}_i(\tau_e^k)
+    =\operatorname{TopB}_{\tau_i\in\mathcal{Q}_i(\tau_e^k)}
+    \left\{B_i^{\mathrm{prim}}(\tau_i;\mathcal{S},\tau_e^k):
+    \mathrm{Collide}=0,\ \mathrm{DynOK}=1,\ \mathrm{MapOK}=1\right\}.
 \end{equation}
-Emergency responses include hard braking or evasive stop primitives and are used only to identify whether collision freedom requires high burden.
+The bank varies comfort deceleration, reaction delay, recovery acceleration, and limited lateral slack. Emergency hard-braking or evasive-stop primitives are kept as a separate source and are used to determine whether collision freedom exists only at high burden; their mere existence does not certify non-coercive feasibility.
 
 The safe response set is
 \begin{equation}
