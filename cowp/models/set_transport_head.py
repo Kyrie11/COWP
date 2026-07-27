@@ -254,18 +254,24 @@ class SetTransportCertificateHead(nn.Module):
         raw = self.mode_out(self.norm(h))
         conflict_logit = raw[..., 0]
         retain_conditional_logit = raw[..., 1]
-        conflict_prob = torch.sigmoid(conflict_logit)
+        # Certificate probabilities and probability->logit conversions form a
+        # numerically sensitive boundary.  Under BF16, ``1 - 1e-5`` rounds to
+        # exactly 1.0, so clamping a BF16 probability before ``torch.logit`` does
+        # not prevent +Inf.  Perform this algebra in FP32 while keeping the raw
+        # learned logits unchanged.  This is the same factorization used by the
+        # paper/loss; only the arithmetic precision is strengthened.
+        conflict_prob = torch.sigmoid(conflict_logit.float())
         # Labels define retained-low-safe as an explicitly non-conflicting mode.
         # Factorize P(retained-low-safe) = P(no conflict) * P(low-safe | no
         # conflict), which removes impossible high-conflict/high-retention states
         # and prevents the downstream OPR computation from applying the same
         # no-conflict condition twice.
-        retain_conditional_prob = torch.sigmoid(retain_conditional_logit)
+        retain_conditional_prob = torch.sigmoid(retain_conditional_logit.float())
         retain_prob = ((1.0 - conflict_prob) * retain_conditional_prob).clamp(1.0e-5, 1.0 - 1.0e-5)
         retain_logit = torch.logit(retain_prob)
-        mode_uncertainty = torch.sigmoid(raw[..., 2])
+        mode_uncertainty = torch.sigmoid(raw[..., 2].float())
         mode_recovery_logit = raw[..., 3]
-        mode_recovery_prob = torch.sigmoid(mode_recovery_logit)
+        mode_recovery_prob = torch.sigmoid(mode_recovery_logit.float())
 
         natural_weight_raw = torch.softmax(natural["logits"].float(), dim=-1)
         eps_p = min(max(float(root_probability_floor), 0.0), 0.25)

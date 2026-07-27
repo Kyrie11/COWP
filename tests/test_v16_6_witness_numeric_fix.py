@@ -161,3 +161,58 @@ def test_weighted_upper_cvar_uses_probability_mass_not_root_count() -> None:
         tail_mass=0.5,
     )
     assert abs(value - 0.6) < 1e-7
+
+from cowp.models.set_transport_head import SetTransportCertificateHead
+
+
+def _tiny_set_transport_inputs() -> dict:
+    b, k, a, m, r, d = 1, 2, 1, 3, 4, 8
+    return {
+        "z_agent": torch.randn(b, 2, d),
+        "z_candidate": torch.randn(b, k, d),
+        "z_graph": torch.randn(b, d),
+        "critical_indices": torch.zeros(b, a, dtype=torch.long),
+        "natural": {
+            "mode_latent": torch.randn(b, a, m, d),
+            "logits": torch.zeros(b, a, m),
+            "source_logits": torch.zeros(b, a, m, 4),
+            "priority_logits": torch.zeros(b, a, m),
+        },
+        "response": {
+            "safe_logits": torch.zeros(b, k, a, r),
+            "low_logits": torch.zeros(b, k, a, r),
+            "valid_logits": torch.zeros(b, k, a, r),
+            "mode_logits": torch.zeros(b, k, a, r),
+            "root_logits": torch.zeros(b, k, a, r, m),
+            "burden_total": torch.zeros(b, k, a, r),
+        },
+        "beta": torch.full((b, a), 0.65),
+    }
+
+
+def test_bfloat16_retain_probability_to_logit_stays_finite_at_saturation() -> None:
+    head = SetTransportCertificateHead(d_model=8, hidden=8)
+    # Force P(conflict)≈0 and P(retain|no-conflict)≈1.  In the old code the
+    # BF16 clamp upper bound 1-1e-5 rounded back to exactly 1 and logit became Inf.
+    with torch.no_grad():
+        final = head.mode_out[-1]
+        final.weight.zero_()
+        final.bias.copy_(torch.tensor([-100.0, 100.0, 0.0, 0.0]))
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        out = head(**_tiny_set_transport_inputs(), calibration_scale=0.0)
+    assert out["mode_retain_prob"].dtype == torch.float32
+    assert torch.isfinite(out["mode_retain_logits"]).all()
+    assert float(out["mode_retain_prob"].detach().max()) < 1.0
+    assert float(out["mode_retain_logits"].detach().max()) > 10.0
+    out["mode_retain_logits"].sum().backward()
+    grads = [p.grad for p in head.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+
+
+def test_batched_nonfinite_output_scan_reports_alias_once() -> None:
+    import importlib
+
+    train_mod = importlib.import_module("cowp.scripts.03_train")
+    x = torch.tensor([1.0, float("inf")])
+    pred = {"a": x, "nested": {"same_alias": x, "finite": torch.ones(3)}}
+    assert train_mod._nonfinite_tensor_paths(pred) == ["pred.a"]

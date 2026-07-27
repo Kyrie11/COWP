@@ -96,6 +96,13 @@ CKPT="${CKPT:-}"
 REQUIRE_INIT_CKPT="${REQUIRE_INIT_CKPT:-1}"
 DATA_PROTOCOL="${DATA_PROTOCOL:-v9_reuse}"
 CACHE_REUSE_REPORT="${CACHE_REUSE_REPORT:-}"
+# Automatically continue an interrupted same-stage run from the newest usable
+# checkpoint under the unchanged OUT_ROOT.  Set AUTO_RESUME=0 for an intentional
+# restart.
+AUTO_RESUME="${AUTO_RESUME:-1}"
+# Reuse deterministic, already-valid diagnostics/gates while continuing an
+# interrupted run. FORCE_EVAL=1 remains the explicit way to recompute them.
+REUSE_COMPLETED_ARTIFACTS="${REUSE_COMPLETED_ARTIFACTS:-$AUTO_RESUME}"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-4}"
@@ -117,11 +124,18 @@ cp configs/train_cowp_v16.yaml "$CONFIG_CANDIDATE_DIR/train_cowp_v16.yaml"
 cp configs/eval_cowp_v16.yaml "$CONFIG_CANDIDATE_DIR/eval_cowp_v16.yaml"
 sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE_DIR/train_cowp_v16.yaml"
 
-# Never mix checkpoints/evaluations produced by different code or config states
-# under one OUT_ROOT. Logical file names keep the signature stable while the
-# candidate configs live in a temporary directory.
+# Never mix unrelated runs.  For an explicitly detected interrupted run, allow
+# this numeric/performance hotfix to resume in the same OUT_ROOT while preserving
+# the previous manifest and writing a provenance amendment.
+provenance_resume_args=()
+if [[ "$AUTO_RESUME" == "1" ]] && find "$OUT_ROOT/checkpoints" -type f -name '*.pt' -size +0c -print -quit 2>/dev/null | grep -q .; then
+  provenance_resume_args=(
+    --allow-compatible-resume
+    --resume-reason "BF16 retain-logit numeric fix, synchronization reduction, and automatic checkpoint resume"
+  )
+fi
 "$PYTHON_BIN" -u -m cowp.scripts.42_write_run_provenance \
-  --output "$OUT_ROOT/configs/run_provenance.json" --strict-existing \
+  --output "$OUT_ROOT/configs/run_provenance.json" --strict-existing "${provenance_resume_args[@]}" \
   --data-protocol "$DATA_PROTOCOL" \
   --raw-train-cache "$RAW_TRAIN_CACHE" --raw-val-cache "$RAW_VAL_CACHE" \
   --train-cache "$TRAIN_CACHE" --val-cache "$VAL_CACHE" \
@@ -214,6 +228,17 @@ json_valid() {
   "$PYTHON_BIN" - "$p" <<'PY' >/dev/null
 import json, sys
 json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+}
+
+json_gate_passed() {
+  local p="$1"
+  [[ "$REUSE_COMPLETED_ARTIFACTS" == "1" ]] || return 1
+  json_valid "$p" || return 1
+  "$PYTHON_BIN" - "$p" <<'PY' >/dev/null
+import json, sys
+x = json.load(open(sys.argv[1], encoding="utf-8"))
+assert bool(x.get("pass", x.get("passed", False)))
 PY
 }
 
@@ -345,11 +370,15 @@ audit_alignment_args=()
 [[ -s "$ALIGN_VAL_REPORT" ]] && audit_alignment_args=(--cache-alignment-report "$ALIGN_VAL_REPORT")
 audit_reuse_args=()
 [[ -n "$CACHE_REUSE_REPORT" && -s "$CACHE_REUSE_REPORT" ]] && audit_reuse_args=(--cache-reuse-report "$CACHE_REUSE_REPORT")
-logrun audit_causal_protocol "$PYTHON_BIN" -u -m cowp.scripts.36_audit_causal_protocol \
-  --model-config "$MODEL_CFG" --label-config "$LABEL_CFG" \
-  --train-config "$TRAIN_CFG" --eval-config "$EVAL_CFG" \
-  --data-protocol "$DATA_PROTOCOL" \
-  "${audit_alignment_args[@]}" "${audit_reuse_args[@]}" --output "$CAUSAL_AUDIT_REPORT"
+if [[ "$REUSE_COMPLETED_ARTIFACTS" == "1" ]] && json_valid "$CAUSAL_AUDIT_REPORT"; then
+  echo "[resume] reuse causal protocol audit: $CAUSAL_AUDIT_REPORT"
+else
+  logrun audit_causal_protocol "$PYTHON_BIN" -u -m cowp.scripts.36_audit_causal_protocol \
+    --model-config "$MODEL_CFG" --label-config "$LABEL_CFG" \
+    --train-config "$TRAIN_CFG" --eval-config "$EVAL_CFG" \
+    --data-protocol "$DATA_PROTOCOL" \
+    "${audit_alignment_args[@]}" "${audit_reuse_args[@]}" --output "$CAUSAL_AUDIT_REPORT"
+fi
 if [[ "$STOP_AFTER_STAGE" == "diagnose" ]]; then
   echo "[cowp_v16.6] stopped after diagnostics: $OUT_ROOT"
   exit 0
@@ -369,6 +398,48 @@ best_planner() {
   local p="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
   [[ -s "$p" ]] && { echo "$p"; return; }
   return 1
+}
+
+# Print: state<TAB>checkpoint<TAB>epoch, where state is complete|resume|none.
+# Selection is based on checkpoint metadata, not the filename alone, and prefers
+# the highest completed epoch (last/epoch/best are all accepted).
+stage_checkpoint_state() {
+  local dir="$1" stage="$2" target_epochs="$3"
+  "$PYTHON_BIN" - "$dir" "$stage" "$target_epochs" <<'PY'
+import sys
+from pathlib import Path
+import torch
+
+dir_path = Path(sys.argv[1])
+stage = sys.argv[2]
+target = int(sys.argv[3])
+rows = []
+for path in sorted(dir_path.glob(f"cowp_{stage}_*.pt")):
+    if not path.is_file() or path.stat().st_size <= 0:
+        continue
+    try:
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:
+            ckpt = torch.load(path, map_location="cpu")
+        ckpt_stage = ckpt.get("stage")
+        epoch = int(ckpt.get("epoch", -1))
+        if ckpt_stage not in (None, stage) or epoch < 0:
+            continue
+        # Prefer a post-scheduler last checkpoint at the same epoch, then a
+        # numbered checkpoint, then best.
+        name = path.name
+        priority = 3 if name.endswith("_last.pt") else (2 if "_epoch" in name else 1)
+        rows.append((epoch, priority, path.stat().st_mtime_ns, path))
+    except Exception:
+        continue
+if not rows:
+    print("none\t\t-1")
+else:
+    epoch, _, _, path = max(rows)
+    state = "complete" if epoch >= target - 1 else "resume"
+    print(f"{state}\t{path}\t{epoch}")
+PY
 }
 
 # Stage 0: repair the natural-option basis while preserving the initialized scene encoder.
@@ -428,29 +499,43 @@ if [[ ! -s "$ORACLE_REPORT" ]]; then
   logrun diagnose_natural_oracle_val "$PYTHON_BIN" -u -m cowp.scripts.34_diagnose_natural_oracles \
     --cache-dir "$RAW_VAL_CACHE" --max-scenes "${ORACLE_DIAG_SCENES:-2000}" --workers "${DIAG_WORKERS:-8}" --output "$ORACLE_REPORT"
 fi
-quality_gate gate_natural_basis "$PYTHON_BIN" -u -m cowp.scripts.32_gate_natural_basis \
-  --history "$NATURAL_HISTORY" --oracle-report "$ORACLE_REPORT" --max-oracle-gap-m 6.0 \
-  --output "$OUT_ROOT/eval/learned_offline/natural_basis_gate.json" \
-  --max-set-minade-m 8.5 --max-branch-minade-m 3.0 \
-  --max-observed-minade-m 4.0 --max-branch-spread-m 3.0 \
-  --max-neutral-minade-m 2.0 --max-priority-minade-m 2.0 \
-  --max-priority-bce 0.45 --max-neutral-consistency-m 3.0 \
-  --max-typed-untyped-gap-m 3.0
+NATURAL_BASIS_GATE_OUT="$OUT_ROOT/eval/learned_offline/natural_basis_gate.json"
+if json_gate_passed "$NATURAL_BASIS_GATE_OUT"; then
+  echo "[resume] reuse passed natural basis gate: $NATURAL_BASIS_GATE_OUT"
+else
+  quality_gate gate_natural_basis "$PYTHON_BIN" -u -m cowp.scripts.32_gate_natural_basis \
+    --history "$NATURAL_HISTORY" --oracle-report "$ORACLE_REPORT" --max-oracle-gap-m 6.0 \
+    --output "$NATURAL_BASIS_GATE_OUT" \
+    --max-set-minade-m 8.5 --max-branch-minade-m 3.0 \
+    --max-observed-minade-m 4.0 --max-branch-spread-m 3.0 \
+    --max-neutral-minade-m 2.0 --max-priority-minade-m 2.0 \
+    --max-priority-bce 0.45 --max-neutral-consistency-m 3.0 \
+    --max-typed-untyped-gap-m 3.0
+fi
 LEARNED_NATURAL_REPORT="$OUT_ROOT/eval/learned_offline/learned_natural_effectiveness.json"
-logrun diagnose_learned_natural "$PYTHON_BIN" -u -m cowp.scripts.39_diagnose_learned_natural \
-  --data-config configs/data.yaml --model-config "$MODEL_CFG" \
-  --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
-  --cache-dir "$RAW_VAL_CACHE" --checkpoint "$NATURAL_CKPT" \
-  --max-scenes "${LEARNED_NATURAL_DIAG_SCENES:-2000}" \
-  --batch-size "${LEARNED_NATURAL_DIAG_BATCH:-8}" --num-workers "${DIAG_WORKERS:-8}" \
-  --device "${LEARNED_NATURAL_DIAG_DEVICE:-cuda}" --output "$LEARNED_NATURAL_REPORT"
-quality_gate gate_natural_effectiveness "$PYTHON_BIN" -u -m cowp.scripts.40_gate_natural_effectiveness \
-  --report "$LEARNED_NATURAL_REPORT" \
-  --output "$OUT_ROOT/eval/learned_offline/natural_effectiveness_gate.json" \
-  --max-learned-8s-m "${MAX_LEARNED_8S_M:-2.5}" \
-  --max-obs-8s-m "${MAX_OBS_8S_M:-4.0}" \
-  --min-overall-gain-8s-m "${MIN_OVERALL_GAIN_8S_M:-0.03}" \
-  --min-obs-gain-8s-m "${MIN_OBS_GAIN_8S_M:-0.05}"
+if [[ "$REUSE_COMPLETED_ARTIFACTS" == "1" ]] && json_valid "$LEARNED_NATURAL_REPORT"; then
+  echo "[resume] reuse learned natural effectiveness report: $LEARNED_NATURAL_REPORT"
+else
+  logrun diagnose_learned_natural "$PYTHON_BIN" -u -m cowp.scripts.39_diagnose_learned_natural \
+    --data-config configs/data.yaml --model-config "$MODEL_CFG" \
+    --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
+    --cache-dir "$RAW_VAL_CACHE" --checkpoint "$NATURAL_CKPT" \
+    --max-scenes "${LEARNED_NATURAL_DIAG_SCENES:-2000}" \
+    --batch-size "${LEARNED_NATURAL_DIAG_BATCH:-8}" --num-workers "${DIAG_WORKERS:-8}" \
+    --device "${LEARNED_NATURAL_DIAG_DEVICE:-cuda}" --output "$LEARNED_NATURAL_REPORT"
+fi
+NATURAL_EFFECT_GATE_OUT="$OUT_ROOT/eval/learned_offline/natural_effectiveness_gate.json"
+if json_gate_passed "$NATURAL_EFFECT_GATE_OUT"; then
+  echo "[resume] reuse passed natural effectiveness gate: $NATURAL_EFFECT_GATE_OUT"
+else
+  quality_gate gate_natural_effectiveness "$PYTHON_BIN" -u -m cowp.scripts.40_gate_natural_effectiveness \
+    --report "$LEARNED_NATURAL_REPORT" \
+    --output "$NATURAL_EFFECT_GATE_OUT" \
+    --max-learned-8s-m "${MAX_LEARNED_8S_M:-2.5}" \
+    --max-obs-8s-m "${MAX_OBS_8S_M:-4.0}" \
+    --min-overall-gain-8s-m "${MIN_OVERALL_GAIN_8S_M:-0.03}" \
+    --min-obs-gain-8s-m "${MIN_OBS_GAIN_8S_M:-0.05}"
+fi
 if [[ "$STOP_AFTER_STAGE" == "natural" ]]; then
   echo "[cowp_v16.6] stopped after natural gate: $OUT_ROOT"
   exit 0
@@ -461,11 +546,18 @@ fi
 # users may legitimately skip natural training and supply a standalone repaired
 # natural checkpoint.
 if [[ "$RUN_TRANSPORT" == "1" ]]; then
-  if best_transport >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
-    echo "[transport] keep existing $(best_transport)"
+  IFS=$'\t' read -r transport_state transport_resume_ckpt transport_resume_epoch \
+    < <(stage_checkpoint_state "$OUT_ROOT/checkpoints/transport" witness "$TRANSPORT_EPOCHS")
+  if [[ "$transport_state" == "complete" && "$FORCE_TRAIN" != "1" ]]; then
+    echo "[transport] target already complete at epoch=$transport_resume_epoch checkpoint=$transport_resume_ckpt"
   else
     resume_args=()
-    [[ -s "$NATURAL_CKPT" ]] && resume_args=(--resume "$NATURAL_CKPT")
+    if [[ "$transport_state" == "resume" && "$AUTO_RESUME" == "1" && "$FORCE_TRAIN" != "1" ]]; then
+      resume_args=(--resume "$transport_resume_ckpt" --resume-training)
+      echo "[transport] auto-resume epoch=$transport_resume_epoch from $transport_resume_ckpt"
+    elif [[ -s "$NATURAL_CKPT" ]]; then
+      resume_args=(--resume "$NATURAL_CKPT")
+    fi
     mapfile -t transport_amp_args < <(amp_args "$TRANSPORT_AMP")
     logrun train_transport_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
       "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
@@ -493,9 +585,16 @@ fi
 
 # Stage 2: train planner/candidate shields without rewriting the transport backbone.
 if [[ "$RUN_PLANNER" == "1" ]]; then
-  if best_planner >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
-    echo "[planner] keep existing $(best_planner)"
+  IFS=$'\t' read -r planner_state planner_resume_ckpt planner_resume_epoch \
+    < <(stage_checkpoint_state "$OUT_ROOT/checkpoints/planner" planner "$PLANNER_EPOCHS")
+  if [[ "$planner_state" == "complete" && "$FORCE_TRAIN" != "1" ]]; then
+    echo "[planner] target already complete at epoch=$planner_resume_epoch checkpoint=$planner_resume_ckpt"
   else
+    planner_resume_args=(--resume "$TRANSPORT_CKPT")
+    if [[ "$planner_state" == "resume" && "$AUTO_RESUME" == "1" && "$FORCE_TRAIN" != "1" ]]; then
+      planner_resume_args=(--resume "$planner_resume_ckpt" --resume-training)
+      echo "[planner] auto-resume epoch=$planner_resume_epoch from $planner_resume_ckpt"
+    fi
     mapfile -t planner_amp_args < <(amp_args "$PLANNER_AMP")
     logrun train_planner_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
       "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
@@ -511,7 +610,7 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
       --lr-scheduler plateau --min-lr 1e-6 --save-every 2 \
       --no-positive-oversampling --no-response-traj --no-response-components \
-      --fused-adamw "${planner_amp_args[@]}" --resume "$TRANSPORT_CKPT"
+      --fused-adamw "${planner_amp_args[@]}" "${planner_resume_args[@]}"
   fi
 fi
 if [[ -z "$CKPT" ]]; then CKPT="$(best_planner || true)"; fi

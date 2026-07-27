@@ -601,36 +601,58 @@ def _finite_scalar(x: torch.Tensor) -> bool:
 
 
 def _nonfinite_tensor_paths(value: Any, prefix: str = "pred", limit: int = 16) -> list[str]:
-    """Return model-output paths containing NaN/Inf.
+    """Return model-output paths containing NaN/Inf with one host sync.
 
-    This check deliberately runs *before* loss construction.  Loss helpers may
-    sanitize legacy labels, but model predictions must never be silently
-    repaired because that can turn an entirely skipped optimization run into a
-    superficially finite training history.
+    The previous implementation called ``.item()`` once for every output tensor.
+    Planner forward exposes many diagnostic aliases and large mode tensors, so
+    those repeated CUDA synchronizations materially reduced throughput.  We now
+    deduplicate tensor objects, launch all finite reductions, and synchronize once
+    per device.  Only the exceptional path performs per-tensor synchronization to
+    report precise names.  The validation contract is unchanged: every unique
+    floating model output is still checked before loss construction.
     """
-    bad: list[str] = []
+    entries: list[tuple[str, torch.Tensor]] = []
+    seen: set[int] = set()
 
-    def visit(x: Any, path: str) -> None:
-        if len(bad) >= limit:
-            return
+    def collect(x: Any, path: str) -> None:
         if torch.is_tensor(x):
             if x.is_floating_point() or x.is_complex():
-                try:
-                    if not bool(torch.isfinite(x.detach()).all().item()):
-                        bad.append(path)
-                except Exception:
-                    bad.append(path)
+                ident = id(x)
+                if ident not in seen:
+                    seen.add(ident)
+                    entries.append((path, x.detach()))
             return
         if isinstance(x, dict):
             for key, item in x.items():
-                visit(item, f"{path}.{key}")
+                collect(item, f"{path}.{key}")
         elif isinstance(x, (list, tuple)):
-            for idx, item in enumerate(x):
-                visit(item, f"{path}[{idx}]")
+            for i, item in enumerate(x):
+                collect(item, f"{path}[{i}]")
 
-    visit(value, prefix)
+    collect(value, prefix)
+    if not entries:
+        return []
+
+    checks: list[tuple[str, torch.Tensor]] = [
+        (path, torch.isfinite(tensor).all()) for path, tensor in entries
+    ]
+    by_device: dict[torch.device, list[torch.Tensor]] = {}
+    for _, flag in checks:
+        by_device.setdefault(flag.device, []).append(flag)
+    all_ok = True
+    for flags in by_device.values():
+        if not bool(torch.stack(flags).all().item()):
+            all_ok = False
+    if all_ok:
+        return []
+
+    bad: list[str] = []
+    for path, flag in checks:
+        if not bool(flag.item()):
+            bad.append(path)
+            if len(bad) >= limit:
+                break
     return bad
-
 
 def _distributed_any(flag: bool, device: torch.device) -> bool:
     """Synchronize a fatal numeric condition so every DDP rank exits together."""
@@ -738,7 +760,10 @@ def _run_epoch(
     model.train(is_train)
     if is_train:
         _set_fully_frozen_modules_eval(model)
-    sums: dict[str, float] = {}
+    # Keep metric accumulation on-device and transfer once per epoch.  The old
+    # loop converted every individual loss term to a Python float each batch,
+    # forcing dozens of CUDA synchronizations in planner training.
+    sums: dict[str, torch.Tensor] = {}
     count = 0
     resolved_amp_dtype = _resolve_amp_dtype(device, amp_dtype)
     # Natural-basis learning is the highest-risk stage because its zero-initialized
@@ -757,7 +782,10 @@ def _run_epoch(
     optimizer_steps = 0
     amp_skipped_steps = 0
     consecutive_amp_overflows = 0
-    context = torch.enable_grad() if is_train else torch.no_grad()
+    # inference_mode is a strict no-autograd superset that also disables version
+    # counter/view bookkeeping, reducing validation overhead without changing any
+    # model outputs or losses.
+    context = torch.enable_grad() if is_train else torch.inference_mode()
     desc = f"{'train' if is_train else 'val'} {stage} epoch {epoch}"
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
     with context:
@@ -853,10 +881,20 @@ def _run_epoch(
             bs = int(next(iter(batch.values())).shape[0]) if batch else 1
             count += bs
             for k, v in losses.items():
-                sums[k] = sums.get(k, 0.0) + float(v.detach().cpu()) * bs
-            if hasattr(iterator, "set_postfix"):
-                iterator.set_postfix(loss=f"{float(loss.detach().cpu()):.4f}", seen=count, refresh=(step == 1 or step % 10 == 0))
-    result = {k: v / max(count, 1) for k, v in sums.items()}
+                term = v.detach().to(dtype=torch.float64) * bs
+                sums[k] = term if k not in sums else sums[k] + term
+            if hasattr(iterator, "set_postfix") and (step == 1 or step % 10 == 0):
+                iterator.set_postfix(
+                    loss=f"{float(loss.detach().item()):.4f}",
+                    seen=count,
+                    refresh=True,
+                )
+    if sums:
+        metric_keys = sorted(sums)
+        metric_values = torch.stack([sums[k] for k in metric_keys]).detach().cpu().tolist()
+        result = {k: float(v) / max(count, 1) for k, v in zip(metric_keys, metric_values)}
+    else:
+        result = {}
     if is_train:
         result["runtime/optimizer_steps"] = float(optimizer_steps)
         result["runtime/amp_skipped_steps"] = float(amp_skipped_steps)
@@ -1123,6 +1161,24 @@ def _load_existing_history(path: Path, *, before_epoch: int | None = None) -> li
     return rows
 
 
+def _atomic_write_history(path: Path, history: list[dict[str, Any]]) -> None:
+    """Persist history after every completed epoch without partial JSON files."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
+    """Write checkpoints atomically so an interruption cannot corrupt resume state."""
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def _best_score_from_history(history: list[dict[str, Any]]) -> float:
     best = float("inf")
     for row in history:
@@ -1156,7 +1212,9 @@ def _make_checkpoint_payload(
     stage: str,
     best_val: float,
     save_optimizer: bool,
-    extra: dict[str, float] | None = None,
+    extra: dict[str, Any] | None = None,
+    scheduler: Any | None = None,
+    no_improve_checks: int = 0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": _model_state_dict_for_save(model),
@@ -1167,6 +1225,9 @@ def _make_checkpoint_payload(
     }
     if save_optimizer:
         payload["optimizer"] = opt.state_dict()
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    payload["no_improve_checks"] = int(no_improve_checks)
     if extra:
         payload.update(extra)
     return payload
@@ -1194,6 +1255,85 @@ def _make_adamw_optimizer(model: torch.nn.Module, *, lr: float, weight_decay: fl
         except RuntimeError as exc:
             print(f"Warning: fused AdamW unavailable, falling back to standard AdamW: {exc}")
     return torch.optim.AdamW(params, **kwargs)
+
+
+
+
+def _make_lr_scheduler(
+    opt: torch.optim.Optimizer,
+    *,
+    mode: str,
+    epochs: int,
+    early_stop_patience: int,
+    min_lr: float,
+    min_delta: float,
+) -> Any | None:
+    mode = str(mode).lower()
+    if mode == "plateau":
+        return torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", factor=0.5, patience=max(1, int(early_stop_patience) // 2),
+            min_lr=float(min_lr), threshold=float(min_delta),
+        )
+    if mode == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=max(int(epochs), 1), eta_min=float(min_lr)
+        )
+    return None
+
+
+def _reconstruct_scheduler_from_history(
+    scheduler: Any,
+    opt: torch.optim.Optimizer,
+    history: list[dict[str, Any]],
+    *,
+    mode: str,
+    base_lr: float,
+    epochs: int,
+    early_stop_patience: int,
+    min_lr: float,
+    min_delta: float,
+) -> int:
+    """Rebuild legacy scheduler state when an older checkpoint lacks it.
+
+    Historical checkpoints were written before ``scheduler.step`` and did not
+    contain scheduler state.  Replaying completed epoch scores on a shadow
+    optimizer reconstructs the exact post-epoch LR/scheduler counters without
+    touching AdamW moments or rerunning model updates.
+    """
+    rows = sorted(
+        (row for row in history if isinstance(row.get("epoch"), int) and int(row["epoch"]) >= 0),
+        key=lambda row: int(row["epoch"]),
+    )
+    if not rows:
+        return 0
+    dummy = torch.nn.Parameter(torch.zeros((), dtype=torch.float32))
+    shadow_opt = torch.optim.SGD([dummy], lr=float(base_lr))
+    shadow = _make_lr_scheduler(
+        shadow_opt, mode=mode, epochs=epochs, early_stop_patience=early_stop_patience,
+        min_lr=min_lr, min_delta=min_delta,
+    )
+    if shadow is None:
+        return 0
+    best_seen = float("inf")
+    replayed = 0
+    for row in rows:
+        if str(mode).lower() == "plateau":
+            try:
+                score = float(row.get("checkpoint/score", float("inf")))
+            except Exception:
+                score = float("inf")
+            if math.isfinite(score):
+                best_seen = min(best_seen, score)
+            shadow.step(score if math.isfinite(score) else best_seen)
+        else:
+            shadow.step()
+        replayed += 1
+    scheduler.load_state_dict(shadow.state_dict())
+    if len(opt.param_groups) != len(shadow_opt.param_groups):
+        raise RuntimeError("cannot reconstruct scheduler: optimizer parameter-group count changed")
+    for actual, rebuilt in zip(opt.param_groups, shadow_opt.param_groups):
+        actual["lr"] = float(rebuilt["lr"])
+    return replayed
 
 
 def _maybe_compile_model(model: COWPModel, enabled: bool, backend: str | None = None) -> torch.nn.Module:
@@ -1510,30 +1650,27 @@ def main() -> None:
             f"static_graph={ddp_kwargs.get('static_graph', False)}, "
             f"gradient_as_bucket_view={ddp_kwargs.get('gradient_as_bucket_view', False)}"
         )
+    epochs = args.epochs or int(tcfg.get("epochs", 10))
+    optimizer_lr = float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4))
     opt = _make_adamw_optimizer(
         model,
-        lr=float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4)),
+        lr=optimizer_lr,
         weight_decay=float(tcfg.get("weight_decay", 1e-4)),
         fused=bool(args.fused_adamw or tcfg.get("fused_adamw", False)),
     )
-    scheduler = None
     scheduler_mode = str(args.lr_scheduler).lower()
-    if scheduler_mode == "plateau":
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            opt, mode="min", factor=0.5, patience=max(1, int(args.early_stop_patience) // 2),
-            min_lr=float(args.min_lr), threshold=float(args.early_stop_min_delta),
-        )
-    elif scheduler_mode == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            opt, T_max=max(int(args.epochs or tcfg.get("epochs", 10)), 1), eta_min=float(args.min_lr)
-        )
+    scheduler = _make_lr_scheduler(
+        opt, mode=scheduler_mode, epochs=epochs,
+        early_stop_patience=int(args.early_stop_patience), min_lr=float(args.min_lr),
+        min_delta=float(args.early_stop_min_delta),
+    )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    epochs = args.epochs or int(tcfg.get("epochs", 10))
     history_path = output_dir / f"history_{stage}.json"
     history: list[dict[str, Any]] = []
     best_val = float("inf")
     start_epoch = 0
+    resume_no_improve_checks = 0
     if args.resume_training:
         if not args.resume or resume_ckpt is None:
             raise ValueError("--resume-training requires --resume to point to a same-stage checkpoint")
@@ -1562,7 +1699,40 @@ def main() -> None:
                 _rank0_print(f"Warning: failed to load optimizer state from {args.resume}; continuing with a fresh optimizer: {exc}")
         else:
             _rank0_print(f"Warning: checkpoint {args.resume} has no optimizer state; continuing model weights from epoch {ckpt_epoch} with a fresh optimizer.")
-        _rank0_print(f"Resume-training stage={stage}: checkpoint_epoch={ckpt_epoch}, next_epoch={start_epoch}, target_epochs={epochs}, previous_history_rows={len(history)}")
+        if scheduler is not None and "scheduler" in resume_ckpt:
+            try:
+                scheduler.load_state_dict(resume_ckpt["scheduler"])
+                _rank0_print(f"Resumed LR scheduler state from {args.resume}")
+            except Exception as exc:
+                _rank0_print(f"Warning: failed to load scheduler state from {args.resume}: {exc}")
+        elif scheduler is not None and history:
+            try:
+                replayed = _reconstruct_scheduler_from_history(
+                    scheduler, opt, history, mode=scheduler_mode, base_lr=optimizer_lr,
+                    epochs=epochs, early_stop_patience=int(args.early_stop_patience),
+                    min_lr=float(args.min_lr), min_delta=float(args.early_stop_min_delta),
+                )
+                _rank0_print(
+                    f"Reconstructed legacy LR scheduler from {replayed} completed history rows; "
+                    f"resume_lr={opt.param_groups[0]['lr']:.8g}"
+                )
+            except Exception as exc:
+                _rank0_print(f"Warning: failed to reconstruct legacy scheduler state: {exc}")
+        if "no_improve_checks" in resume_ckpt:
+            resume_no_improve_checks = max(int(resume_ckpt.get("no_improve_checks", 0)), 0)
+        else:
+            historical_counts = [
+                int(row["checkpoint/no_improve_checks"])
+                for row in history
+                if isinstance(row.get("checkpoint/no_improve_checks"), int)
+            ]
+            resume_no_improve_checks = max(historical_counts[-1] if historical_counts else 0, 0)
+            if historical_counts:
+                _rank0_print(
+                    f"Reconstructed legacy early-stop counter from history: "
+                    f"no_improve_checks={resume_no_improve_checks}"
+                )
+        _rank0_print(f"Resume-training stage={stage}: checkpoint_epoch={ckpt_epoch}, next_epoch={start_epoch}, target_epochs={epochs}, previous_history_rows={len(history)}, no_improve_checks={resume_no_improve_checks}")
     if args.eval_before_train and val_dl is not None and not args.resume_training and start_epoch == 0:
         _set_sampler_epoch(val_dl, -1)
         init_metrics = _run_epoch(
@@ -1584,7 +1754,7 @@ def main() -> None:
             }
             history.append(row0)
             best_val = float(init_score)
-            torch.save(
+            _atomic_torch_save(
                 _make_checkpoint_payload(
                     model, cfg, opt, epoch=-1, stage=stage, best_val=best_val,
                     save_optimizer=not args.no_save_optimizer,
@@ -1598,7 +1768,7 @@ def main() -> None:
         _rank0_print(f"Stage {stage} already reached target epochs: checkpoint next_epoch={start_epoch}, target_epochs={epochs}")
         _cleanup_distributed()
         return
-    no_improve_checks = 0
+    no_improve_checks = int(resume_no_improve_checks)
     early_stop_patience = max(int(args.early_stop_patience), 0)
     min_delta = max(float(args.early_stop_min_delta), 0.0)
     try:
@@ -1702,7 +1872,7 @@ def main() -> None:
                 if improved:
                     best_val = score_loss
                     no_improve_checks = 0
-                    torch.save(
+                    _atomic_torch_save(
                         _make_checkpoint_payload(
                             model,
                             cfg,
@@ -1724,7 +1894,7 @@ def main() -> None:
                 print(json.dumps(row, ensure_ascii=False))
                 save_every = max(int(args.save_every), 1)
                 if ((epoch + 1) % save_every == 0) or epoch == epochs - 1:
-                    torch.save(
+                    _atomic_torch_save(
                         _make_checkpoint_payload(
                             model,
                             cfg,
@@ -1741,6 +1911,21 @@ def main() -> None:
                     scheduler.step(float(score_loss) if math.isfinite(score_loss) else float(best_val))
                 else:
                     scheduler.step()
+            if _is_main_process():
+                # Persist a post-scheduler checkpoint every completed epoch.  The
+                # launcher prefers this file for interruption recovery, so model,
+                # optimizer, LR scheduler, epoch numbering, and early-stop state
+                # continue together instead of silently warm-starting from scratch.
+                _atomic_torch_save(
+                    _make_checkpoint_payload(
+                        model, cfg, opt, epoch=epoch, stage=stage, best_val=best_val,
+                        save_optimizer=not args.no_save_optimizer, scheduler=scheduler,
+                        no_improve_checks=no_improve_checks,
+                        extra={score_name: score_loss},
+                    ),
+                    output_dir / f"cowp_{stage}_last.pt",
+                )
+                _atomic_write_history(history_path, history)
             stop_now = bool(early_stop_patience > 0 and no_improve_checks >= early_stop_patience) if _is_main_process() else False
             if dist.is_available() and dist.is_initialized():
                 stop_tensor = torch.tensor([1 if stop_now else 0], device=device, dtype=torch.int32)
@@ -1753,8 +1938,7 @@ def main() -> None:
                 )
                 break
         if _is_main_process():
-            with history_path.open("w", encoding="utf-8") as f:
-                json.dump(history, f, indent=2)
+            _atomic_write_history(history_path, history)
     finally:
         _cleanup_distributed()
 
