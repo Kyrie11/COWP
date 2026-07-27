@@ -929,18 +929,106 @@ def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor
     return model.state_dict()
 
 
+_V16_7_NATURAL_TO_TRANSPORT_ALLOWED_MISSING = frozenset({
+    "set_transport.candidate_risk_raw_weight",
+    "set_transport.candidate_risk_threshold_logit",
+    "set_transport.candidate_risk_log_scale",
+    "set_transport.global_risk_raw_weight",
+    "set_transport.global_risk_threshold_logit",
+    "set_transport.global_risk_log_scale",
+    "set_transport.pair_deficit_raw_weight",
+})
+
+
+def _normalized_checkpoint_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if state and all(str(k).startswith("_orig_mod.") for k in state):
+        return {str(k)[len("_orig_mod."):]: v for k, v in state.items()}
+    return state
+
+
+def _strict_checkpoint_load(
+    model: torch.nn.Module,
+    state: dict[str, torch.Tensor],
+    *,
+    allowed_missing: frozenset[str] = frozenset(),
+    reset_prefixes: tuple[str, ...] = (),
+) -> dict[str, list[str]]:
+    """Load a checkpoint with an explicit, auditable migration allow-list.
+
+    Unlike the legacy compatible loader, this rejects shape mismatches and
+    unexpected keys.  It is used for v16.7 stage hand-offs, where silently
+    randomizing a natural or transport parameter would invalidate the mechanism
+    experiment.
+    """
+    state = _normalized_checkpoint_state(state)
+    model_state = model.state_dict()
+    prefixes = tuple(p.strip().rstrip(".") for p in reset_prefixes if p and p.strip())
+
+    def reset_key(key: str) -> bool:
+        return any(key == p or key.startswith(p + ".") for p in prefixes)
+
+    filtered = {k: v for k, v in state.items() if not reset_key(str(k))}
+    shape_mismatch = sorted(
+        k for k, v in filtered.items()
+        if k in model_state and tuple(model_state[k].shape) != tuple(v.shape)
+    )
+    unexpected = sorted(k for k in filtered if k not in model_state)
+    compatible = {
+        k: v for k, v in filtered.items()
+        if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)
+    }
+    reset_missing = {k for k in model_state if reset_key(k)}
+    missing = sorted(set(model_state) - set(compatible) - reset_missing)
+    benign_missing = sorted(k for k in missing if k.endswith("num_batches_tracked"))
+    allowed_initialized = sorted(k for k in missing if k in allowed_missing)
+    disallowed_missing = sorted(set(missing) - set(benign_missing) - set(allowed_initialized))
+    if shape_mismatch or unexpected or disallowed_missing:
+        raise RuntimeError(
+            "Strict checkpoint migration failed: "
+            f"missing={disallowed_missing[:20]}, shape_mismatch={shape_mismatch[:20]}, "
+            f"unexpected={unexpected[:20]}, allowed_initialized={allowed_initialized[:20]}"
+        )
+    model.load_state_dict(compatible, strict=False)
+    if allowed_initialized:
+        print(
+            "Strict checkpoint migration initialized approved v16.7 keys: "
+            f"{allowed_initialized}"
+        )
+    if reset_missing:
+        print(f"Explicitly reinitialized {len(reset_missing)} checkpoint keys under prefixes={prefixes}")
+    return {
+        "allowed_initialized_keys": allowed_initialized,
+        "reset_keys": sorted(reset_missing),
+        "benign_missing_keys": benign_missing,
+        "shape_mismatch_keys": shape_mismatch,
+        "unexpected_keys": unexpected,
+    }
+
+
 def _load_model_state_robust(
     model: torch.nn.Module,
     state: dict[str, torch.Tensor],
     *,
     reset_prefixes: tuple[str, ...] = (),
-) -> None:
+    policy: str = "compatible",
+) -> dict[str, list[str]]:
     """Load compatible weights while explicitly reinitializing selected modules.
 
     Cross-version natural warm starts are unsafe when mode identities or decoder
     parameterization changed.  ``reset_prefixes=("natural_decoder",)`` keeps the
     pretrained scene graph but guarantees a fresh typed option basis.
     """
+    policy = str(policy).lower()
+    if policy == "strict":
+        return _strict_checkpoint_load(model, state, reset_prefixes=reset_prefixes)
+    if policy == "v16_7_natural_to_transport":
+        return _strict_checkpoint_load(
+            model, state,
+            allowed_missing=_V16_7_NATURAL_TO_TRANSPORT_ALLOWED_MISSING,
+            reset_prefixes=reset_prefixes,
+        )
+    if policy != "compatible":
+        raise ValueError(f"Unknown checkpoint load policy: {policy}")
     candidates = [state]
     if state and all(k.startswith("_orig_mod.") for k in state.keys()):
         candidates.insert(0, {k[len("_orig_mod."):]: v for k, v in state.items()})
@@ -955,7 +1043,7 @@ def _load_model_state_robust(
         if not prefixes:
             try:
                 model.load_state_dict(cand)
-                return
+                return {"allowed_initialized_keys": [], "reset_keys": [], "benign_missing_keys": [], "shape_mismatch_keys": [], "unexpected_keys": []}
             except RuntimeError as exc:
                 last_error = exc
         compatible = {k: v for k, v in cand.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
@@ -970,7 +1058,13 @@ def _load_model_state_robust(
                 print(f"Loaded checkpoint with {len(missing)} initialized/missing keys, e.g. {missing[:6]}")
             if unexpected:
                 print(f"Ignored {len(unexpected)} incompatible/unexpected keys, e.g. {unexpected[:6]}")
-            return
+            return {
+                "allowed_initialized_keys": missing,
+                "reset_keys": [k for k in model_state if any(k == p or k.startswith(p + ".") for p in prefixes)],
+                "benign_missing_keys": [],
+                "shape_mismatch_keys": [],
+                "unexpected_keys": unexpected,
+            }
     if last_error is not None:
         raise last_error
     raise RuntimeError("Checkpoint contains no compatible model parameters")
@@ -1386,6 +1480,17 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--resume-training", action="store_true", help="When --resume points to a checkpoint from the same stage, continue epoch numbering/history instead of treating it as a warm start.")
     ap.add_argument("--reset-checkpoint-prefix", action="append", default=[], help="Reinitialize a module prefix instead of loading it from --resume. Repeatable; v14 natural training should pass natural_decoder.")
+    ap.add_argument(
+        "--checkpoint-load-policy",
+        choices=["compatible", "strict", "v16_7_natural_to_transport"],
+        default="compatible",
+        help="Checkpoint compatibility contract. v16.7 stage hand-offs should use an explicit strict policy.",
+    )
+    ap.add_argument(
+        "--expected-resume-stage",
+        default=None,
+        help="Optional checkpoint stage required for --resume (for example natural or witness).",
+    )
     ap.add_argument("--eval-before-train", action="store_true", help="Evaluate/save the initialized or warm-started model as epoch -1 before optimization. Prevents training from silently degrading a strong analytic basis.")
     ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
     ap.add_argument("--output-dir", default="outputs/checkpoints")
@@ -1596,7 +1701,21 @@ def main() -> None:
     resume_ckpt: dict[str, Any] | None = None
     if args.resume:
         resume_ckpt = torch.load(args.resume, map_location=device)
-        _load_model_state_robust(model, resume_ckpt["model"], reset_prefixes=tuple(args.reset_checkpoint_prefix))
+        if not isinstance(resume_ckpt, dict) or "model" not in resume_ckpt:
+            raise TypeError(f"Resume checkpoint {args.resume!r} does not contain a model state_dict")
+        if args.expected_resume_stage is not None:
+            actual_resume_stage = _checkpoint_stage(resume_ckpt)
+            if actual_resume_stage != str(args.expected_resume_stage):
+                raise ValueError(
+                    f"Expected resume checkpoint stage={args.expected_resume_stage}, "
+                    f"got stage={actual_resume_stage} from {args.resume}"
+                )
+        load_report = _load_model_state_robust(
+            model, resume_ckpt["model"],
+            reset_prefixes=tuple(args.reset_checkpoint_prefix),
+            policy=args.checkpoint_load_policy,
+        )
+        _rank0_print(f"Checkpoint load policy={args.checkpoint_load_policy}: {load_report}")
 
     # Apply architecture and permanent stage freezes *before* DDP and AdamW.
     # v16.5 did this only inside the epoch loop, so DDP searched for unused

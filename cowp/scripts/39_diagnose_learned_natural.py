@@ -46,17 +46,60 @@ def _typed_pairwise(pred: torch.Tensor, gt: torch.Tensor, gt_source: torch.Tenso
     return torch.where(allowed, pair, torch.full_like(pair, 1.0e4))
 
 
-def _load_checkpoint(model: COWPModel, path: str, device: torch.device) -> dict:
+# A v16.6 natural checkpoint is intentionally reused by the v16.7 mechanism
+# rerun.  v16.7 adds only downstream monotone BCOT calibration parameters to
+# ``set_transport``.  Stage="natural" never executes that module, so those
+# freshly initialized parameters are irrelevant to this diagnostic.  Every
+# graph/natural-decoder key remains strict: allowing those to drift would make
+# the natural-basis gate meaningless.
+_V16_7_NATURAL_DIAG_ALLOWED_MISSING = frozenset({
+    "set_transport.candidate_risk_raw_weight",
+    "set_transport.candidate_risk_threshold_logit",
+    "set_transport.candidate_risk_log_scale",
+    "set_transport.global_risk_raw_weight",
+    "set_transport.global_risk_threshold_logit",
+    "set_transport.global_risk_log_scale",
+    "set_transport.pair_deficit_raw_weight",
+})
+
+
+def _normalize_checkpoint_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if state and all(str(k).startswith("_orig_mod.") for k in state):
+        return {str(k)[len("_orig_mod."):]: v for k, v in state.items()}
+    return state
+
+
+def _load_checkpoint(
+    model: COWPModel, path: str, device: torch.device
+) -> tuple[dict, dict[str, list[str]]]:
     ckpt = torch.load(path, map_location=device)
     state = ckpt.get("model", ckpt)
+    if not isinstance(state, dict):
+        raise TypeError(f"Checkpoint {path!r} does not contain a model state_dict")
+    state = _normalize_checkpoint_state(state)
     result = model.load_state_dict(state, strict=False)
-    missing = [k for k in result.missing_keys if not k.endswith("num_batches_tracked")]
-    unexpected = list(result.unexpected_keys)
-    if missing or unexpected:
+    missing = sorted(k for k in result.missing_keys if not k.endswith("num_batches_tracked"))
+    unexpected = sorted(result.unexpected_keys)
+    allowed_missing = sorted(k for k in missing if k in _V16_7_NATURAL_DIAG_ALLOWED_MISSING)
+    disallowed_missing = sorted(set(missing) - set(allowed_missing))
+    if disallowed_missing or unexpected:
         raise RuntimeError(
-            f"Checkpoint/config mismatch for learned-natural diagnosis: missing={missing[:20]}, unexpected={unexpected[:20]}"
+            "Checkpoint/config mismatch for learned-natural diagnosis: "
+            f"missing={disallowed_missing[:20]}, unexpected={unexpected[:20]}, "
+            f"allowed_downstream_missing={allowed_missing[:20]}"
         )
-    return ckpt if isinstance(ckpt, dict) else {}
+    compatibility = {
+        "allowed_initialized_keys": allowed_missing,
+        "disallowed_missing_keys": disallowed_missing,
+        "unexpected_keys": unexpected,
+    }
+    if allowed_missing:
+        print(
+            "Learned-natural checkpoint migration: initialized unused v16.7 "
+            f"downstream keys from current model defaults: {allowed_missing}",
+            flush=True,
+        )
+    return (ckpt if isinstance(ckpt, dict) else {}), compatibility
 
 
 def _effective_modes(mass: np.ndarray) -> float:
@@ -92,7 +135,7 @@ def main() -> None:
     model = COWPModel(cfg).to(device).eval()
     if not model.natural_decoder.uses_typed_basis:
         raise ValueError(f"Learned-natural diagnosis requires a typed decoder, got {model.natural_decoder.decoder_type!r}")
-    ckpt = _load_checkpoint(model, args.checkpoint, device)
+    ckpt, checkpoint_compatibility = _load_checkpoint(model, args.checkpoint, device)
 
     base_ds = TorchCOWPDataset(args.cache_dir, stage="natural")
     idxs = _indices(len(base_ds), int(args.max_scenes))
@@ -275,6 +318,7 @@ def main() -> None:
     report = {
         "checkpoint": str(Path(args.checkpoint)),
         "checkpoint_epoch": ckpt.get("epoch"),
+        "checkpoint_compatibility": checkpoint_compatibility,
         "cache_dir": str(Path(args.cache_dir)),
         "sampled_scenes": len(idxs),
         "sample_indices_sha256": hashlib.sha256(np.asarray(idxs, dtype=np.int64).tobytes()).hexdigest(),
