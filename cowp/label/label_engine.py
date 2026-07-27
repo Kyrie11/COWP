@@ -103,6 +103,8 @@ def build_labels_for_scene(
         "cowp/witness/low_safe_mass_by_source": witness["low_safe_mass_by_source"],
         "cowp/witness/opr": witness["opr"],
         "cowp/witness/c_i": witness["c_i"],
+        "cowp/witness/tail_burden_excess": witness["tail_burden_excess"],
+        "cowp/witness/root_min_safe_burden": witness["root_min_safe_burden"],
         "cowp/witness/conflict_interval": witness["conflict_interval"],
         "cowp/witness/conflict_region_id": witness["conflict_region_id"],
         "cowp/witness/critical_agent_track_index": witness["critical_agent_track_index"],

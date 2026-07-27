@@ -323,6 +323,7 @@ class COWPModel(nn.Module):
             cand_traj,
             conflict.float() if conflict is not None else None,
             sdc_index,
+            candidate_valid=cand_mask,
         )
 
         if need_natural:
@@ -359,9 +360,17 @@ class COWPModel(nn.Module):
         if need_candidate_context:
             assert cand_traj is not None and cand_mask is not None and enc_cond is not None
             assert enc_candidates is not None
-            z_cand = self.candidate_encoder(enc_candidates, batch["cowp/candidates/macro_type"].long())
+            z_cand = self.candidate_encoder(
+                enc_candidates,
+                batch["cowp/candidates/macro_type"].long(),
+                valid_mask=cand_mask,
+            )
             if "z_candidate_context" in enc_cond:
-                z_cand = z_cand + enc_cond["z_candidate_context"]
+                z_cand = z_cand + enc_cond["z_candidate_context"].float()
+            # Transformer key padding masks suppress invalid candidates as keys,
+            # but padded query outputs can still attend to valid scene tokens.
+            # Keep invalid candidate representations identically zero end-to-end.
+            z_cand = z_cand * cand_mask.unsqueeze(-1).to(z_cand.dtype)
             out["z_candidate"] = z_cand
 
         anchor7 = None
@@ -448,6 +457,8 @@ class COWPModel(nn.Module):
                     calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
                     root_mass_scale=float(pcfg.get("set_transport_root_mass_scale", 1.0)),
                     candidate_tail_temperature=float(pcfg.get("candidate_transport_tail_temperature", 0.12)),
+                    root_probability_floor=float(pcfg.get("set_transport_probability_floor", 0.02)),
+                    cvar_tail_mass=float(pcfg.get("set_transport_cvar_tail_mass", 0.25)),
                 )
                 out["set_certificate"] = set_certificate
                 # The selector consumes the mechanistic certificate.  The proxy
@@ -461,7 +472,11 @@ class COWPModel(nn.Module):
                 witness["epistemic_uncertainty"] = set_certificate["uncertainty"]
                 witness["opr"] = set_certificate["opr"]
                 witness["burden_total"] = set_certificate["min_safe_burden"]
-                witness["c_i"] = set_certificate["natural_conflict_mass"]
+                witness["tail_burden_excess"] = set_certificate["tail_burden_excess"]
+                witness["natural_conflict_mass"] = set_certificate["natural_conflict_mass"]
+                # In the manuscript C_i is the conflict-conditioned tail burden
+                # excess, not conflict probability mass.
+                witness["c_i"] = set_certificate["tail_burden_excess"]
                 out["candidate_transport_risk"] = set_certificate["candidate_transport_risk"]
                 out["candidate_transport_uncertainty"] = set_certificate["candidate_transport_uncertainty"]
                 out["candidate_transport_severe_prob"] = set_certificate["candidate_severe_prob"]
@@ -524,7 +539,10 @@ class COWPModel(nn.Module):
                 uncertainty = uncertainty.detach() if detach_witness else uncertainty
                 uncertainty = torch.where(cm, uncertainty, torch.zeros_like(uncertainty))
                 burden = witness.get("burden_total", torch.zeros_like(witness_for_planner)).float()
-                ci = witness.get("c_i", torch.zeros_like(witness_for_planner)).float()
+                ci = witness.get(
+                    "natural_conflict_mass",
+                    witness.get("c_i", torch.zeros_like(witness_for_planner)),
+                ).float()
                 if detach_witness:
                     burden = burden.detach()
                     ci = ci.detach()
@@ -533,7 +551,13 @@ class COWPModel(nn.Module):
                     beta_pair = torch.full_like(witness_for_planner, 0.65)
                 else:
                     beta_pair = beta.float()[:, None, :].expand_as(witness_prob)
-                burden_excess = torch.where(cm, torch.relu(burden - beta_pair), torch.zeros_like(burden))
+                tail_burden = witness.get("tail_burden_excess")
+                if torch.is_tensor(tail_burden):
+                    if detach_witness:
+                        tail_burden = tail_burden.detach()
+                    burden_excess = torch.where(cm, tail_burden.float().clamp_min(0.0), torch.zeros_like(burden))
+                else:
+                    burden_excess = torch.where(cm, torch.relu(burden - beta_pair), torch.zeros_like(burden))
                 ci_excess = torch.where(cm, torch.relu(ci), torch.zeros_like(ci))
                 alpha = float(self.cfg.get("planning", {}).get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35)))
                 option_collapse = torch.where(

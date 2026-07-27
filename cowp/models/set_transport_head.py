@@ -77,6 +77,65 @@ class SetTransportCertificateHead(nn.Module):
         )
         return torch.where(existence > 1.0e-4, value.clamp_min(0.0), torch.full_like(value, 2.0))
 
+    @staticmethod
+    def _soft_root_min_burden(
+        burden: torch.Tensor,
+        safe_prob: torch.Tensor,
+        valid_prob: torch.Tensor,
+        root_prob: torch.Tensor,
+        tau: float,
+    ) -> torch.Tensor:
+        """Differentiable same-root minimum burden, Eq. b*_{ikm}.
+
+        ``root_prob`` is [B,K,A,R,M].  The support is normalized independently
+        for every root so response-slot duplication cannot lower the minimum.
+        A root without a credible safe/valid response receives the finite
+        emergency sentinel 2.0 used by the cache schema.
+        """
+        tau = max(float(tau), 1.0e-3)
+        support = (
+            safe_prob[..., None]
+            * valid_prob[..., None]
+            * root_prob.clamp_min(0.0)
+        )
+        existence = support.amax(dim=-2)
+        norm = support / support.sum(dim=-2, keepdim=True).clamp_min(1.0e-8)
+        value = -tau * torch.logsumexp(
+            norm.clamp_min(1.0e-8).log() - burden[..., None] / tau,
+            dim=-2,
+        )
+        return torch.where(
+            existence > 1.0e-4,
+            value.clamp(0.0, 2.0),
+            torch.full_like(value, 2.0),
+        )
+
+    @staticmethod
+    def _weighted_upper_cvar(
+        values: torch.Tensor,
+        weights: torch.Tensor,
+        tail_mass: float,
+    ) -> torch.Tensor:
+        """Weighted upper-tail CVaR over the last/root dimension.
+
+        ``tail_mass`` is the probability mass averaged from the worst end, e.g.
+        0.25 averages the worst 25% of conflicted root mass.  Sorting is
+        piecewise differentiable and exactly matches the finite-root definition,
+        unlike a max or an unrelated global response minimum.
+        """
+        q = min(max(float(tail_mass), 1.0e-3), 1.0)
+        w = weights.clamp_min(0.0)
+        total = w.sum(dim=-1, keepdim=True)
+        w = w / total.clamp_min(1.0e-8)
+        v_sorted, order = values.sort(dim=-1, descending=True)
+        w_sorted = torch.gather(w, -1, order)
+        before = w_sorted.cumsum(dim=-1) - w_sorted
+        remaining = torch.relu(torch.as_tensor(q, device=w.device, dtype=w.dtype) - before)
+        take = torch.minimum(w_sorted, remaining)
+        denom = take.sum(dim=-1).clamp_min(1.0e-8)
+        cvar = (take * v_sorted).sum(dim=-1) / denom
+        return torch.where(total.squeeze(-1) > 1.0e-8, cvar, torch.zeros_like(cvar))
+
     def _relative_geometry(
         self,
         candidate_traj: torch.Tensor | None,
@@ -171,6 +230,8 @@ class SetTransportCertificateHead(nn.Module):
         calibration_scale: float = 0.10,
         root_mass_scale: float = 1.0,
         candidate_tail_temperature: float = 0.12,
+        root_probability_floor: float = 0.02,
+        cvar_tail_mass: float = 0.25,
     ) -> dict[str, torch.Tensor]:
         B, K, D = z_candidate.shape
         A = critical_indices.shape[1]
@@ -206,7 +267,10 @@ class SetTransportCertificateHead(nn.Module):
         mode_recovery_logit = raw[..., 3]
         mode_recovery_prob = torch.sigmoid(mode_recovery_logit)
 
-        natural_weight = torch.softmax(natural["logits"].float(), dim=-1)[:, None, :, :].expand(B, K, A, M)
+        natural_weight_raw = torch.softmax(natural["logits"].float(), dim=-1)
+        eps_p = min(max(float(root_probability_floor), 0.0), 0.25)
+        natural_weight_raw = (1.0 - eps_p) * natural_weight_raw + eps_p / max(M, 1)
+        natural_weight = natural_weight_raw[:, None, :, :].expand(B, K, A, M)
         source_prob = torch.softmax(natural["source_logits"].float(), dim=-1)[:, None, :, :, :]
         priority_prob = torch.sigmoid(natural["priority_logits"].float())[:, None, :, :]
 
@@ -247,6 +311,12 @@ class SetTransportCertificateHead(nn.Module):
             ).clamp(0.0, 1.0)
             response_root_exist_aux = root_contribution.amax(dim=-2)
         else:
+            root_prob = torch.full(
+                (*response_safe.shape, M),
+                1.0 / max(M, 1),
+                device=response_safe.device,
+                dtype=response_safe.dtype,
+            )
             response_root_exist_aux = low_safe_option_prob
         # Preserve the legacy response-bank reconstruction under its original
         # name for diagnostics/ablations.  The new root-indexed quantity is the
@@ -262,17 +332,33 @@ class SetTransportCertificateHead(nn.Module):
         min_safe_burden = self._soft_min_burden(
             response["burden_total"].float(), response_safe, response_valid, response_weight, burden_temperature
         )
+        root_min_safe_burden = self._soft_root_min_burden(
+            response["burden_total"].float(),
+            response_safe,
+            response_valid,
+            root_prob,
+            burden_temperature,
+        )
 
         beta_pair = beta.float()[:, None, :].expand(B, K, A)
+        root_excess = torch.relu(root_min_safe_burden - beta_pair[..., None])
+        conflicted_root_weight = natural_weight * conflict_prob
+        tail_burden_excess = self._weighted_upper_cvar(
+            root_excess,
+            conflicted_root_weight,
+            cvar_tail_mass,
+        )
         gt = max(float(gate_temperature), 1.0e-3)
         floor = max(float(conflict_mass_floor), 1.0e-4)
         conflict_support = (natural_conflict_mass / floor).clamp(0.0, 1.0)
         conflict_gate = conflict_support * torch.sigmoid((natural_conflict_mass - floor) / gt)
-        burden_gate = torch.sigmoid((min_safe_burden - (beta_pair + float(gamma))) / gt)
+        burden_gate = torch.sigmoid((tail_burden_excess - float(gamma)) / gt)
         option_gate = torch.sigmoid((float(alpha_opr) - opr) / gt)
-        response_absence_gate = 1.0 - root_recovery_mass
-        failure_union = 1.0 - (1.0 - burden_gate) * (1.0 - option_gate) * (1.0 - response_absence_gate)
+        # No independent response-absence heuristic is needed: an absent same-root
+        # response receives burden 2.0 and therefore enters the CVaR term.
+        failure_union = 1.0 - (1.0 - burden_gate) * (1.0 - option_gate)
         analytic_witness = (conflict_gate * failure_union).clamp(0.0, 1.0)
+        response_absence_gate = 1.0 - root_recovery_mass
 
         calib_in = torch.cat([
             z_candidate[:, :, None, :].expand(B, K, A, D),
@@ -359,6 +445,8 @@ class SetTransportCertificateHead(nn.Module):
             "analytic_witness_prob": analytic_witness,
             "opr": opr,
             "min_safe_burden": min_safe_burden,
+            "root_min_safe_burden": root_min_safe_burden,
+            "tail_burden_excess": tail_burden_excess,
             "natural_conflict_mass": natural_conflict_mass,
             "priority_conflict_mass": priority_conflict_mass,
             "response_low_safe_mass": response_low_safe_mass,

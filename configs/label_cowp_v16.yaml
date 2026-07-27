@@ -266,6 +266,8 @@ ncf:
   gamma: 0.1
   min_alt_weight: 0.03
   positive_min_natural_conflict_mass: 0.1
+  root_probability_floor: 0.02
+  cvar_tail_mass: 0.25
 planning:
   online_plan_continuity_weight: 0.2
   online_plan_continuity_horizon_steps: 12

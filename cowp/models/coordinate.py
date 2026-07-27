@@ -82,6 +82,7 @@ def ego_centric_inputs(
     candidate_traj: torch.Tensor | None,
     conflict_regions: torch.Tensor | None,
     sdc_index: torch.Tensor,
+    candidate_valid: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
     """Return ego-centric copies used only by neural encoders.
 
@@ -109,11 +110,33 @@ def ego_centric_inputs(
 
     cand = None
     if candidate_traj is not None:
-        cand = torch.nan_to_num(candidate_traj.float(), nan=0.0, posinf=0.0, neginf=0.0).clone()
+        raw_cand = candidate_traj.float()
+        if candidate_valid is not None:
+            if candidate_valid.shape != raw_cand.shape[:2]:
+                raise ValueError(
+                    "candidate_valid must match candidate trajectory [B,K], "
+                    f"got {tuple(candidate_valid.shape)} versus {tuple(raw_cand.shape[:2])}"
+                )
+            valid = candidate_valid.to(device=raw_cand.device, dtype=torch.bool)
+        else:
+            valid = torch.ones(raw_cand.shape[:2], device=raw_cand.device, dtype=torch.bool)
+        bad_valid = valid[..., None, None] & ~torch.isfinite(raw_cand)
+        if bool(bad_valid.any().item()):
+            first = torch.nonzero(bad_valid, as_tuple=False)[0].detach().cpu().tolist()
+            raise FloatingPointError(
+                "Non-finite feature in a valid candidate before coordinate normalization at "
+                f"[batch,candidate,time,feature]={first}."
+            )
+        cand = torch.where(valid[..., None, None], raw_cand, torch.zeros_like(raw_cand)).clone()
         cand[..., 0:2] = _rotate_xy(cand[..., 0:2] - origin[:, None, None, :], c, s)
         cand[..., 2] = _wrap_angle_torch(cand[..., 2] - ego_yaw[:, None, None])
         if cand.shape[-1] > 4:
             cand[..., 3:5] = _rotate_xy(cand[..., 3:5], c, s)
+        # Candidate banks are zero-padded in the global frame.  A global zero is
+        # not an ego-centric zero: subtracting the scene origin would otherwise
+        # turn every invalid slot into a large constant trajectory.  Preserve the
+        # padding contract explicitly before any neural candidate encoder sees it.
+        cand = torch.where(valid[..., None, None], cand, torch.zeros_like(cand))
 
     conflict = None
     if conflict_regions is not None:

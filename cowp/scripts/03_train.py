@@ -48,7 +48,7 @@ from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
-from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
+from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, paper_aligned_supervision_batch, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -182,6 +182,25 @@ def _make_grad_scaler(enabled: bool):
     if hasattr(torch, "cuda") and hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "GradScaler"):
         return torch.cuda.amp.GradScaler(enabled=True)
     return None
+
+
+def _use_grad_scaler(stage_amp: bool, is_train: bool, amp_dtype: torch.dtype) -> bool:
+    """Use dynamic loss scaling only for true fp16 training.
+
+    bfloat16 already has fp32-like exponent range.  Scaling a bf16 forward is
+    unnecessary and, for cuDNN recurrent kernels, can amplify first-step
+    input-weight gradients without providing fp16 underflow protection.
+    """
+    return bool(stage_amp and is_train and amp_dtype == torch.float16)
+
+
+def _update_grad_scaler_scale(scaler, new_scale: float) -> None:
+    """Synchronously set a lower scale after a globally detected DDP overflow."""
+    value = float(max(new_scale, 1.0))
+    try:
+        scaler.update(new_scale=value)
+    except TypeError:
+        scaler.update(value)
 
 
 def _resolve_amp_dtype(device: torch.device, requested: str) -> torch.dtype:
@@ -455,6 +474,8 @@ def _validate_stage_supervision(dataset, stage: str, *, samples: int = 32) -> di
 
 
 def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage: str, loss_weights: dict[str, float]) -> dict[str, torch.Tensor]:
+    if stage in ("witness", "planner", "all"):
+        batch = paper_aligned_supervision_batch(batch, loss_weights)
     out: dict[str, torch.Tensor] = {}
     losses: list[torch.Tensor] = []
     if stage in ("natural", "representation", "all"):
@@ -727,13 +748,15 @@ def _run_epoch(
     stage_amp = bool(amp and device.type == "cuda")
     if stage in {"natural", "representation"} and resolved_amp_dtype == torch.float16:
         stage_amp = False
-    # The scaler must follow the effective stage policy rather than the raw CLI
-    # flag; otherwise a forced-fp32 natural stage could still be misreported as
-    # AMP training.
-    scaler_enabled = bool(stage_amp and is_train)
+    # Dynamic loss scaling is an fp16 remedy.  BF16 has fp32-like exponent
+    # range and is intentionally trained without GradScaler.  The old code
+    # scaled both dtypes and then raised before GradScaler could perform its
+    # documented skip-and-downscale recovery.
+    scaler_enabled = _use_grad_scaler(stage_amp, is_train, resolved_amp_dtype)
     scaler = _make_grad_scaler(scaler_enabled)
     optimizer_steps = 0
     amp_skipped_steps = 0
+    consecutive_amp_overflows = 0
     context = torch.enable_grad() if is_train else torch.no_grad()
     desc = f"{'train' if is_train else 'val'} {stage} epoch {epoch}"
     iterator = tqdm_iter(dl, enabled=progress, total=len(dl), desc=desc, unit="batch")
@@ -774,21 +797,47 @@ def _run_epoch(
                     scale_before = float(scaler.get_scale())
                     scaler.scale(loss).backward()
                     scaler.unscale_(opt)
-                    grad_norm, bad_grad_paths = _clip_grad_norm_stable(model, grad_clip)
-                    local_bad_grad = bool(bad_grad_paths) or not _finite_scalar(grad_norm)
-                    if _distributed_any(local_bad_grad, device):
-                        raise FloatingPointError(
-                            "Non-finite gradient at "
-                            f"stage={stage} epoch={epoch} step={step}; "
-                            f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}."
-                        )
-                    scaler.step(opt)
-                    scaler.update()
-                    scale_after = float(scaler.get_scale())
-                    if scale_after < scale_before:
+
+                    # Check entries before clipping.  In fp16, a non-finite
+                    # unscaled gradient can be a normal dynamic-loss-scaling
+                    # overflow.  All DDP ranks must skip together and use the
+                    # same lower scale; abort only if it persists at a tiny scale.
+                    bad_grad_paths = _nonfinite_gradient_paths(model)
+                    global_amp_overflow = _distributed_any(bool(bad_grad_paths), device)
+                    if global_amp_overflow:
                         amp_skipped_steps += 1
+                        consecutive_amp_overflows += 1
+                        opt.zero_grad(set_to_none=True)
+                        scale_after = max(scale_before * 0.5, 1.0)
+                        _update_grad_scaler_scale(scaler, scale_after)
+                        if amp_skipped_steps <= 3 or (amp_skipped_steps & (amp_skipped_steps - 1)) == 0:
+                            _rank0_print(
+                                "AMP fp16 overflow: skipped optimizer step and reduced "
+                                f"scale {scale_before:g}->{scale_after:g} at "
+                                f"stage={stage} epoch={epoch} step={step}; "
+                                f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}"
+                            )
+                        if consecutive_amp_overflows >= 8 or scale_before <= 1.0:
+                            raise FloatingPointError(
+                                "Persistent non-finite fp16 gradient after dynamic-scale recovery at "
+                                f"stage={stage} epoch={epoch} step={step}; "
+                                f"scale={scale_before:g}; consecutive_overflows={consecutive_amp_overflows}; "
+                                f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}. "
+                                "This is a structural numeric/data error, not a recoverable AMP overflow."
+                            )
                     else:
+                        grad_norm, bad_grad_paths = _clip_grad_norm_stable(model, grad_clip)
+                        local_bad_grad = bool(bad_grad_paths) or not _finite_scalar(grad_norm)
+                        if _distributed_any(local_bad_grad, device):
+                            raise FloatingPointError(
+                                "Non-finite gradient norm after finite-entry fp16 backward at "
+                                f"stage={stage} epoch={epoch} step={step}; "
+                                f"local_bad_grad_paths={bad_grad_paths or ['reported_on_another_ddp_rank']}."
+                            )
+                        scaler.step(opt)
+                        scaler.update()
                         optimizer_steps += 1
+                        consecutive_amp_overflows = 0
                 else:
                     loss.backward()
                     grad_norm, bad_grad_paths = _clip_grad_norm_stable(model, grad_clip)
@@ -813,6 +862,7 @@ def _run_epoch(
         result["runtime/amp_skipped_steps"] = float(amp_skipped_steps)
         result["runtime/amp_bfloat16"] = float(stage_amp and resolved_amp_dtype == torch.bfloat16)
         result["runtime/amp_float16"] = float(stage_amp and resolved_amp_dtype == torch.float16)
+        result["runtime/amp_scaler_enabled"] = float(scaler_enabled)
         if optimizer_steps <= 0:
             raise RuntimeError(
                 f"Stage {stage} completed no optimizer steps at epoch {epoch}; "

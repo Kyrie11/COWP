@@ -130,6 +130,12 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
   --file "configs/train_cowp_v16.yaml=$CONFIG_CANDIDATE_DIR/train_cowp_v16.yaml" \
   --file "configs/eval_cowp_v16.yaml=$CONFIG_CANDIDATE_DIR/eval_cowp_v16.yaml" \
   --file "cowp/models/natural_decoder.py=cowp/models/natural_decoder.py" \
+  --file "cowp/models/candidate_encoder.py=cowp/models/candidate_encoder.py" \
+  --file "cowp/models/coordinate.py=cowp/models/coordinate.py" \
+  --file "cowp/models/set_transport_head.py=cowp/models/set_transport_head.py" \
+  --file "cowp/data/cache_schema.py=cowp/data/cache_schema.py" \
+  --file "cowp/label/label_engine.py=cowp/label/label_engine.py" \
+  --file "cowp/label/witness.py=cowp/label/witness.py" \
   --file "cowp/models/losses.py=cowp/models/losses.py" \
   --file "cowp/models/cowp_model.py=cowp/models/cowp_model.py" \
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \

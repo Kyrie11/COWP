@@ -60,6 +60,8 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/witness/low_safe_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
     "cowp/witness/opr": FieldSpec(("K", "A"), "f"),
     "cowp/witness/c_i": FieldSpec(("K", "A"), "f"),
+    "cowp/witness/tail_burden_excess": FieldSpec(("K", "A"), "f", required=False),
+    "cowp/witness/root_min_safe_burden": FieldSpec(("K", "A", "M"), "f", required=False),
     "cowp/witness/conflict_interval": FieldSpec(("K", "A", 2), ("i", "u")),
     "cowp/witness/conflict_region_id": FieldSpec(("K", "A"), ("i", "u")),
     "cowp/witness/critical_agent_track_index": FieldSpec(("A",), ("i", "u")),
@@ -130,13 +132,20 @@ def validate_numeric_invariants(data: Mapping[str, np.ndarray], cfg: dict) -> li
     if "cowp/witness/exists" in data:
         exists = np.asarray(data["cowp/witness/exists"], dtype=bool)
         mass = np.asarray(data.get("cowp/witness/natural_conflict_mass", np.zeros_like(exists, dtype=float)))
-        min_b = np.asarray(data.get("cowp/witness/min_safe_burden", np.zeros_like(exists, dtype=float)))
         opr = np.asarray(data.get("cowp/witness/opr", np.ones_like(exists, dtype=float)))
-        beta = np.asarray(data.get("cowp/natural/beta", np.ones(exists.shape[1]) * 0.65))
+        tail = data.get("cowp/witness/tail_burden_excess")
+        if tail is None:
+            min_b = np.asarray(data.get("cowp/witness/min_safe_burden", np.zeros_like(exists, dtype=float)))
+            beta = np.asarray(data.get("cowp/natural/beta", np.ones(exists.shape[1]) * 0.65))
+            tail = np.maximum(min_b - beta[None, :], 0.0)
+        else:
+            tail = np.asarray(tail)
         alpha_opr = float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
+        gamma = float(cfg.get("ncf", {}).get("gamma", 0.10))
+        delta = float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))
         for k, a in zip(*np.where(exists)):
-            if mass[k, a] < float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10)) - 1e-5:
+            if not mass[k, a] > delta - 1e-5:
                 errors.append(f"positive witness ({k},{a}) below conflict mass threshold")
-            if not (min_b[k, a] > beta[a] or opr[k, a] < alpha_opr):
-                errors.append(f"positive witness ({k},{a}) has neither high safe-response burden nor option collapse")
+            if not (tail[k, a] > gamma - 1e-5 or opr[k, a] < alpha_opr):
+                errors.append(f"positive witness ({k},{a}) has neither tail-burden excess nor option collapse")
     return errors

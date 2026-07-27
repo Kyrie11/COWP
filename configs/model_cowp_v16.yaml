@@ -34,6 +34,11 @@ model:
   natural_residual_envelope_floor_ratio: 0.10
   allow_label_only_state_fallback: false
   require_explicit_sdc_index: true
+planning:
+  set_transport_conflict_mass_floor: 0.10
+  set_transport_probability_floor: 0.02
+  set_transport_cvar_tail_mass: 0.25
+
 ablation:
   use_obs_branch: true
   use_neutral_branch: true

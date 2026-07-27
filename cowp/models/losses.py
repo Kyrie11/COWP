@@ -46,6 +46,184 @@ def _safe_float(x: torch.Tensor) -> torch.Tensor:
     return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _primitive_burden_targets(
+    batch: dict[str, torch.Tensor],
+    weights: dict[str, float],
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Recover paper-aligned primitive burden from v9-compatible caches.
+
+    Older caches folded option loss into burden component 4.  The manuscript
+    explicitly keeps option preservation outside B_prim, so training reconstructs
+    the primitive target from response labels (preferred) or by zeroing the
+    option component and renormalizing the five physical/normative weights.
+    """
+    comps = batch.get("cowp/witness/burden_components")
+    clean_comps = None
+    if comps is not None:
+        clean_comps = _safe_float(comps).clone()
+        if clean_comps.shape[-1] >= 5:
+            clean_comps[..., 4] = 0.0
+
+    response_b = batch.get("cowp/response/burden_total")
+    response_valid = batch.get("cowp/response/valid")
+    response_safe = batch.get("cowp/response/is_safe")
+    if response_b is not None and response_valid is not None and response_safe is not None:
+        safe = response_valid.bool() & response_safe.bool()
+        b = _safe_float(response_b).clamp(0.0, 2.0)
+        masked = torch.where(safe, b, torch.full_like(b, float("inf")))
+        best_idx = masked.argmin(dim=-1)
+        best = masked.amin(dim=-1)
+        best = torch.where(safe.any(dim=-1), best, torch.full_like(best, 2.0))
+        response_comps = batch.get("cowp/response/burden_components")
+        if response_comps is not None:
+            rc = _safe_float(response_comps)
+            gather_idx = best_idx[..., None, None].expand(*best_idx.shape, 1, rc.shape[-1])
+            clean_comps = torch.gather(rc, -2, gather_idx).squeeze(-2)
+            if clean_comps.shape[-1] >= 5:
+                clean_comps = clean_comps.clone()
+                clean_comps[..., 4] = 0.0
+        return best, clean_comps
+
+    if clean_comps is None:
+        total = batch.get("cowp/witness/burden_total")
+        return (_safe_float(total).clamp(0.0, 2.0) if total is not None else None), None
+
+    # Keep the manuscript's physical/normative coefficients unchanged.  The
+    # historical option coefficient remains in the normalization denominator,
+    # while its component is exactly zero; renormalizing the remaining five
+    # terms would silently increase primitive burden by 1/0.85.
+    w = torch.tensor(
+        [
+            float(weights.get("burden_weight_acc", 0.25)),
+            float(weights.get("burden_weight_jerk", 0.10)),
+            float(weights.get("burden_weight_progress", 0.20)),
+            float(weights.get("burden_weight_risk", 0.20)),
+            float(weights.get("burden_weight_option", 0.15)),
+            float(weights.get("burden_weight_norm", 0.10)),
+        ],
+        device=clean_comps.device,
+        dtype=clean_comps.dtype,
+    )
+    w = w[: clean_comps.shape[-1]]
+    w = w / w.sum().clamp_min(1.0e-6)
+    return (clean_comps[..., : w.numel()] * w).sum(dim=-1).clamp(0.0, 2.0), clean_comps
+
+
+def _weighted_upper_cvar_target(values: torch.Tensor, weights: torch.Tensor, tail_mass: float) -> torch.Tensor:
+    q = min(max(float(tail_mass), 1.0e-3), 1.0)
+    w = weights.clamp_min(0.0)
+    total = w.sum(dim=-1, keepdim=True)
+    w = w / total.clamp_min(1.0e-8)
+    v_sorted, order = values.sort(dim=-1, descending=True)
+    w_sorted = torch.gather(w, -1, order)
+    before = w_sorted.cumsum(dim=-1) - w_sorted
+    remaining = torch.relu(torch.as_tensor(q, device=w.device, dtype=w.dtype) - before)
+    take = torch.minimum(w_sorted, remaining)
+    out = (take * v_sorted).sum(dim=-1) / take.sum(dim=-1).clamp_min(1.0e-8)
+    return torch.where(total.squeeze(-1) > 1.0e-8, out, torch.zeros_like(out))
+
+
+def paper_aligned_supervision_batch(
+    batch: dict[str, torch.Tensor],
+    weights: dict[str, float],
+) -> dict[str, torch.Tensor]:
+    """Rebuild v16.6 certificate targets from v9 transport primitives.
+
+    This is a shallow-copy adapter: large tensors are not duplicated.  It makes
+    old augmented caches obey the manuscript's current equations without a full
+    WOMD rebuild: floor-smoothed transported OPR, conflict-conditioned same-root
+    CVaR burden, gamma-separated witness existence, and primitive burden with no
+    circular option component.
+    """
+    if float(weights.get("paper_aligned_witness_targets", 1.0)) <= 0.0:
+        return batch
+    required = (
+        "cowp/candidates/valid", "cowp/critical/valid",
+        "cowp/natural/weight", "cowp/natural/valid", "cowp/natural/beta",
+        "cowp/transport/mode_valid", "cowp/transport/mode_conflict",
+        "cowp/transport/mode_retained_low_safe",
+        "cowp/transport/response_root_index",
+        "cowp/response/valid", "cowp/response/is_safe",
+        "cowp/response/burden_total",
+    )
+    if not all(k in batch for k in required):
+        return batch
+
+    cand = batch["cowp/candidates/valid"].bool()
+    crit = batch["cowp/critical/valid"].bool()
+    pair = cand[:, :, None] & crit[:, None, :]
+    mode_valid = batch["cowp/transport/mode_valid"].bool() & pair[..., None]
+    mode_conflict = batch["cowp/transport/mode_conflict"].bool() & mode_valid
+    mode_retain = batch["cowp/transport/mode_retained_low_safe"].bool() & mode_valid
+    M = int(mode_valid.shape[-1])
+
+    nat_valid = batch["cowp/natural/valid"].bool()[..., :M]
+    p = _safe_float(batch["cowp/natural/weight"])[..., :M] * nat_valid.float()
+    p = p / p.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+    eps_p = min(max(float(weights.get("set_transport_probability_floor", 0.02)), 0.0), 0.25)
+    valid_count = nat_valid.float().sum(dim=-1, keepdim=True).clamp_min(1.0)
+    p = ((1.0 - eps_p) * p + eps_p * nat_valid.float() / valid_count) * nat_valid.float()
+    p_pair = p[:, None, :, :].expand_as(mode_valid.float())
+    conflict_mass = (p_pair * mode_conflict.float()).sum(dim=-1).clamp(0.0, 1.0)
+    opr = (p_pair * mode_retain.float()).sum(dim=-1).clamp(0.0, 1.0)
+
+    response_valid = batch["cowp/response/valid"].bool()
+    response_safe = batch["cowp/response/is_safe"].bool()
+    safe = response_valid & response_safe & pair[..., None]
+    response_b = _safe_float(batch["cowp/response/burden_total"]).clamp(0.0, 2.0)
+    root_idx = batch["cowp/transport/response_root_index"].long().clamp(0, max(M - 1, 0))
+    root_axis = torch.arange(M, device=root_idx.device).view(*([1] * root_idx.ndim), M)
+    same_root = safe[..., None] & (root_idx[..., None] == root_axis)
+    root_values = torch.where(
+        same_root,
+        response_b[..., None],
+        torch.full((*response_b.shape, M), float("inf"), device=response_b.device, dtype=response_b.dtype),
+    )
+    root_min = root_values.amin(dim=-2)
+    root_min = torch.where(same_root.any(dim=-2), root_min, torch.full_like(root_min, 2.0))
+
+    beta = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
+    root_excess = torch.relu(root_min - beta)
+    tail = _weighted_upper_cvar_target(
+        root_excess,
+        p_pair * mode_conflict.float(),
+        float(weights.get("set_transport_cvar_tail_mass", 0.25)),
+    )
+    delta = float(weights.get("witness_conflict_mass_floor", 0.10))
+    gamma = float(weights.get("witness_burden_gamma", 0.10))
+    alpha = float(weights.get("witness_opr_alpha", weights.get("priority_claim_opr_alpha", 0.35)))
+    exists = pair & (conflict_mass > delta) & ((tail > gamma) | (opr < alpha))
+
+    primitive_total, primitive_comps = _primitive_burden_targets(batch, weights)
+    out = dict(batch)
+    old_exists = batch.get("cowp/witness/exists")
+    out["cowp/witness/explanation_valid"] = exists & (
+        _binary_target(old_exists) > 0.5 if old_exists is not None else exists
+    )
+    out["cowp/witness/exists"] = exists
+    out["cowp/witness/opr"] = opr
+    out["cowp/witness/natural_conflict_mass"] = conflict_mass
+    out["cowp/witness/tail_burden_excess"] = tail
+    out["cowp/witness/c_i"] = tail
+    out["cowp/witness/root_min_safe_burden"] = root_min
+    if primitive_total is not None:
+        out["cowp/witness/burden_total"] = primitive_total
+        out["cowp/witness/min_safe_burden"] = primitive_total
+    if primitive_comps is not None:
+        out["cowp/witness/burden_components"] = primitive_comps
+
+    conventional = batch.get("cowp/candidates/conventional_safe")
+    if conventional is not None:
+        conventional_b = conventional.bool() & cand
+        false_safe = conventional_b & (exists & crit[:, None, :]).any(dim=-1)
+        pair_good = (tail <= gamma) & (opr >= alpha)
+        pair_good = pair_good | ~crit[:, None, :]
+        ncf = conventional_b & pair_good.all(dim=-1)
+        out["cowp/candidates/false_safe"] = false_safe
+        out["cowp/candidates/noncoercive_feasible"] = ncf
+    return out
+
+
 def _safe_velocity_atan2(y: torch.Tensor, x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
     """Avoid the undefined backward derivative of atan2 at zero speed."""
     finite = torch.isfinite(x) & torch.isfinite(y)
@@ -1029,24 +1207,47 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         + float(weights.get("witness_balanced_fraction", 0.65)) * balanced
     )
     pos_mask = pair_mask & (y > 0.5)
-    if pos_mask.any():
+    explanation_mask = pos_mask
+    if "cowp/witness/explanation_valid" in batch:
+        explanation_mask = explanation_mask & batch["cowp/witness/explanation_valid"].bool()
+
+    if explanation_mask.any():
         token_target = torch.nan_to_num(
             batch["cowp/witness/token"].float(),
             nan=0.0,
             posinf=0.0,
             neginf=0.0,
         ).long().clamp(0, pred["token_logits"].shape[-1] - 1)
-        token = F.cross_entropy(_safe_float(pred["token_logits"])[pos_mask], token_target[pos_mask], reduction="mean")
-        burden = F.smooth_l1_loss(_safe_float(pred["burden_total"])[pos_mask], _safe_float(batch["cowp/witness/burden_total"])[pos_mask], reduction="mean")
-        interval = F.smooth_l1_loss(_safe_float(pred["conflict_interval"])[pos_mask], _safe_float(batch["cowp/witness/conflict_interval"])[pos_mask], reduction="mean")
+        token = F.cross_entropy(
+            _safe_float(pred["token_logits"])[explanation_mask],
+            token_target[explanation_mask],
+            reduction="mean",
+        )
+        interval = F.smooth_l1_loss(
+            _safe_float(pred["conflict_interval"])[explanation_mask],
+            _safe_float(batch["cowp/witness/conflict_interval"])[explanation_mask],
+            reduction="mean",
+        )
+    else:
+        token = _zero_like_loss(pred["exist_logits"])
+        interval = _zero_like_loss(pred["exist_logits"])
+
+    if pos_mask.any():
+        burden = F.smooth_l1_loss(
+            _safe_float(pred["burden_total"])[pos_mask],
+            _safe_float(batch["cowp/witness/burden_total"])[pos_mask],
+            reduction="mean",
+        )
         if "cowp/witness/burden_components" in batch and "burden_components" in pred:
-            comps = F.smooth_l1_loss(_safe_float(pred["burden_components"])[pos_mask], _safe_float(batch["cowp/witness/burden_components"])[pos_mask], reduction="mean")
+            comps = F.smooth_l1_loss(
+                _safe_float(pred["burden_components"])[pos_mask],
+                _safe_float(batch["cowp/witness/burden_components"])[pos_mask],
+                reduction="mean",
+            )
         else:
             comps = _zero_like_loss(pred["exist_logits"])
     else:
-        token = _zero_like_loss(pred["exist_logits"])
         burden = _zero_like_loss(pred["exist_logits"])
-        interval = _zero_like_loss(pred["exist_logits"])
         comps = _zero_like_loss(pred["exist_logits"])
     opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair_mask)
     ci = masked_mean(torch.abs(_safe_float(pred["c_i"]) - _safe_float(batch["cowp/witness/c_i"])), pair_mask)
@@ -1556,7 +1757,21 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     )
     opr = masked_mean(torch.abs(_safe_float(pred["opr"]) - _binary_target(batch["cowp/witness/opr"])), pair)
     burden_target = _safe_float(batch["cowp/witness/burden_total"]).clamp(0.0, 2.0)
-    burden = masked_mean(torch.abs(_safe_float(pred["min_safe_burden"]).clamp(0.0, 2.0) - burden_target), pair)
+    burden = masked_mean(
+        torch.abs(_safe_float(pred["min_safe_burden"]).clamp(0.0, 2.0) - burden_target),
+        pair,
+    )
+    tail_target = batch.get("cowp/witness/tail_burden_excess")
+    if tail_target is not None and "tail_burden_excess" in pred:
+        tail_burden = masked_mean(
+            torch.abs(
+                _safe_float(pred["tail_burden_excess"]).clamp(0.0, 2.0)
+                - _safe_float(tail_target).clamp(0.0, 2.0)
+            ),
+            pair,
+        )
+    else:
+        tail_burden = _zero_like_loss(pred)
 
     conflict_target = batch.get("cowp/witness/natural_conflict_mass")
     if conflict_target is None:
@@ -1760,6 +1975,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         float(weights.get("set_transport_witness", 2.0)) * witness
         + float(weights.get("set_transport_opr", 1.0)) * opr
         + float(weights.get("set_transport_burden", 0.75)) * burden
+        + float(weights.get("set_transport_tail_burden", 1.0)) * tail_burden
         + float(weights.get("set_transport_conflict", 1.0)) * conflict
         + float(weights.get("set_transport_source", 0.75)) * source
         + float(weights.get("set_transport_response_exist", 0.5)) * response
@@ -1773,7 +1989,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     )
     return {
         "loss": total, "witness": witness, "opr": opr, "burden": burden,
-        "conflict": conflict, "source": source, "response": response,
+        "tail_burden": tail_burden, "conflict": conflict, "source": source, "response": response,
         "mode_conflict": mode_conflict, "mode_retain": mode_retain,
         "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
         "response_root_aux": response_root_aux, "root_recovery": root_recovery,

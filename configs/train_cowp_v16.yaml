@@ -57,6 +57,13 @@ loss_weights:
   witness_candidate_false_safe: 0.75
   witness_candidate_ncf: 0.5
   witness_opr_consistency_tau: 0.08
+  # v16.6 paper-aligned online target reconstruction for reused v9 caches.
+  paper_aligned_witness_targets: 1.0
+  witness_conflict_mass_floor: 0.10
+  witness_burden_gamma: 0.10
+  witness_opr_alpha: 0.35
+  set_transport_probability_floor: 0.02
+  set_transport_cvar_tail_mass: 0.25
   witness_evidential: 0.05
   witness_evidence_kl: 0.01
   planner_witness_scale: 0.05
@@ -106,6 +113,7 @@ loss_weights:
   set_transport_witness: 2.0
   set_transport_opr: 1.25
   set_transport_burden: 0.75
+  set_transport_tail_burden: 1.0
   set_transport_conflict: 1.0
   set_transport_source: 0.75
   set_transport_response_exist: 0.75
