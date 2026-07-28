@@ -6,6 +6,39 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 SOURCE_NATURAL_ROOT="${SOURCE_NATURAL_ROOT:-outputs/cowp_v16_6_natural_recovery_v9labels_seed2026}"
 ATTR_GATE="${ATTR_GATE:-outputs/cowp_v16_6_natural_attribution_aligned_v9labels_seed2026/natural_component_attribution_gate.json}"
 export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_7_mechanism_v9labels_seed2026}"
+export SOURCE_NATURAL_ROOT ATTR_GATE OUT_ROOT
+
+# Detach at the outermost mechanism wrapper so gate validation, provenance,
+# training and evaluation all survive an SSH/terminal disconnect.  The child
+# keeps one append-only driver log and a PID file under this OUT_ROOT.
+export BACKGROUND="${BACKGROUND:-1}"
+if [[ "$BACKGROUND" == "1" && "${COWP_V16_7_MECHANISM_BACKGROUND_CHILD:-0}" != "1" ]]; then
+  mkdir -p "$OUT_ROOT/logs"
+  driver_log="$OUT_ROOT/logs/driver.nohup.log"
+  pid_file="$OUT_ROOT/logs/driver.pid"
+  if [[ -s "$pid_file" ]]; then
+    old_pid="$(cat "$pid_file")"
+    if kill -0 "$old_pid" 2>/dev/null; then
+      echo "[cowp_v16.7] already running pid=$old_pid"
+      echo "[cowp_v16.7] log=$driver_log"
+      exit 0
+    fi
+  fi
+  printf '\n===== launch %s =====\n' "$(date -Is)" >> "$driver_log"
+  nohup env \
+    BACKGROUND=0 \
+    COWP_V16_7_MECHANISM_BACKGROUND_CHILD=1 \
+    SOURCE_NATURAL_ROOT="$SOURCE_NATURAL_ROOT" \
+    ATTR_GATE="$ATTR_GATE" \
+    OUT_ROOT="$OUT_ROOT" \
+    bash "$0" >> "$driver_log" 2>&1 < /dev/null &
+  pid=$!
+  printf '%s\n' "$pid" > "$pid_file"
+  echo "[cowp_v16.7] background pid=$pid"
+  echo "[cowp_v16.7] log=$driver_log"
+  exit 0
+fi
+
 NAT_BASIS_GATE="$SOURCE_NATURAL_ROOT/eval/learned_offline/natural_basis_gate.json"
 NAT_EFFECT_GATE="$SOURCE_NATURAL_ROOT/eval/learned_offline/natural_effectiveness_gate.json"
 MAIN_REPORT="$SOURCE_NATURAL_ROOT/eval/learned_offline/learned_natural_effectiveness.json"
@@ -103,12 +136,13 @@ export RUN_OFFLINE=1
 export RUN_PROBE=0
 export RUN_FULL=0
 export FORCE_TRAIN="${FORCE_TRAIN:-1}"
+export AUTO_RESUME="${AUTO_RESUME:-1}"
 export FORCE_EVAL="${FORCE_EVAL:-1}"
 export FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-0}"
 export REQUIRE_INIT_CKPT=0
 export REQUIRE_WAYMAX_PREFLIGHT=0
 export ALLOW_QUALITY_GATE_FAILURE=0
-export BACKGROUND="${BACKGROUND:-0}"
+export BACKGROUND="${BACKGROUND:-1}"
 
 # The reported failure happens before any v16.7 transport/planner checkpoint is
 # written, but the strict provenance manifest has already been created.  Permit
