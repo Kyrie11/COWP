@@ -47,14 +47,51 @@ def _typed_pairwise(pred: torch.Tensor, gt: torch.Tensor, gt_source: torch.Tenso
 
 
 def _load_checkpoint(model: COWPModel, path: str, device: torch.device) -> dict:
-    ckpt = torch.load(path, map_location=device)
-    state = ckpt.get("model", ckpt)
+    """Load the checkpoint components that are actually used by this diagnosis.
+
+    The learned-natural diagnostic executes ``stage=natural``.  Consequently its
+    numerical result depends on the scene graph and natural decoder, but not on
+    response, witness, transport, candidate-certificate, or planner heads.
+
+    v16.7 intentionally added new monotone transport parameters while the
+    mechanism-only launcher reuses a validated v16.6 natural checkpoint.  Treating
+    those newly introduced, unused downstream parameters as a fatal mismatch makes
+    the supported cross-version warm start impossible.  We therefore remain strict
+    for every graph/natural key and only initialize mismatched downstream-only keys
+    from the current configuration.
+    """
+    try:
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:  # PyTorch < 2.6
+        ckpt = torch.load(path, map_location=device)
+    state = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Checkpoint {path} does not contain a model state_dict")
+
+    # Checkpoints produced through torch.compile may carry this wrapper prefix.
+    if state and all(str(k).startswith("_orig_mod.") for k in state):
+        state = {str(k)[len("_orig_mod."):]: v for k, v in state.items()}
+
     result = model.load_state_dict(state, strict=False)
     missing = [k for k in result.missing_keys if not k.endswith("num_batches_tracked")]
     unexpected = list(result.unexpected_keys)
-    if missing or unexpected:
+    required_prefixes = ("graph.", "natural_decoder.")
+    required_missing = [k for k in missing if k.startswith(required_prefixes)]
+    required_unexpected = [k for k in unexpected if k.startswith(required_prefixes)]
+    if required_missing or required_unexpected:
         raise RuntimeError(
-            f"Checkpoint/config mismatch for learned-natural diagnosis: missing={missing[:20]}, unexpected={unexpected[:20]}"
+            "Checkpoint/config mismatch in learned-natural dependencies: "
+            f"missing={required_missing[:20]}, unexpected={required_unexpected[:20]}"
+        )
+
+    ignored_missing = [k for k in missing if k not in required_missing]
+    ignored_unexpected = [k for k in unexpected if k not in required_unexpected]
+    if ignored_missing or ignored_unexpected:
+        print(
+            "Learned-natural checkpoint compatibility: initialized/ignored "
+            f"downstream-only parameters; missing={ignored_missing[:20]}, "
+            f"unexpected={ignored_unexpected[:20]}",
+            flush=True,
         )
     return ckpt if isinstance(ckpt, dict) else {}
 
