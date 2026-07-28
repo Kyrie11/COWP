@@ -5,24 +5,6 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
-## v16.7.1 — Checkpoint Migration and Online-Continuation Hotfix
-
-- Fixed `39_diagnose_learned_natural.py` rejecting the validated v16.6 natural
-  checkpoint solely because v16.7 added seven downstream `set_transport` calibration
-  parameters.  The diagnostic now permits exactly those seven unused keys while
-  remaining strict for the graph and natural decoder.
-- Added explicit checkpoint hand-off policies: v16.6 natural -> v16.7 transport permits
-  only the seven audited additions; transport -> planner is exact and stage-checked.
-- Added an exact final planner checkpoint validator before learned-offline or Waymax
-  evaluation, preventing silent random initialization during paper-facing evaluation.
-- Made the launcher dependency-aware.  `NEXT_RUN_COMMANDS_V16_7_FULL_CN.sh` now performs
-  an online-only continuation from the gated v16.7 planner checkpoint and no longer
-  reloads the external v16.6 natural checkpoint/history.
-- A failed pre-training run may amend its provenance manifest for this hotfix only when
-  no transport/planner checkpoint exists.  Existing trained roots remain protected.
-- Regression status: 142 tests passed; all Python modules compile; all shell launchers
-  pass `bash -n`.
-
 ## v16.7 — Priority-Aware Mechanism Repair, Monotone Certification, and Paper-Grade Closed-Loop Protocol
 
 ### Evidence from the uploaded v16.6 run

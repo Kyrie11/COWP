@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT="${COWP_CODE_ROOT:-$(cd "$(dirname "$0")" && pwd)}"
 cd "$ROOT"
-export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_3_natural_recovery_v9labels_seed2026}"
+export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_4_natural_recovery_v9labels_seed2026}"
 export FORCE_TRAIN="${FORCE_TRAIN:-1}"
 export FORCE_EVAL="${FORCE_EVAL:-1}"
 export NATURAL_AMP=0
@@ -19,15 +19,14 @@ export RUN_FULL=0
 export ALLOW_QUALITY_GATE_FAILURE=0
 export BACKGROUND="${BACKGROUND:-1}"
 
-# The previous run failed before epoch 0 completed, but it already wrote the
-# strict code-signature manifest.  A numerical code repair changes that hash.
-# Keep the same OUT_ROOT and preserve the old manifest as an audit backup; only
-# rotate it when no completed natural history exists.
+# A fresh v16.4 output root is required.  If a prior v16.4 launch was interrupted
+# before writing any natural history, preserve its provenance manifest as an audit
+# backup so the repaired/relaunched run can recreate a consistent manifest.
 PROVENANCE="$OUT_ROOT/configs/run_provenance.json"
 NATURAL_HISTORY="$OUT_ROOT/checkpoints/natural/history_natural.json"
 if [[ -s "$PROVENANCE" && ! -s "$NATURAL_HISTORY" ]]; then
   stamp="$(date +%Y%m%d_%H%M%S)"
-  mv "$PROVENANCE" "${PROVENANCE}.failed_before_numeric_fix.${stamp}.bak"
+  mv "$PROVENANCE" "${PROVENANCE}.interrupted_before_natural_history.${stamp}.bak"
 fi
 
-exec bash "$ROOT/NEXT_RUN_COMMANDS_V16_3_CN.sh"
+exec bash "$ROOT/NEXT_RUN_COMMANDS_V16_4_CN.sh"
