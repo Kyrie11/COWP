@@ -33,6 +33,23 @@ ALLOW_QUALITY_GATE_FAILURE="${ALLOW_QUALITY_GATE_FAILURE:-0}"  # engineering smo
 DETACH="${DETACH:-0}"
 STOP_AFTER_STAGE="${STOP_AFTER_STAGE:-none}"  # none|diagnose|natural|transport|planner|offline|probe
 
+# Compute the minimal stage dependency graph.  An online-only continuation
+# (RUN_PROBE/RUN_FULL with all training/offline flags disabled) must not reload
+# the external v16.6 natural checkpoint; it consumes only the already-gated
+# v16.7 planner checkpoint and calibration under the same OUT_ROOT.
+NEED_NATURAL_PIPELINE=0
+if [[ "$RUN_NATURAL" == "1" || "$RUN_TRANSPORT" == "1" || "$RUN_PLANNER" == "1" || "$RUN_OFFLINE" == "1" ]]; then
+  NEED_NATURAL_PIPELINE=1
+fi
+NEED_TRANSPORT_CHECKPOINT=0
+if [[ "$RUN_TRANSPORT" == "1" || "$RUN_PLANNER" == "1" || "$RUN_OFFLINE" == "1" ]]; then
+  NEED_TRANSPORT_CHECKPOINT=1
+fi
+NEED_PLANNER_CHECKPOINT=0
+if [[ "$RUN_PLANNER" == "1" || "$RUN_OFFLINE" == "1" || "$RUN_PROBE" == "1" || "$RUN_FULL" == "1" ]]; then
+  NEED_PLANNER_CHECKPOINT=1
+fi
+
 AUG_TRAIN_WORKERS="${AUG_TRAIN_WORKERS:-12}"
 AUG_VAL_WORKERS="${AUG_VAL_WORKERS:-6}"
 AUG_CHUNKSIZE="${AUG_CHUNKSIZE:-2}"
@@ -119,7 +136,16 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
 
 # Never mix checkpoints/evaluations produced by different code or config states
 # under one OUT_ROOT. Logical file names keep the signature stable while the
-# candidate configs live in a temporary directory.
+# candidate configs live in a temporary directory.  A failed pre-training run
+# may be resumed after an explicit compatibility hotfix; the old manifest is
+# preserved and an amendment is written by 42_write_run_provenance.
+provenance_resume_args=()
+if [[ "${ALLOW_COMPATIBLE_RESUME:-0}" == "1" ]]; then
+  provenance_resume_args=(
+    --allow-compatible-resume
+    --resume-reason "${PROVENANCE_RESUME_REASON:-v16.7 checkpoint-compatibility hotfix before transport training}"
+  )
+fi
 "$PYTHON_BIN" -u -m cowp.scripts.42_write_run_provenance \
   --output "$OUT_ROOT/configs/run_provenance.json" --strict-existing \
   --data-protocol "$DATA_PROTOCOL" \
@@ -134,11 +160,14 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
   --file "cowp/models/cowp_model.py=cowp/models/cowp_model.py" \
   --file "cowp/models/set_transport_head.py=cowp/models/set_transport_head.py" \
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \
+  --file "cowp/scripts/39_diagnose_learned_natural.py=cowp/scripts/39_diagnose_learned_natural.py" \
+  --file "cowp/scripts/45_validate_checkpoint_compatibility.py=cowp/scripts/45_validate_checkpoint_compatibility.py" \
   --file "cowp/scripts/25_verify_mechanism_effect.py=cowp/scripts/25_verify_mechanism_effect.py" \
   --file "cowp/scripts/31_calibrate_bcot_budget.py=cowp/scripts/31_calibrate_bcot_budget.py" \
   --file "cowp/waymax_eval/rollout.py=cowp/waymax_eval/rollout.py" \
   --file "cowp/waymax_eval/policy_wrapper.py=cowp/waymax_eval/policy_wrapper.py" \
-  --file "run_cowp_v16_7_dual_gpu.sh=$0" | tee "$OUT_ROOT/logs/run_provenance.log"
+  --file "run_cowp_v16_7_dual_gpu.sh=$0" \
+  "${provenance_resume_args[@]}" | tee "$OUT_ROOT/logs/run_provenance.log"
 
 # Provenance passed: only now publish the canonical copied configs.
 cp "$CONFIG_CANDIDATE_DIR/model_cowp_v16.yaml" "$OUT_ROOT/configs/model_cowp_v16.yaml"
@@ -369,6 +398,7 @@ best_planner() {
   return 1
 }
 
+if [[ "$NEED_NATURAL_PIPELINE" == "1" ]]; then
 # Stage 0: repair the natural-option basis while preserving the initialized scene encoder.
 # Root-indexed transport is not identifiable when the natural trajectories drift by
 # tens of metres, so this stage is a hard prerequisite rather than an optional auxiliary.
@@ -454,39 +484,49 @@ if [[ "$STOP_AFTER_STAGE" == "natural" ]]; then
   exit 0
 fi
 
-# Stage 1: learn explicit mode conflict/retention and same-root response recovery.
-# Stage 0 has already validated NATURAL_CKPT.  Do not re-check INIT_CKPT here:
-# users may legitimately skip natural training and supply a standalone repaired
-# natural checkpoint.
-if [[ "$RUN_TRANSPORT" == "1" ]]; then
-  if best_transport >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
-    echo "[transport] keep existing $(best_transport)"
-  else
-    resume_args=()
-    [[ -s "$NATURAL_CKPT" ]] && resume_args=(--resume "$NATURAL_CKPT")
-    mapfile -t transport_amp_args < <(amp_args "$TRANSPORT_AMP")
-    logrun train_transport_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
-      "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
-      --data-config configs/data.yaml --model-config "$MODEL_CFG" \
-      --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
-      --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
-      --stage witness --epochs "$TRANSPORT_EPOCHS" --batch-size "$BATCH_PER_GPU" \
-      --lr "$TRANSPORT_LR" --num-workers "$TRANSPORT_NUM_WORKERS" --prefetch-factor "$TRANSPORT_PREFETCH_FACTOR" \
-      --val-num-workers "$TRANSPORT_VAL_NUM_WORKERS" --val-prefetch-factor "$TRANSPORT_VAL_PREFETCH_FACTOR" \
-      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
-      --device cuda --output-dir "$OUT_ROOT/checkpoints/transport" \
-      --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
-      --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
-      --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
-      --no-positive-oversampling --no-response-traj --no-response-components \
-      --fused-adamw "${transport_amp_args[@]}" "${resume_args[@]}"
-  fi
+else
+  echo "[natural] skipped: online-only continuation reuses the already-passed mechanism gate under $OUT_ROOT"
 fi
-if [[ -z "$TRANSPORT_CKPT" ]]; then TRANSPORT_CKPT="$(best_transport || true)"; fi
-[[ -s "$TRANSPORT_CKPT" ]] || { echo "No transport checkpoint. Set TRANSPORT_CKPT or enable RUN_TRANSPORT." >&2; exit 2; }
-if [[ "$STOP_AFTER_STAGE" == "transport" ]]; then
-  echo "[cowp_v16.7] stopped after transport: $OUT_ROOT"
-  exit 0
+
+if [[ "$NEED_TRANSPORT_CHECKPOINT" == "1" ]]; then
+  # Stage 1: learn explicit mode conflict/retention and same-root response recovery.
+  # Stage 0 has already validated NATURAL_CKPT.  Do not re-check INIT_CKPT here:
+  # users may legitimately skip natural training and supply a standalone repaired
+  # natural checkpoint.
+  if [[ "$RUN_TRANSPORT" == "1" ]]; then
+    if best_transport >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
+      echo "[transport] keep existing $(best_transport)"
+    else
+      resume_args=()
+      [[ -s "$NATURAL_CKPT" ]] && resume_args=(--resume "$NATURAL_CKPT")
+      mapfile -t transport_amp_args < <(amp_args "$TRANSPORT_AMP")
+      logrun train_transport_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
+        "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
+        --data-config configs/data.yaml --model-config "$MODEL_CFG" \
+        --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
+        --cache-dir "$TRAIN_CACHE" --val-cache-dir "$VAL_CACHE" \
+        --stage witness --epochs "$TRANSPORT_EPOCHS" --batch-size "$BATCH_PER_GPU" \
+        --lr "$TRANSPORT_LR" --num-workers "$TRANSPORT_NUM_WORKERS" --prefetch-factor "$TRANSPORT_PREFETCH_FACTOR" \
+        --val-num-workers "$TRANSPORT_VAL_NUM_WORKERS" --val-prefetch-factor "$TRANSPORT_VAL_PREFETCH_FACTOR" \
+        --sharing-strategy "$TORCH_SHARING_STRATEGY" \
+        --device cuda --output-dir "$OUT_ROOT/checkpoints/transport" \
+        --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
+        --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
+        --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
+        --no-positive-oversampling --no-response-traj --no-response-components \
+        --fused-adamw --checkpoint-load-policy v16_7_natural_to_transport --expected-resume-stage natural \
+        "${transport_amp_args[@]}" "${resume_args[@]}"
+    fi
+  fi
+  if [[ -z "$TRANSPORT_CKPT" ]]; then TRANSPORT_CKPT="$(best_transport || true)"; fi
+  [[ -s "$TRANSPORT_CKPT" ]] || { echo "No transport checkpoint. Set TRANSPORT_CKPT or enable RUN_TRANSPORT." >&2; exit 2; }
+  if [[ "$STOP_AFTER_STAGE" == "transport" ]]; then
+    echo "[cowp_v16.7] stopped after transport: $OUT_ROOT"
+    exit 0
+  fi
+
+else
+  echo "[transport] skipped: online-only continuation uses the final planner checkpoint"
 fi
 
 # Stage 2: train planner/candidate shields without rewriting the transport backbone.
@@ -509,12 +549,20 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
       --lr-scheduler plateau --min-lr 1e-6 --save-every 2 \
       --no-positive-oversampling --no-response-traj --no-response-components \
-      --fused-adamw "${planner_amp_args[@]}" --resume "$TRANSPORT_CKPT"
+      --fused-adamw "${planner_amp_args[@]}" --checkpoint-load-policy strict \
+      --expected-resume-stage witness --resume "$TRANSPORT_CKPT"
   fi
 fi
-if [[ -z "$CKPT" ]]; then CKPT="$(best_planner || true)"; fi
-[[ -s "$CKPT" ]] || { echo "No v15 planner checkpoint. Set CKPT or enable RUN_PLANNER." >&2; exit 2; }
-echo "[checkpoint] $CKPT"
+if [[ "$NEED_PLANNER_CHECKPOINT" == "1" ]]; then
+  if [[ -z "$CKPT" ]]; then CKPT="$(best_planner || true)"; fi
+  [[ -s "$CKPT" ]] || { echo "No v16.7 planner checkpoint. Set CKPT or enable RUN_PLANNER." >&2; exit 2; }
+  echo "[checkpoint] $CKPT"
+  logrun validate_planner_checkpoint "$PYTHON_BIN" -u -m cowp.scripts.45_validate_checkpoint_compatibility \
+    --checkpoint "$CKPT" --expected-stage planner \
+    --data-config configs/data.yaml --model-config "$MODEL_CFG" \
+    --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
+    --output "$OUT_ROOT/eval/planner_checkpoint_compatibility.json"
+fi
 if [[ "$STOP_AFTER_STAGE" == "planner" ]]; then
   echo "[cowp_v16.7] stopped after planner: $OUT_ROOT"
   exit 0

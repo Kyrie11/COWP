@@ -48,7 +48,7 @@ export NATURAL_HISTORY="$SOURCE_NATURAL_ROOT/checkpoints/natural/history_natural
 # earlier checkpoint epoch; that is valid development evidence for the same
 # architecture, but it is not silently treated as exact-checkpoint paper proof.
 mkdir -p "$OUT_ROOT/configs"
-"$PYTHON_BIN" - "$NATURAL_CKPT" "$MAIN_REPORT" "$ATTR_GATE" "$OUT_ROOT/configs/natural_attribution_transfer_manifest.json" <<'PY'
+"$PYTHON_BIN" - "$NATURAL_CKPT" "$NATURAL_HISTORY" "$MAIN_REPORT" "$ATTR_GATE" "$OUT_ROOT/configs/natural_attribution_transfer_manifest.json" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
 
@@ -59,7 +59,7 @@ def sha256(path):
             h.update(chunk)
     return h.hexdigest()
 
-ckpt,report_path,attr_path,out_path=map(Path,sys.argv[1:])
+ckpt,history_path,report_path,attr_path,out_path=map(Path,sys.argv[1:])
 report=json.loads(report_path.read_text(encoding='utf-8'))
 attr=json.loads(attr_path.read_text(encoding='utf-8'))
 selected_epoch=int(report.get('checkpoint_epoch',-1))
@@ -72,6 +72,8 @@ payload={
     'schema_version':'cowp_natural_attribution_transfer_v1',
     'natural_checkpoint':str(ckpt),
     'natural_checkpoint_sha256':sha256(ckpt),
+    'natural_history':str(history_path),
+    'natural_history_sha256':sha256(history_path),
     'natural_effectiveness_report':str(report_path),
     'natural_selected_epoch':selected_epoch,
     'attribution_gate':str(attr_path),
@@ -107,4 +109,16 @@ export REQUIRE_INIT_CKPT=0
 export REQUIRE_WAYMAX_PREFLIGHT=0
 export ALLOW_QUALITY_GATE_FAILURE=0
 export BACKGROUND="${BACKGROUND:-0}"
+
+# The reported failure happens before any v16.7 transport/planner checkpoint is
+# written, but the strict provenance manifest has already been created.  Permit
+# this specific pre-training hotfix to amend (not overwrite) provenance so the
+# user's original OUT_ROOT can be resumed safely.  Once a downstream checkpoint
+# exists, signature changes remain blocked by default.
+if [[ -s "$OUT_ROOT/configs/run_provenance.json" \
+      && ! -s "$OUT_ROOT/checkpoints/transport/cowp_witness_best.pt" \
+      && ! -s "$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt" ]]; then
+  export ALLOW_COMPATIBLE_RESUME="${ALLOW_COMPATIBLE_RESUME:-1}"
+  export PROVENANCE_RESUME_REASON="${PROVENANCE_RESUME_REASON:-v16.7 checkpoint migration and dynamic-DDP hotfix before transport training}"
+fi
 exec bash "$ROOT/NEXT_RUN_COMMANDS_V16_7_CN.sh"

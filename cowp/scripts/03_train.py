@@ -929,18 +929,106 @@ def _model_state_dict_for_save(model: torch.nn.Module) -> dict[str, torch.Tensor
     return model.state_dict()
 
 
+_V16_7_NATURAL_TO_TRANSPORT_ALLOWED_MISSING = frozenset({
+    "set_transport.candidate_risk_raw_weight",
+    "set_transport.candidate_risk_threshold_logit",
+    "set_transport.candidate_risk_log_scale",
+    "set_transport.global_risk_raw_weight",
+    "set_transport.global_risk_threshold_logit",
+    "set_transport.global_risk_log_scale",
+    "set_transport.pair_deficit_raw_weight",
+})
+
+
+def _normalized_checkpoint_state(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if state and all(str(k).startswith("_orig_mod.") for k in state):
+        return {str(k)[len("_orig_mod."):]: v for k, v in state.items()}
+    return state
+
+
+def _strict_checkpoint_load(
+    model: torch.nn.Module,
+    state: dict[str, torch.Tensor],
+    *,
+    allowed_missing: frozenset[str] = frozenset(),
+    reset_prefixes: tuple[str, ...] = (),
+) -> dict[str, list[str]]:
+    """Load a checkpoint with an explicit, auditable migration allow-list.
+
+    Unlike the legacy compatible loader, this rejects shape mismatches and
+    unexpected keys.  It is used for v16.7 stage hand-offs, where silently
+    randomizing a natural or transport parameter would invalidate the mechanism
+    experiment.
+    """
+    state = _normalized_checkpoint_state(state)
+    model_state = model.state_dict()
+    prefixes = tuple(p.strip().rstrip(".") for p in reset_prefixes if p and p.strip())
+
+    def reset_key(key: str) -> bool:
+        return any(key == p or key.startswith(p + ".") for p in prefixes)
+
+    filtered = {k: v for k, v in state.items() if not reset_key(str(k))}
+    shape_mismatch = sorted(
+        k for k, v in filtered.items()
+        if k in model_state and tuple(model_state[k].shape) != tuple(v.shape)
+    )
+    unexpected = sorted(k for k in filtered if k not in model_state)
+    compatible = {
+        k: v for k, v in filtered.items()
+        if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)
+    }
+    reset_missing = {k for k in model_state if reset_key(k)}
+    missing = sorted(set(model_state) - set(compatible) - reset_missing)
+    benign_missing = sorted(k for k in missing if k.endswith("num_batches_tracked"))
+    allowed_initialized = sorted(k for k in missing if k in allowed_missing)
+    disallowed_missing = sorted(set(missing) - set(benign_missing) - set(allowed_initialized))
+    if shape_mismatch or unexpected or disallowed_missing:
+        raise RuntimeError(
+            "Strict checkpoint migration failed: "
+            f"missing={disallowed_missing[:20]}, shape_mismatch={shape_mismatch[:20]}, "
+            f"unexpected={unexpected[:20]}, allowed_initialized={allowed_initialized[:20]}"
+        )
+    model.load_state_dict(compatible, strict=False)
+    if allowed_initialized:
+        print(
+            "Strict checkpoint migration initialized approved v16.7 keys: "
+            f"{allowed_initialized}"
+        )
+    if reset_missing:
+        print(f"Explicitly reinitialized {len(reset_missing)} checkpoint keys under prefixes={prefixes}")
+    return {
+        "allowed_initialized_keys": allowed_initialized,
+        "reset_keys": sorted(reset_missing),
+        "benign_missing_keys": benign_missing,
+        "shape_mismatch_keys": shape_mismatch,
+        "unexpected_keys": unexpected,
+    }
+
+
 def _load_model_state_robust(
     model: torch.nn.Module,
     state: dict[str, torch.Tensor],
     *,
     reset_prefixes: tuple[str, ...] = (),
-) -> None:
+    policy: str = "compatible",
+) -> dict[str, list[str]]:
     """Load compatible weights while explicitly reinitializing selected modules.
 
     Cross-version natural warm starts are unsafe when mode identities or decoder
     parameterization changed.  ``reset_prefixes=("natural_decoder",)`` keeps the
     pretrained scene graph but guarantees a fresh typed option basis.
     """
+    policy = str(policy).lower()
+    if policy == "strict":
+        return _strict_checkpoint_load(model, state, reset_prefixes=reset_prefixes)
+    if policy == "v16_7_natural_to_transport":
+        return _strict_checkpoint_load(
+            model, state,
+            allowed_missing=_V16_7_NATURAL_TO_TRANSPORT_ALLOWED_MISSING,
+            reset_prefixes=reset_prefixes,
+        )
+    if policy != "compatible":
+        raise ValueError(f"Unknown checkpoint load policy: {policy}")
     candidates = [state]
     if state and all(k.startswith("_orig_mod.") for k in state.keys()):
         candidates.insert(0, {k[len("_orig_mod."):]: v for k, v in state.items()})
@@ -955,7 +1043,7 @@ def _load_model_state_robust(
         if not prefixes:
             try:
                 model.load_state_dict(cand)
-                return
+                return {"allowed_initialized_keys": [], "reset_keys": [], "benign_missing_keys": [], "shape_mismatch_keys": [], "unexpected_keys": []}
             except RuntimeError as exc:
                 last_error = exc
         compatible = {k: v for k, v in cand.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
@@ -970,7 +1058,13 @@ def _load_model_state_robust(
                 print(f"Loaded checkpoint with {len(missing)} initialized/missing keys, e.g. {missing[:6]}")
             if unexpected:
                 print(f"Ignored {len(unexpected)} incompatible/unexpected keys, e.g. {unexpected[:6]}")
-            return
+            return {
+                "allowed_initialized_keys": missing,
+                "reset_keys": [k for k in model_state if any(k == p or k.startswith(p + ".") for p in prefixes)],
+                "benign_missing_keys": [],
+                "shape_mismatch_keys": [],
+                "unexpected_keys": unexpected,
+            }
     if last_error is not None:
         raise last_error
     raise RuntimeError("Checkpoint contains no compatible model parameters")
@@ -1148,6 +1242,60 @@ def _parameter_counts(model: torch.nn.Module) -> tuple[int, int]:
     total = sum(int(p.numel()) for p in model.parameters())
     trainable = sum(int(p.numel()) for p in model.parameters() if p.requires_grad)
     return trainable, total
+
+
+def _ddp_policy(stage: str, *, device: torch.device, local_rank: int) -> dict[str, Any]:
+    """Return a DDP policy compatible with COWP's batch-dependent supervision.
+
+    Witness/response/planner losses intentionally skip heads when a batch has no
+    valid response, positive witness, explanation token, discriminative
+    candidate, or optional Waymax outcome.  The corresponding parameter set can
+    therefore receive gradients in one iteration and ``None`` in the next.  This
+    is a legitimate dynamic autograd graph and is incompatible with
+    ``static_graph=True``.
+
+    ``find_unused_parameters=True`` preserves the existing optimization
+    semantics: a skipped head keeps ``grad is None`` and AdamW does not update it.
+    Connecting skipped losses to a synthetic zero would silence DDP too, but it
+    would change weight-decay/momentum behaviour and is therefore deliberately
+    avoided.
+    """
+    dynamic_supervision_stage = stage in {"response", "witness", "planner", "all"}
+    kwargs: dict[str, Any] = {
+        "find_unused_parameters": bool(dynamic_supervision_stage),
+        # This optimization is independent of graph staticness and is supported
+        # by the PyTorch versions used by the project.  Older versions are
+        # handled by the constructor fallback below.
+        "gradient_as_bucket_view": True,
+    }
+    if device.type == "cuda":
+        kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
+    return kwargs
+
+
+def _ddp_parameter_manifest(model: torch.nn.Module, stage: str, policy: dict[str, Any]) -> dict[str, Any]:
+    """Map reducer parameter indices to names for actionable DDP diagnostics."""
+    rows = []
+    for index, (name, param) in enumerate(
+        (item for item in model.named_parameters() if item[1].requires_grad)
+    ):
+        rows.append({
+            "index": int(index),
+            "name": name,
+            "shape": list(param.shape),
+            "numel": int(param.numel()),
+        })
+    return {
+        "schema_version": "cowp_ddp_parameter_manifest_v1",
+        "stage": stage,
+        "policy": {
+            "find_unused_parameters": bool(policy.get("find_unused_parameters", False)),
+            "static_graph": bool(policy.get("static_graph", False)),
+            "gradient_as_bucket_view": bool(policy.get("gradient_as_bucket_view", False)),
+        },
+        "parameter_tensor_count": len(rows),
+        "parameters": rows,
+    }
 
 
 def _load_existing_history(path: Path, *, before_epoch: int | None = None) -> list[dict[str, Any]]:
@@ -1386,6 +1534,17 @@ def main() -> None:
     ap.add_argument("--resume", default=None)
     ap.add_argument("--resume-training", action="store_true", help="When --resume points to a checkpoint from the same stage, continue epoch numbering/history instead of treating it as a warm start.")
     ap.add_argument("--reset-checkpoint-prefix", action="append", default=[], help="Reinitialize a module prefix instead of loading it from --resume. Repeatable; v14 natural training should pass natural_decoder.")
+    ap.add_argument(
+        "--checkpoint-load-policy",
+        choices=["compatible", "strict", "v16_7_natural_to_transport"],
+        default="compatible",
+        help="Checkpoint compatibility contract. v16.7 stage hand-offs should use an explicit strict policy.",
+    )
+    ap.add_argument(
+        "--expected-resume-stage",
+        default=None,
+        help="Optional checkpoint stage required for --resume (for example natural or witness).",
+    )
     ap.add_argument("--eval-before-train", action="store_true", help="Evaluate/save the initialized or warm-started model as epoch -1 before optimization. Prevents training from silently degrading a strong analytic basis.")
     ap.add_argument("--no-save-optimizer", action="store_true", help="Do not store optimizer state in epoch/best checkpoints. This saves disk but weakens exact crash resume.")
     ap.add_argument("--output-dir", default="outputs/checkpoints")
@@ -1596,11 +1755,28 @@ def main() -> None:
     resume_ckpt: dict[str, Any] | None = None
     if args.resume:
         resume_ckpt = torch.load(args.resume, map_location=device)
-        _load_model_state_robust(model, resume_ckpt["model"], reset_prefixes=tuple(args.reset_checkpoint_prefix))
+        if not isinstance(resume_ckpt, dict) or "model" not in resume_ckpt:
+            raise TypeError(f"Resume checkpoint {args.resume!r} does not contain a model state_dict")
+        if args.expected_resume_stage is not None:
+            actual_resume_stage = _checkpoint_stage(resume_ckpt)
+            if actual_resume_stage != str(args.expected_resume_stage):
+                raise ValueError(
+                    f"Expected resume checkpoint stage={args.expected_resume_stage}, "
+                    f"got stage={actual_resume_stage} from {args.resume}"
+                )
+        load_report = _load_model_state_robust(
+            model, resume_ckpt["model"],
+            reset_prefixes=tuple(args.reset_checkpoint_prefix),
+            policy=args.checkpoint_load_policy,
+        )
+        _rank0_print(f"Checkpoint load policy={args.checkpoint_load_policy}: {load_report}")
 
     # Apply architecture and permanent stage freezes *before* DDP and AdamW.
-    # v16.5 did this only inside the epoch loop, so DDP searched for unused
-    # parameters every batch and AdamW still tracked permanently frozen modules.
+    # Temporary warm-up freezes are intentionally not applied here: graph or
+    # candidate parameters that will be unfrozen later must already belong to
+    # the DDP reducer and optimizer.  Passing warmup_frozen=False applies only
+    # the stage's permanent policy (for example, the validated natural basis is
+    # frozen throughout witness training).
     inactive_branches = _freeze_inactive_architecture_branches(model)
     natural_unfreeze_epoch = int(
         args.natural_graph_unfreeze_epoch
@@ -1612,14 +1788,13 @@ def main() -> None:
         and bool(tcfg.get("freeze_graph_during_natural", False))
         and natural_unfreeze_epoch < 0
     )
-    if stage in {"natural", "representation"}:
-        _set_stage_freeze(
-            model,
-            stage,
-            False,
-            freeze_natural_during_witness=bool(tcfg.get("freeze_natural_during_witness", False)),
-            freeze_graph_during_natural=permanent_natural_freeze,
-        )
+    _set_stage_freeze(
+        model,
+        stage,
+        False,
+        freeze_natural_during_witness=bool(tcfg.get("freeze_natural_during_witness", False)),
+        freeze_graph_during_natural=permanent_natural_freeze,
+    )
     trainable_params, total_params = _parameter_counts(model)
     _rank0_print(
         f"Parameter policy before DDP: trainable={trainable_params:,}/{total_params:,} "
@@ -1628,43 +1803,40 @@ def main() -> None:
         f"inactive_branches={inactive_branches}"
     )
 
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
-        # Static DDP is valid whenever the set of trainable/unused parameters is
-        # fixed for the whole run.  v16.6 restricted this optimization to natural
-        # training, while transport/planner still paid an unused-parameter graph
-        # traversal every batch.  v16.7 launchers use zero warm-up freeze, making
-        # those stage graphs static as well.  Keep find_unused=True outside the
-        # fully frozen natural decoder because stage-specific heads can remain
-        # checkpoint-compatible but unused; static_graph caches that set safely.
-        no_freeze_transition = int(args.freeze_backbone_epochs) <= 0
-        static_stage_ddp = bool(
-            (permanent_natural_freeze and stage in {"natural", "representation"})
-            or (no_freeze_transition and stage in {"witness", "planner"})
-        )
-        fully_used_static_natural = bool(
-            permanent_natural_freeze and stage in {"natural", "representation"}
-        )
-        ddp_kwargs: dict[str, Any] = {
-            "find_unused_parameters": not fully_used_static_natural,
-        }
-        if static_stage_ddp:
-            ddp_kwargs.update({"static_graph": True, "gradient_as_bucket_view": True})
-        if device.type == "cuda":
-            ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
+        # COWP has batch-dependent optional supervision.  Do not use
+        # static_graph for response/witness/planner: a head may legitimately be
+        # active in one batch and absent in the next.  Dynamic unused-parameter
+        # discovery keeps the mathematical training objective unchanged.
+        ddp_kwargs = _ddp_policy(stage, device=device, local_rank=local_rank)
+        ddp_manifest_model = model
         try:
             model = DDP(model, **ddp_kwargs)
         except TypeError:
-            # Compatibility with older PyTorch versions lacking static_graph or
-            # gradient_as_bucket_view.  Keep the safe no-unused traversal choice.
-            ddp_kwargs.pop("static_graph", None)
+            # Compatibility with older PyTorch versions lacking
+            # gradient_as_bucket_view.  Keep the dynamic unused-parameter policy.
             ddp_kwargs.pop("gradient_as_bucket_view", None)
             model = DDP(model, **ddp_kwargs)
+        if _is_main_process():
+            manifest = _ddp_parameter_manifest(ddp_manifest_model, stage, ddp_kwargs)
+            (output_dir / f"ddp_parameter_manifest_{stage}.json").write_text(
+                json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
         _rank0_print(
             f"DDP policy: find_unused_parameters={ddp_kwargs.get('find_unused_parameters')}, "
             f"static_graph={ddp_kwargs.get('static_graph', False)}, "
             f"gradient_as_bucket_view={ddp_kwargs.get('gradient_as_bucket_view', False)}"
         )
+        if bool(ddp_kwargs.get("find_unused_parameters", False)):
+            _rank0_print(
+                "DDP dynamic-supervision mode enabled. PyTorch may emit a one-time "
+                "'did not find any unused parameters' warning on an early batch; "
+                "later batches can still skip optional heads, so this warning is not a failure."
+            )
     epochs = args.epochs or int(tcfg.get("epochs", 10))
     optimizer_lr = float(args.lr if args.lr is not None else tcfg.get("lr", 3e-4))
     opt = _make_adamw_optimizer(
@@ -1679,8 +1851,6 @@ def main() -> None:
         early_stop_patience=int(args.early_stop_patience), min_lr=float(args.min_lr),
         min_delta=float(args.early_stop_min_delta),
     )
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     history_path = output_dir / f"history_{stage}.json"
     history: list[dict[str, Any]] = []
     best_val = float("inf")
