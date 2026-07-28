@@ -1,0 +1,39 @@
+{
+  "pass": true,
+  "checks": {
+    "future_label_encoder_fallback_disabled": true,
+    "explicit_sdc_required": true,
+    "online_other_future_is_causal": true,
+    "log_trajectory_fallback_disabled": true,
+    "collision_rate_from_waymax_only": true,
+    "label_metric_named_as_proxy": true,
+    "reactive_protocol_claim_is_honest": true,
+    "typed_source_ce_not_used_as_learning_claim": true,
+    "natural_decoder_is_dynamics_consistent": true,
+    "certificate_fallback_is_explicitly_disabled": true,
+    "missing_logdiv_not_supervised": true,
+    "critical_mapping_complete": true,
+    "response_root_indices_in_range": true,
+    "natural_map_filter_enabled": true,
+    "observational_decontamination_enabled": true,
+    "v15_label_tensors_materialized": false
+  },
+  "engineering_pass": true,
+  "full_v15_label_protocol_pass": false,
+  "data_protocol": "v9_reuse",
+  "failed_checks": [],
+  "engineering_failed_checks": [],
+  "label_protocol_failed_checks": [
+    "v15_label_tensors_materialized"
+  ],
+  "protocol": {
+    "online_other_future_source": "constant_velocity",
+    "actual_non_ego_policy": "logged_replay",
+    "reactive_mixture_implemented": false,
+    "closed_loop_collision_source": "waymax_standard_metrics_only",
+    "label_space_safety_metric": "OfflineConventionalUnsafeRate"
+  },
+  "interpretation": "Passing this audit removes known causality, coordinate-identity, and metric-naming violations. It does not establish algorithmic SOTA or supply reactive non-ego ground truth.",
+  "cache_alignment_report": "/mnt/data/cowp_v16_work/model/cowp_v15_model_v9labels_seed2026/eval/cache_alignment_val.json",
+  "cache_reuse_report": "/mnt/data/cowp_v16_work/model/cowp_v15_model_v9labels_seed2026/eval/cache_reuse_gate_v9.json"
+}

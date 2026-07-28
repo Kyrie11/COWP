@@ -1,0 +1,84 @@
+{
+  "raw_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax",
+  "transport_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax_transport_v9",
+  "raw_files": 5013,
+  "transport_files": 5013,
+  "sampled_scenes": 2000,
+  "workers": 8,
+  "hash_mode": "sampled",
+  "counts": {
+    "scenes": 2000,
+    "critical_valid": 11105,
+    "critical_unmapped": 0,
+    "critical_invisible": 0,
+    "natural_nonfinite": 0,
+    "response_root_valid_slots": 17995680,
+    "response_root_out_of_range": 0,
+    "waymax_selected": 24000,
+    "waymax_rollout_valid": 24000,
+    "waymax_logdiv_finite": 0
+  },
+  "source_counts": {
+    "1": 87357,
+    "2": 28240,
+    "0": 49803
+  },
+  "missing_transport_keys": {},
+  "rates": {
+    "base_payload_mismatch": 0.0,
+    "critical_unmapped": 0.0,
+    "critical_invisible": 0.0,
+    "response_root_out_of_range": 0.0,
+    "waymax_selected_rollout_success": 1.0,
+    "waymax_logdiv_finite": 0.0
+  },
+  "distributions": {
+    "natural_first_step_jump_m": {
+      "count": 165400,
+      "mean": 0.6872398213307007,
+      "p50": 0.30356115102767944,
+      "p90": 1.6547863483428955,
+      "p99": 6.613127417564399,
+      "max": 16.129091262817383
+    },
+    "natural_first_step_cv_error_m": {
+      "count": 165400,
+      "mean": 0.25127106648376385,
+      "p50": 0.020755991339683533,
+      "p90": 0.30067434608936316,
+      "p99": 5.514032201767002,
+      "max": 13.353092193603516
+    },
+    "natural_8s_displacement_m": {
+      "count": 165400,
+      "mean": 35.142879490819496,
+      "p50": 15.195274829864502,
+      "p90": 106.78213043212891,
+      "p99": 166.4873995971681,
+      "max": 281.6647033691406
+    },
+    "natural_max_speed_mps": {
+      "count": 165400,
+      "mean": 5.826354678148764,
+      "p50": 3.999999761581421,
+      "p90": 15.471839332580569,
+      "p99": 22.993194580078125,
+      "max": 68.98693084716797
+    },
+    "waymax_logdiv": {
+      "count": 0,
+      "mean": null,
+      "p50": null,
+      "p90": null,
+      "p99": null,
+      "max": null
+    }
+  },
+  "examples": {
+    "base_payload_mismatch": [],
+    "unmapped_or_negative_input_index": []
+  },
+  "pass": true,
+  "hard_fail_reasons": [],
+  "optimization_note": "Only required NPZ members are read; overlay symlinks bypass content hashing; per-scene I/O is threaded; natural statistics are vectorized."
+}

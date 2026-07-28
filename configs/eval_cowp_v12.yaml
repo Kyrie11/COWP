@@ -1,0 +1,28 @@
+eval:
+  protocol_version: cowp_v12_root_indexed_transport
+  rollout_horizon_steps: 80
+  selected_candidate_match_threshold_ADE_m: 1.5
+  # The current real-Waymax evaluator controls only the SDC. Uncontrolled agents
+  # follow Waymax's logged/background evolution; a learned/rule reactive mixture
+  # is not implemented in 04_eval_closed_loop. Keep the protocol explicit so the
+  # paper does not accidentally claim an unexecuted mixture.
+  actual_non_ego_policy: logged_replay
+  non_ego_policy_mixture:
+    logged_replay: 1.0
+    rule_reactive: 0.0
+    learned_reactive: 0.0
+  reactive_mixture_implemented: false
+  methods:
+    - idm_lattice
+    - cowp
+    - cowp_wo_counterfactual
+    - cowp_wo_neutral_branch
+    - cowp_wo_priority_branch
+    - cowp_wo_option_preservation
+    - cowp_wo_witness_rejection
+    - soft_burden_cost_only
+  tables:
+    main: true
+    stress: true
+    ablation: true
+    witness_quality: true

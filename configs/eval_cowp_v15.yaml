@@ -1,0 +1,32 @@
+eval:
+  protocol_version: cowp_v15_causal_typed_option_transport
+  rollout_horizon_steps: 80
+  selected_candidate_match_threshold_ADE_m: 1.5
+  actual_non_ego_policy: logged_replay
+  non_ego_policy_mixture:
+    logged_replay: 1.0
+    rule_reactive: 0.0
+    learned_reactive: 0.0
+  reactive_mixture_implemented: false
+  methods:
+  - idm_lattice
+  - cowp
+  - cowp_wo_counterfactual
+  - cowp_wo_neutral_branch
+  - cowp_wo_priority_branch
+  - cowp_wo_option_preservation
+  - cowp_wo_witness_rejection
+  - soft_burden_cost_only
+  tables:
+    main: true
+    stress: true
+    ablation: true
+    witness_quality: true
+  reported_collision_source: waymax_standard_metrics_only
+  label_space_candidate_safety_metric: OfflineConventionalUnsafeRate
+planning:
+  online_plan_continuity_weight: 0.2
+  online_plan_continuity_horizon_steps: 12
+  online_plan_continuity_scale_m: 3.0
+  online_other_future_source: constant_velocity
+  causal_log_trajectory_fallback: false

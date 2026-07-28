@@ -1,0 +1,70 @@
+{
+  "version": "v16.6",
+  "source_artifacts": {
+    "code": "COWP(4).zip",
+    "natural_recovery": "cowp_v16_5_natural_recovery_v9labels_seed2026(1).zip",
+    "natural_ablations": "cowp_v16_5_natural_ablations_v9labels_seed2026(1).zip",
+    "paper_previous": "interactive_planning_v16_4_revised(2).tex",
+    "paper_v16_5": "interactive_planning_v16_5_revised(2).tex"
+  },
+  "uploaded_gate": {
+    "pass": false,
+    "valid_as_component_verdict": false,
+    "reasons": [
+      "main external report used checkpoint epoch 15 while both ablations used epoch 19",
+      "reports did not record a sampled-scene hash or paired scene metrics",
+      "the gate tested mean path ratio although training optimizes probability-weighted normalized squared excess"
+    ]
+  },
+  "strict_natural_recovery": {
+    "basis_gate_pass": true,
+    "effectiveness_gate_pass": true,
+    "learned_8s_m": 1.180930689040034,
+    "obs_8s_m": 2.7185368728460473,
+    "overall_gain_8s_m": 0.7053094569375928,
+    "obs_gain_8s_m": 1.385225237629235,
+    "yaw_error_rad": 7.411590701639332e-08,
+    "amp_skipped_steps": 0
+  },
+  "common_epoch_15_evidence": {
+    "obs_capacity_obs_minade_improvement_m": 0.05149097964732263,
+    "obs_capacity_overall_traj_improvement_m": 0.027181603885238825,
+    "mass_envelope_obs_minade_improvement_m": 0.1140609112307045,
+    "mass_envelope_overall_traj_improvement_m": 0.036472197531417505,
+    "mass_envelope_exact_trust_objective_reduction": 0.32688730200258553
+  },
+  "component_verdict": {
+    "obs_capacity": {
+      "status": "directionally_supported_not_paper_proven",
+      "next_evidence": "same-epoch same-scene external paired diagnostic"
+    },
+    "mass_aware_root_envelope": {
+      "status": "active_and_strongly_supported_not_yet_formally_attributed",
+      "uploaded_own_best_violation_mass_reduction": 0.06650786888383914,
+      "uploaded_own_best_relative_violation_reduction": 0.324817154,
+      "emergency_projection_empirical_contribution": "not demonstrated; projection_active_mass was zero"
+    }
+  },
+  "v16_6_repairs": [
+    "same-main-selected-epoch attribution",
+    "scene hashes and scene-level paired metrics",
+    "exact squared-excess and violation-mass gate",
+    "paired bootstrap confidence intervals",
+    "development pass separated from paper_claim_ready",
+    "freeze unused legacy natural head before DDP/optimizer",
+    "AdamW over trainable parameters only",
+    "static DDP for permanently frozen natural stage",
+    "component-neutral checkpoint score",
+    "disjoint calibration and held-out learned-offline partitions",
+    "held-out mechanism metrics cannot be overridden by calibration metrics",
+    "proposal/certificate scene-level coverage diagnostics",
+    "paper main/appendix/code alignment"
+  ],
+  "validation": {
+    "pytest": "119 passed",
+    "shell_syntax": "passed for v16.6 scripts",
+    "python_compile": "passed",
+    "tex_reference_static_check": "no missing labels introduced"
+  },
+  "honesty_note": "The repaired gate is not forced to pass. It will pass only if aligned paired evidence supports both components. A pass permits downstream evidence collection but is not a publication-level component claim."
+}

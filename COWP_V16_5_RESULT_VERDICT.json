@@ -1,0 +1,31 @@
+{
+  "comparison_basis": "v16.3 natural recovery vs v16.4 main and v16.4 isolated/claimed ablations",
+  "v16_4_attribution_gate_pass": false,
+  "v16_4_metrics": {
+    "v16_3": {"all_8s_m": 1.1779251089855445, "obs_8s_m": 2.640240735445996, "yaw_error_rad": 0.17496934332187122, "residual_endpoint_p99_m": 45.2182137298584},
+    "v16_4_main": {"all_8s_m": 1.2338680379266134, "obs_8s_m": 2.917379533800694, "yaw_error_rad": 6.939926371822798e-08, "residual_endpoint_p99_m": 20.000003814697266},
+    "v16_4_no_effectiveness_bundle": {"all_8s_m": 1.2158724850683993, "obs_8s_m": 2.8724420138634215},
+    "v16_4_no_obs_capacity": {"all_8s_m": 1.259934166998809, "obs_8s_m": 3.0521625360751226},
+    "v16_4_no_fixed_trust": {"all_8s_m": 1.1699583799610012, "obs_8s_m": 2.615938006636301, "residual_endpoint_p99_m": 46.70899097442627}
+  },
+  "component_verdicts": {
+    "typed_causal_natural_decoder": "supported relative to the analytic basis; v16.4 main regression versus v16.3 is caused by added constraints rather than loss of learning",
+    "yaw_reference_frame_fix": "supported as an engineering correction; yaw consistency becomes numerically satisfied",
+    "obs_residual_capacity": "supported by the valid one-factor v16.4 control; OBS improves by 0.134783 m",
+    "v16_4_effectiveness_loss": "not identifiable because the purported ablation removes multiple unrelated losses; the bundled objective is not supported because the ablation performs better",
+    "fixed_endpoint_trust_region": "reject as the semantic root-identity mechanism; it controls tail but worsens OBS by 0.301442 m",
+    "natural_gate": "supported as a fail-fast engineering mechanism",
+    "planner": "not evaluated in v16.4",
+    "selector": "not evaluated in v16.4"
+  },
+  "engineering_errors_fixed_in_v16_5": [
+    "compound no-effectiveness ablation replaced by isolated controls",
+    "graph no longer silently unfreezes after two natural epochs",
+    "frozen graph forced to eval mode and no_grad",
+    "main/ablation loader, precision, seed and validation schedules aligned",
+    "repeated multi-horizon pairwise distance computations fused",
+    "redundant/unsupported loss branches skipped when disabled",
+    "attribution reduced to two isolated full-training controls"
+  ],
+  "v16_5_status": "code and tests complete; performance requires new GPU training"
+}
