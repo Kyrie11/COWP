@@ -19,6 +19,26 @@ from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
 
+# v16.7 added these trainable monotone-calibration parameters to the transport
+# certificate head.  The natural checkpoint intentionally comes from v16.6 and
+# therefore does not contain them.  This script only runs ``stage="natural"``,
+# where SetTransportCertificateHead is not executed, so those parameters are
+# expected to remain at their v16.7 initialization values.  Keep this allowlist
+# exact: unrelated missing keys must still fail loudly because they can indicate
+# a genuinely incompatible natural decoder or encoder checkpoint.
+_NATURAL_DIAG_OPTIONAL_MISSING_KEYS = frozenset(
+    {
+        "set_transport.candidate_risk_raw_weight",
+        "set_transport.candidate_risk_threshold_logit",
+        "set_transport.candidate_risk_log_scale",
+        "set_transport.global_risk_raw_weight",
+        "set_transport.global_risk_threshold_logit",
+        "set_transport.global_risk_log_scale",
+        "set_transport.pair_deficit_raw_weight",
+    }
+)
+
+
 def _indices(n: int, limit: int) -> list[int]:
     if limit <= 0 or limit >= n:
         return list(range(n))
@@ -50,11 +70,24 @@ def _load_checkpoint(model: COWPModel, path: str, device: torch.device) -> dict:
     ckpt = torch.load(path, map_location=device)
     state = ckpt.get("model", ckpt)
     result = model.load_state_dict(state, strict=False)
-    missing = [k for k in result.missing_keys if not k.endswith("num_batches_tracked")]
+    missing_all = [k for k in result.missing_keys if not k.endswith("num_batches_tracked")]
+    optional_missing = [
+        k for k in missing_all if k in _NATURAL_DIAG_OPTIONAL_MISSING_KEYS
+    ]
+    missing = [
+        k for k in missing_all if k not in _NATURAL_DIAG_OPTIONAL_MISSING_KEYS
+    ]
     unexpected = list(result.unexpected_keys)
     if missing or unexpected:
         raise RuntimeError(
             f"Checkpoint/config mismatch for learned-natural diagnosis: missing={missing[:20]}, unexpected={unexpected[:20]}"
+        )
+    if optional_missing:
+        print(
+            "Loaded cross-version natural checkpoint; keeping newly initialized "
+            "v16.7 transport calibration parameters (natural-only diagnosis does "
+            f"not execute SetTransportCertificateHead): {optional_missing}",
+            flush=True,
         )
     return ckpt if isinstance(ckpt, dict) else {}
 
