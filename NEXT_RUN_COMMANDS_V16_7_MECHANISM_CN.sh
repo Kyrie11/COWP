@@ -111,7 +111,7 @@ export FORCE_RESTART_TRAIN="${FORCE_RESTART_TRAIN:-0}"
 # existing failed OUT_ROOT already contains the pre-hotfix signature, so allow
 # exactly one auditable provenance amendment.  The marker prevents this opt-in
 # from weakening strict provenance checks for unrelated future code changes.
-export COMPATIBLE_RESUME_MARKER="${COMPATIBLE_RESUME_MARKER:-$OUT_ROOT/configs/.v16_7_dynamic_ddp_hotfix_v3_applied}"
+export COMPATIBLE_RESUME_MARKER="${COMPATIBLE_RESUME_MARKER:-$OUT_ROOT/configs/.v16_7_checkpoint_resume_hotfix_v1_applied}"
 if [[ -z "${ALLOW_COMPATIBLE_CODE_RESUME+x}" ]]; then
   if [[ -s "$OUT_ROOT/configs/run_provenance.json" && ! -e "$COMPATIBLE_RESUME_MARKER" ]]; then
     export ALLOW_COMPATIBLE_CODE_RESUME=1
@@ -119,7 +119,7 @@ if [[ -z "${ALLOW_COMPATIBLE_CODE_RESUME+x}" ]]; then
     export ALLOW_COMPATIBLE_CODE_RESUME=0
   fi
 fi
-export COMPATIBLE_RESUME_REASON="${COMPATIBLE_RESUME_REASON:-v16.7 mechanism hotfix v3: disable invalid static DDP for dynamic witness/planner supervision}"
+export COMPATIBLE_RESUME_REASON="${COMPATIBLE_RESUME_REASON:-v16.7 mechanism hotfix: learned-natural compatibility and same-stage checkpoint continuation}"
 export FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-0}"
 export REQUIRE_INIT_CKPT=0
 export REQUIRE_WAYMAX_PREFLIGHT=0
