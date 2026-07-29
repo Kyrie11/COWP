@@ -102,24 +102,6 @@ export RUN_PROBE=0
 export RUN_FULL=0
 export FORCE_TRAIN="${FORCE_TRAIN:-1}"
 export FORCE_EVAL="${FORCE_EVAL:-1}"
-# FORCE_TRAIN requests that the stages be executed, while AUTO_RESUME_TRAIN
-# decides whether an exact same-stage checkpoint is continued.  Set
-# FORCE_RESTART_TRAIN=1 only for an intentional clean restart.
-export AUTO_RESUME_TRAIN="${AUTO_RESUME_TRAIN:-1}"
-export FORCE_RESTART_TRAIN="${FORCE_RESTART_TRAIN:-0}"
-# This hotfix changes only checkpoint dispatch/diagnostic compatibility.  An
-# existing failed OUT_ROOT already contains the pre-hotfix signature, so allow
-# exactly one auditable provenance amendment.  The marker prevents this opt-in
-# from weakening strict provenance checks for unrelated future code changes.
-export COMPATIBLE_RESUME_MARKER="${COMPATIBLE_RESUME_MARKER:-$OUT_ROOT/configs/.v16_7_checkpoint_resume_hotfix_v1_applied}"
-if [[ -z "${ALLOW_COMPATIBLE_CODE_RESUME+x}" ]]; then
-  if [[ -s "$OUT_ROOT/configs/run_provenance.json" && ! -e "$COMPATIBLE_RESUME_MARKER" ]]; then
-    export ALLOW_COMPATIBLE_CODE_RESUME=1
-  else
-    export ALLOW_COMPATIBLE_CODE_RESUME=0
-  fi
-fi
-export COMPATIBLE_RESUME_REASON="${COMPATIBLE_RESUME_REASON:-v16.7 mechanism hotfix: learned-natural compatibility and same-stage checkpoint continuation}"
 export FREEZE_BACKBONE_EPOCHS="${FREEZE_BACKBONE_EPOCHS:-0}"
 export REQUIRE_INIT_CKPT=0
 export REQUIRE_WAYMAX_PREFLIGHT=0

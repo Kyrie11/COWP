@@ -29,19 +29,6 @@ RUN_FULL="${RUN_FULL:-0}"
 FORCE_AUGMENT="${FORCE_AUGMENT:-0}"
 FORCE_TRAIN="${FORCE_TRAIN:-0}"
 FORCE_EVAL="${FORCE_EVAL:-0}"
-# Same-stage recovery is enabled independently of FORCE_TRAIN.  FORCE_TRAIN=1
-# means "execute the requested training pipeline"; it no longer discards a valid
-# same-stage checkpoint.  Use FORCE_RESTART_TRAIN=1 only when an intentional
-# from-scratch rerun is required.
-AUTO_RESUME_TRAIN="${AUTO_RESUME_TRAIN:-1}"
-FORCE_RESTART_TRAIN="${FORCE_RESTART_TRAIN:-0}"
-# A small launcher/diagnostic hotfix changes the provenance signature even though
-# existing model/optimizer checkpoints remain compatible.  This opt-in preserves
-# the original manifest and appends an auditable amendment instead of overwriting
-# experiment provenance silently.
-ALLOW_COMPATIBLE_CODE_RESUME="${ALLOW_COMPATIBLE_CODE_RESUME:-0}"
-COMPATIBLE_RESUME_REASON="${COMPATIBLE_RESUME_REASON:-v16.7 checkpoint auto-resume and learned-natural compatibility hotfix}"
-COMPATIBLE_RESUME_MARKER="${COMPATIBLE_RESUME_MARKER:-}"
 ALLOW_QUALITY_GATE_FAILURE="${ALLOW_QUALITY_GATE_FAILURE:-0}"  # engineering smoke only; never for paper claims
 DETACH="${DETACH:-0}"
 STOP_AFTER_STAGE="${STOP_AFTER_STAGE:-none}"  # none|diagnose|natural|transport|planner|offline|probe
@@ -133,13 +120,8 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
 # Never mix checkpoints/evaluations produced by different code or config states
 # under one OUT_ROOT. Logical file names keep the signature stable while the
 # candidate configs live in a temporary directory.
-provenance_resume_args=()
-if [[ "$ALLOW_COMPATIBLE_CODE_RESUME" == "1" ]]; then
-  provenance_resume_args=(--allow-compatible-resume --resume-reason "$COMPATIBLE_RESUME_REASON")
-fi
 "$PYTHON_BIN" -u -m cowp.scripts.42_write_run_provenance \
   --output "$OUT_ROOT/configs/run_provenance.json" --strict-existing \
-  "${provenance_resume_args[@]}" \
   --data-protocol "$DATA_PROTOCOL" \
   --raw-train-cache "$RAW_TRAIN_CACHE" --raw-val-cache "$RAW_VAL_CACHE" \
   --train-cache "$TRAIN_CACHE" --val-cache "$VAL_CACHE" \
@@ -152,16 +134,11 @@ fi
   --file "cowp/models/cowp_model.py=cowp/models/cowp_model.py" \
   --file "cowp/models/set_transport_head.py=cowp/models/set_transport_head.py" \
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \
-  --file "cowp/scripts/39_diagnose_learned_natural.py=cowp/scripts/39_diagnose_learned_natural.py" \
   --file "cowp/scripts/25_verify_mechanism_effect.py=cowp/scripts/25_verify_mechanism_effect.py" \
   --file "cowp/scripts/31_calibrate_bcot_budget.py=cowp/scripts/31_calibrate_bcot_budget.py" \
   --file "cowp/waymax_eval/rollout.py=cowp/waymax_eval/rollout.py" \
   --file "cowp/waymax_eval/policy_wrapper.py=cowp/waymax_eval/policy_wrapper.py" \
   --file "run_cowp_v16_7_dual_gpu.sh=$0" | tee "$OUT_ROOT/logs/run_provenance.log"
-if [[ "$ALLOW_COMPATIBLE_CODE_RESUME" == "1" && -n "$COMPATIBLE_RESUME_MARKER" ]]; then
-  mkdir -p "$(dirname "$COMPATIBLE_RESUME_MARKER")"
-  : > "$COMPATIBLE_RESUME_MARKER"
-fi
 
 # Provenance passed: only now publish the canonical copied configs.
 cp "$CONFIG_CANDIDATE_DIR/model_cowp_v16.yaml" "$OUT_ROOT/configs/model_cowp_v16.yaml"
@@ -236,129 +213,6 @@ json_valid() {
 import json, sys
 json.load(open(sys.argv[1], encoding="utf-8"))
 PY
-}
-
-# Print "<path><TAB><epoch>" for the newest readable checkpoint of one exact
-# stage under one exact output directory.  The caller supplies both pieces so
-# transport/witness checkpoints can never be confused with planner checkpoints.
-# ``*_last.pt`` wins ties because it is written after scheduler.step and carries
-# the most complete interruption-recovery state.
-latest_valid_stage_checkpoint() {
-  local output_dir="$1" stage="$2" policy="${3:-latest}"
-  "$PYTHON_BIN" - "$output_dir" "$stage" "$policy" <<'PYLATEST'
-from __future__ import annotations
-
-import re
-import sys
-from pathlib import Path
-
-out = Path(sys.argv[1])
-stage = sys.argv[2]
-policy = sys.argv[3]
-prefix = f"cowp_{stage}"
-
-candidates: list[tuple[Path, int]] = []
-last = out / f"{prefix}_last.pt"
-best = out / f"{prefix}_best.pt"
-if last.is_file():
-    candidates.append((last, 3))
-for p in out.glob(f"{prefix}_epoch*.pt"):
-    candidates.append((p, 2))
-if best.is_file():
-    candidates.append((best, 1))
-
-try:
-    import torch
-except Exception as exc:
-    print(f"Warning: cannot inspect checkpoints without torch: {exc}", file=sys.stderr)
-    print("\t-1")
-    raise SystemExit(0)
-
-valid: list[tuple[int, int, int, Path]] = []
-seen: set[Path] = set()
-for path, kind_priority in candidates:
-    path = path.resolve()
-    if path in seen or not path.is_file() or path.stat().st_size <= 0:
-        continue
-    seen.add(path)
-    try:
-        try:
-            obj = torch.load(path, map_location="cpu", weights_only=False)
-        except TypeError:
-            obj = torch.load(path, map_location="cpu")
-        if not isinstance(obj, dict):
-            raise TypeError("checkpoint payload is not a dictionary")
-        ckpt_stage = obj.get("stage")
-        if ckpt_stage is not None and str(ckpt_stage) != stage:
-            raise ValueError(f"stage={ckpt_stage!r}, expected {stage!r}")
-        model_state = obj.get("model")
-        if not isinstance(model_state, dict) or not model_state:
-            raise ValueError("missing non-empty model state")
-        epoch = int(obj.get("epoch"))
-        if epoch < -1:
-            raise ValueError(f"invalid epoch={epoch}")
-        valid.append((epoch, kind_priority, path.stat().st_mtime_ns, path))
-    except Exception as exc:
-        print(f"Warning: ignoring unreadable/incompatible checkpoint {path}: {exc}", file=sys.stderr)
-
-if not valid:
-    print("\t-1")
-else:
-    if policy == "best":
-        valid_best = [row for row in valid if row[3].name == f"{prefix}_best.pt"]
-        chosen = max(valid_best, key=lambda row: (row[0], row[2])) if valid_best else max(
-            valid, key=lambda row: (row[0], row[1], row[2])
-        )
-    elif policy == "latest":
-        chosen = max(valid, key=lambda row: (row[0], row[1], row[2]))
-    else:
-        raise ValueError(f"unknown checkpoint selection policy: {policy}")
-    epoch, _, _, path = chosen
-    print(f"{path}\t{epoch}")
-PYLATEST
-}
-
-# Print "<mode><TAB><path><TAB><epoch>" where mode is complete, resume,
-# warm, or scratch.  Epochs stored by 03_train.py are zero-based: a target of
-# 30 epochs is complete at checkpoint epoch 29, and epoch 15 resumes at 16.
-stage_training_plan() {
-  local output_dir="$1" stage="$2" epochs="$3" upstream_resume="${4:-}"
-  local latest_info latest latest_epoch target_last_epoch
-  target_last_epoch=$((epochs - 1))
-
-  if [[ "$AUTO_RESUME_TRAIN" == "1" && "$FORCE_RESTART_TRAIN" != "1" ]]; then
-    latest_info="$(latest_valid_stage_checkpoint "$output_dir" "$stage")"
-    IFS=$'\t' read -r latest latest_epoch <<< "$latest_info"
-    latest="${latest:-}"
-    latest_epoch="${latest_epoch:--1}"
-    if [[ -n "$latest" && -s "$latest" && "$latest_epoch" =~ ^-?[0-9]+$ ]]; then
-      if (( latest_epoch >= target_last_epoch )); then
-        printf 'complete\t%s\t%s\n' "$latest" "$latest_epoch"
-      elif (( latest_epoch >= -1 )); then
-        printf 'resume\t%s\t%s\n' "$latest" "$latest_epoch"
-      else
-        printf 'warm\t%s\t-1\n' "$upstream_resume"
-      fi
-      return 0
-    fi
-  fi
-
-  if [[ -n "$upstream_resume" && -s "$upstream_resume" ]]; then
-    printf 'warm\t%s\t-1\n' "$upstream_resume"
-  else
-    printf 'scratch\t\t-1\n'
-  fi
-}
-
-best_or_latest_stage_checkpoint() {
-  local output_dir="$1" stage="$2"
-  local info path epoch
-  # Prefer the validation-selected best checkpoint, but only after validating
-  # its payload and stage.  Fall back to the newest valid interruption checkpoint.
-  info="$(latest_valid_stage_checkpoint "$output_dir" "$stage" best)"
-  IFS=$'\t' read -r path epoch <<< "$info"
-  [[ -n "$path" && -s "$path" ]] || return 1
-  echo "$path"
 }
 
 cache_ready() {
@@ -500,13 +354,19 @@ if [[ "$STOP_AFTER_STAGE" == "diagnose" ]]; then
 fi
 
 best_natural() {
-  best_or_latest_stage_checkpoint "$OUT_ROOT/checkpoints/natural" natural
+  local p="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+  [[ -s "$p" ]] && { echo "$p"; return; }
+  return 1
 }
 best_transport() {
-  best_or_latest_stage_checkpoint "$OUT_ROOT/checkpoints/transport" witness
+  local p="$OUT_ROOT/checkpoints/transport/cowp_witness_best.pt"
+  [[ -s "$p" ]] && { echo "$p"; return; }
+  return 1
 }
 best_planner() {
-  best_or_latest_stage_checkpoint "$OUT_ROOT/checkpoints/planner" planner
+  local p="$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt"
+  [[ -s "$p" ]] && { echo "$p"; return; }
+  return 1
 }
 
 # Stage 0: repair the natural-option basis while preserving the initialized scene encoder.
@@ -517,65 +377,41 @@ if [[ "$RUN_NATURAL" == "1" && "$REQUIRE_INIT_CKPT" == "1" && ! -s "$INIT_CKPT" 
   exit 2
 fi
 natural_default_history="$OUT_ROOT/checkpoints/natural/history_natural.json"
+natural_artifacts_complete() {
+  local ckpt="$OUT_ROOT/checkpoints/natural/cowp_natural_best.pt"
+  [[ -s "$ckpt" && -s "$natural_default_history" ]] || return 1
+  "$PYTHON_BIN" - "$natural_default_history" <<'PY' >/dev/null
+import json, sys
+x = json.load(open(sys.argv[1], encoding="utf-8"))
+assert isinstance(x, list) and len(x) >= 2
+PY
+}
 if [[ "$RUN_NATURAL" == "1" ]]; then
-  IFS=$'\t' read -r natural_plan natural_resume natural_epoch < <(
-    stage_training_plan "$OUT_ROOT/checkpoints/natural" natural "$NATURAL_EPOCHS" "$INIT_CKPT"
-  )
-  case "$natural_plan" in
-    complete)
-      echo "[natural] target already complete: checkpoint=$natural_resume epoch=$natural_epoch target_epochs=$NATURAL_EPOCHS; skip training"
-      if [[ ! -s "$natural_default_history" ]]; then
-        echo "Natural checkpoint is complete but its required history is missing: $natural_default_history" >&2
-        echo "Restore history_natural.json from the same run; retraining solely to fabricate gate history is unsafe." >&2
-        exit 2
-      fi
-      ;;
-    resume)
-      echo "[natural] resume same stage: checkpoint=$natural_resume completed_epoch=$natural_epoch next_epoch=$((natural_epoch + 1)) target_epochs=$NATURAL_EPOCHS"
-      mapfile -t natural_amp_args < <(amp_args "$NATURAL_AMP")
-      logrun train_natural_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
-        "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
-        --data-config configs/data.yaml --model-config "$MODEL_CFG" \
-        --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
-        --cache-dir "$RAW_TRAIN_CACHE" --val-cache-dir "$RAW_VAL_CACHE" \
-        --stage natural --epochs "$NATURAL_EPOCHS" --batch-size "$BATCH_PER_GPU" \
-        --lr "$NATURAL_LR" --num-workers "$NATURAL_NUM_WORKERS" --prefetch-factor "$NATURAL_PREFETCH_FACTOR" \
-        --val-num-workers "$NATURAL_VAL_NUM_WORKERS" --val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR" \
-        --sharing-strategy "$TORCH_SHARING_STRATEGY" \
-        --device cuda --output-dir "$OUT_ROOT/checkpoints/natural" \
-        --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
-        --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
-        --no-positive-oversampling --natural-graph-unfreeze-epoch -1 \
-        --val-every "${NATURAL_VAL_EVERY:-2}" --grad-clip 1.0 --fused-adamw \
-        "${natural_amp_args[@]}" --resume "$natural_resume" --resume-training
-      ;;
-    warm|scratch)
-      echo "[natural] fresh stage training (mode=$natural_plan) from initialization checkpoint=${natural_resume:--none-}"
-      init_args=()
-      [[ "$natural_plan" == "warm" && -s "$natural_resume" ]] && init_args=(--resume "$natural_resume")
-      mapfile -t natural_amp_args < <(amp_args "$NATURAL_AMP")
-      logrun train_natural_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
-        "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
-        --data-config configs/data.yaml --model-config "$MODEL_CFG" \
-        --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
-        --cache-dir "$RAW_TRAIN_CACHE" --val-cache-dir "$RAW_VAL_CACHE" \
-        --stage natural --epochs "$NATURAL_EPOCHS" --batch-size "$BATCH_PER_GPU" \
-        --lr "$NATURAL_LR" --num-workers "$NATURAL_NUM_WORKERS" --prefetch-factor "$NATURAL_PREFETCH_FACTOR" \
-        --val-num-workers "$NATURAL_VAL_NUM_WORKERS" --val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR" \
-        --sharing-strategy "$TORCH_SHARING_STRATEGY" \
-        --device cuda --output-dir "$OUT_ROOT/checkpoints/natural" \
-        --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
-        --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
-        --no-positive-oversampling --eval-before-train \
-        --reset-checkpoint-prefix natural_decoder --natural-graph-unfreeze-epoch -1 \
-        --val-every "${NATURAL_VAL_EVERY:-2}" --grad-clip 1.0 --fused-adamw \
-        "${natural_amp_args[@]}" "${init_args[@]}"
-      ;;
-    *)
-      echo "Internal error: unknown natural training plan '$natural_plan'" >&2
-      exit 2
-      ;;
-  esac
+  if natural_artifacts_complete && [[ "$FORCE_TRAIN" != "1" ]]; then
+    echo "[natural] keep complete checkpoint+history $(best_natural)"
+  else
+    if best_natural >/dev/null && [[ ! -s "$natural_default_history" ]]; then
+      echo "[natural] checkpoint exists but history is missing; retraining instead of creating a false gate failure." >&2
+    fi
+    init_args=()
+    [[ -s "$INIT_CKPT" ]] && init_args=(--resume "$INIT_CKPT")
+    mapfile -t natural_amp_args < <(amp_args "$NATURAL_AMP")
+    logrun train_natural_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
+      "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
+      --data-config configs/data.yaml --model-config "$MODEL_CFG" \
+      --label-config "$LABEL_CFG" --train-config "$TRAIN_CFG" \
+      --cache-dir "$RAW_TRAIN_CACHE" --val-cache-dir "$RAW_VAL_CACHE" \
+      --stage natural --epochs "$NATURAL_EPOCHS" --batch-size "$BATCH_PER_GPU" \
+      --lr "$NATURAL_LR" --num-workers "$NATURAL_NUM_WORKERS" --prefetch-factor "$NATURAL_PREFETCH_FACTOR" \
+      --val-num-workers "$NATURAL_VAL_NUM_WORKERS" --val-prefetch-factor "$NATURAL_VAL_PREFETCH_FACTOR" \
+      --sharing-strategy "$TORCH_SHARING_STRATEGY" \
+      --device cuda --output-dir "$OUT_ROOT/checkpoints/natural" \
+      --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
+      --lr-scheduler plateau --min-lr 2e-6 --save-every 2 \
+      --no-positive-oversampling --eval-before-train \
+      --reset-checkpoint-prefix natural_decoder --natural-graph-unfreeze-epoch -1 \
+      --val-every "${NATURAL_VAL_EVERY:-2}" --grad-clip 1.0 --fused-adamw "${natural_amp_args[@]}" "${init_args[@]}"
+  fi
 fi
 if [[ -z "$NATURAL_CKPT" ]]; then NATURAL_CKPT="$(best_natural || true)"; fi
 [[ -s "$NATURAL_CKPT" ]] || { echo "No natural-basis checkpoint. Set NATURAL_CKPT or enable RUN_NATURAL." >&2; exit 2; }
@@ -623,31 +459,11 @@ fi
 # users may legitimately skip natural training and supply a standalone repaired
 # natural checkpoint.
 if [[ "$RUN_TRANSPORT" == "1" ]]; then
-  IFS=$'\t' read -r transport_plan transport_resume transport_epoch < <(
-    stage_training_plan "$OUT_ROOT/checkpoints/transport" witness "$TRANSPORT_EPOCHS" "$NATURAL_CKPT"
-  )
-  case "$transport_plan" in
-    complete)
-      echo "[transport/witness] target already complete: checkpoint=$transport_resume epoch=$transport_epoch target_epochs=$TRANSPORT_EPOCHS; skip training"
-      ;;
-    resume)
-      echo "[transport/witness] resume same stage: checkpoint=$transport_resume completed_epoch=$transport_epoch next_epoch=$((transport_epoch + 1)) target_epochs=$TRANSPORT_EPOCHS"
-      resume_args=(--resume "$transport_resume" --resume-training)
-      ;;
-    warm)
-      echo "[transport/witness] fresh stage warm-start from validated natural checkpoint=$transport_resume"
-      resume_args=(--resume "$transport_resume")
-      ;;
-    scratch)
-      echo "Transport/witness stage has neither a same-stage checkpoint nor NATURAL_CKPT." >&2
-      exit 2
-      ;;
-    *)
-      echo "Internal error: unknown transport training plan '$transport_plan'" >&2
-      exit 2
-      ;;
-  esac
-  if [[ "$transport_plan" != "complete" ]]; then
+  if best_transport >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
+    echo "[transport] keep existing $(best_transport)"
+  else
+    resume_args=()
+    [[ -s "$NATURAL_CKPT" ]] && resume_args=(--resume "$NATURAL_CKPT")
     mapfile -t transport_amp_args < <(amp_args "$TRANSPORT_AMP")
     logrun train_transport_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
       "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
@@ -675,31 +491,9 @@ fi
 
 # Stage 2: train planner/candidate shields without rewriting the transport backbone.
 if [[ "$RUN_PLANNER" == "1" ]]; then
-  IFS=$'\t' read -r planner_plan planner_resume planner_epoch < <(
-    stage_training_plan "$OUT_ROOT/checkpoints/planner" planner "$PLANNER_EPOCHS" "$TRANSPORT_CKPT"
-  )
-  case "$planner_plan" in
-    complete)
-      echo "[planner] target already complete: checkpoint=$planner_resume epoch=$planner_epoch target_epochs=$PLANNER_EPOCHS; skip training"
-      ;;
-    resume)
-      echo "[planner] resume same stage: checkpoint=$planner_resume completed_epoch=$planner_epoch next_epoch=$((planner_epoch + 1)) target_epochs=$PLANNER_EPOCHS"
-      resume_args=(--resume "$planner_resume" --resume-training)
-      ;;
-    warm)
-      echo "[planner] fresh stage warm-start from transport checkpoint=$planner_resume"
-      resume_args=(--resume "$planner_resume")
-      ;;
-    scratch)
-      echo "Planner stage has neither a same-stage checkpoint nor TRANSPORT_CKPT." >&2
-      exit 2
-      ;;
-    *)
-      echo "Internal error: unknown planner training plan '$planner_plan'" >&2
-      exit 2
-      ;;
-  esac
-  if [[ "$planner_plan" != "complete" ]]; then
+  if best_planner >/dev/null && [[ "$FORCE_TRAIN" != "1" ]]; then
+    echo "[planner] keep existing $(best_planner)"
+  else
     mapfile -t planner_amp_args < <(amp_args "$PLANNER_AMP")
     logrun train_planner_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
       "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
@@ -715,11 +509,11 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
       --lr-scheduler plateau --min-lr 1e-6 --save-every 2 \
       --no-positive-oversampling --no-response-traj --no-response-components \
-      --fused-adamw "${planner_amp_args[@]}" "${resume_args[@]}"
+      --fused-adamw "${planner_amp_args[@]}" --resume "$TRANSPORT_CKPT"
   fi
 fi
 if [[ -z "$CKPT" ]]; then CKPT="$(best_planner || true)"; fi
-[[ -s "$CKPT" ]] || { echo "No v16.7 planner checkpoint. Set CKPT or enable RUN_PLANNER." >&2; exit 2; }
+[[ -s "$CKPT" ]] || { echo "No v15 planner checkpoint. Set CKPT or enable RUN_PLANNER." >&2; exit 2; }
 echo "[checkpoint] $CKPT"
 if [[ "$STOP_AFTER_STAGE" == "planner" ]]; then
   echo "[cowp_v16.7] stopped after planner: $OUT_ROOT"

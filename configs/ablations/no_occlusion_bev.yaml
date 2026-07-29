@@ -1,4 +1,0 @@
-ablation:
-  no_occlusion_bev: true
-model:
-  no_occlusion_bev: true

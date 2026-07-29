@@ -1,4 +1,0 @@
-ablation:
-  full_future_roots: true
-training:
-  root_target_mode: full_future
