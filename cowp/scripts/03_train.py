@@ -1630,17 +1630,22 @@ def main() -> None:
 
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
-        # Static DDP is valid whenever the set of trainable/unused parameters is
-        # fixed for the whole run.  v16.6 restricted this optimization to natural
-        # training, while transport/planner still paid an unused-parameter graph
-        # traversal every batch.  v16.7 launchers use zero warm-up freeze, making
-        # those stage graphs static as well.  Keep find_unused=True outside the
-        # fully frozen natural decoder because stage-specific heads can remain
-        # checkpoint-compatible but unused; static_graph caches that set safely.
-        no_freeze_transition = int(args.freeze_backbone_epochs) <= 0
+        # Static DDP is valid only when the set of parameters participating in
+        # backward is invariant for the entire run.  Natural/representation
+        # stages satisfy this after their permanent graph/branch freezes.
+        #
+        # Witness/transport and planner stages do not: their losses contain
+        # data-dependent branches such as ``mask.any()``, positive/negative pair
+        # mining, candidate-budget supervision, and optional response/root
+        # targets.  Consequently, two successive batches can legitimately use
+        # different parameter subsets even when ``freeze_backbone_epochs=0``.
+        # Enabling ``static_graph=True`` for those stages causes the reducer to
+        # fail at the next forward with "Expected to have finished reduction".
+        # Keep ordinary unused-parameter discovery for these stages.  This is a
+        # DDP execution-policy fix only; model outputs, losses, optimizer
+        # parameters, and evaluation behavior are unchanged.
         static_stage_ddp = bool(
-            (permanent_natural_freeze and stage in {"natural", "representation"})
-            or (no_freeze_transition and stage in {"witness", "planner"})
+            permanent_natural_freeze and stage in {"natural", "representation"}
         )
         fully_used_static_natural = bool(
             permanent_natural_freeze and stage in {"natural", "representation"}
