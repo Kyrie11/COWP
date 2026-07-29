@@ -2154,9 +2154,20 @@ class COWPWaymaxPolicy:
                     ).clamp(0.0, 1.0)
                     primary_bad = transport_ucb >= transport_budget
                     option_bad = self.torch.zeros_like(primary_bad)
-                    severe_bad = severe_pair_bad | (
+                    aggregate_severe_bad = (
                         transport_severe >= float(pcfg_runtime.get("candidate_transport_severe_threshold", 0.80))
                     )
+                    # The aggregate tail head is useful for ranking and audit, but it
+                    # compresses all protected relations into one scalar.  Making it
+                    # a second unconditional veto duplicates the localized pair
+                    # certificate and is especially brittle when root-recovery
+                    # labels are sparse.  Keep the pair-localized high-confidence
+                    # veto hard; enable the aggregate veto only as an explicit
+                    # ablation/safety setting.
+                    if bool(pcfg_runtime.get("candidate_transport_aggregate_severe_hard_veto", False)):
+                        severe_bad = severe_pair_bad | aggregate_severe_bad
+                    else:
+                        severe_bad = severe_pair_bad
                 uncertain_mix = float(pcfg_runtime.get("set_transport_uncertain_penalty", 0.25))
                 burden_penalty = transport_risk
                 option_penalty = float(pcfg_runtime.get("candidate_transport_uncertainty_penalty", 0.20)) * transport_uncertainty

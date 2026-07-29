@@ -166,15 +166,26 @@ def paper_aligned_supervision_batch(
     p = ((1.0 - eps_p) * p + eps_p * nat_valid.float() / valid_count) * nat_valid.float()
     p_pair = p[:, None, :, :].expand_as(mode_valid.float())
     conflict_mass = (p_pair * mode_conflict.float()).sum(dim=-1).clamp(0.0, 1.0)
-    opr = (p_pair * mode_retain.float()).sum(dim=-1).clamp(0.0, 1.0)
 
     response_valid = batch["cowp/response/valid"].bool()
     response_safe = batch["cowp/response/is_safe"].bool()
-    safe = response_valid & response_safe & pair[..., None]
+    response_low = batch.get("cowp/response/is_low_burden")
     response_b = _safe_float(batch["cowp/response/burden_total"]).clamp(0.0, 2.0)
-    root_idx = batch["cowp/transport/response_root_index"].long().clamp(0, max(M - 1, 0))
+    low_safe = response_valid & response_safe & pair[..., None]
+    if response_low is not None:
+        low_safe = low_safe & response_low.bool()
+    else:
+        # Older caches may omit the explicit low-burden flag.  Safety alone is
+        # not q_ikm: derive the missing predicate from the agent-adaptive beta
+        # rather than labelling every safe but coercive response as recovery.
+        beta_response = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
+        low_safe = low_safe & (response_b <= beta_response)
+    safe = response_valid & response_safe & pair[..., None]
+    root_idx_raw = batch["cowp/transport/response_root_index"].long()
+    root_in_range = (root_idx_raw >= 0) & (root_idx_raw < M)
+    root_idx = root_idx_raw.clamp(0, max(M - 1, 0))
     root_axis = torch.arange(M, device=root_idx.device).view(*([1] * root_idx.ndim), M)
-    same_root = safe[..., None] & (root_idx[..., None] == root_axis)
+    same_root = safe[..., None] & root_in_range[..., None] & (root_idx[..., None] == root_axis)
     root_values = torch.where(
         same_root,
         response_b[..., None],
@@ -182,6 +193,26 @@ def paper_aligned_supervision_batch(
     )
     root_min = root_values.amin(dim=-2)
     root_min = torch.where(same_root.any(dim=-2), root_min, torch.full_like(root_min, 2.0))
+    direct_root_min = batch.get("cowp/transport/root_min_safe_burden")
+    if direct_root_min is not None:
+        root_min = torch.minimum(root_min, _safe_float(direct_root_min)[..., :M].clamp(0.0, 2.0))
+
+    # q_ikm: explicit/soft same-root low-burden recovery.  v16.7 rebuilt OPR
+    # from mode_retain only, so every conflicting root was counted as destroyed
+    # even when a same-root response existed.  This contradicted Eq. s=(1-c)r+cq
+    # and made train/eval labels systematically over-conservative.
+    root_score = batch.get("cowp/transport/root_low_safe_score")
+    if root_score is None:
+        root_score = torch.zeros_like(mode_valid, dtype=torch.float32)
+        root_score.scatter_add_(
+            -1, root_idx, (low_safe & root_in_range).float()
+        )
+        root_score = root_score.clamp(0.0, 1.0)
+    else:
+        root_score = _safe_float(root_score)[..., :M].clamp(0.0, 1.0)
+    transported = torch.where(mode_conflict, root_score, mode_retain.float())
+    transported = transported * mode_valid.float()
+    opr = (p_pair * transported).sum(dim=-1).clamp(0.0, 1.0)
 
     beta = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
     root_excess = torch.relu(root_min - beta)
@@ -624,6 +655,9 @@ def _root_low_safe_target(
     remain?  Scatter-reducing the explicit slot labels gives that target without
     loading dense response trajectories or relying on a learned root classifier.
     """
+    soft = batch.get("cowp/transport/root_low_safe_score")
+    if soft is not None:
+        return _safe_float(soft)[..., : int(mode_count)].clamp(0.0, 1.0)
     required = (
         "cowp/response/valid",
         "cowp/response/is_safe",
@@ -1945,13 +1979,31 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     ) if "mode_recovery_logits" in pred else None
     if mode_valid is not None and root_low_safe_target is not None:
         mm = mode_valid.bool() & pair[..., None]
+        target_confidence = batch.get("cowp/transport/root_target_confidence")
+        if target_confidence is not None:
+            min_conf = float(weights.get("set_transport_root_target_min_confidence", 0.25))
+            mm = mm & (_safe_float(target_confidence)[..., : mm.shape[-1]] >= min_conf)
         assignment = natural_assignment
         recovery_logit = _align_pred_modes_to_gt(
             _safe_float(pred["mode_recovery_logits"]), assignment
         )
         mode_recovery = _balanced_mode_bce(recovery_logit, root_low_safe_target, mm)
+        conflict_mm = mm
+        if mode_conflict_target is not None:
+            conflict_mm = conflict_mm & mode_conflict_target.bool()
+        mode_recovery_conflict = _balanced_mode_bce(
+            recovery_logit, root_low_safe_target, conflict_mm
+        ) if conflict_mm.any() else _zero_like_loss(recovery_logit)
+        mode_recovery_rank = _within_pair_binary_rank_loss(
+            recovery_logit, (root_low_safe_target >= float(weights.get("set_transport_root_positive_threshold", 0.35))).float(),
+            conflict_mm,
+            margin=float(weights.get("set_transport_mode_recovery_rank_margin", 0.35)),
+            max_roots_per_class=int(weights.get("set_transport_mode_recovery_rank_max_roots", 8)),
+        ) if conflict_mm.any() else _zero_like_loss(recovery_logit)
     else:
         mode_recovery = _zero_like_loss(pred)
+        mode_recovery_conflict = _zero_like_loss(pred)
+        mode_recovery_rank = _zero_like_loss(pred)
 
     # Keep the old response-bank/root-classifier path as an auxiliary
     # reconstruction constraint.  It is useful for interpretability and response
@@ -1975,16 +2027,15 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         rt = _safe_float(recovery_target).clamp(0.0, 1.0)
         rp = _safe_float(pred["root_recovery_mass"]).clamp(1.0e-5, 1.0 - 1.0e-5)
         has_recovery = (rt > float(weights.get("set_transport_recovery_positive_floor", 1.0e-4))).float()
-        active = pair.float()
-        pos = (has_recovery * active).sum()
-        neg = ((1.0 - has_recovery) * active).sum()
-        pos_weight = (neg / pos.clamp_min(1.0)).clamp(1.0, float(weights.get("set_transport_recovery_max_pos_weight", 8.0)))
-        presence = masked_mean(
-            F.binary_cross_entropy_with_logits(torch.logit(rp), has_recovery, reduction="none", pos_weight=pos_weight), pair
+        presence = symmetric_class_balanced_bce_with_logits(
+            torch.logit(rp), has_recovery, pair,
+            max_class_weight=float(weights.get("set_transport_recovery_max_pos_weight", 8.0)),
         )
-        pos_mask = pair & (has_recovery > 0.5)
-        magnitude = masked_mean(torch.abs(rp - rt), pos_mask) if pos_mask.any() else _zero_like_loss(rp)
-        root_recovery = 0.7 * presence + 0.3 * magnitude
+        conflict_pair = pair
+        if mode_conflict_target is not None:
+            conflict_pair = conflict_pair & mode_conflict_target.bool().any(dim=-1)
+        magnitude = masked_mean(torch.abs(rp - rt), conflict_pair) if conflict_pair.any() else _zero_like_loss(rp)
+        root_recovery = 0.5 * presence + 0.5 * magnitude
     else:
         root_recovery = _zero_like_loss(pred)
 
@@ -2089,6 +2140,8 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
         + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
         + float(weights.get("set_transport_mode_recovery", 2.0)) * mode_recovery
+        + float(weights.get("set_transport_mode_recovery_conflict", 2.0)) * mode_recovery_conflict
+        + float(weights.get("set_transport_mode_recovery_rank", 0.5)) * mode_recovery_rank
         + float(weights.get("set_transport_response_root_aux", 0.15)) * response_root_aux
         + float(weights.get("set_transport_root_recovery", 0.75)) * root_recovery
         + float(weights.get("set_transport_candidate_budget", 2.0)) * candidate_budget
@@ -2098,6 +2151,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         "tail_burden": tail_burden, "conflict": conflict, "source": source, "response": response,
         "mode_conflict": mode_conflict, "mode_conflict_rank": mode_conflict_rank, "mode_retain": mode_retain,
         "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
+        "mode_recovery_conflict": mode_recovery_conflict, "mode_recovery_rank": mode_recovery_rank,
         "response_root_aux": response_root_aux, "root_recovery": root_recovery,
         "candidate_budget": candidate_budget,
         "candidate_budget_coverage": candidate_budget_coverage.detach(),

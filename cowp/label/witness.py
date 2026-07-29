@@ -8,6 +8,7 @@ from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
 from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
+from cowp.label.safe_responses import root_conditioned_recovery_search
 
 
 def _event_interval(mask: np.ndarray) -> tuple[int, int]:
@@ -37,6 +38,39 @@ def _weighted_upper_cvar(values: np.ndarray, weights: np.ndarray, tail_mass: flo
     if denom <= 1.0e-12:
         return 0.0
     return float(np.sum(take * v) / denom)
+
+
+
+def _root_affinity(response_traj: np.ndarray, natural_roots: np.ndarray, cfg: dict) -> np.ndarray:
+    """Soft multi-horizon affinity used only when a response lacks explicit identity.
+
+    A single full-horizon ADE argmin creates brittle one-hot labels and swaps roots
+    that share an endpoint.  This affinity uses the same 1/3/5/8 s semantics as the
+    learned root alignment and exposes low-confidence coverage instead of treating
+    an uncovered root as a confirmed negative.
+    """
+    roots = np.asarray(natural_roots, dtype=np.float32)
+    response = np.asarray(response_traj, dtype=np.float32)
+    if roots.ndim != 3 or len(roots) == 0:
+        return np.zeros((0,), dtype=np.float32)
+    total = min(int(response.shape[0]), int(roots.shape[1]))
+    if total <= 0:
+        return np.full((len(roots),), 1.0 / max(len(roots), 1), dtype=np.float32)
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-4)
+    horizons_s = cfg.get("response", {}).get("root_assignment_horizons_s", [1.0, 3.0, 5.0, 8.0])
+    costs = np.zeros((len(roots),), dtype=np.float64)
+    used = 0
+    distance = np.linalg.norm(roots[:, :total, :2] - response[None, :total, :2], axis=-1)
+    for seconds in horizons_s:
+        steps = max(1, min(total, int(round(float(seconds) / dt))))
+        costs += distance[:, :steps].mean(axis=-1)
+        used += 1
+    costs /= max(used, 1)
+    temperature = max(float(cfg.get("response", {}).get("root_assignment_temperature_m", 2.0)), 1.0e-3)
+    logits = -(costs - float(np.min(costs))) / temperature
+    affinity = np.exp(np.clip(logits, -40.0, 0.0))
+    affinity /= max(float(np.sum(affinity)), 1.0e-12)
+    return affinity.astype(np.float32)
 
 
 def _mechanism_token(comps: np.ndarray, opr: float, rho: PriorityRelation, cfg: dict) -> MechanismToken:
@@ -96,9 +130,12 @@ def certify_witnesses(
     mode_valid = np.zeros((K, A, M), dtype=bool)
     mode_conflict = np.zeros((K, A, M), dtype=bool)
     mode_retained_low_safe = np.zeros((K, A, M), dtype=bool)
-    response_root_index = np.zeros((K, A, R), dtype=np.int32)
+    response_root_index = np.full((K, A, R), -1, dtype=np.int32)
     response_is_min_burden = np.zeros((K, A, R), dtype=bool)
     root_recovery_mass = np.zeros((K, A), dtype=np.float32)
+    root_low_safe_score = np.zeros((K, A, M), dtype=np.float32)
+    root_target_confidence = np.zeros((K, A, M), dtype=np.float32)
+    transported_opr = np.ones((K, A), dtype=np.float32)
 
     cur = scene.current_time_index
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
@@ -163,13 +200,36 @@ def certify_witnesses(
             # roots.  High-burden/non-retained roots therefore contribute zero.
             opr[k, a] = float(np.clip(low_safe_mass, 0.0, 1.0)) if use_option else 1.0
 
-            # Assign every ego-conditioned response to the nearest natural root.
-            # This produces explicit same-root transport supervision without
-            # changing the response generator or storing extra trajectories.
+            # Same-root response supervision.  Fresh v16.8 labels use the explicit
+            # root identity emitted by the response generator.  Legacy/global
+            # responses fall back to a soft multi-horizon affinity; low-confidence
+            # coverage is recorded separately and is not forced into a hard negative.
             valid_roots = np.where(natural["valid"][a])[0]
+            # Candidate-conditioned root oracle: q_ikm is evaluated with an equal
+            # root-preserving control budget before considering the compact/global
+            # response slots.  This removes the top-R coverage bias from the core
+            # coercion target while retaining response slots for auxiliary decoding.
+            if bool(cfg.get("response", {}).get("root_conditioned_transport", {}).get("enabled", True)):
+                for root in valid_roots:
+                    root = int(root)
+                    if not (mode_valid[k, a, root] and mode_conflict[k, a, root]):
+                        continue
+                    best_b, low_ok, _ = root_conditioned_recovery_search(
+                        natural["traj"][a, root], ego, cfg,
+                        object_type=object_type, beta=beta, rho=rho,
+                    )
+                    root_target_confidence[k, a, root] = 1.0
+                    root_min_safe_burden[k, a, root] = min(
+                        float(root_min_safe_burden[k, a, root]), float(best_b)
+                    )
+                    if low_ok:
+                        root_low_safe_score[k, a, root] = 1.0
+
             valid_resp = np.where(response["valid"][k, a])[0]
-            root_low_safe = np.zeros(M, dtype=bool)
             response_primitive_burden: dict[int, float] = {}
+            explicit_root = response.get("root_index")
+            explicit_affinity = response.get("root_affinity")
+            min_affinity = float(cfg.get("response", {}).get("root_assignment_min_affinity", 0.35))
             for ridx in valid_resp:
                 comps = np.asarray(response["burden_components"][k, a, ridx], dtype=np.float32).copy()
                 # OPR is constrained separately; B_prim contains physical and
@@ -179,25 +239,52 @@ def certify_witnesses(
                 response_primitive_burden[int(ridx)] = float(weighted_burden_total(comps, cfg))
 
             if len(valid_roots):
-                nat_xy = natural["traj"][a, valid_roots, :, :2]
+                nat_roots = natural["traj"][a, valid_roots]
                 for ridx in valid_resp:
-                    rxy = response["traj"][k, a, ridx, :, :2]
-                    d = np.mean(np.linalg.norm(nat_xy - rxy[None, :, :], axis=-1), axis=-1)
-                    root = int(valid_roots[int(np.argmin(d))])
+                    affin = np.zeros(M, dtype=np.float32)
+                    explicit = int(explicit_root[k, a, ridx]) if explicit_root is not None else -1
+                    if explicit in set(valid_roots.tolist()):
+                        conf = 1.0
+                        if explicit_affinity is not None:
+                            conf = float(np.clip(explicit_affinity[k, a, ridx], 0.0, 1.0))
+                        affin[explicit] = max(conf, min_affinity)
+                    else:
+                        local = _root_affinity(response["traj"][k, a, ridx], nat_roots, cfg)
+                        affin[valid_roots] = local
+                    root = int(np.argmax(affin))
                     response_root_index[k, a, ridx] = root
+                    root_target_confidence[k, a] = np.maximum(root_target_confidence[k, a], affin)
                     is_low = response_primitive_burden[int(ridx)] <= beta
                     if response["is_safe"][k, a, ridx] and is_low:
-                        root_low_safe[root] = True
+                        root_low_safe_score[k, a] = np.maximum(root_low_safe_score[k, a], affin)
+
                 for root in valid_roots:
                     rset = [
                         int(r) for r in valid_resp
                         if int(response_root_index[k, a, r]) == int(root)
                         and bool(response["is_safe"][k, a, r])
+                        and float(root_target_confidence[k, a, root]) >= min_affinity
                     ]
                     if rset:
                         best = min(rset, key=lambda r: response_primitive_burden[r])
                         response_is_min_burden[k, a, best] = True
                         root_min_safe_burden[k, a, root] = response_primitive_burden[best]
+
+            # Eq. (option_preservation) must include transported conflict roots:
+            # s=(1-c)r+cq.  v16.7 used only the non-conflict term and therefore
+            # labelled every conflicting natural root as lost even when a same-root
+            # low-burden safe response existed.
+            recovered = np.clip(root_low_safe_score[k, a], 0.0, 1.0)
+            transported_root = mode_retained_low_safe[k, a].astype(np.float32)
+            transported_root = np.where(mode_conflict[k, a], recovered, transported_root)
+            transported_opr[k, a] = float(np.clip(np.sum(root_weight * transported_root), 0.0, 1.0))
+            if use_option:
+                opr[k, a] = transported_opr[k, a]
+            for root in valid_roots:
+                if mode_conflict[k, a, root] and recovered[root] > 0.0:
+                    src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, root])
+                    src = src if 0 <= src < 4 else int(NaturalSource.PAD)
+                    low_safe_mass_by_source[k, a, src] += float(root_weight[root] * recovered[root])
 
             # Both OPR and tail burden use the same floor-smoothed natural-root
             # measure.  CVaR is conditioned on roots that conflict with ego and
@@ -205,7 +292,7 @@ def certify_witnesses(
             conflict_weight = root_weight * mode_valid[k, a] * mode_conflict[k, a]
             denom = float(np.sum(conflict_weight))
             if denom > 1e-8:
-                root_recovery_mass[k, a] = float(np.sum(conflict_weight * root_low_safe) / denom)
+                root_recovery_mass[k, a] = float(np.sum(conflict_weight * recovered) / denom)
             root_excess = np.maximum(root_min_safe_burden[k, a] - beta, 0.0)
             tail_burden_excess[k, a] = _weighted_upper_cvar(
                 root_excess,
@@ -288,4 +375,7 @@ def certify_witnesses(
         "transport_response_root_index": response_root_index,
         "transport_response_is_min_burden": response_is_min_burden,
         "transport_root_recovery_mass": root_recovery_mass,
+        "transport_root_low_safe_score": root_low_safe_score,
+        "transport_root_target_confidence": root_target_confidence,
+        "transport_transported_opr": transported_opr,
     }

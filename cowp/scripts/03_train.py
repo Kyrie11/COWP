@@ -518,7 +518,10 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
                 st_for_loss["_natural_pred_source_logits"] = natural_pred_source_logits
             stl = set_transport_loss(st_for_loss, batch, loss_weights)
             out.update({f"set_transport/{k}": v for k, v in stl.items() if k != "loss"})
-            losses.append(float(loss_weights.get("set_transport", 1.0)) * stl["loss"])
+            transport_scale_key = "planner_set_transport_scale" if stage == "planner" else "set_transport"
+            transport_scale = float(loss_weights.get(transport_scale_key, loss_weights.get("set_transport", 1.0)))
+            if transport_scale > 0.0:
+                losses.append(transport_scale * stl["loss"])
         response_targets_available = all(
             key in batch for key in (
                 "cowp/response/valid", "cowp/response/is_safe",
@@ -557,6 +560,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         outcome = planner_outcome_supervision(pred.get("outcome"), pred["planner_score"], batch, loss_weights)
         priority_claim = priority_claim_loss(pred.get("priority_claim_logits"), batch, loss_weights)
         cls = candidate_classification_loss(pred["planner_score"], batch, loss_weights)
+        cert_weight = float(loss_weights.get("candidate_certificate", 1.0))
         cert = candidate_certificate_loss(pred, batch, loss_weights)
         out["planner/ranking"] = rank
         out["planner/imitation"] = imitation
@@ -576,7 +580,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             + loss_weights.get("closed_loop_legacy", 0.0) * outcome_legacy
             + loss_weights.get("priority_claim", 0.5) * priority_claim
             + cls["loss"]
-            + float(loss_weights.get("candidate_certificate", 1.0)) * cert["loss"]
+            + cert_weight * cert["loss"]
         )
     if not losses:
         # Representation fallback: keep graph/planner path differentiable.
@@ -1076,13 +1080,15 @@ def _set_stage_freeze(
     *,
     freeze_natural_during_witness: bool = False,
     freeze_graph_during_natural: bool = False,
+    freeze_transport_during_planner: bool = True,
+    freeze_response_during_planner: bool = True,
 ) -> None:
     """Granular v11 freeze policy.
 
-    Transport learning always updates candidate, natural and witness identity heads;
-    only the expensive graph encoder is protected during warm-up.  Planner learning
-    keeps natural/witness identities fixed, while allowing candidate features to
-    adapt after warm-up.  Set-transport and response modules always remain trainable.
+    Transport learning updates candidate and mechanism heads while preserving the
+    repaired natural basis.  Planner learning keeps the validated certificate and
+    response semantics fixed by default, so the final planner checkpoint cannot
+    silently trade mechanism quality for ranking loss.
     """
     core = model.module if hasattr(model, "module") else model
     if stage in {"natural", "representation"}:
@@ -1113,6 +1119,8 @@ def _set_stage_freeze(
             "candidate_encoder": bool(warmup_frozen),
             "natural_decoder": True,
             "witness_decoder": True,
+            "set_transport": bool(freeze_transport_during_planner),
+            "response_decoder": bool(freeze_response_during_planner),
         }
     else:
         policy = {"graph": False, "candidate_encoder": False, "natural_decoder": False, "witness_decoder": False}
@@ -1612,13 +1620,15 @@ def main() -> None:
         and bool(tcfg.get("freeze_graph_during_natural", False))
         and natural_unfreeze_epoch < 0
     )
-    if stage in {"natural", "representation"}:
+    if stage in {"natural", "representation", "planner"}:
         _set_stage_freeze(
             model,
             stage,
             False,
             freeze_natural_during_witness=bool(tcfg.get("freeze_natural_during_witness", False)),
             freeze_graph_during_natural=permanent_natural_freeze,
+            freeze_transport_during_planner=bool(tcfg.get("freeze_transport_during_planner", True)),
+            freeze_response_during_planner=bool(tcfg.get("freeze_response_during_planner", True)),
         )
     trainable_params, total_params = _parameter_counts(model)
     _rank0_print(
@@ -1801,6 +1811,8 @@ def main() -> None:
                 freeze_natural_during_witness=bool(
                     tcfg.get("freeze_natural_during_witness", False)
                 ),
+                freeze_transport_during_planner=bool(tcfg.get("freeze_transport_during_planner", True)),
+                freeze_response_during_planner=bool(tcfg.get("freeze_response_during_planner", True)),
                 freeze_graph_during_natural=(
                     bool(tcfg.get("freeze_graph_during_natural", False))
                     and (

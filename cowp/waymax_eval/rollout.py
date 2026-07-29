@@ -11,6 +11,7 @@ import numpy as np
 
 from cowp.core.constants import MacroType
 from cowp.models.root_alignment import natural_root_alignment_cost
+from cowp.models.losses import paper_aligned_supervision_batch
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_batch
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
@@ -747,7 +748,10 @@ def _select_from_learned(
                 transport_ucb = (transport_risk + transport_ucb_scale * transport_uncertainty).clamp(0.0, 1.0)
                 primary_bad = transport_ucb >= transport_budget
                 severe_prob_threshold = float(pcfg_gate.get("candidate_transport_severe_threshold", 0.80))
-                severe_bad = severe_pair_bad | (transport_severe >= severe_prob_threshold)
+                aggregate_severe_hard = bool(pcfg_gate.get("candidate_transport_aggregate_severe_hard_veto", False))
+                severe_bad = severe_pair_bad | (
+                    aggregate_severe_hard & (transport_severe >= severe_prob_threshold)
+                )
                 option_bad = torch.zeros_like(primary_bad)
             else:
                 primary_bad = ((witness_cert >= witness_threshold) & priority_claim & confident_pair).any(dim=-1)
@@ -902,13 +906,18 @@ def _root_low_safe_target_eval(batch, mode_count: int):
     """
     import torch
 
+    if int(mode_count) <= 0:
+        return None
+    soft = batch.get("cowp/transport/root_low_safe_score")
+    if soft is not None:
+        return soft.float()[..., : int(mode_count)].clamp(0.0, 1.0).ge(0.35)
     required = (
         "cowp/response/valid",
         "cowp/response/is_safe",
         "cowp/response/is_low_burden",
         "cowp/transport/response_root_index",
     )
-    if any(k not in batch for k in required) or int(mode_count) <= 0:
+    if any(k not in batch for k in required):
         return None
     low_safe = (
         batch["cowp/response/valid"].bool()
@@ -979,6 +988,9 @@ def _root_transport_eval_arrays(pred, batch):
         candidate_valid = batch["cowp/candidates/valid"].bool()[:, :, None, None]
         critical_valid = batch["cowp/critical/valid"].bool()[:, None, :, None]
         all_mask = mode_valid.bool() & candidate_valid & critical_valid
+        target_confidence = batch.get("cowp/transport/root_target_confidence")
+        if torch.is_tensor(target_confidence):
+            all_mask = all_mask & (target_confidence.float()[..., : all_mask.shape[-1]] >= 0.25)
         conflict_mask = all_mask & mode_conflict.bool()
         rho = batch.get("cowp/witness/rho")
         if torch.is_tensor(rho):
@@ -1574,6 +1586,20 @@ def _learned_offline_candidate_eval_many(
             if "critical_mask" in pred:
                 batch = dict(batch)
                 batch["cowp/critical/valid"] = pred["critical_mask"].bool()
+            # Training and mechanism evaluation must use one canonical definition.
+            # v16.7 trained on reconstructed paper-aligned targets but evaluated
+            # against stale v9 false-safe/NCF labels, making calibration impossible
+            # to interpret.  Rebuild the labels here from the same transport fields.
+            ncf_cfg = cfg.get("ncf", {}) if isinstance(cfg, dict) else {}
+            eval_target_weights = {
+                "paper_aligned_witness_targets": 1.0,
+                "set_transport_probability_floor": float(ncf_cfg.get("root_probability_floor", 0.02)),
+                "set_transport_cvar_tail_mass": float(ncf_cfg.get("cvar_tail_mass", 0.25)),
+                "witness_conflict_mass_floor": float(ncf_cfg.get("positive_min_natural_conflict_mass", 0.10)),
+                "witness_burden_gamma": float(ncf_cfg.get("gamma", 0.10)),
+                "witness_opr_alpha": float(ncf_cfg.get("alpha_opr", 0.35)),
+            }
+            batch = paper_aligned_supervision_batch(batch, eval_target_weights)
             alpha = float(cfg.get("planning", {}).get("alpha_opr_infer", cfg.get("ncf", {}).get("alpha_opr", 0.35)))
             B = int(batch["cowp/candidates/valid"].shape[0])
             batch_labels = [_slim_label_from_batch_item(batch, i) for i in range(B)]

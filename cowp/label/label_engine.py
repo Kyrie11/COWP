@@ -88,6 +88,8 @@ def build_labels_for_scene(
         "cowp/response/traj": response["traj"],
         "cowp/response/valid": response["valid"],
         "cowp/response/source": response["source"],
+        "cowp/response/root_index": response.get("root_index", np.full_like(response["source"], -1, dtype=np.int32)),
+        "cowp/response/root_affinity": response.get("root_affinity", np.zeros_like(response["burden_total"], dtype=np.float32)),
         "cowp/response/is_safe": response["is_safe"],
         "cowp/response/is_low_burden": response["is_low_burden"],
         "cowp/response/burden_total": response["burden_total"],
@@ -115,6 +117,9 @@ def build_labels_for_scene(
         "cowp/transport/response_root_index": witness["transport_response_root_index"],
         "cowp/transport/response_is_min_burden": witness["transport_response_is_min_burden"],
         "cowp/transport/root_recovery_mass": witness["transport_root_recovery_mass"],
+        "cowp/transport/root_low_safe_score": witness["transport_root_low_safe_score"],
+        "cowp/transport/root_target_confidence": witness["transport_root_target_confidence"],
+        "cowp/transport/transported_opr": witness["transport_transported_opr"],
         "map/conflict_regions": conflict_tensor,
         "map/conflict_region_valid": conflict_valid,
     }

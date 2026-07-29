@@ -1,0 +1,459 @@
+time:
+  dt: 0.1
+  history_steps: 11
+  future_steps: 80
+  rollout_horizon_steps: 80
+  short_label_horizon_steps: 50
+dataset:
+  require_interaction_heavy: true
+  collect_scene_metadata: true
+limits:
+  max_agents: 128
+  max_critical_agents: 6
+  max_candidates: 64
+  max_natural_alternatives: 24
+  max_safe_responses: 32
+  max_conflict_regions: 64
+  max_roadgraph_points: 20000
+candidate:
+  map_filter_enabled: true
+  map_filter_require_available: false
+  map_filter_stride: 4
+  map_filter_lane_point_stride: 2
+  map_filter_min_lane_points: 64
+  map_filter_local_radius_m: 140.0
+  map_max_distance_vehicle_m: 5.0
+  map_min_compliant_fraction: 0.8
+  map_hard_max_distance_m: 12.0
+  terminal_speed_offsets_mps:
+  - -5
+  - -3
+  - -1
+  - 0
+  - 1
+  - 3
+  - 5
+  terminal_s_offsets_m:
+  - -25
+  - -15
+  - -8
+  - 0
+  - 8
+  - 15
+  - 25
+  - 35
+  terminal_lattice_speed_position_blend: 0.5
+  dedup_endpoint_tolerance_m: 0.25
+  dedup_speed_tolerance_mps: 0.25
+  dedup_all_macro_types: false
+  yield_decel_values_mps2:
+  - -1.0
+  - -2.0
+  - -3.0
+  accelerate_values_mps2:
+  - 0.5
+  - 1.0
+  - 1.5
+  stop_margin_to_conflict_m:
+  - 2.0
+  - 5.0
+  - 8.0
+  merge_time_offsets_s:
+  - -2.0
+  - -1.2
+  - -0.4
+  - 0.0
+  - 0.4
+  - 1.2
+  - 2.0
+  lane_change_duration_s:
+  - 2.5
+  - 3.5
+  - 4.5
+  - 5.5
+  lane_change_start_delay_s:
+  - 0.0
+  - 0.5
+  - 1.0
+  - 1.5
+  - 2.0
+  max_accel_mps2: 4.0
+  max_decel_mps2: 6.0
+  max_jerk_mps3: 10.0
+  max_curvature_inv_m: 0.2
+  min_valid_horizon_steps: 50
+  ignore_initial_jerk_steps: 3
+  jerk_check_percentile: 99.0
+conflict:
+  tta_delta_threshold: 3.0
+  conflict_time_buffer: 0.8
+  intersection_radius_m: 5.0
+  merge_radius_m: 8.0
+  lane_intersection_heading_threshold_deg: 30.0
+  same_direction_heading_threshold_deg: 30.0
+priority:
+  priority_delay_tolerance_s: 0.8
+  priority_progress_loss_tolerance_m: 5.0
+  arrival_order_margin_s: 0.5
+  max_comfort_decel_vehicle: -3.0
+  max_comfort_accel_vehicle: 2.5
+  max_comfort_jerk_vehicle: 3.0
+  gap_loss_threshold_m: 6.0
+  gap_loss_threshold_s: 1.0
+critical:
+  max_current_distance_m: 40.0
+  max_future_distance_m: 15.0
+  always_keep_current_distance_m: 18.0
+  current_distance_requires_future_or_conflict: true
+  min_score: 1.5
+  tta_delta_threshold: 3.0
+  vehicle_only_main: false
+natural:
+  obs_speed_scale:
+  - 0.85
+  - 0.95
+  - 1.0
+  - 1.05
+  - 1.15
+  obs_time_shift_s:
+  - -0.5
+  - 0.0
+  - 0.5
+  obs_lateral_offset_m:
+  - -0.3
+  - 0.0
+  - 0.3
+  max_obs_samples: 8
+  neutral_acc_values_mps2:
+  - -1.0
+  - -0.5
+  - 0.0
+  - 0.5
+  - 1.0
+  neutral_target_speed_offsets_mps:
+  - -2.0
+  - 0.0
+  - 2.0
+  max_neutral_samples: 8
+  prio_acc_values_mps2:
+  - -0.5
+  - 0.0
+  - 0.5
+  prio_speed_min_mps: 0.0
+  prio_max_samples: 8
+  min_natural_alternatives: 6
+  source_weight_obs: 1.0
+  source_weight_neu: 0.8
+  source_weight_prio: 1.2
+  sigma_traj_m: 15.0
+  sigma_b: 0.5
+  map_filter_enabled: true
+  map_filter_require_available: false
+  map_filter_stride: 4
+  map_min_compliant_fraction: 0.8
+  map_max_distance_vehicle_m: 5.0
+  map_max_distance_vru_m: 8.0
+  map_hard_max_distance_m: 12.0
+  obs_decontamination_enabled: true
+  obs_pressure_radius_m: 12.0
+  obs_neutral_relief_scale_m: 6.0
+  obs_contamination_weight: 0.9
+  obs_drop_contamination_above: 0.9
+  obs_weight_floor: 0.05
+response:
+  safe_budget_search:
+    enabled: true
+    beam_width: 16
+    max_return: 16
+    unsafe_penalty: 100.0
+    hard_profile_penalty: 0.25
+    comfort_decel_values_mps2:
+    - -1.0
+    - -1.5
+    - -2.0
+    hard_decel_values_mps2:
+    - -3.0
+    - -4.0
+    - -5.0
+    reaction_delays_s:
+    - 0.0
+    - 0.3
+    - 0.6
+    recover_accel_values_mps2:
+    - 0.0
+    - 0.5
+    lateral_slack_offsets_m:
+    - -0.25
+    - 0.25
+  response_acc_values_mps2:
+  - -4.5
+  - -3.5
+  - -2.5
+  - -1.5
+  - -0.5
+  - 0.0
+  - 0.5
+  - 1.0
+  response_start_delay_s:
+  - 0.0
+  - 0.3
+  - 0.6
+  - 1.0
+  response_duration_s:
+  - 1.0
+  - 2.0
+  - 3.0
+  emergency_decel_values_mps2:
+  - -6.0
+  - -8.0
+  emergency_reaction_delay_s:
+  - 0.0
+  - 0.2
+  - 0.5
+  max_response_primitives_per_agent: 72
+  max_predicted_responses_per_agent: 8
+  max_emergency_responses_per_agent: 4
+  root_conditioned_transport:
+    enabled: true
+    max_roots_per_agent: 24
+    profiles:
+    - accel_mps2: 0.0
+      start_delay_s: 0.0
+      duration_s: 1.0
+    - accel_mps2: -1.5
+      start_delay_s: 0.2
+      duration_s: 2.0
+    - accel_mps2: 0.75
+      start_delay_s: 0.2
+      duration_s: 1.5
+    label_search_profiles:
+    - accel_mps2: 0.0
+      start_delay_s: 0.0
+      duration_s: 1.0
+    - accel_mps2: -0.75
+      start_delay_s: 0.1
+      duration_s: 1.5
+    - accel_mps2: -1.5
+      start_delay_s: 0.0
+      duration_s: 2.0
+    - accel_mps2: -2.5
+      start_delay_s: 0.0
+      duration_s: 2.5
+    - accel_mps2: -3.5
+      start_delay_s: 0.0
+      duration_s: 1.5
+    - accel_mps2: -1.5
+      start_delay_s: 0.4
+      duration_s: 2.5
+    - accel_mps2: 0.5
+      start_delay_s: 0.1
+      duration_s: 1.5
+    - accel_mps2: 1.0
+      start_delay_s: 0.0
+      duration_s: 2.0
+    - accel_mps2: 1.5
+      start_delay_s: 0.0
+      duration_s: 1.5
+  root_assignment_horizons_s:
+  - 1.0
+  - 3.0
+  - 5.0
+  - 8.0
+  root_assignment_temperature_m: 2.0
+  root_assignment_min_affinity: 0.35
+unsafe:
+  collision_inflation_m: 0.1
+  near_miss_distance_vehicle_m: 1.0
+  near_miss_distance_vru_m: 1.5
+  ttc_min_vehicle_s: 1.5
+  ttc_distance_gate_vehicle_m: 15.0
+  ttc_min_vru_s: 2.0
+  ttc_distance_gate_vru_m: 20.0
+  rss_reaction_time_s: 0.5
+  rss_a_max_accel: 2.0
+  rss_b_min_comfort: 3.0
+  rss_b_max_front: 6.0
+  rss_min_gap_m: 2.0
+  severe_offroad_distance_m: 4.0
+burden:
+  beta0_vehicle: 0.65
+  beta0_cyclist: 0.55
+  beta0_pedestrian: 0.5
+  beta_min: 0.45
+  beta_max: 0.85
+  low_speed_threshold_mps: 5.0
+  dense_neighbor_count_radius_m: 30.0
+  dense_neighbor_count_threshold: 8
+  weights:
+    acc: 0.25
+    jerk: 0.1
+    prog: 0.2
+    risk: 0.2
+    option: 0.15
+    norm: 0.1
+  vehicle:
+    a_comf_pos: 2.0
+    a_comf_neg: -3.0
+    a_hard_pos: 4.0
+    a_hard_neg: -6.0
+    j_comf: 3.0
+    j_hard: 8.0
+    delay_norm_s: 4.0
+    progress_loss_norm_m: 20.0
+  cyclist:
+    a_comf_pos: 1.5
+    a_comf_neg: -2.5
+    a_hard_pos: 3.0
+    a_hard_neg: -5.0
+    j_comf: 2.5
+    j_hard: 7.0
+    delay_norm_s: 4.0
+    progress_loss_norm_m: 15.0
+  pedestrian:
+    a_comf_pos: 1.0
+    a_comf_neg: -1.5
+    a_hard_pos: 2.0
+    a_hard_neg: -3.0
+    j_comf: 1.5
+    j_hard: 5.0
+    delay_norm_s: 4.0
+    progress_loss_norm_m: 8.0
+ncf:
+  alpha_opr: 0.35
+  gamma: 0.1
+  min_alt_weight: 0.03
+  positive_min_natural_conflict_mass: 0.1
+  root_probability_floor: 0.02
+  cvar_tail_mass: 0.25
+planning:
+  online_plan_continuity_weight: 0.2
+  online_plan_continuity_horizon_steps: 12
+  online_plan_continuity_scale_m: 3.0
+  set_transport_root_mass_scale: 1.0
+  p_hard: 0.75
+  p_soft: 0.45
+  alpha_opr_infer: 0.35
+  ncf_gamma_infer: 0.1
+  fallback_decel_mps2: -2.0
+  emergency_decel_mps2: -6.0
+  online_lane_change_offsets_m:
+  - -3.5
+  - 3.5
+  online_candidate_dedup_endpoint_m: 0.08
+  min_online_candidates: 8
+  max_online_critical_agents: 4
+  online_critical_score_threshold: 1.2
+  online_critical_max_distance_m: 55.0
+  online_critical_max_closest_m: 18.0
+  max_online_pair_conflict_tokens: 24
+  max_online_map_tokens: 12
+  online_map_token_spacing_m: 6.0
+  online_lane_change_duration_s: 4.0
+  evidential_probability_mix: 1.0
+  evidential_ucb_scale: 0.0
+  witness_probability_source: evidential
+  witness_temperature: 1.0
+  witness_logit_bias: 0.0
+  adaptive_frontier_margin: 0.3
+  candidate_certificate_penalty: 2.5
+  candidate_min_ncf_prob: 0.15
+  candidate_max_false_safe_prob: 0.75
+  candidate_risk_ncf_weight: 1.0
+  candidate_risk_false_safe_weight: 2.0
+  candidate_risk_quality_weight: 0.75
+  candidate_pair_risk_mix: 0.75
+  candidate_frontier_keep_fraction: 0.55
+  candidate_frontier_min_keep: 1
+  candidate_frontier_max_keep: 8
+  candidate_frontier_shield_tie_mix: 0.1
+  candidate_selection_risk_budget: 0.12
+  candidate_selection_min_keep: 1
+  candidate_selection_score_weight: 0.08
+  candidate_selection_progress_weight: 0.05
+  candidate_selection_action_weight: 1.25
+  candidate_selection_rule_weight: 0.6
+  candidate_selection_outcome_weight: 0.0
+  online_ignore_initial_jerk_steps: 3
+  online_extra_accel_values_mps2:
+  - -4.0
+  - -2.5
+  - -1.5
+  - -0.5
+  - 0.25
+  - 0.75
+  - 1.25
+  - 2.0
+  candidate_structured_logit_weight: 1.0
+  candidate_certificate_residual_scale: 0.15
+  candidate_structured_decision_mix: 0.65
+  candidate_cert_allow_hybrid_fallback: false
+  candidate_cert_hybrid_fallback_mix: 0.0
+  candidate_cert_flat_fallback_mix: 0.0
+  candidate_pressure_prior_mix: 0.1
+  candidate_pressure_prior_penalty: 0.0
+  candidate_rule_risk_mix: 0.4
+  candidate_action_risk_mix: 1.0
+  candidate_outcome_risk_mix: 0.0
+  candidate_frontier_min_progress_m: 1.0
+  candidate_frontier_min_progress_ratio: 0.05
+  candidate_frontier_score_slack: 1.25
+  candidate_frontier_max_action_risk: 0.65
+  candidate_action_accel_soft_mps2: 3.0
+  candidate_action_accel_hard_mps2: 7.0
+  candidate_action_jerk_soft_mps3: 5.0
+  candidate_action_jerk_hard_mps3: 15.0
+  candidate_action_yaw_rate_soft_rps: 0.5
+  candidate_action_yaw_rate_hard_rps: 1.5
+  planner_detach_witness_features: true
+  online_other_future_source: constant_velocity
+  planner_detach_backbone_features: true
+  candidate_frontier_mode: exact_topk
+  candidate_pareto_epsilon: 0.025
+  candidate_action_projection_risk_mix: 0.75
+  action_projection_error_scale_m: 1.25
+  online_action_risk_horizon_steps: 8
+  candidate_hard_max_action_risk: 0.45
+  candidate_hard_max_rule_risk: 0.7
+  set_transport_conflict_mass_floor: 0.1
+  set_transport_burden_temperature: 0.08
+  set_transport_gate_temperature: 0.06
+  set_transport_calibration_scale: 0.1
+  set_transport_hard_max_uncertainty: 0.4
+  set_transport_opr_ucb_scale: 0.5
+  set_transport_uncertain_penalty: 0.25
+  candidate_transport_tail_temperature: 0.12
+  candidate_transport_budget: 0.35
+  pair_witness_threshold: 0.7
+  candidate_transport_pure_selector: true
+  candidate_transport_budget_scale: 1.0
+  candidate_transport_budget_bias: 0.0
+  candidate_transport_ucb_scale: 0.15
+  candidate_transport_uncertainty_penalty: 0.15
+  candidate_transport_severe_threshold: 0.85
+  candidate_transport_residual_scale: 0.2
+  candidate_transport_gate_mode: pairmax
+  candidate_transport_aggregate_severe_hard_veto: false
+waymax:
+  max_delta_yaw_rad: 0.12
+diagnostics:
+  min_mean_candidate_valid: 12.0
+  min_mean_critical_valid: 1.0
+  max_mean_critical_valid: 6.5
+  min_scenes_with_ncf_candidate_ratio: 0.35
+  min_mean_candidate_endpoint_spread_m: 6.0
+  target_positive_pair_ratio:
+  - 0.02
+  - 0.35
+  target_false_safe_candidate_ratio:
+  - 0.05
+  - 0.45
+  target_ncf_candidate_ratio:
+  - 0.1
+  - 0.8
+  min_stress_eligible_scene_ratio: 0.01
+  min_response_safe_pair_ratio: 0.6
+  min_mean_natural_alternatives: 4.0
+  min_mechanism_token_types: 4
+  min_waymax_rollout_candidate_ratio: 0.9
+model:
+  set_transport_hidden: 96

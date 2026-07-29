@@ -45,6 +45,12 @@ class FileStats:
     recovery_count: int = 0
     recovery_out_of_range: int = 0
     recovery_hist: np.ndarray | None = None
+    conflict_root_positive: int = 0
+    conflict_root_total: int = 0
+    conflict_root_confident: int = 0
+    conflict_root_finite_min: int = 0
+    legacy_witness_opr_abs_sum: float = 0.0
+    legacy_witness_opr_abs_count: int = 0
 
 
 def _quantile_from_hist(hist: np.ndarray, q: float, lo: float, hi: float) -> float | None:
@@ -70,6 +76,12 @@ def main() -> None:
     ds = COWPNpzDataset(args.cache_dir)
     n = len(ds) if args.limit <= 0 else min(len(ds), int(args.limit))
     wanted = set(REQUIRED)
+    wanted.update({
+        "cowp/transport/root_low_safe_score",
+        "cowp/transport/root_target_confidence",
+        "cowp/transport/root_min_safe_burden",
+        "cowp/transport/transported_opr",
+    })
     bins = max(int(args.quantile_bins), 100)
     q_lo, q_hi = 0.0, 1.0
 
@@ -111,16 +123,38 @@ def main() -> None:
             ww = w[None, :, :]
             denom = (ww * mv).sum(axis=-1)
             conf = (ww * mv * mc).sum(axis=-1)
-            opr = (ww * mv * mr).sum(axis=-1) / np.maximum(denom, 1e-6)
-            opr = np.where(denom > 1e-6, opr, 1.0)
+            root_score = np.asarray(
+                data.get("cowp/transport/root_low_safe_score", np.zeros_like(mv, dtype=np.float32)),
+                dtype=np.float32,
+            )
+            transported_root = np.where(mc, root_score, mr.astype(np.float32)) * mv.astype(np.float32)
+            opr_reconstructed = np.clip((ww * transported_root).sum(axis=-1), 0.0, 1.0)
+            opr_stored = np.asarray(
+                data.get("cowp/transport/transported_opr", opr_reconstructed), dtype=np.float32
+            )
             pair = denom > 1e-6
             if pair.any():
                 conf_abs = np.abs(conf[pair] - witness_conf[pair]).astype(np.float64, copy=False)
-                opr_abs = np.abs(opr[pair] - witness_opr[pair]).astype(np.float64, copy=False)
+                opr_abs = np.abs(opr_reconstructed[pair] - opr_stored[pair]).astype(np.float64, copy=False)
+                legacy_abs = np.abs(opr_stored[pair] - witness_opr[pair]).astype(np.float64, copy=False)
                 result.conflict_abs_sum = float(conf_abs.sum(dtype=np.float64))
                 result.conflict_abs_count = int(conf_abs.size)
                 result.opr_abs_sum = float(opr_abs.sum(dtype=np.float64))
                 result.opr_abs_count = int(opr_abs.size)
+                result.legacy_witness_opr_abs_sum = float(legacy_abs.sum(dtype=np.float64))
+                result.legacy_witness_opr_abs_count = int(legacy_abs.size)
+
+            conflict_roots = mv & mc
+            result.conflict_root_total = int(conflict_roots.sum())
+            result.conflict_root_positive = int(((root_score >= 0.35) & conflict_roots).sum())
+            confidence = np.asarray(
+                data.get("cowp/transport/root_target_confidence", np.zeros_like(root_score)), dtype=np.float32
+            )
+            result.conflict_root_confident = int(((confidence >= 0.25) & conflict_roots).sum())
+            root_min = np.asarray(
+                data.get("cowp/transport/root_min_safe_burden", np.full_like(root_score, 2.0)), dtype=np.float32
+            )
+            result.conflict_root_finite_min = int(((root_min < 2.0) & conflict_roots).sum())
             result.ok = True
             return result
         except Exception as exc:  # diagnostics must report the offending file
@@ -137,8 +171,9 @@ def main() -> None:
 
     files_ok = mode_count = conflict_count = retain_count = 0
     root_valid = root_total = min_count = 0
-    conflict_sum = opr_sum = recovery_sum = 0.0
-    conflict_n = opr_n = recovery_n = recovery_out_of_range = 0
+    conflict_sum = opr_sum = recovery_sum = legacy_opr_sum = 0.0
+    conflict_n = opr_n = recovery_n = recovery_out_of_range = legacy_opr_n = 0
+    conflict_root_positive = conflict_root_total = conflict_root_confident = conflict_root_finite_min = 0
     recovery_hist = np.zeros(bins, dtype=np.int64)
     errors: list[dict[str, str]] = []
 
@@ -161,6 +196,12 @@ def main() -> None:
             recovery_sum += row.recovery_sum
             recovery_n += row.recovery_count
             recovery_out_of_range += row.recovery_out_of_range
+            conflict_root_positive += row.conflict_root_positive
+            conflict_root_total += row.conflict_root_total
+            conflict_root_confident += row.conflict_root_confident
+            conflict_root_finite_min += row.conflict_root_finite_min
+            legacy_opr_sum += row.legacy_witness_opr_abs_sum
+            legacy_opr_n += row.legacy_witness_opr_abs_count
             if row.recovery_hist is not None:
                 recovery_hist += row.recovery_hist
     finally:
@@ -180,6 +221,11 @@ def main() -> None:
         "min_burden_marker_rate_per_valid_response": min_count / max(root_total, 1),
         "aggregate_conflict_mae": conflict_sum / conflict_n if conflict_n else None,
         "aggregate_opr_mae": opr_sum / opr_n if opr_n else None,
+        "legacy_cached_witness_opr_mae": legacy_opr_sum / legacy_opr_n if legacy_opr_n else None,
+        "conflict_root_positive_rate": conflict_root_positive / max(conflict_root_total, 1),
+        "conflict_root_target_confidence_coverage": conflict_root_confident / max(conflict_root_total, 1),
+        "conflict_root_safe_response_coverage": conflict_root_finite_min / max(conflict_root_total, 1),
+        "conflict_root_count": conflict_root_total,
         "root_recovery_mean": recovery_sum / recovery_n if recovery_n else None,
         "root_recovery_p10": _quantile_from_hist(recovery_hist, 0.1, q_lo, q_hi),
         "root_recovery_p90": _quantile_from_hist(recovery_hist, 0.9, q_lo, q_hi),

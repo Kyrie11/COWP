@@ -14,6 +14,8 @@ from cowp.core.config import load_config
 from cowp.core.constants import PriorityRelation
 from cowp.geometry.collision import unsafe_between
 from cowp.label.burden import compute_burden
+from cowp.label.witness import _root_affinity
+from cowp.label.safe_responses import root_conditioned_recovery_search
 from cowp.utils.progress import tqdm_iter
 
 
@@ -24,6 +26,10 @@ TRANSPORT_KEYS = (
     "cowp/transport/response_root_index",
     "cowp/transport/response_is_min_burden",
     "cowp/transport/root_recovery_mass",
+    "cowp/transport/root_low_safe_score",
+    "cowp/transport/root_target_confidence",
+    "cowp/transport/root_min_safe_burden",
+    "cowp/transport/transported_opr",
 )
 
 REQUIRED_INPUT_KEYS = (
@@ -52,6 +58,8 @@ def _init_worker(cfg: dict) -> None:
 OPTIONAL_INPUT_KEYS = (
     "cowp/witness/rho",
     "cowp/critical/agent_type",
+    "cowp/response/root_index",
+    "cowp/response/root_affinity",
     "cowp/critical/input_index",
     "cowp/critical/track_index",
     "state/type",
@@ -220,47 +228,89 @@ def _derive(data: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
 
     mode_retained = mode_valid & (~mode_conflict) & intrinsic_low[None, :, :]
 
-    root_idx = np.zeros((K, A, R), dtype=np.int32)
+    root_idx = np.full((K, A, R), -1, dtype=np.int32)
     is_min = np.zeros((K, A, R), dtype=bool)
     recovery = np.zeros((K, A), dtype=np.float32)
+    root_low_score = np.zeros((K, A, M), dtype=np.float32)
+    root_confidence = np.zeros((K, A, M), dtype=np.float32)
+    root_min_safe_burden = np.full((K, A, M), 2.0, dtype=np.float32)
+    transported_opr = np.zeros((K, A), dtype=np.float32)
+    explicit_root = data.get("cowp/response/root_index")
+    explicit_affinity = data.get("cowp/response/root_affinity")
+    rcfg = cfg.get("response", {}).get("root_conditioned_transport", {})
+    root_search_enabled = bool(rcfg.get("enabled", True))
 
     for a in np.where(crit_valid)[0]:
         a = int(a)
         roots = np.where(nat_valid[a])[0]
         if not len(roots):
             continue
-        nat_xy = np.asarray(nat_traj[a, roots, :, :2], dtype=np.float32)
+        nat_roots = np.asarray(nat_traj[a, roots], dtype=np.float32)
+        min_affinity = float(cfg.get("response", {}).get("root_assignment_min_affinity", 0.35))
         for k in valid_k:
             k = int(k)
             valid_r = np.where(resp_valid[k, a])[0]
-            root_low = np.zeros(M, dtype=bool)
             if len(valid_r):
-                rxy = np.asarray(resp_traj[k, a, valid_r, :, :2], dtype=np.float32)
-                t = min(rxy.shape[-2], nat_xy.shape[-2])
-                dist = np.linalg.norm(
-                    rxy[:, None, :t, :] - nat_xy[None, :, :t, :],
-                    axis=-1,
-                ).mean(axis=-1)
-                assigned = roots[np.argmin(dist, axis=-1)]
-                root_idx[k, a, valid_r] = assigned.astype(np.int32)
+                valid_root_set = set(int(x) for x in roots.tolist())
+                for ridx in valid_r:
+                    affinity = np.zeros(M, dtype=np.float32)
+                    explicit = int(explicit_root[k, a, ridx]) if explicit_root is not None else -1
+                    if explicit in valid_root_set:
+                        conf = 1.0
+                        if explicit_affinity is not None:
+                            conf = float(np.clip(explicit_affinity[k, a, ridx], 0.0, 1.0))
+                        affinity[explicit] = max(conf, min_affinity)
+                    else:
+                        local = _root_affinity(resp_traj[k, a, ridx], nat_roots, cfg)
+                        affinity[roots] = local
+                    root = int(np.argmax(affinity))
+                    root_idx[k, a, ridx] = root
+                    root_confidence[k, a] = np.maximum(root_confidence[k, a], affinity)
+                    if resp_safe[k, a, ridx] and resp_low[k, a, ridx]:
+                        root_low_score[k, a] = np.maximum(root_low_score[k, a], affinity)
 
-                low_safe = resp_safe[k, a, valid_r] & resp_low[k, a, valid_r]
-                if np.any(low_safe):
-                    np.logical_or.at(root_low, assigned[low_safe], True)
-
-                safe_r_mask = resp_safe[k, a, valid_r]
-                if np.any(safe_r_mask):
-                    safe_r = valid_r[safe_r_mask]
-                    safe_root = assigned[safe_r_mask]
-                    for root in np.unique(safe_root):
-                        members = safe_r[safe_root == root]
-                        best = int(members[np.argmin(resp_burden[k, a, members])])
+                safe_r = valid_r[resp_safe[k, a, valid_r]]
+                for root in roots:
+                    members = [
+                        int(r) for r in safe_r
+                        if int(root_idx[k, a, r]) == int(root)
+                        and float(root_confidence[k, a, root]) >= min_affinity
+                    ]
+                    if members:
+                        best = int(members[int(np.argmin(resp_burden[k, a, members]))])
                         is_min[k, a, best] = True
+                        root_min_safe_burden[k, a, root] = float(resp_burden[k, a, best])
+
+            # Re-evaluate q_ikm from root-conditioned controls rather than treating
+            # a finite global response bank as the definition of recoverability.
+            # This can be applied to reused caches because natural/candidate
+            # trajectories and object type are already present.  It gives every
+            # conflicting root an equal search budget and eliminates response-slot
+            # truncation as a source of false negatives.
+            if root_search_enabled:
+                rho = PriorityRelation(int(rho_arr[k, a])) if rho_arr.ndim == 2 else PriorityRelation.UNKNOWN
+                object_type = _state_type(data, a)
+                conflict_roots = np.where(mode_valid[k, a] & mode_conflict[k, a])[0]
+                for root in conflict_roots:
+                    root = int(root)
+                    root_confidence[k, a, root] = 1.0
+                    best_b, low_ok, _ = root_conditioned_recovery_search(
+                        nat_traj[a, root], cand_traj[k], cfg,
+                        object_type=object_type, beta=float(beta[a]), rho=rho,
+                    )
+                    root_min_safe_burden[k, a, root] = min(
+                        float(root_min_safe_burden[k, a, root]), float(best_b)
+                    )
+                    if low_ok:
+                        root_low_score[k, a, root] = 1.0
 
             conflict_w = nat_weight[a] * mode_valid[k, a] * mode_conflict[k, a]
             denom = float(conflict_w.sum())
             if denom > 1.0e-8:
-                recovery[k, a] = float((conflict_w * root_low).sum() / denom)
+                recovery[k, a] = float((conflict_w * root_low_score[k, a]).sum() / denom)
+            transported = mode_retained[k, a].astype(np.float32)
+            transported = np.where(mode_conflict[k, a], root_low_score[k, a], transported)
+            transported_opr[k, a] = float(np.clip((nat_weight[a] * transported).sum(), 0.0, 1.0))
 
     return {
         "cowp/transport/mode_valid": mode_valid,
@@ -269,6 +319,10 @@ def _derive(data: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
         "cowp/transport/response_root_index": root_idx,
         "cowp/transport/response_is_min_burden": is_min,
         "cowp/transport/root_recovery_mass": recovery,
+        "cowp/transport/root_low_safe_score": root_low_score,
+        "cowp/transport/root_target_confidence": root_confidence,
+        "cowp/transport/root_min_safe_burden": root_min_safe_burden,
+        "cowp/transport/transported_opr": transported_opr,
     }
 
 
