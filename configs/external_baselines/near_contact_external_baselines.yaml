@@ -1,0 +1,94 @@
+external_baselines:
+  baseline: marc_lite
+  methods:
+    - marc_lite
+    - racp_lite
+    - expected_risk_filter
+    - cvar_risk_filter
+    - dro_cvar_filter
+    - predictive_safety_filter
+    - oracle_recovery_filter
+    - gameformer_lite
+  max_candidates: 24
+  policy:
+    # Observation-only multi-modal forecast shared by deployable baselines.
+    risk_dt: 0.1
+    risk_clearance_buffer_m: 0.75
+    risk_clearance_scale_m: 2.0
+    risk_collision_temperature_m: 0.8
+    risk_severity_speed_mps: 12.0
+    backup_deceleration_mps2: 5.0
+    backup_reaction_time_s: 0.25
+    cvar_alpha: 0.20
+    branch_divergence_threshold_m: 1.0
+    max_branch_fraction: 0.60
+
+    # MARC-style semantic multi-policy contingency planning.
+    marc_risk_tolerance: 0.35
+    marc_utility_weight: 1.0
+    marc_common_prefix_weight: 0.35
+    marc_backup_margin_weight: 0.08
+    marc_expected_risk_weight: 2.0
+    marc_collision_probability_weight: 1.0
+    marc_smoothness_weight: 0.15
+    marc_deviation_weight: 0.10
+    marc_risk_threshold: 1.0
+
+    # RACP-style multimodal beliefs and contingent risk.
+    racp_risk_tolerance: 0.60
+    racp_utility_weight: 1.0
+    racp_belief_branch_weight: 0.45
+    racp_backup_margin_weight: 0.06
+    racp_risk_weight: 2.5
+    racp_collision_probability_weight: 1.0
+    racp_smoothness_weight: 0.10
+    racp_risk_threshold: 0.75
+
+    risk_deviation_weight: 0.05
+    expected_risk_threshold: 0.45
+    expected_risk_weight: 3.0
+    cvar_risk_threshold: 0.55
+    cvar_risk_weight: 3.0
+    dro_ambiguity_radius: 0.10
+    dro_cvar_threshold: 0.65
+    dro_cvar_risk_weight: 3.5
+
+    # Predictive safety filter / backup-barrier projection.
+    psf_backup_margin_m: 0.0
+    psf_cbf_kappa: 0.50
+    psf_cbf_slack_m: 0.50
+    psf_accel_gate: 6.0
+    psf_steer_gate: 0.75
+    psf_deviation_weight: 2.0
+    psf_utility_weight: 0.35
+    psf_barrier_weight: 0.25
+    psf_risk_weight: 2.0
+    psf_smoothness_weight: 0.15
+
+    # Explicit teacher-only diagnostic upper bound.
+    gamma_H: 0.0
+    gamma_D: 5.0
+    gamma_branch_rec: 0.0
+    gamma_oracle_rec: 0.0
+    oracle_utility_tiebreak: 0.001
+  training:
+    device: auto
+    batch_size: 64
+    epochs: 1
+
+closed_loop:
+  # Deployable methods select from feature-only candidates, then label only the
+  # executed candidate for OC-RAP metric audit. The oracle script overrides this
+  # to label_mode=all because its definition requires teacher labels to select.
+  label_mode: selected
+  force_teacher_baselines: false
+  external_sparse_labels: false
+  exhaustive_teacher_labels: false
+  num_recovery_options: 12
+  save_partial: false
+
+waymax:
+  compute_future_metrics: false
+  teacher_metrics_stride: 0
+  teacher_rollout_top_k_options: 4
+  dataloader_include_sdc_paths: false

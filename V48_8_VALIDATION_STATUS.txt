@@ -1,0 +1,42 @@
+OC-RAP v48.8 SCOPE validation status
+===================================
+
+Static/local validation completed:
+
+1. pytest
+   - Command: PYTHONPATH=src pytest -q
+   - Result: 137 passed
+   - Warnings: 4 PyTorch Transformer nested-tensor warnings inherited from existing encoder setup
+
+2. Python compilation
+   - Command: python -m compileall -q src tools
+   - Result: passed
+
+3. Shell syntax
+   - Checked:
+     - run_v48_two_gpu_fast_commands.txt
+     - scripts/train_ocrap_v48_8_scope.sh
+     - scripts/prepare_v48_8_shared_assets.sh
+     - scripts/run_v48_8_parallel_ablations.sh
+     - scripts/recalibrate_v48_8_multiseed.sh
+     - scripts/run_ocrap_v48_trac_sr.sh
+     - scripts/run_v48_7_safe_noninferiority.sh
+   - Result: passed
+
+4. New unit coverage
+   - all-group nominal-inclusive preference
+   - relative-only context feature behavior
+   - support-aware fold aggregation
+   - split-conformal residual quantile
+
+Not executed locally:
+
+- Real WOMD data loading
+- Waymax rollouts
+- A30 training
+- Dedicated calibration
+- Natural-gate promotion
+- Near/Contact stress closed-loop
+- Paper-level paired Safe evaluation
+
+Therefore no claim is made that v48.8 reaches the internal CCF-A thresholds or closed-loop publication targets before server experiments.

@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export OCRAP_ROOT=${OCRAP_ROOT:-/data0/senzeyu2/dataset/OCRAP}
+export WOMD_VAL=${WOMD_VAL:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation/validation_tfexample.tfrecord}
+export WOMD_VAL_INTERACTIVE=${WOMD_VAL_INTERACTIVE:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/validation_interactive/validation_interactive_tfexample.tfrecord}
+export BASE_V39=${BASE_V39:-runs/ocrap_v39_ocrac_balanced}
+export FINAL_RUN=${FINAL_RUN:-0}
+export RETRAIN_CLEAN_BASE=${RETRAIN_CLEAN_BASE:-0}
+export TRAIN_SAFE_DATA=${TRAIN_SAFE_DATA:-$OCRAP_ROOT/train_safe}
+export CLEAN_BASE_RUN=${CLEAN_BASE_RUN:-runs/ocrap_v39_ocrac_clean_safe}
+mkdir -p runs
+
+# Optional dataset-diagnostic preflight. Training/validation must satisfy the
+# semantic contract. The uploaded test diagnostics currently fail the all-split
+# contract, so development offline screening below intentionally uses val roots;
+# do not treat it as held-out paper evidence.
+if [[ -n "${DATASET_DIAGNOSTICS_DIR:-}" ]]; then
+  if [[ "${FINAL_RUN}" == "1" ]]; then
+    PYTHONPATH=src python tools/check_regime_dataset_contract.py "$DATASET_DIAGNOSTICS_DIR" --scope all --mode paper
+  else
+    PYTHONPATH=src python tools/check_regime_dataset_contract.py "$DATASET_DIAGNOSTICS_DIR" --scope v46dev --mode development
+    echo 'v46 development mode: train_safe is intentionally excluded from the head-only data preflight; final claims require a clean base retrain.' >&2
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Optional Stage 0: refresh the shared base on the corrected Safe distribution.
+# Reusing an old v30/v39 checkpoint as initialization is allowed; freezing it as
+# the final backbone is not.  An empty FREEZE_PREFIXES string unfreezes the full
+# base model for this clean-data refresh.
+# ---------------------------------------------------------------------------
+if [[ "${RETRAIN_CLEAN_BASE}" == "1" ]]; then
+  [[ -d "${TRAIN_SAFE_DATA}" ]] || { echo "missing clean TRAIN_SAFE_DATA=${TRAIN_SAFE_DATA}" >&2; exit 2; }
+  TRAIN_MIX="${TRAIN_SAFE_DATA},${OCRAP_ROOT}/train_contact,${OCRAP_ROOT}/train_near_contact" \
+  VAL_MIX="${OCRAP_ROOT}/val_safe,${OCRAP_ROOT}/val_contact,${OCRAP_ROOT}/val_near_contact" \
+  BASE_RUN="${BASE_V39}" INIT_CKPT="${BASE_V39}/model_v39_ocrac/best.pt" \
+  RUN="${CLEAN_BASE_RUN}" VARIANT=clean_safe_refresh \
+  FREEZE_PREFIXES="${CLEAN_FREEZE_PREFIXES:-}" \
+  EPOCHS="${CLEAN_EPOCHS:-10}" PATIENCE="${CLEAN_PATIENCE:-3}" LR="${CLEAN_LR:-0.000006}" \
+    bash scripts/train_ocrap_v39_ocrac.sh
+  python - "${CLEAN_BASE_RUN}/model_v39_ocrac/train_summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = pathlib.Path(sys.argv[1])
+with summary.open("r", encoding="utf-8") as fh:
+    payload = json.load(fh)
+frozen = payload.get("freeze_param_prefixes") or []
+if frozen:
+    raise SystemExit(f"clean-base refresh was not fully unfrozen: {frozen}")
+print({"event": "clean_base_full_unfreeze_verified", "summary": str(summary)})
+PY
+  printf '%s\n' "clean train_safe refresh completed from ${TRAIN_SAFE_DATA}; freeze_param_prefixes=[] verified" > "${CLEAN_BASE_RUN}/CLEAN_DATASET_RETRAINED"
+  BASE_V39="${CLEAN_BASE_RUN}"
+fi
+
+if [[ "${FINAL_RUN}" == "1" && ! -f "${BASE_V39}/CLEAN_DATASET_RETRAINED" ]]; then
+  echo "FINAL_RUN=1 requires a clean-base marker at ${BASE_V39}/CLEAN_DATASET_RETRAINED" >&2
+  echo "Run with RETRAIN_CLEAN_BASE=1 or point BASE_V39 at a verified clean refresh." >&2
+  exit 4
+fi
+
+# Separate development screening from publication evidence.  FINAL_RUN never
+# inherits a stale relaxed shell variable: the calibration script stamps and
+# enforces the final contract, including conditional false-admission risk among
+# actions that would actually execute.
+if [[ "${FINAL_RUN}" == "1" ]]; then
+  export RACE_CONTRACT_MODE=final
+  [[ -n "${RACE_CAL_NEAR_DATA:-}" && -n "${RACE_CAL_CONTACT_DATA:-}" ]] || {
+    echo 'FINAL_RUN=1 requires dedicated RACE_CAL_NEAR_DATA and RACE_CAL_CONTACT_DATA.' >&2
+    echo 'The current val roots may be used only with FINAL_RUN=0.' >&2
+    exit 4
+  }
+else
+  export RACE_CONTRACT_MODE=development
+  echo 'v46 development calibration uses val roots and is not publication evidence.' >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Stage 1: train two shared-encoder recovery-value experts.
+# Each expert receives bucket-specific value supervision; a deployable
+# observation-conditioned router is distilled jointly. Safe stays locked.
+# ---------------------------------------------------------------------------
+TRAIN_GPU=0 VARIANT=expert_balanced RUN=runs/ocrap_v46_race_balanced \
+BASE_RUN="$BASE_V39" INIT_CKPT="$BASE_V39/model_v39_ocrac/best.pt" \
+  bash scripts/train_ocrap_v46_race.sh > runs/ocrap_v46_race_balanced.launch.log 2>&1 &
+P0=$!
+TRAIN_GPU=1 VARIANT=expert_precision RUN=runs/ocrap_v46_race_precision \
+BASE_RUN="$BASE_V39" INIT_CKPT="$BASE_V39/model_v39_ocrac/best.pt" \
+  bash scripts/train_ocrap_v46_race.sh > runs/ocrap_v46_race_precision.launch.log 2>&1 &
+P1=$!
+set +e
+wait "$P0"; S0=$?
+wait "$P1"; S1=$?
+set -e
+echo "v46 training/calibration exit status: balanced=$S0 precision=$S1"
+
+# Keep only checkpoints with valid Near and Contact held-out rules. Invalid
+# candidates are not sent to offline evaluation or Waymax.
+mapfile -t VALID_RUNS < <(python - <<'PY'
+import json, pathlib
+for name in ('balanced','precision'):
+    root=pathlib.Path(f'runs/ocrap_v46_race_{name}')
+    ok=True
+    for bucket in ('near','contact'):
+        p=root/'calibration'/f'direct_value_risk_{bucket}_v46.json'
+        try: d=json.load(open(p))
+        except Exception: ok=False; continue
+        ok &= bool(d.get('valid_for_active_contract',False))
+        print(name,bucket,{k:d.get(k) for k in ['contract_mode','valid_for_active_contract','valid_for_development','valid_for_deployment','direct_value_opportunity_threshold','direct_value_threshold','all_pair_advantage_mae','warnings']},file=__import__('sys').stderr)
+    if ok: print(root)
+PY
+)
+if [[ ${#VALID_RUNS[@]} -eq 0 ]]; then
+  echo 'v46: no checkpoint passed opportunity+score calibration; do not run offline or Waymax.' >&2
+  exit 3
+fi
+printf 'valid v46 candidates:\n'; printf '  %s\n' "${VALID_RUNS[@]}"
+
+# ---------------------------------------------------------------------------
+# Stage 2: offline zero-use/safety gate. One candidate per GPU, sequential
+# Safe/Near/Contact on that GPU to avoid two evaluations competing for memory.
+# ---------------------------------------------------------------------------
+OFFLINE_RUNS=()
+PIDS=()
+for i in "${!VALID_RUNS[@]}"; do
+  base=${VALID_RUNS[$i]}
+  gpu=$((i % 2))
+  tag=$(basename "$base")
+  out="runs/${tag}_offline"
+  OFFLINE_RUNS+=("$out")
+  BASE_RUN="$base" RUN="$out" RUN_OFFLINE_EVAL=1 RUN_AUDITS=0 RUN_SAFE_CLOSED_LOOP=0 \
+  SAFE_TEST="$OCRAP_ROOT/val_safe" NEAR_TEST="$OCRAP_ROOT/val_near_contact" CONTACT_TEST="$OCRAP_ROOT/val_contact" \
+  RUN_SCALAR_BASELINES=0 OFFLINE_SINGLE_GPU=1 GPU_SAFE="$gpu" GPU_NEAR="$gpu" GPU_CONTACT="$gpu" \
+  CONTACT_BRAKE_TAIL=false RUN_NEAR_TAIL=false CONTACT_TAIL_BYPASS_PCD_GAIN=false \
+    bash scripts/run_ocrap_v46_race.sh > "${out}.launch.log" 2>&1 &
+  PIDS+=("$!")
+done
+for p in "${PIDS[@]}"; do wait "$p"; done
+
+PYTHONPATH=src python tools/select_v46_candidate.py "${VALID_RUNS[@]}" \
+  --offline-runs "${OFFLINE_RUNS[@]}" --write-choice runs/v46_chosen_base_run.txt \
+  | tee runs/v46_candidate_selection.txt
+CHOSEN_BASE_RUN=$(cat runs/v46_chosen_base_run.txt)
+CHOSEN=$(basename "$CHOSEN_BASE_RUN")
+echo "chosen: $CHOSEN_BASE_RUN"
+
+# ---------------------------------------------------------------------------
+# Stage 3: cheapest real-execution probe. No scalar baseline yet. Only selected
+# candidates are teacher-labelled; two rollouts, six steps, and two-step replans.
+# This stage asks only whether the certified path actually executes safely.
+# ---------------------------------------------------------------------------
+PROBE_RUN="runs/${CHOSEN}_probe2"
+BASE_RUN="$CHOSEN_BASE_RUN" RUN="$PROBE_RUN" \
+RUN_OFFLINE_EVAL=0 RUN_AUDITS=1 RUN_SAFE_CLOSED_LOOP=0 RUN_SCALAR_BASELINES=0 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 GPU_NEAR=0 GPU_CONTACT=1 \
+AUDIT_MAX_ROLLOUTS=2 AUDIT_MAX_STEPS=6 AUDIT_EVERY_N_STEPS=3 \
+AUDIT_TARGETS=4 AUDIT_LABELS=32 AUDIT_LABEL_MODE=selected_only \
+AUDIT_NUM_CANDIDATES=8 AUDIT_NUM_RECOVERY_OPTIONS=6 AUDIT_REPLAN_INTERVAL=2 \
+AUDIT_TOP_K=2 AUDIT_MAX_EXTRA_CANDIDATES=1 \
+CONTACT_BRAKE_TAIL=false RUN_NEAR_TAIL=false CONTACT_TAIL_BYPASS_PCD_GAIN=false \
+  bash scripts/run_ocrap_v46_race.sh
+PYTHONPATH=src python tools/check_v46_quick_gate.py "$PROBE_RUN" --base-run "$CHOSEN_BASE_RUN" \
+  --mode execution --near-intervention-cap 0.15 --contact-intervention-cap 0.20 \
+  | tee "$PROBE_RUN/quick_gate_v46_execution.txt"
+
+# ---------------------------------------------------------------------------
+# Stage 4: four-rollout paired mechanism gate. Near/scalar+v46 runs on GPU0 and
+# Contact/scalar+v46 on GPU1. This rejects regressions before a longer run.
+# ---------------------------------------------------------------------------
+MICRO_RUN="runs/${CHOSEN}_micro4"
+BASE_RUN="$CHOSEN_BASE_RUN" RUN="$MICRO_RUN" \
+RUN_OFFLINE_EVAL=0 RUN_AUDITS=1 RUN_SAFE_CLOSED_LOOP=0 RUN_SCALAR_BASELINES=1 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 GPU_NEAR=0 GPU_CONTACT=1 \
+AUDIT_MAX_ROLLOUTS=4 AUDIT_MAX_STEPS=10 AUDIT_EVERY_N_STEPS=2 \
+AUDIT_TARGETS=8 AUDIT_LABELS=128 AUDIT_LABEL_MODE=selected_topk \
+AUDIT_NUM_CANDIDATES=10 AUDIT_NUM_RECOVERY_OPTIONS=8 AUDIT_REPLAN_INTERVAL=1 \
+AUDIT_TOP_K=4 AUDIT_MAX_EXTRA_CANDIDATES=3 \
+CONTACT_BRAKE_TAIL=false RUN_NEAR_TAIL=false CONTACT_TAIL_BYPASS_PCD_GAIN=false \
+  bash scripts/run_ocrap_v46_race.sh
+PYTHONPATH=src python tools/check_v46_quick_gate.py "$MICRO_RUN" --base-run "$CHOSEN_BASE_RUN" \
+  --mode mechanism --near-intervention-cap 0.10 --contact-intervention-cap 0.15 \
+  | tee "$MICRO_RUN/quick_gate_v46_mechanism.txt"
+
+# ---------------------------------------------------------------------------
+# Stage 5: eight-rollout confirmation. Safe closed loop is deferred until both
+# stress regimes pass. This remains development scale; paper runs need 3 seeds.
+# ---------------------------------------------------------------------------
+CONFIRM_RUN="runs/${CHOSEN}_confirm8"
+BASE_RUN="$CHOSEN_BASE_RUN" RUN="$CONFIRM_RUN" \
+RUN_OFFLINE_EVAL=0 RUN_AUDITS=1 RUN_SAFE_CLOSED_LOOP=1 RUN_SCALAR_BASELINES=1 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 GPU_NEAR=0 GPU_CONTACT=1 GPU_SAFE=0 \
+AUDIT_MAX_ROLLOUTS=8 AUDIT_MAX_STEPS=14 AUDIT_EVERY_N_STEPS=2 \
+AUDIT_TARGETS=16 AUDIT_LABELS=256 AUDIT_LABEL_MODE=selected_topk \
+AUDIT_NUM_CANDIDATES=12 AUDIT_NUM_RECOVERY_OPTIONS=8 AUDIT_REPLAN_INTERVAL=1 \
+AUDIT_TOP_K=5 AUDIT_MAX_EXTRA_CANDIDATES=4 \
+SAFE_MAX_ROLLOUTS=8 SAFE_MAX_STEPS=24 SAFE_MAX_TARGETS=16 \
+CONTACT_BRAKE_TAIL=false RUN_NEAR_TAIL=false CONTACT_TAIL_BYPASS_PCD_GAIN=false \
+  bash scripts/run_ocrap_v46_race.sh
+PYTHONPATH=src python tools/check_v46_quick_gate.py "$CONFIRM_RUN" --base-run "$CHOSEN_BASE_RUN" \
+  --mode confirmation --min-improvement 0.005 --near-intervention-cap 0.08 --contact-intervention-cap 0.12 \
+  | tee "$CONFIRM_RUN/quick_gate_v46_confirmation.txt"
+
+if [[ "${FINAL_RUN}" == "1" ]]; then
+  echo 'v46 final-contract screening passed; paper-scale multi-seed closed-loop evaluation is still required.'
+else
+  echo 'v46 development gates passed. Results are preliminary until clean-base retraining and paper-scale stress sets are complete.'
+fi
+
+# Optional one-shot held-out offline evaluation.  Candidate selection above is
+# still performed on validation only; the chosen model is evaluated on test
+# exactly once and test results never feed back into selection.
+if [[ "${RUN_HELDOUT_TEST:-0}" == "1" ]]; then
+  HELDOUT_RUN="runs/${CHOSEN}_heldout_test"
+  BASE_RUN="$CHOSEN_BASE_RUN" RUN="$HELDOUT_RUN" \
+  RUN_OFFLINE_EVAL=1 RUN_AUDITS=0 RUN_SAFE_CLOSED_LOOP=0 \
+  SAFE_TEST="$OCRAP_ROOT/test_safe" NEAR_TEST="$OCRAP_ROOT/test_near_contact" CONTACT_TEST="$OCRAP_ROOT/test_contact" \
+  RUN_SCALAR_BASELINES=1 OFFLINE_SINGLE_GPU=1 GPU_SAFE=0 GPU_NEAR=0 GPU_CONTACT=0 \
+    bash scripts/run_ocrap_v46_race.sh
+  echo "held-out test evaluation written to ${HELDOUT_RUN}"
+fi

@@ -1,0 +1,17 @@
+# v48.3 OC-TRAC-NASC/RCD: existing train data + scene-disjoint proxy calibration.
+# Run from the repository root.
+OUTPUTDIR=runs/ocrap_v48_3_nasc_rcd_proxy \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT=runs/ocrap_v48_1_existing_data_screening/candidates/precision/model_v48_trac_sr/best.pt \
+CALIBRATION_MODE=proxy_val_split \
+CALIBRATION_FRACTION=0.50 \
+CALIBRATION_SEED=4801 \
+BUILD_TRAIN=0 BUILD_CALIBRATION=0 STRICT_TRAIN_DATA_GATE=0 REUSE_TEACHER_INDEX=0 \
+GPU0=0 GPU1=1 BATCH_SIZE=72 NUM_WORKERS=6 PREFETCH_FACTOR=2 EPOCHS=8 PATIENCE=2 \
+SET_CONTEXT_ENABLED=true POLICY_DISTILL_WEIGHT=1.0 POLICY_REGRET_WEIGHT=1.0 \
+bash run_v48_two_gpu_fast_commands.txt
+
+# Inspect the result.
+python tools/summarize_v48_screening.py --root runs/ocrap_v48_3_nasc_rcd_proxy 2>/dev/null || true
+cat runs/ocrap_v48_3_nasc_rcd_proxy/screening_status.json

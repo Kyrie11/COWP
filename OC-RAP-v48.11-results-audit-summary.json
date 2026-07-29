@@ -1,0 +1,1116 @@
+{
+  "version": "v48.11",
+  "algorithm": "OC-TRAC-CASTER",
+  "natural_gate_passed": false,
+  "main": {
+    "balanced": {
+      "near": {
+        "valid_for_deployment": false,
+        "candidate_positive_auc": 0.6774938308532117,
+        "candidate_risk_harm_auc": 0.6115969497950368,
+        "candidate_rank_teacher_correlation": 0.1099060136540985,
+        "unconstrained_group_top1_correlation": 0.013484619260065967,
+        "policy_top1_positive_auc": 0.6561980724493187,
+        "policy_top1_harm_auc": 0.5865988309157827,
+        "positive_group_top1_accuracy": 0.5510204081632653,
+        "positive_group_top1_regret_mean": 0.1656913487698366,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ],
+        "fit": {
+          "num_groups": 96,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.027410248294247718,
+          "num_opportunities": 24,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "verify": {
+          "num_groups": 115,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.02298569272695777,
+          "num_opportunities": 25,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "near_miss_verify_frontier": [
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9294896378423871,
+              "harm_threshold": 0.045622458342852557,
+              "score_threshold": 0.9795894421734681,
+              "rank_margin_threshold": 0.01405346393585205
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 23,
+              "num_selected": 8,
+              "selection_rate": 0.06956521739130435,
+              "num_positive_selected": 5,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.2,
+              "teacher_advantage_mean": 0.09860610918381488,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 8
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9294896378423871,
+              "harm_threshold": 0.045622458342852557,
+              "score_threshold": 0.9795894421734681,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 23,
+              "num_selected": 10,
+              "selection_rate": 0.08695652173913043,
+              "num_positive_selected": 7,
+              "precision": 0.7,
+              "precision_wilson_lcb90": 0.44169979586983504,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.21294197008340698,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.28,
+              "teacher_advantage_mean": 0.14569878171149056,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 10
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9294896378423871,
+              "harm_threshold": 0.1609969544501411,
+              "score_threshold": 0.9777078759016697,
+              "rank_margin_threshold": 0.01405346393585205
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 24,
+              "num_selected": 8,
+              "selection_rate": 0.06956521739130435,
+              "num_positive_selected": 5,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.2,
+              "teacher_advantage_mean": 0.09860610918381488,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 8
+              },
+              "max_selected_macro_share": 1.0
+            }
+          }
+        ]
+      },
+      "contact": {
+        "valid_for_deployment": false,
+        "candidate_positive_auc": 0.8384915430915633,
+        "candidate_risk_harm_auc": 0.5500931816721291,
+        "candidate_rank_teacher_correlation": 0.19674818852940154,
+        "unconstrained_group_top1_correlation": 0.0734854841514316,
+        "policy_top1_positive_auc": 0.7993775287892935,
+        "policy_top1_harm_auc": 0.489778848405768,
+        "positive_group_top1_accuracy": 0.5757575757575758,
+        "positive_group_top1_regret_mean": 0.208564770408177,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ],
+        "fit": {
+          "num_groups": 173,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.015398167871705533,
+          "num_opportunities": 33,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "verify": {
+          "num_groups": 193,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.01382456217817879,
+          "num_opportunities": 33,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "near_miss_verify_frontier": [
+          {
+            "fit_constraint_deficit": 0.1462440165857225,
+            "rule": {
+              "opportunity_threshold": 0.6379486562805412,
+              "harm_threshold": 0.04308693323942602,
+              "score_threshold": 0.7181564168047067,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 29,
+              "precision": 0.5862068965517241,
+              "precision_wilson_lcb90": 0.4347904661728982,
+              "harmful_selected_rate": 0.1724137931034483,
+              "harmful_selected_ucb90": 0.3141985510019757,
+              "positive_recall": 0.5151515151515151,
+              "teacher_advantage_mean": 0.05065194444937885,
+              "max_selected_macro_share": 0.9310344827586207
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 40,
+              "num_selected": 40,
+              "selection_rate": 0.20725388601036268,
+              "num_positive_selected": 10,
+              "precision": 0.25,
+              "precision_wilson_lcb90": 0.15570378386291212,
+              "num_harmful_selected": 18,
+              "harmful_selected_rate": 0.45,
+              "harmful_selected_ucb90": 0.5784274532415536,
+              "harmful_group_exposure": 0.09326424870466321,
+              "harmful_group_exposure_ucb90": 0.13353839462548636,
+              "num_opportunities": 33,
+              "positive_recall": 0.30303030303030304,
+              "teacher_advantage_mean": -0.17560123747393108,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 40
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.1462440165857225,
+            "rule": {
+              "opportunity_threshold": 0.6379486562805412,
+              "harm_threshold": 0.04308693323942602,
+              "score_threshold": 0.0,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 29,
+              "precision": 0.5862068965517241,
+              "precision_wilson_lcb90": 0.4347904661728982,
+              "harmful_selected_rate": 0.1724137931034483,
+              "harmful_selected_ucb90": 0.3141985510019757,
+              "positive_recall": 0.5151515151515151,
+              "teacher_advantage_mean": 0.05065194444937885,
+              "max_selected_macro_share": 0.9310344827586207
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 40,
+              "num_selected": 40,
+              "selection_rate": 0.20725388601036268,
+              "num_positive_selected": 10,
+              "precision": 0.25,
+              "precision_wilson_lcb90": 0.15570378386291212,
+              "num_harmful_selected": 18,
+              "harmful_selected_rate": 0.45,
+              "harmful_selected_ucb90": 0.5784274532415536,
+              "harmful_group_exposure": 0.09326424870466321,
+              "harmful_group_exposure_ucb90": 0.13353839462548636,
+              "num_opportunities": 33,
+              "positive_recall": 0.30303030303030304,
+              "teacher_advantage_mean": -0.17560123747393108,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 40
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.1462440165857225,
+            "rule": {
+              "opportunity_threshold": 0.4162484096405188,
+              "harm_threshold": 0.04308693323942602,
+              "score_threshold": 0.7181564168047067,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 29,
+              "precision": 0.5862068965517241,
+              "precision_wilson_lcb90": 0.4347904661728982,
+              "harmful_selected_rate": 0.1724137931034483,
+              "harmful_selected_ucb90": 0.3141985510019757,
+              "positive_recall": 0.5151515151515151,
+              "teacher_advantage_mean": 0.05065194444937885,
+              "max_selected_macro_share": 0.9310344827586207
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 40,
+              "num_selected": 40,
+              "selection_rate": 0.20725388601036268,
+              "num_positive_selected": 10,
+              "precision": 0.25,
+              "precision_wilson_lcb90": 0.15570378386291212,
+              "num_harmful_selected": 18,
+              "harmful_selected_rate": 0.45,
+              "harmful_selected_ucb90": 0.5784274532415536,
+              "harmful_group_exposure": 0.09326424870466321,
+              "harmful_group_exposure_ucb90": 0.13353839462548636,
+              "num_opportunities": 33,
+              "positive_recall": 0.30303030303030304,
+              "teacher_advantage_mean": -0.17560123747393108,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 40
+              },
+              "max_selected_macro_share": 1.0
+            }
+          }
+        ]
+      }
+    },
+    "precision": {
+      "near": {
+        "valid_for_deployment": false,
+        "candidate_positive_auc": 0.6760917520376879,
+        "candidate_risk_harm_auc": 0.6073566359589192,
+        "candidate_rank_teacher_correlation": 0.13030838120301966,
+        "unconstrained_group_top1_correlation": -0.024307577566455973,
+        "policy_top1_positive_auc": 0.6358381502890174,
+        "policy_top1_harm_auc": 0.5831846565566459,
+        "positive_group_top1_accuracy": 0.6530612244897959,
+        "positive_group_top1_regret_mean": 0.1420309646718665,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ],
+        "fit": {
+          "num_groups": 96,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.027410248294247718,
+          "num_opportunities": 24,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "verify": {
+          "num_groups": 115,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.02298569272695777,
+          "num_opportunities": 25,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "near_miss_verify_frontier": [
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9303909540483828,
+              "harm_threshold": 0.039384385624497,
+              "score_threshold": 0.974138293103335,
+              "rank_margin_threshold": 0.028865061700344086
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 26,
+              "num_selected": 6,
+              "selection_rate": 0.05217391304347826,
+              "num_positive_selected": 4,
+              "precision": 0.6666666666666666,
+              "precision_wilson_lcb90": 0.3470147670003182,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.3107839813059142,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.16,
+              "teacher_advantage_mean": 0.12424559089057001,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 6
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9303909540483828,
+              "harm_threshold": 0.039384385624497,
+              "score_threshold": 0.974138293103335,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 26,
+              "num_selected": 8,
+              "selection_rate": 0.06956521739130435,
+              "num_positive_selected": 6,
+              "precision": 0.75,
+              "precision_wilson_lcb90": 0.4601530454871806,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.24,
+              "teacher_advantage_mean": 0.1767015611234758,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 8
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.30200856159526734,
+            "rule": {
+              "opportunity_threshold": 0.9303909540483828,
+              "harm_threshold": 0.1648950922107147,
+              "score_threshold": 0.9723493297321728,
+              "rank_margin_threshold": 0.028865061700344086
+            },
+            "fit": {
+              "num_selected": 8,
+              "precision": 0.625,
+              "precision_wilson_lcb90": 0.3479914384047327,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "positive_recall": 0.20833333333333334,
+              "teacher_advantage_mean": 0.029332266419489862,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 115,
+              "num_top1_after_joint_gate": 30,
+              "num_selected": 8,
+              "selection_rate": 0.06956521739130435,
+              "num_positive_selected": 4,
+              "precision": 0.5,
+              "precision_wilson_lcb90": 0.24864189021250815,
+              "num_harmful_selected": 0,
+              "harmful_selected_rate": 0.0,
+              "harmful_selected_ucb90": 0.25272359742376327,
+              "harmful_group_exposure": 0.0,
+              "harmful_group_exposure_ucb90": 0.02298569272695777,
+              "num_opportunities": 25,
+              "positive_recall": 0.16,
+              "teacher_advantage_mean": 0.0931841931679275,
+              "teacher_advantage_min": 0.0,
+              "selected_macro_counts": {
+                "5": 8
+              },
+              "max_selected_macro_share": 1.0
+            }
+          }
+        ]
+      },
+      "contact": {
+        "valid_for_deployment": false,
+        "candidate_positive_auc": 0.8188473048858401,
+        "candidate_risk_harm_auc": 0.548959246752116,
+        "candidate_rank_teacher_correlation": 0.22727206412012935,
+        "unconstrained_group_top1_correlation": 0.020787539955768077,
+        "policy_top1_positive_auc": 0.7676582278481012,
+        "policy_top1_harm_auc": 0.49926200528610165,
+        "positive_group_top1_accuracy": 0.5909090909090909,
+        "positive_group_top1_regret_mean": 0.20415947964141776,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ],
+        "fit": {
+          "num_groups": 173,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.015398167871705533,
+          "num_opportunities": 33,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "verify": {
+          "num_groups": 193,
+          "num_top1_after_joint_gate": 0,
+          "num_selected": 0,
+          "selection_rate": 0.0,
+          "num_positive_selected": 0,
+          "precision": null,
+          "precision_wilson_lcb90": null,
+          "num_harmful_selected": 0,
+          "harmful_selected_rate": null,
+          "harmful_selected_ucb90": 1.0,
+          "harmful_group_exposure": 0.0,
+          "harmful_group_exposure_ucb90": 0.01382456217817879,
+          "num_opportunities": 33,
+          "positive_recall": 0.0,
+          "teacher_advantage_mean": null,
+          "teacher_advantage_min": null,
+          "selected_macro_counts": {},
+          "max_selected_macro_share": 0.0
+        },
+        "near_miss_verify_frontier": [
+          {
+            "fit_constraint_deficit": 0.15000000000000002,
+            "rule": {
+              "opportunity_threshold": 0.7961257498945757,
+              "harm_threshold": 0.06177735283225568,
+              "score_threshold": 0.8798445481738614,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 17,
+              "precision": 0.7058823529411765,
+              "precision_wilson_lcb90": 0.5064310517193242,
+              "harmful_selected_rate": 0.11764705882352941,
+              "harmful_selected_ucb90": 0.3005595855493944,
+              "positive_recall": 0.36363636363636365,
+              "teacher_advantage_mean": 0.12957893546621713,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 40,
+              "num_selected": 23,
+              "selection_rate": 0.11917098445595854,
+              "num_positive_selected": 8,
+              "precision": 0.34782608695652173,
+              "precision_wilson_lcb90": 0.2084975830012259,
+              "num_harmful_selected": 11,
+              "harmful_selected_rate": 0.4782608695652174,
+              "harmful_selected_ucb90": 0.6426240332900218,
+              "harmful_group_exposure": 0.05699481865284974,
+              "harmful_group_exposure_ucb90": 0.09105710741642434,
+              "num_opportunities": 33,
+              "positive_recall": 0.24242424242424243,
+              "teacher_advantage_mean": -0.19798446915302054,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 23
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.15000000000000002,
+            "rule": {
+              "opportunity_threshold": 0.7961257498945757,
+              "harm_threshold": 0.15600944242736117,
+              "score_threshold": 0.877112299424417,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 17,
+              "precision": 0.7058823529411765,
+              "precision_wilson_lcb90": 0.5064310517193242,
+              "harmful_selected_rate": 0.11764705882352941,
+              "harmful_selected_ucb90": 0.3005595855493944,
+              "positive_recall": 0.36363636363636365,
+              "teacher_advantage_mean": 0.12957893546621713,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 48,
+              "num_selected": 23,
+              "selection_rate": 0.11917098445595854,
+              "num_positive_selected": 8,
+              "precision": 0.34782608695652173,
+              "precision_wilson_lcb90": 0.2084975830012259,
+              "num_harmful_selected": 11,
+              "harmful_selected_rate": 0.4782608695652174,
+              "harmful_selected_ucb90": 0.6426240332900218,
+              "harmful_group_exposure": 0.05699481865284974,
+              "harmful_group_exposure_ucb90": 0.09105710741642434,
+              "num_opportunities": 33,
+              "positive_recall": 0.24242424242424243,
+              "teacher_advantage_mean": -0.19798446915302054,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 23
+              },
+              "max_selected_macro_share": 1.0
+            }
+          },
+          {
+            "fit_constraint_deficit": 0.15000000000000002,
+            "rule": {
+              "opportunity_threshold": 0.7961257498945757,
+              "harm_threshold": 0.233475811817994,
+              "score_threshold": 0.877112299424417,
+              "rank_margin_threshold": 0.0
+            },
+            "fit": {
+              "num_selected": 17,
+              "precision": 0.7058823529411765,
+              "precision_wilson_lcb90": 0.5064310517193242,
+              "harmful_selected_rate": 0.11764705882352941,
+              "harmful_selected_ucb90": 0.3005595855493944,
+              "positive_recall": 0.36363636363636365,
+              "teacher_advantage_mean": 0.12957893546621713,
+              "max_selected_macro_share": 1.0
+            },
+            "verify": {
+              "num_groups": 193,
+              "num_top1_after_joint_gate": 48,
+              "num_selected": 23,
+              "selection_rate": 0.11917098445595854,
+              "num_positive_selected": 8,
+              "precision": 0.34782608695652173,
+              "precision_wilson_lcb90": 0.2084975830012259,
+              "num_harmful_selected": 11,
+              "harmful_selected_rate": 0.4782608695652174,
+              "harmful_selected_ucb90": 0.6426240332900218,
+              "harmful_group_exposure": 0.05699481865284974,
+              "harmful_group_exposure_ucb90": 0.09105710741642434,
+              "num_opportunities": 33,
+              "positive_recall": 0.24242424242424243,
+              "teacher_advantage_mean": -0.19798446915302054,
+              "teacher_advantage_min": -0.6224593312018546,
+              "selected_macro_counts": {
+                "5": 23
+              },
+              "max_selected_macro_share": 1.0
+            }
+          }
+        ]
+      }
+    }
+  },
+  "multiseed_aggregate": [
+    {
+      "variant": "balanced",
+      "bucket": "near",
+      "num_seeds": 3,
+      "valid_seed_count": 0,
+      "candidate_positive_auc": {
+        "mean": 0.6845138740165931,
+        "min": 0.6479371921182266,
+        "max": 0.728110599078341,
+        "std": 0.03310492964710675
+      },
+      "candidate_risk_harm_auc": {
+        "mean": 0.5763263881641293,
+        "min": 0.5464027425565887,
+        "max": 0.6115969497950368,
+        "std": 0.02688262508986217
+      },
+      "candidate_head_harm_auc": {
+        "mean": 0.5763263881641293,
+        "min": 0.5464027425565887,
+        "max": 0.6115969497950368,
+        "std": 0.02688262508986217
+      },
+      "rank_correlation": {
+        "mean": 0.11693712886177343,
+        "min": 0.1099060136540985,
+        "max": 0.12614101100227282,
+        "std": 0.006803649600623101
+      },
+      "top1_correlation": {
+        "mean": -0.009974515949001199,
+        "min": -0.031139848086780542,
+        "max": 0.013484619260065967,
+        "std": 0.018289922924839053
+      },
+      "top1_accuracy": {
+        "mean": 0.5549051662008472,
+        "min": 0.5510204081632653,
+        "max": 0.5581395348837209,
+        "std": 0.0029425324750419683
+      },
+      "top1_regret": {
+        "mean": 0.17039247422472792,
+        "min": 0.16152664028531974,
+        "max": 0.18395943361902745,
+        "std": 0.009742791851592323
+      },
+      "rank_margin_correctness_auc": {
+        "mean": 0.6327475338177092,
+        "min": 0.606,
+        "max": 0.6600877192982456,
+        "std": 0.022085195217860946
+      },
+      "verify_selected": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_harmful_exposure_ucb90": {
+        "mean": 0.025094891976513312,
+        "min": 0.02298569272695777,
+        "max": 0.027410248294247718,
+        "std": 0.0018121899357001177
+      },
+      "verify_harmful_selected_ucb90": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0
+      },
+      "verify_positive_recall": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_macro_share": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      }
+    },
+    {
+      "variant": "balanced",
+      "bucket": "contact",
+      "num_seeds": 3,
+      "valid_seed_count": 0,
+      "candidate_positive_auc": {
+        "mean": 0.8288647722523089,
+        "min": 0.7539607406376166,
+        "max": 0.8941420330277466,
+        "std": 0.05763219425307015
+      },
+      "candidate_risk_harm_auc": {
+        "mean": 0.5362463162850407,
+        "min": 0.5139260205922063,
+        "max": 0.5500931816721291,
+        "std": 0.015934556808082756
+      },
+      "candidate_head_harm_auc": {
+        "mean": 0.5362463162850407,
+        "min": 0.5139260205922063,
+        "max": 0.5500931816721291,
+        "std": 0.015934556808082756
+      },
+      "rank_correlation": {
+        "mean": 0.17674268485441114,
+        "min": 0.14323865228448265,
+        "max": 0.19674818852940154,
+        "std": 0.023839397769689026
+      },
+      "top1_correlation": {
+        "mean": 0.0870238722591861,
+        "min": 0.0734854841514316,
+        "max": 0.10258487802780845,
+        "std": 0.011965559400342041
+      },
+      "top1_accuracy": {
+        "mean": 0.5786423557609999,
+        "min": 0.55,
+        "max": 0.6101694915254238,
+        "std": 0.024648642888377256
+      },
+      "top1_regret": {
+        "mean": 0.2087918294183042,
+        "min": 0.18664286368087235,
+        "max": 0.23116785416586322,
+        "std": 0.018177960304861705
+      },
+      "rank_margin_correctness_auc": {
+        "mean": 0.583730039489002,
+        "min": 0.5387205387205387,
+        "max": 0.6316425120772947,
+        "std": 0.037990733231218904
+      },
+      "verify_selected": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_harmful_exposure_ucb90": {
+        "mean": 0.01318925265155737,
+        "min": 0.012779747804204579,
+        "max": 0.01382456217817879,
+        "std": 0.00045544855831036615
+      },
+      "verify_harmful_selected_ucb90": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0
+      },
+      "verify_positive_recall": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_macro_share": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      }
+    },
+    {
+      "variant": "precision",
+      "bucket": "near",
+      "num_seeds": 3,
+      "valid_seed_count": 0,
+      "candidate_positive_auc": {
+        "mean": 0.6875454430309555,
+        "min": 0.6544642857142857,
+        "max": 0.732080291340893,
+        "std": 0.032705263188915326
+      },
+      "candidate_risk_harm_auc": {
+        "mean": 0.5764549982818966,
+        "min": 0.5515215553677092,
+        "max": 0.6073566359589192,
+        "std": 0.023181940783033077
+      },
+      "candidate_head_harm_auc": {
+        "mean": 0.5764549982818966,
+        "min": 0.5515215553677092,
+        "max": 0.6073566359589192,
+        "std": 0.023181940783033077
+      },
+      "rank_correlation": {
+        "mean": 0.13473308838424447,
+        "min": 0.12715191105786489,
+        "max": 0.14673897289184887,
+        "std": 0.00858668632445077
+      },
+      "top1_correlation": {
+        "mean": -0.01862227105411303,
+        "min": -0.03193062362036069,
+        "max": 0.0003713880244775787,
+        "std": 0.013786394783270537
+      },
+      "top1_accuracy": {
+        "mean": 0.6266448698342386,
+        "min": 0.6046511627906976,
+        "max": 0.6530612244897959,
+        "std": 0.020009220830285217
+      },
+      "top1_regret": {
+        "mean": 0.1537216098654766,
+        "min": 0.1420309646718665,
+        "max": 0.1706472428290081,
+        "std": 0.012254976311826543
+      },
+      "rank_margin_correctness_auc": {
+        "mean": 0.5567092221503986,
+        "min": 0.542016806722689,
+        "max": 0.5656108597285068,
+        "std": 0.010466443693630608
+      },
+      "verify_selected": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_harmful_exposure_ucb90": {
+        "mean": 0.025094891976513312,
+        "min": 0.02298569272695777,
+        "max": 0.027410248294247718,
+        "std": 0.0018121899357001177
+      },
+      "verify_harmful_selected_ucb90": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0
+      },
+      "verify_positive_recall": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_macro_share": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      }
+    },
+    {
+      "variant": "precision",
+      "bucket": "contact",
+      "num_seeds": 3,
+      "valid_seed_count": 0,
+      "candidate_positive_auc": {
+        "mean": 0.8132915103374518,
+        "min": 0.73859807879716,
+        "max": 0.8824291473293554,
+        "std": 0.05885005923857794
+      },
+      "candidate_risk_harm_auc": {
+        "mean": 0.5368071118461013,
+        "min": 0.5148453523246107,
+        "max": 0.548959246752116,
+        "std": 0.015558727445288412
+      },
+      "candidate_head_harm_auc": {
+        "mean": 0.5368071118461013,
+        "min": 0.5148453523246107,
+        "max": 0.548959246752116,
+        "std": 0.015558727445288412
+      },
+      "rank_correlation": {
+        "mean": 0.20071808880471972,
+        "min": 0.1746162318476747,
+        "max": 0.22727206412012935,
+        "std": 0.021499030618979034
+      },
+      "top1_correlation": {
+        "mean": 0.04799620322470088,
+        "min": 0.020787539955768077,
+        "max": 0.07769085728210477,
+        "std": 0.023297095574852458
+      },
+      "top1_accuracy": {
+        "mean": 0.5726759116589625,
+        "min": 0.5,
+        "max": 0.6271186440677966,
+        "std": 0.05347350768735409
+      },
+      "top1_regret": {
+        "mean": 0.20596793594052754,
+        "min": 0.17909933294400007,
+        "max": 0.23464499523616472,
+        "std": 0.022712449383662445
+      },
+      "rank_margin_correctness_auc": {
+        "mean": 0.5798639898639899,
+        "min": 0.5477777777777778,
+        "max": 0.6191646191646192,
+        "std": 0.029586665268949253
+      },
+      "verify_selected": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_harmful_exposure_ucb90": {
+        "mean": 0.01318925265155737,
+        "min": 0.012779747804204579,
+        "max": 0.01382456217817879,
+        "std": 0.00045544855831036615
+      },
+      "verify_harmful_selected_ucb90": {
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0,
+        "std": 0.0
+      },
+      "verify_positive_recall": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      },
+      "verify_macro_share": {
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "std": 0.0
+      }
+    }
+  ],
+  "engineering_findings": {
+    "preference_conditional_mode_missing": true,
+    "effect": "Stage-T early stopping used nominal false-switch/harm penalties for a recovery-only centered tournament.",
+    "ablation_scheduler_fail_fast": true,
+    "missing_ablation_tasks": [
+      "C_tournament_old_evidence_precision",
+      "D_full_caster_precision"
+    ],
+    "macro_gate_mismatch": "Absolute selected macro share <=0.85 conflicts with the ~0.88 teacher-positive macro-5 concentration."
+  },
+  "ablations": {
+    "suite_complete": false,
+    "tasks": {
+      "C_tournament_old_evidence_balanced": {
+        "task_complete": false,
+        "controller_exit": "3"
+      },
+      "B_policy_first_precision": {
+        "task_complete": true,
+        "controller_exit": null
+      },
+      "A_cope_reference_balanced": {
+        "task_complete": true,
+        "controller_exit": "20"
+      },
+      "B_policy_first_balanced": {
+        "task_complete": true,
+        "controller_exit": null
+      },
+      "D_full_caster_balanced": {
+        "task_complete": true,
+        "controller_exit": "20"
+      },
+      "A_cope_reference_precision": {
+        "task_complete": true,
+        "controller_exit": "20"
+      }
+    }
+  }
+}

@@ -1,0 +1,200 @@
+# OC-RAP v48.6 OC-TRAC-RPGC：下一步全部执行指令
+# 原则：主实验、多seed、消融、closed-loop必须串行，不要同时占用GPU0/GPU1。
+
+###############################################################################
+# 0. 进入代码目录并确认旧任务已退出
+###############################################################################
+cd /path/to/OC-RAP-v48.6-RPGC
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
+ps -ef | grep -E 'run_v48|train_ocrap|ocrap.cli train|calibrate_policy_risk' | grep -v grep || true
+nvidia-smi
+
+# 优先继承v48.5 precision checkpoint：其Near regret和candidate AUC更好，
+# Contact top-1虽略低于balanced，但三个seed均保持正相关。
+V485_PRECISION=runs/ocrap_v48_5_ecpr_proxy_4801/candidates/precision/model_v48_trac_sr/best.pt
+V485_BALANCED=runs/ocrap_v48_5_ecpr_proxy_4801/candidates/balanced/model_v48_trac_sr/best.pt
+V481_PRECISION=runs/ocrap_v48_1_existing_data_screening/candidates/precision/model_v48_trac_sr/best.pt
+
+if [[ -f "$V485_PRECISION" ]]; then
+  export INIT_CKPT="$V485_PRECISION"
+elif [[ -f "$V485_BALANCED" ]]; then
+  export INIT_CKPT="$V485_BALANCED"
+elif [[ -f "$V481_PRECISION" ]]; then
+  export INIT_CKPT="$V481_PRECISION"
+else
+  echo "No valid initialization checkpoint found" >&2
+  exit 2
+fi
+printf 'INIT_CKPT=%s\n' "$INIT_CKPT"
+
+###############################################################################
+# 1. v48.6主实验：训练balanced和precision两个variant
+###############################################################################
+OUTPUTDIR=runs/ocrap_v48_6_rpgc_proxy_4801 \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_MODE=proxy_val_split \
+CALIBRATION_FRACTION=0.50 \
+CALIBRATION_SEED=4801 \
+BUILD_TRAIN=0 \
+BUILD_CALIBRATION=0 \
+STRICT_TRAIN_DATA_GATE=0 \
+REUSE_TEACHER_INDEX=0 \
+GPU0=0 GPU1=1 \
+BATCH_SIZE=72 \
+NUM_WORKERS=6 \
+PREFETCH_FACTOR=2 \
+EPOCHS=14 \
+PATIENCE=4 \
+RISK_SOURCE=direct_delta \
+EXACT_TEACHER_PCD=true \
+SET_CONTEXT_ENABLED=false \
+PREFERENCE_HEAD_ENABLED=true \
+PREFERENCE_CONTEXT_ENABLED=true \
+DELTA_HEAD_ENABLED=true \
+PREFERENCE_WEIGHT=1.50 \
+PREFERENCE_REGRET_WEIGHT=0.50 \
+PREFERENCE_LISTWISE_WEIGHT=0.75 \
+PREFERENCE_GAP_WEIGHT=0.25 \
+PREFERENCE_TEMPERATURE=0.06 \
+PREFERENCE_MIN_GAP=0.010 \
+PREFERENCE_MARGIN=0.030 \
+PREFERENCE_CONFIDENCE_SCALE=0.040 \
+DELTA_NLL_WEIGHT=1.00 \
+POSITIVE_MACRO_BALANCE_POWER=0.50 \
+OPPORTUNITY_AUX_WEIGHT=0.15 \
+OPPORTUNITY_ADMISSION_WEIGHT=0.0 \
+HARM_ADMISSION_WEIGHT=0.0 \
+GROUP_DRO_WEIGHT=0 \
+POLICY_DISTILL_WEIGHT=0 \
+POLICY_REGRET_WEIGHT=0 \
+bash run_v48_two_gpu_fast_commands.txt
+
+# Controller默认转后台。查看：
+tail -f runs/ocrap_v48_6_rpgc_proxy_4801/logs/controller.log
+
+###############################################################################
+# 2. 主实验完成性审计
+###############################################################################
+python tools/audit_v48_6_completion.py \
+  --root runs/ocrap_v48_6_rpgc_proxy_4801 \
+  --require-calibration \
+  --output runs/ocrap_v48_6_rpgc_proxy_4801/completion_audit_v48_6.json
+
+cat runs/ocrap_v48_6_rpgc_proxy_4801/completion_audit_v48_6.json
+cat runs/ocrap_v48_6_rpgc_proxy_4801/screening_status.json
+
+# 只有comparable=true才继续。
+# 即使Natural gate未通过，也可继续做multi-seed和消融诊断，但不能运行恢复闭环。
+
+###############################################################################
+# 3. 固定同一checkpoint做4801/4802/4803三seed复校准
+###############################################################################
+SOURCE_RUN=runs/ocrap_v48_6_rpgc_proxy_4801 \
+MULTISEED_ROOT=runs/ocrap_v48_6_rpgc_proxy_multiseed \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+SEEDS=4801,4802,4803 \
+CALIBRATION_FRACTION=0.50 \
+GPU0=0 GPU1=1 \
+bash scripts/recalibrate_v48_6_multiseed.sh \
+  > runs/ocrap_v48_6_rpgc_proxy_multiseed.controller.log 2>&1
+
+cat runs/ocrap_v48_6_rpgc_proxy_multiseed/multiseed_summary_v48_6.json
+
+###############################################################################
+# 4. 四组核心消融（必须等multi-seed完全退出后再运行）
+###############################################################################
+ABLATION_ROOT=runs/ocrap_v48_6_ablations \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_SEED=4801 \
+GPU0=0 GPU1=1 \
+BATCH_SIZE=72 \
+NUM_WORKERS=6 \
+PREFETCH_FACTOR=2 \
+EPOCHS=14 \
+PATIENCE=4 \
+bash scripts/run_v48_6_core_ablations.sh \
+  > runs/ocrap_v48_6_ablations.controller.log 2>&1
+
+cat runs/ocrap_v48_6_ablations/ablation_summary_v48_6.json
+
+# 四组含义：
+# A_v485_ecpr_reference      v48.5有效ECPR参考路径
+# B_preference_context_only  只增加Preference相对上下文
+# C_direct_delta_only        只增加直接相对gain分布
+# D_full_rpgc                v48.6完整模型
+
+###############################################################################
+# 5. 第一轮离线决策门
+###############################################################################
+# 必须人工检查每个seed、variant、regime：
+# - Near/Contact top1_corr三个seed均>0，开发目标>0.10；
+# - rank_margin_correctness_auc最好>=0.65；
+# - 至少一个variant在Near和Contact均有非零verify selections；
+# - verify precision LCB90开发阶段>=0.40；
+# - positive recall开发阶段>=0.20，投稿准备>=0.35；
+# - harmful exposure UCB不超过配置预算；
+# - max_selected_macro_share<=0.85；
+# - candidate AUC相对v48.5下降不超过0.03。
+
+###############################################################################
+# 6. 专用calibration全部完成后，对同一checkpoint重新校准（不重训）
+###############################################################################
+# 仅在calibration_safe / calibration_near_contact / calibration_contact全部完成、
+# merge/audit通过后执行。
+OUTPUTDIR=runs/ocrap_v48_6_rpgc_proxy_4801 \
+CALIBRATION_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP/calibration \
+RISK_SOURCE=direct_delta \
+GPU0=0 GPU1=1 \
+bash scripts/recalibrate_v48_on_dedicated_set.sh \
+  > runs/ocrap_v48_6_rpgc_proxy_4801/logs/dedicated_recalibration.controller.log 2>&1
+
+###############################################################################
+# 7. Natural gate通过后才运行development closed-loop
+###############################################################################
+# Proxy calibration通过时：
+OUTPUTDIR=runs/ocrap_v48_6_rpgc_proxy_4801
+CHOSEN_BASE_RUN=$(cat "$OUTPUTDIR/chosen_base_run.txt")
+
+BASE_RUN="$CHOSEN_BASE_RUN" \
+RUN="$OUTPUTDIR/closed_loop_probe" \
+SAFE_TEST="$OUTPUTDIR/dataset_splits/development_safe" \
+NEAR_TEST="$OUTPUTDIR/dataset_splits/development_near_contact" \
+CONTACT_TEST="$OUTPUTDIR/dataset_splits/development_contact" \
+RUN_OFFLINE_EVAL=0 \
+RUN_AUDITS=1 \
+RUN_SAFE_CLOSED_LOOP=1 \
+RUN_SCALAR_BASELINES=1 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 \
+GPU_NEAR=0 GPU_CONTACT=1 GPU_SAFE=0 \
+AUDIT_MAX_ROLLOUTS=50 \
+AUDIT_MAX_STEPS=80 \
+AUDIT_TARGETS=64 \
+AUDIT_LABELS=1024 \
+SAFE_MAX_ROLLOUTS=50 \
+SAFE_MAX_STEPS=80 \
+nohup bash scripts/run_ocrap_v48_trac_sr.sh \
+  > "$OUTPUTDIR/logs/closed_loop_probe.log" 2>&1 </dev/null &
+
+###############################################################################
+# 8. Paired-scene闭环比较
+###############################################################################
+# 根据实际生成文件填写--baseline和--candidate。
+python tools/compare_paired_closed_loop.py \
+  --baseline /path/to/external_baseline_closed_loop_summary.json \
+  --candidate runs/ocrap_v48_6_rpgc_proxy_4801/closed_loop_probe/summary.json \
+  --output runs/ocrap_v48_6_rpgc_proxy_4801/closed_loop_probe/paired_comparison.json
+
+###############################################################################
+# 9. 日志与停止条件
+###############################################################################
+# 训练中若出现以下任一情况，可停止并先打包诊断：
+# - Contact top1重新变为负且连续3 epoch不恢复；
+# - direct_policy_risk_fold_worst持续上升；
+# - direct delta NLL下降但harm-risk AUC仍接近0.5；
+# - rank-margin correctness AUC<0.55；
+# - near-miss macro share仍为1.0且precision无改善。

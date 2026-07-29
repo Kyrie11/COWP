@@ -1,0 +1,195 @@
+# OC-RAP v48.7 OC-TRAC-SPIRE 下一步执行指令
+# 所有主实验、多 seed、消融应串行执行，不要互相占用 GPU0/GPU1。
+
+################################################################################
+# 0. 进入代码目录并确认旧任务退出
+################################################################################
+cd /path/to/OC-RAP-v48.7-SPIRE
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
+ps -ef | grep -E 'run_v48|train_ocrap|calibrate_policy|closed-loop' | grep -v grep || true
+nvidia-smi
+
+################################################################################
+# 1. 现在先把已完成的 Safe 和 Near dedicated calibration 合并到 OCRAP 根目录
+################################################################################
+BUILD_ROOT=/data0/senzeyu2/dataset/OCRAP/calibration \
+SHARD_ROOT=/data0/senzeyu2/dataset/OCRAP/calibration/shards \
+TARGET_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+REGIMES=safe,near_contact \
+OVERWRITE=1 LINK_MODE=hardlink \
+bash scripts/merge_v48_calibration_regimes_to_eval_root.sh
+
+cat /data0/senzeyu2/dataset/OCRAP/calibration_safe/MERGE_COMPLETE.json
+cat /data0/senzeyu2/dataset/OCRAP/calibration_near_contact/MERGE_COMPLETE.json
+cat /data0/senzeyu2/dataset/OCRAP/calibration/merge_to_eval_root/calibration_overlap_audit.json
+
+################################################################################
+# 2. Contact 尚未完成时先检查状态；不要重复启动仍在运行的 worker
+################################################################################
+python tools/inspect_calibration_build_v48.py \
+  --root /data0/senzeyu2/dataset/OCRAP/calibration
+
+# 仅在原 controller 已退出且 Contact 确实未完成时恢复：
+nohup env \
+WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+OUTPUT_ROOT=/data0/senzeyu2/dataset/OCRAP/calibration \
+GPU0=0 GPU1=1 \
+CALIBRATION_START_INDEX=11000 PARTITION_STRIDE=6 \
+SAFE_RAW_PER_WORKER=600 NEAR_RAW_PER_WORKER=700 CONTACT_RAW_PER_WORKER=700 \
+MIN_CAL_SAFE_SCENES=80 MIN_CAL_NEAR_SCENES=120 MIN_CAL_CONTACT_SCENES=120 \
+RESUME=1 START_STAGE=contact RUN_DIAGNOSTICS=1 \
+bash scripts/build_v48_calibration_regimes.sh \
+> /data0/senzeyu2/dataset/OCRAP/calibration/logs/calibration_controller_contact_resume.log 2>&1 </dev/null &
+
+# Contact 完成后单独安装到 OCRAP 根目录：
+BUILD_ROOT=/data0/senzeyu2/dataset/OCRAP/calibration \
+TARGET_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+REGIMES=contact OVERWRITE=1 LINK_MODE=hardlink \
+bash scripts/merge_v48_calibration_regimes_to_eval_root.sh
+
+################################################################################
+# 3. 选择初始化 checkpoint
+# 优先使用 v48.5 precision（其 Contact top-1 明显优于 v48.6 main）；
+# 若不存在，使用 v48.6 消融 B balanced，而不是 v48.6 full RPGC。
+################################################################################
+V485=runs/ocrap_v48_5_ecpr_proxy_4801/candidates/precision/model_v48_trac_sr/best.pt
+V486_B=runs/ocrap_v48_6_ablations/B_preference_context_only/candidates/balanced/model_v48_trac_sr/best.pt
+if [[ -f "$V485" ]]; then
+  INIT_CKPT="$V485"
+elif [[ -f "$V486_B" ]]; then
+  INIT_CKPT="$V486_B"
+else
+  echo "Neither preferred initialization checkpoint exists" >&2
+  exit 2
+fi
+echo "INIT_CKPT=$INIT_CKPT"
+
+################################################################################
+# 4. v48.7 主实验：Stage P preference + Stage C certificate
+################################################################################
+OUTPUTDIR=runs/ocrap_v48_7_spire_proxy_4801 \
+TRAIN_SCRIPT=scripts/train_ocrap_v48_7_spire.sh \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_MODE=proxy_val_split \
+CALIBRATION_FRACTION=0.50 CALIBRATION_SEED=4801 \
+BUILD_TRAIN=0 BUILD_CALIBRATION=0 STRICT_TRAIN_DATA_GATE=0 \
+REUSE_TEACHER_INDEX=0 \
+GPU0=0 GPU1=1 BATCH_SIZE=72 NUM_WORKERS=6 PREFETCH_FACTOR=2 \
+PREFERENCE_EPOCHS=10 PREFERENCE_PATIENCE=3 \
+CERTIFICATE_EPOCHS=8 CERTIFICATE_PATIENCE=3 \
+PREFERENCE_SET_WEIGHT=1.25 \
+PREFERENCE_TIE_EPS_NEAR=0.025 PREFERENCE_TIE_EPS_CONTACT=0.010 \
+RISK_SOURCE=direct_delta \
+bash run_v48_two_gpu_fast_commands.txt
+
+# 监控：
+tail -f runs/ocrap_v48_7_spire_proxy_4801/logs/controller.log
+
+################################################################################
+# 5. 完成性审计
+################################################################################
+python tools/audit_v48_7_completion.py \
+  --root runs/ocrap_v48_7_spire_proxy_4801 \
+  --require-calibration \
+  --output runs/ocrap_v48_7_spire_proxy_4801/completion_audit_v48_7.json
+
+cat runs/ocrap_v48_7_spire_proxy_4801/completion_audit_v48_7.json
+# comparable 必须为 true。Natural gate 失败时会存在 GATE_FAILED.json，这是正常保护，
+# 不代表 candidate/model_v48_trac_sr/best.pt 不存在。
+
+################################################################################
+# 6. 固定同一 checkpoint 做 4801/4802/4803 复校准
+################################################################################
+nohup env \
+SOURCE_RUN=runs/ocrap_v48_7_spire_proxy_4801 \
+MULTISEED_ROOT=runs/ocrap_v48_7_spire_proxy_multiseed \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+SEEDS=4801,4802,4803 CALIBRATION_FRACTION=0.50 \
+GPU0=0 GPU1=1 \
+bash scripts/recalibrate_v48_7_multiseed.sh \
+> runs/ocrap_v48_7_spire_proxy_multiseed.controller.log 2>&1 </dev/null &
+
+################################################################################
+# 7. 自动执行原“人工步骤 5”的检查
+################################################################################
+python tools/check_v48_7_submission_gates.py \
+  --summary runs/ocrap_v48_7_spire_proxy_multiseed/multiseed_summary_v48_7.json \
+  --output runs/ocrap_v48_7_spire_proxy_multiseed/submission_gate_report.json || true
+
+cat runs/ocrap_v48_7_spire_proxy_multiseed/submission_gate_report.json
+
+################################################################################
+# 8. 四组核心消融（主实验和 multi-seed 全部退出后再运行）
+################################################################################
+nohup env \
+ABLATION_ROOT=runs/ocrap_v48_7_ablations \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_SEED=4801 \
+GPU0=0 GPU1=1 BATCH_SIZE=72 NUM_WORKERS=6 PREFETCH_FACTOR=2 \
+bash scripts/run_v48_7_core_ablations.sh \
+> runs/ocrap_v48_7_ablations.controller.log 2>&1 </dev/null &
+
+# 四组：
+# A_joint_singlewinner       v48.6 joint baseline
+# B_staged_singlewinner      仅验证梯度隔离
+# C_joint_setvalued          仅验证 acceptable-set 监督
+# D_full_spire               梯度隔离 + acceptable-set
+
+################################################################################
+# 9. Safe 可在 stress Natural gate 通过前单独运行
+################################################################################
+# Safe 是 nominal-locked；该命令不会启用 Near/Contact 恢复动作。
+BASE_RUN=runs/ocrap_v48_7_spire_proxy_4801/candidates/precision \
+RUN=runs/ocrap_v48_7_safe_noninferiority \
+SAFE_TEST=/data0/senzeyu2/dataset/OCRAP/calibration_safe \
+GPU_SAFE=0 SAFE_MAX_TARGETS=80 SAFE_MAX_ROLLOUTS=32 SAFE_MAX_STEPS=40 \
+bash scripts/run_v48_7_safe_noninferiority.sh
+
+################################################################################
+# 10. 三个 dedicated calibration 全部完成后，对同一 checkpoint 重新校准
+################################################################################
+OUTPUTDIR=runs/ocrap_v48_7_spire_proxy_4801 \
+CALIBRATION_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+RISK_SOURCE=direct_delta GPU0=0 GPU1=1 \
+bash scripts/recalibrate_v48_7_on_dedicated_set.sh
+
+# 只有成功生成以下文件，才允许 stress closed-loop：
+cat runs/ocrap_v48_7_spire_proxy_4801/chosen_base_run_dedicated.txt
+
+################################################################################
+# 11. Near/Contact development closed-loop：仅在 Natural gate 通过后执行
+################################################################################
+OUTPUTDIR=runs/ocrap_v48_7_spire_proxy_4801
+if [[ -f "$OUTPUTDIR/chosen_base_run_dedicated.txt" ]]; then
+  BASE_RUN=$(cat "$OUTPUTDIR/chosen_base_run_dedicated.txt")
+elif [[ -f "$OUTPUTDIR/chosen_base_run.txt" ]]; then
+  BASE_RUN=$(cat "$OUTPUTDIR/chosen_base_run.txt")
+else
+  echo "Natural gate did not pass; stress closed-loop is intentionally blocked."
+  exit 20
+fi
+
+BASE_RUN="$BASE_RUN" RUN="$OUTPUTDIR/closed_loop_probe" \
+SAFE_TEST="$OUTPUTDIR/dataset_splits/development_safe" \
+NEAR_TEST="$OUTPUTDIR/dataset_splits/development_near_contact" \
+CONTACT_TEST="$OUTPUTDIR/dataset_splits/development_contact" \
+RUN_OFFLINE_EVAL=0 RUN_AUDITS=1 RUN_SAFE_CLOSED_LOOP=0 RUN_SCALAR_BASELINES=1 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 GPU_NEAR=0 GPU_CONTACT=1 \
+AUDIT_MAX_ROLLOUTS=8 AUDIT_MAX_STEPS=16 AUDIT_TARGETS=16 AUDIT_LABELS=256 \
+nohup bash scripts/run_ocrap_v48_trac_sr.sh \
+> "$OUTPUTDIR/logs/closed_loop_probe.log" 2>&1 &
+
+################################################################################
+# 12. 不要执行的操作
+################################################################################
+# 不要为了修复 missing checkpoint 而训练：
+# runs/ocrap_v48_trac_sr_regime_balanced/model_v48_trac_sr/best.pt
+# 这是旧脚本的历史默认路径，不是 v48.6/v48.7 的必需模型。

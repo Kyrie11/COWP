@@ -1,0 +1,58 @@
+external_baselines:
+  baseline: gameformer_lite
+  methods: [gameformer_lite]
+  max_candidates: 24
+  supervision_target: logged_nominal
+  allow_teacher_supervision: false
+  hard_weight: 12.0
+  harm_weight: 2.0
+  oracle_weight: 1.0
+  model:
+    arch: gameformer_levelk
+    max_candidates: 24
+    d_model: 256
+    num_layers: 4
+    num_heads: 8
+    dropout: 0.10
+    num_levels: 4
+    modalities: 6
+    future_len: 20
+    history_len: 11
+    neighbors_to_predict: 8
+    num_roots: 10
+    num_options: 12
+    root_feature_dim: 18
+    # Teacher root/margin tensors are unavailable in a deployable feature-only
+    # closed loop. Old checkpoints without this key retain legacy behavior;
+    # checkpoints trained with this config must be retrained.
+    use_teacher_branch_context: false
+    traj_step_scale: 1.5
+  training:
+    device: auto
+    distributed: auto
+    batch_size: 64
+    num_workers: 8
+    epochs: 30
+    lr: 0.0001
+    weight_decay: 0.0002
+    grad_clip: 5.0
+    tqdm: true
+    pin_memory: true
+    find_unused_parameters: auto
+  loss_weights:
+    policy: 1.0
+    levelk: 0.50
+    level_response: 0.10
+    gameformer_traj: 0.35
+    utility: 0.0
+    hard: 0.0
+    harm: 0.0
+    oracle_rec: 0.0
+    deploy_rec: 0.0
+  policy:
+    gamma_H: 0.0
+    gamma_D: 5.0
+    gamma_oracle_rec: 0.0
+    gameformer_hard_weight: 12.0
+    gameformer_harm_weight: 2.0
+    gameformer_oracle_weight: 1.0

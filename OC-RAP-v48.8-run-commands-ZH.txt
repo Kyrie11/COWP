@@ -1,0 +1,273 @@
+OC-RAP v48.8 SCOPE：下一步完整执行指令
+========================================
+
+重要原则
+--------
+1. calibration_contact未完成前，所有模型开发继续使用proxy_val_split。
+2. 主实验、multi-seed、消融、Safe paired probe不要互相并发。
+3. 四组消融会一次提交，但两张A30上任意时刻最多运行两个训练任务，每张GPU一个任务。
+4. Natural gate失败时禁止Near/Contact stress closed-loop；Safe nominal-locked paired probe可独立运行。
+
+
+0. 进入代码目录并确认旧任务已退出
+----------------------------------
+
+cd /path/to/OC-RAP-v48.8-SCOPE
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+
+ps -ef | grep -E 'run_v48|train_ocrap|calibrate_policy|closed-loop|run_v48_8_parallel' | grep -v grep || true
+nvidia-smi
+
+# 只有确认没有旧训练占用GPU后再继续。
+
+
+1. 一次性准备proxy split与exact teacher-PCD共享资产
+----------------------------------------------------
+
+ASSET_ROOT=runs/ocrap_v48_8_shared_assets_4801 \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+CALIBRATION_FRACTION=0.50 \
+CALIBRATION_SEED=4801 \
+MANIFEST_WORKERS=6 \
+bash scripts/prepare_v48_8_shared_assets.sh
+
+检查：
+
+cat runs/ocrap_v48_8_shared_assets_4801/SHARED_ASSETS_COMPLETE.json
+cat runs/ocrap_v48_8_shared_assets_4801/teacher_pcd_train_index_summary.json
+cat runs/ocrap_v48_8_shared_assets_4801/development_calibration_overlap_audit.json
+
+
+2. 选择初始化checkpoint
+----------------------
+
+# v48.7消融C是当前排序表现最好的可验证初始化。
+C_PREC=runs/ocrap_v48_7_ablations/C_joint_setvalued/candidates/precision/model_v48_trac_sr/best.pt
+C_BAL=runs/ocrap_v48_7_ablations/C_joint_setvalued/candidates/balanced/model_v48_trac_sr/best.pt
+MAIN_PREC=runs/ocrap_v48_7_spire_proxy_4801/candidates/precision/model_v48_trac_sr/best.pt
+
+if [[ -f "$C_PREC" ]]; then
+  INIT_CKPT="$C_PREC"
+elif [[ -f "$C_BAL" ]]; then
+  INIT_CKPT="$C_BAL"
+elif [[ -f "$MAIN_PREC" ]]; then
+  INIT_CKPT="$MAIN_PREC"
+else
+  echo "找不到v48.7初始化checkpoint" >&2
+  exit 2
+fi
+export INIT_CKPT
+echo "INIT_CKPT=$INIT_CKPT"
+
+
+3. 运行v48.8主实验（仍使用val proxy calibration）
+------------------------------------------------
+
+OUTPUTDIR=runs/ocrap_v48_8_scope_proxy_4801 \
+TRAIN_SCRIPT=scripts/train_ocrap_v48_8_scope.sh \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_MODE=proxy_val_split \
+CALIBRATION_FRACTION=0.50 \
+CALIBRATION_SEED=4801 \
+BUILD_TRAIN=0 BUILD_CALIBRATION=0 STRICT_TRAIN_DATA_GATE=0 \
+AUTO_ENSURE_MANIFESTS=0 \
+PREBUILT_SPLIT_ROOT=runs/ocrap_v48_8_shared_assets_4801/dataset_splits \
+REUSE_PREBUILT_SPLITS=1 \
+SHARED_GROUP_INDEX=runs/ocrap_v48_8_shared_assets_4801/teacher_pcd_train_index.jsonl \
+SHARED_GROUP_SUMMARY=runs/ocrap_v48_8_shared_assets_4801/teacher_pcd_train_index_summary.json \
+REUSE_TEACHER_INDEX=1 \
+GPU0=0 GPU1=1 \
+BATCH_SIZE=72 NUM_WORKERS=6 PREFETCH_FACTOR=2 \
+PREFERENCE_EPOCHS=12 PREFERENCE_PATIENCE=4 \
+CERTIFICATE_EPOCHS=10 CERTIFICATE_PATIENCE=4 \
+PREFERENCE_CONTEXT_HIDDEN=48 DELTA_HIDDEN=64 \
+PREFERENCE_ALL_GROUP_SET_WEIGHT=1.50 \
+PREFERENCE_SET_MARGIN=0.020 \
+PREFERENCE_NOMINAL_MARGIN=0.018 \
+PREFERENCE_HARM_MARGIN=0.030 \
+PREFERENCE_TIE_EPS_NEAR=0.030 \
+PREFERENCE_TIE_EPS_CONTACT=0.012 \
+CERTIFICATE_DELTA_NLL_WEIGHT=0 \
+CERTIFICATE_DELTA_SIGN_WEIGHT=0.50 \
+DELTA_SIGN_TEMPERATURE=0.040 \
+POLICY_METRIC_MIN_FOLD_POSITIVE=6 \
+POLICY_METRIC_ROBUST_TOP_K=2 \
+BEST_METRIC_MIN_DELTA=0.00001 \
+RISK_SOURCE=conformal_delta \
+CONFORMAL_ALPHA=0.10 \
+CONFORMAL_TEMPERATURE=0.02 \
+bash run_v48_two_gpu_fast_commands.txt
+
+查看：
+
+tail -f runs/ocrap_v48_8_scope_proxy_4801/logs/controller.log
+
+控制器以后台方式运行。日志出现Natural gate失败并以rc=20退出是允许的；训练和诊断结果仍然有效。
+
+
+4. 完成性、Stage P、Stage C和Natural gate审计
+-------------------------------------------
+
+python tools/audit_v48_7_completion.py \
+  --root runs/ocrap_v48_8_scope_proxy_4801 \
+  --output runs/ocrap_v48_8_scope_proxy_4801/completion_audit_v48_8.json
+
+python tools/check_v48_8_learning_gates.py \
+  --run runs/ocrap_v48_8_scope_proxy_4801 \
+  --output runs/ocrap_v48_8_scope_proxy_4801/learning_gates_v48_8.json || true
+
+cat runs/ocrap_v48_8_scope_proxy_4801/learning_gates_v48_8.json
+
+检查以下分层结论：
+
+A. Stage P
+- Near top-1 corr是否>=0.10；
+- Contact top-1 corr是否>=0.10；
+- acceptable top-1 accuracy是否>=0.60。
+
+B. Stage C discrimination
+- Near candidate-positive AUC是否>=0.75；
+- Contact candidate-positive AUC是否>=0.80；
+- positive regret是否下降。
+
+C. Certificate/Natural gate
+- Near和Contact是否都出现非零verify selection；
+- precision LCB、positive recall、conditional harmful UCB和macro share是否通过。
+
+只有learning_gates_v48_8.json中的continue_to_multiseed=true，才执行第5步。
+只有continue_to_stress_closed_loop=true，才执行第8步。
+
+
+5. 固定同一checkpoint做4801/4802/4803复校准
+-------------------------------------------
+
+nohup env \
+SOURCE_RUN=runs/ocrap_v48_8_scope_proxy_4801 \
+MULTISEED_ROOT=runs/ocrap_v48_8_scope_proxy_multiseed \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+SEEDS=4801,4802,4803 \
+CALIBRATION_FRACTION=0.50 \
+GPU0=0 GPU1=1 \
+CONFORMAL_ALPHA=0.10 \
+CONFORMAL_TEMPERATURE=0.02 \
+bash scripts/recalibrate_v48_8_multiseed.sh \
+> runs/ocrap_v48_8_scope_proxy_multiseed.controller.log 2>&1 </dev/null &
+
+查看：
+
+tail -f runs/ocrap_v48_8_scope_proxy_multiseed.controller.log
+cat runs/ocrap_v48_8_scope_proxy_multiseed/multiseed_summary_v48_8.json
+
+重点检查：
+- Near/Contact三个seed的top-1方向；
+- conformal规则是否在至少2/3 seed产生一致非零选择；
+- precision、recall、conditional harmful UCB、macro share是否稳定。
+
+
+6. 四组消融：一次提交，两张A30自动排队并行
+--------------------------------------------
+
+# 注意：这会把四组全部加入队列，但最多两个GPU任务同时运行，避免每张A30同时放两个模型。
+
+nohup env \
+ABLATION_ROOT=runs/ocrap_v48_8_ablations \
+ASSET_ROOT=runs/ocrap_v48_8_shared_assets_4801 \
+TRAIN_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+EVAL_OCRAP_ROOT=/data0/senzeyu2/dataset/OCRAP \
+INIT_CKPT="$INIT_CKPT" \
+CALIBRATION_FRACTION=0.50 \
+CALIBRATION_SEED=4801 \
+GPU0=0 GPU1=1 \
+BATCH_SIZE=72 NUM_WORKERS=6 PREFETCH_FACTOR=2 \
+CONFORMAL_ALPHA=0.10 \
+CONFORMAL_TEMPERATURE=0.02 \
+bash scripts/run_v48_8_parallel_ablations.sh \
+> runs/ocrap_v48_8_ablations.controller.log 2>&1 </dev/null &
+
+查看：
+
+tail -f runs/ocrap_v48_8_ablations.controller.log
+tail -f runs/ocrap_v48_8_ablations/logs/scheduler.log
+
+完成后：
+
+cat runs/ocrap_v48_8_ablations/ABLATIONS_COMPLETE.json
+cat runs/ocrap_v48_8_ablations/ablation_summary_v48_8.json
+
+四组含义：
+A_engineering_fixed_v487：修复工程隔离后的v48.7参考；
+B_conflict_free_preference：只验证无冲突all-group Preference；
+C_robust_conformal_certificate：只验证稳健delta与conformal证书；
+D_full_scope：完整SCOPE。
+
+归因顺序：
+- B相对A回答Preference是否真正改善top-1；
+- C相对A回答Certificate是否改善gain/harm及非零coverage；
+- D相对B/C回答两者分阶段组合是否保留各自收益。
+
+
+7. Safe scene-paired non-inferiority probe（可独立于Natural gate）
+--------------------------------------------------------------
+
+# 不要与主训练/消融并发。该脚本在两张A30上同时运行scalar/nominal reference与nominal-locked model。
+# 建议至少100个匹配scene；若当前WOMD源只能匹配很少scene，先作为诊断，不作论文结论。
+
+BASE_RUN=runs/ocrap_v48_8_scope_proxy_4801/candidates/precision \
+RUN=runs/ocrap_v48_8_safe_paired_noninferiority \
+SAFE_TEST=/data0/senzeyu2/dataset/OCRAP/calibration_safe \
+RUN_SAFE_PAIRED_SCALAR=1 \
+GPU_SAFE_BASELINE=0 GPU_SAFE=1 \
+SAFE_MAX_TARGETS=160 \
+SAFE_MAX_ROLLOUTS=120 \
+SAFE_RAW_MAX_SCENARIOS=2400 \
+SAFE_MAX_STEPS=40 \
+bash scripts/run_v48_7_safe_noninferiority.sh
+
+查看：
+
+cat runs/ocrap_v48_8_safe_paired_noninferiority/safe_paired_noninferiority_v48_8.json
+
+报告会给出相同scene上的collision、offroad、NUP和intervention paired CI。
+若route progression、jerk p95、yaw-rate p95没有由runner输出，会明确显示available=false。
+
+
+8. 仅在Natural gate通过后运行Near/Contact development stress probe
+------------------------------------------------------------------
+
+OUTPUTDIR=runs/ocrap_v48_8_scope_proxy_4801
+
+if [[ ! -f "$OUTPUTDIR/chosen_base_run.txt" ]]; then
+  echo "Natural gate没有通过；禁止运行Near/Contact stress closed-loop。" >&2
+  exit 20
+fi
+
+CHOSEN_BASE_RUN=$(cat "$OUTPUTDIR/chosen_base_run.txt")
+BASE_RUN="$CHOSEN_BASE_RUN" \
+RUN="$OUTPUTDIR/closed_loop_probe" \
+SAFE_TEST=runs/ocrap_v48_8_shared_assets_4801/dataset_splits/dev_val_safe \
+NEAR_TEST=runs/ocrap_v48_8_shared_assets_4801/dataset_splits/dev_val_near_contact \
+CONTACT_TEST=runs/ocrap_v48_8_shared_assets_4801/dataset_splits/dev_val_contact \
+RUN_OFFLINE_EVAL=0 RUN_AUDITS=1 RUN_SAFE_CLOSED_LOOP=0 RUN_SCALAR_BASELINES=1 \
+PAIR_BUCKETS_ON_TWO_GPUS=1 GPU_NEAR=0 GPU_CONTACT=1 \
+AUDIT_MAX_ROLLOUTS=16 AUDIT_MAX_STEPS=24 AUDIT_TARGETS=32 AUDIT_LABELS=512 \
+nohup bash scripts/run_ocrap_v48_trac_sr.sh \
+> "$OUTPUTDIR/logs/closed_loop_probe.log" 2>&1 </dev/null &
+
+查看：
+
+tail -f "$OUTPUTDIR/logs/closed_loop_probe.log"
+
+
+9. calibration_contact完成前的规则
+---------------------------------
+
+当前不要运行dedicated calibration，不要将dedicated Safe/Near与proxy Contact混用。
+继续保留：
+
+CALIBRATION_MODE=proxy_val_split
+CALIBRATION_FRACTION=0.50
+
+calibration_contact完成后，再对同一个固定v48.8 checkpoint统一使用三套dedicated calibration重新校准；无需重新训练。届时再生成专用指令。

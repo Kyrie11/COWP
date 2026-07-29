@@ -76,5 +76,5 @@ def test_launcher_uses_exact_stage_directories_and_same_stage_resume() -> None:
     assert '--resume "$natural_resume" --resume-training' in launcher
     assert 'FORCE_RESTART_TRAIN="${FORCE_RESTART_TRAIN:-0}"' in launcher
     wrapper = Path("NEXT_RUN_COMMANDS_V16_7_MECHANISM_CN.sh").read_text(encoding="utf-8")
-    assert ".v16_7_checkpoint_resume_hotfix_v1_applied" in wrapper
+    assert ".v16_7_dynamic_ddp_hotfix_v3_applied" in wrapper
     assert 'export ALLOW_COMPATIBLE_CODE_RESUME=1' in wrapper

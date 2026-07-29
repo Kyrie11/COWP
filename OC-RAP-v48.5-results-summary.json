@@ -1,0 +1,31 @@
+{
+  "version": "v48.5 OC-TRAC-ECPR",
+  "multi_seed": {
+    "balanced": {
+      "near": {"candidate_auc_mean": 0.68157, "risk_harm_auc_mean": 0.59483, "candidate_rank_corr_mean": 0.189998, "group_top1_corr_mean": 0.00423, "positive_top1_accuracy": 0.45069, "positive_regret": 0.17457},
+      "contact": {"candidate_auc_mean": 0.78087, "risk_harm_auc_mean": 0.59063, "candidate_rank_corr_mean": 0.23218, "group_top1_corr_mean": 0.15081, "positive_top1_accuracy": 0.57763, "positive_regret": 0.18711}
+    },
+    "precision": {
+      "near": {"candidate_auc_mean": 0.72791, "risk_harm_auc_mean": 0.59418, "candidate_rank_corr_mean": 0.20006, "group_top1_corr_mean": -0.00758, "positive_top1_accuracy": 0.51752, "positive_regret": 0.11315},
+      "contact": {"candidate_auc_mean": 0.79569, "risk_harm_auc_mean": 0.56571, "candidate_rank_corr_mean": 0.21422, "group_top1_corr_mean": 0.13722, "positive_top1_accuracy": 0.58833, "positive_regret": 0.18035}
+    },
+    "top1_by_seed": {
+      "balanced_near": [0.0619, 0.0430, -0.0922],
+      "balanced_contact": [0.1737, 0.1551, 0.1237],
+      "precision_near": [0.0285, 0.0192, -0.0704],
+      "precision_contact": [0.1551, 0.1268, 0.1297]
+    },
+    "verify_selected": 0
+  },
+  "ablations": {
+    "A_exact_pointwise": {"balanced_near_top1": -0.0302, "balanced_contact_top1": -0.0991, "precision_near_top1": -0.0292, "precision_contact_top1": -0.0102},
+    "B_exact_zi_nasc": {"balanced_near_top1": -0.0119, "balanced_contact_top1": -0.0926, "precision_near_top1": -0.0021, "precision_contact_top1": -0.0931},
+    "C_exact_ecpr": {"balanced_near_top1": 0.03825, "balanced_contact_top1": 0.07849, "precision_near_top1": -0.03373, "precision_contact_top1": 0.02575},
+    "D_full_ecpr_nasc": {"balanced_near_top1": -0.06626, "balanced_contact_top1": -0.00468, "precision_near_top1": -0.04139, "precision_contact_top1": -0.01391}
+  },
+  "near_miss": {
+    "near": {"selected_range": [8, 18], "precision_range": [0.154, 0.556], "precision_lcb90_range": [0.052, 0.303], "harm_rate_range": [0.0, 0.375], "positive_recall_range": [0.105, 0.316], "max_macro_share": 1.0},
+    "contact": {"selected_range": [10, 49], "precision_range": [0.265, 0.400], "precision_lcb90_range": [0.127, 0.242], "harm_rate_range": [0.242, 0.510], "positive_recall_range": [0.111, 0.520], "max_macro_share_range": [0.898, 1.0]}
+  },
+  "closed_loop_evidence_available": false
+}

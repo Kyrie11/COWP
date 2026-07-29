@@ -1630,35 +1630,38 @@ def main() -> None:
 
     model = _maybe_compile_model(model, compile_enabled, backend=args.compile_backend)
     if distributed:
-        # Static DDP is valid whenever the set of trainable/unused parameters is
-        # fixed for the whole run.  v16.6 restricted this optimization to natural
-        # training, while transport/planner still paid an unused-parameter graph
-        # traversal every batch.  v16.7 launchers use zero warm-up freeze, making
-        # those stage graphs static as well.  Keep find_unused=True outside the
-        # fully frozen natural decoder because stage-specific heads can remain
-        # checkpoint-compatible but unused; static_graph caches that set safely.
-        no_freeze_transition = int(args.freeze_backbone_epochs) <= 0
+        # Only the permanently frozen natural-repair stage has a genuinely fixed
+        # autograd graph.  Witness/planner remain dynamic even when
+        # freeze_backbone_epochs == 0: their masked supervision and optional loss
+        # branches can make a returned head participate in one batch but not the
+        # next.  DDP static_graph=True is therefore invalid for those stages.
+        #
+        # find_unused_parameters=True preserves the original training semantics:
+        # parameters omitted by the current loss keep grad=None (rather than being
+        # forced into the graph with a synthetic zero loss, which would change
+        # AdamW momentum/weight-decay behavior).
         static_stage_ddp = bool(
-            (permanent_natural_freeze and stage in {"natural", "representation"})
-            or (no_freeze_transition and stage in {"witness", "planner"})
-        )
-        fully_used_static_natural = bool(
             permanent_natural_freeze and stage in {"natural", "representation"}
         )
         ddp_kwargs: dict[str, Any] = {
-            "find_unused_parameters": not fully_used_static_natural,
+            "find_unused_parameters": not static_stage_ddp,
+            "gradient_as_bucket_view": True,
         }
         if static_stage_ddp:
-            ddp_kwargs.update({"static_graph": True, "gradient_as_bucket_view": True})
+            ddp_kwargs["static_graph"] = True
         if device.type == "cuda":
             ddp_kwargs.update({"device_ids": [local_rank], "output_device": local_rank})
         try:
             model = DDP(model, **ddp_kwargs)
         except TypeError:
-            # Compatibility with older PyTorch versions lacking static_graph or
-            # gradient_as_bucket_view.  Keep the safe no-unused traversal choice.
-            ddp_kwargs.pop("static_graph", None)
+            # Older PyTorch may not support static_graph and/or bucket views.  Once
+            # static_graph is removed, unused-parameter discovery must be enabled
+            # because natural repair still carries checkpoint-compatible heads that
+            # are intentionally absent from its loss graph.
+            used_static_graph = bool(ddp_kwargs.pop("static_graph", False))
             ddp_kwargs.pop("gradient_as_bucket_view", None)
+            if used_static_graph:
+                ddp_kwargs["find_unused_parameters"] = True
             model = DDP(model, **ddp_kwargs)
         _rank0_print(
             f"DDP policy: find_unused_parameters={ddp_kwargs.get('find_unused_parameters')}, "

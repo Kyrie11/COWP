@@ -1,0 +1,399 @@
+{
+  "version": "v48.8",
+  "main_learning_gates": {
+    "version": "v48.8",
+    "run": "runs/ocrap_v48_8_scope_proxy_4801",
+    "variants": {
+      "balanced": {
+        "preference": {
+          "near": {
+            "top1_correlation": 0.052719386765408535,
+            "acceptable_top1_accuracy": 0.5918367346938775,
+            "passed": false
+          },
+          "contact": {
+            "top1_correlation": 0.12508826336304463,
+            "acceptable_top1_accuracy": 0.5757575757575758,
+            "passed": false
+          }
+        },
+        "gain": {
+          "near": {
+            "candidate_positive_auc": 0.7303241606221491,
+            "candidate_harm_auc": 0.6291973376823732,
+            "mean_regret": 0.1452784188065804,
+            "passed": false
+          },
+          "contact": {
+            "candidate_positive_auc": 0.7849591445576516,
+            "candidate_harm_auc": 0.5321979473083038,
+            "mean_regret": 0.20893001753322413,
+            "passed": false
+          }
+        },
+        "certificate": {
+          "near": {
+            "valid_for_deployment": false,
+            "verify_selected": 0,
+            "precision_lcb90": null,
+            "harmful_selected_ucb90": 1.0,
+            "positive_recall": 0.0,
+            "passed": false,
+            "near_miss_verify_frontier": []
+          },
+          "contact": {
+            "valid_for_deployment": false,
+            "verify_selected": 0,
+            "precision_lcb90": null,
+            "harmful_selected_ucb90": 1.0,
+            "positive_recall": 0.0,
+            "passed": false,
+            "near_miss_verify_frontier": []
+          }
+        },
+        "stage_p_passed": false,
+        "stage_c_discrimination_passed": false,
+        "natural_gate_passed": false
+      },
+      "precision": {
+        "preference": {
+          "near": {
+            "top1_correlation": 0.16274268794110483,
+            "acceptable_top1_accuracy": 0.5510204081632653,
+            "passed": false
+          },
+          "contact": {
+            "top1_correlation": 0.18463751946429727,
+            "acceptable_top1_accuracy": 0.5909090909090909,
+            "passed": false
+          }
+        },
+        "gain": {
+          "near": {
+            "candidate_positive_auc": 0.6431522470649816,
+            "candidate_harm_auc": 0.6247366333142328,
+            "mean_regret": 0.1553296576828924,
+            "passed": false
+          },
+          "contact": {
+            "candidate_positive_auc": 0.7651938531894146,
+            "candidate_harm_auc": 0.5742571897071048,
+            "mean_regret": 0.19842229877932216,
+            "passed": false
+          }
+        },
+        "certificate": {
+          "near": {
+            "valid_for_deployment": false,
+            "verify_selected": 0,
+            "precision_lcb90": null,
+            "harmful_selected_ucb90": 1.0,
+            "positive_recall": 0.0,
+            "passed": false,
+            "near_miss_verify_frontier": []
+          },
+          "contact": {
+            "valid_for_deployment": false,
+            "verify_selected": 0,
+            "precision_lcb90": null,
+            "harmful_selected_ucb90": 1.0,
+            "positive_recall": 0.0,
+            "passed": false,
+            "near_miss_verify_frontier": []
+          }
+        },
+        "stage_p_passed": false,
+        "stage_c_discrimination_passed": false,
+        "natural_gate_passed": false
+      }
+    },
+    "decision": {
+      "continue_to_multiseed": false,
+      "continue_to_stress_closed_loop": false
+    }
+  },
+  "ablations": [
+    {
+      "group": "A_engineering_fixed_v487",
+      "variant": "balanced",
+      "near_top1": 0.022118739044801706,
+      "contact_top1": 0.07868825360273245,
+      "near_candidate_positive_auc": 0.6908977043296194,
+      "contact_candidate_positive_auc": 0.7539022831971485,
+      "risk_source_near": "direct_delta",
+      "risk_source_contact": "direct_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "A_engineering_fixed_v487",
+      "variant": "precision",
+      "near_top1": 0.047841056252605194,
+      "contact_top1": 0.10237076958983769,
+      "near_candidate_positive_auc": 0.6596033051671278,
+      "contact_candidate_positive_auc": 0.7887521436497529,
+      "risk_source_near": "direct_delta",
+      "risk_source_contact": "direct_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "B_conflict_free_preference",
+      "variant": "balanced",
+      "near_top1": 0.005804628432992659,
+      "contact_top1": 0.0578653618022909,
+      "near_candidate_positive_auc": 0.7132935766095865,
+      "contact_candidate_positive_auc": 0.7642792292948654,
+      "risk_source_near": "direct_delta",
+      "risk_source_contact": "direct_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "B_conflict_free_preference",
+      "variant": "precision",
+      "near_top1": 0.005804625432484747,
+      "contact_top1": 0.05786534324598534,
+      "near_candidate_positive_auc": 0.7100033649891573,
+      "contact_candidate_positive_auc": 0.7818924644406335,
+      "risk_source_near": "direct_delta",
+      "risk_source_contact": "direct_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "C_robust_conformal_certificate",
+      "variant": "balanced",
+      "near_top1": 0.022118739044801706,
+      "contact_top1": 0.07868825360273245,
+      "near_candidate_positive_auc": 0.6462929036117551,
+      "contact_candidate_positive_auc": 0.7249705773563334,
+      "risk_source_near": "conformal_delta",
+      "risk_source_contact": "conformal_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "C_robust_conformal_certificate",
+      "variant": "precision",
+      "near_top1": 0.047841056252605194,
+      "contact_top1": 0.10237076958983769,
+      "near_candidate_positive_auc": 0.6834386450310327,
+      "contact_candidate_positive_auc": 0.7472241837318,
+      "risk_source_near": "conformal_delta",
+      "risk_source_contact": "conformal_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "D_full_scope",
+      "variant": "balanced",
+      "near_top1": 0.005804628432992659,
+      "contact_top1": 0.0578653618022909,
+      "near_candidate_positive_auc": 0.6532285201525462,
+      "contact_candidate_positive_auc": 0.8271999730992973,
+      "risk_source_near": "conformal_delta",
+      "risk_source_contact": "conformal_delta",
+      "near_valid": false,
+      "contact_valid": false
+    },
+    {
+      "group": "D_full_scope",
+      "variant": "precision",
+      "near_top1": 0.005804625432484747,
+      "contact_top1": 0.05786534324598534,
+      "near_candidate_positive_auc": 0.648685784790249,
+      "contact_candidate_positive_auc": 0.8200981875651502,
+      "risk_source_near": "conformal_delta",
+      "risk_source_contact": "conformal_delta",
+      "near_valid": false,
+      "contact_valid": false
+    }
+  ],
+  "conformal_diagnostics": {
+    "balanced": {
+      "near": {
+        "risk_source": "conformal_delta",
+        "conformal": {
+          "alpha": 0.1,
+          "temperature": 0.02,
+          "fit_pair_count": 325,
+          "overprediction_quantile": 0.585380818118623,
+          "underprediction_quantile": 0.1988120675086975
+        },
+        "num_selected_verify": 0,
+        "near_miss_count": 0,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ]
+      },
+      "contact": {
+        "risk_source": "conformal_delta",
+        "conformal": {
+          "alpha": 0.1,
+          "temperature": 0.02,
+          "fit_pair_count": 682,
+          "overprediction_quantile": 0.6112101121344599,
+          "underprediction_quantile": 0.04755169061203536
+        },
+        "num_selected_verify": 0,
+        "near_miss_count": 0,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ]
+      }
+    },
+    "precision": {
+      "near": {
+        "risk_source": "conformal_delta",
+        "conformal": {
+          "alpha": 0.1,
+          "temperature": 0.02,
+          "fit_pair_count": 325,
+          "overprediction_quantile": 0.5720888101431515,
+          "underprediction_quantile": 0.3315393030643463
+        },
+        "num_selected_verify": 0,
+        "near_miss_count": 0,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ]
+      },
+      "contact": {
+        "risk_source": "conformal_delta",
+        "conformal": {
+          "alpha": 0.1,
+          "temperature": 0.02,
+          "fit_pair_count": 682,
+          "overprediction_quantile": 0.5873616173590808,
+          "underprediction_quantile": 0.06628727912902832
+        },
+        "num_selected_verify": 0,
+        "near_miss_count": 0,
+        "warnings": [
+          "no joint opportunity-harm-score rule satisfied fit constraints",
+          "held-out selections below requirement",
+          "held-out precision LCB below requirement",
+          "held-out conditional harmful-switch UCB above budget"
+        ]
+      }
+    }
+  },
+  "safe_paired": {
+    "version": "v48.8",
+    "method": "scene_paired_bootstrap_noninferiority",
+    "baseline": "runs/ocrap_v48_8_safe_paired_noninferiority/closed_loop_safe_fast_v48_scalar.json",
+    "candidate": "runs/ocrap_v48_8_safe_paired_noninferiority/closed_loop_safe_fast_v48.json",
+    "baseline_scenes": 8,
+    "candidate_scenes": 8,
+    "paired_scenes": 8,
+    "baseline_only_scenes": [],
+    "candidate_only_scenes": [],
+    "metrics": [
+      {
+        "metric": "collision_scene_rate",
+        "available": true,
+        "paired_scenes": 8,
+        "baseline_mean": 0.125,
+        "candidate_mean": 0.125,
+        "candidate_minus_baseline": 0.0,
+        "paired_ci95": [
+          0.0,
+          0.0
+        ],
+        "direction": "lower_is_better",
+        "noninferiority_margin": 0.002,
+        "passed_noninferiority": true
+      },
+      {
+        "metric": "offroad_scene_rate",
+        "available": true,
+        "paired_scenes": 8,
+        "baseline_mean": 0.125,
+        "candidate_mean": 0.125,
+        "candidate_minus_baseline": 0.0,
+        "paired_ci95": [
+          0.0,
+          0.0
+        ],
+        "direction": "lower_is_better",
+        "noninferiority_margin": 0.002,
+        "passed_noninferiority": true
+      },
+      {
+        "metric": "bounded_NUP",
+        "available": true,
+        "paired_scenes": 8,
+        "baseline_mean": 1.0,
+        "candidate_mean": 1.0,
+        "candidate_minus_baseline": 0.0,
+        "paired_ci95": [
+          0.0,
+          0.0
+        ],
+        "direction": "higher_is_better",
+        "noninferiority_margin": 0.01,
+        "passed_noninferiority": true
+      },
+      {
+        "metric": "intervention_episode_rate",
+        "available": true,
+        "paired_scenes": 8,
+        "baseline_mean": 0.0,
+        "candidate_mean": 0.0,
+        "candidate_minus_baseline": 0.0,
+        "paired_ci95": [
+          0.0,
+          0.0
+        ],
+        "direction": "lower_is_better",
+        "noninferiority_margin": 0.03,
+        "passed_noninferiority": true
+      },
+      {
+        "metric": "route_progression",
+        "available": false,
+        "reason": "metric is not emitted at scene level by both runs",
+        "direction": "higher_is_better",
+        "noninferiority_margin": 0.005
+      },
+      {
+        "metric": "jerk_p95",
+        "available": false,
+        "reason": "metric is not emitted at scene level by both runs",
+        "direction": "lower_is_better",
+        "noninferiority_margin": null
+      },
+      {
+        "metric": "yaw_rate_p95",
+        "available": false,
+        "reason": "metric is not emitted at scene level by both runs",
+        "direction": "lower_is_better",
+        "noninferiority_margin": null
+      }
+    ],
+    "core_available_metrics_passed": true,
+    "paper_safe_claim_ready": false,
+    "notes": [
+      "A small paired probe is diagnostic only; use at least 100 paired scenes for the paper claim.",
+      "Unavailable route/jerk/yaw metrics are reported as unavailable rather than inferred from proxies."
+    ]
+  },
+  "audit_conclusions": {
+    "natural_gate_passed": false,
+    "near_contact_closed_loop_executed": false,
+    "design_1_conflict_free_set_preference": "not effective in the completed ablation; uniform-set KL and dead-zone-as-acceptable caused false interventions",
+    "design_2_relative_low_capacity_adapter": "relative representation remains plausible, but the implemented 196297-parameter adapter did not improve top1",
+    "design_3_relative_gain": "candidate discrimination exists but all-candidate training is misaligned with the frozen-policy selected candidate",
+    "design_4_split_conformal": "failed operationally because all-pair residual quantiles saturated opportunity=0 and harm=1"
+  }
+}
