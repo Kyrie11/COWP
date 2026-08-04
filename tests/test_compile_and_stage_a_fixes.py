@@ -54,3 +54,23 @@ def test_checkpoint_helpers_strip_compiled_prefix():
     train_mod._load_model_state_robust(fresh, state)
     for a, b in zip(model.parameters(), fresh.parameters()):
         assert torch.allclose(a, b)
+
+
+def test_checkpoint_helper_migrates_four_row_transport_head_into_five_rows():
+    from cowp.utils.checkpoint_compat import compatible_state_dict
+
+    model_state = {
+        "set_transport.mode_out.1.weight": torch.full((5, 3), 9.0),
+        "set_transport.mode_out.1.bias": torch.full((5,), 9.0),
+    }
+    old = {
+        "set_transport.mode_out.1.weight": torch.arange(12, dtype=torch.float32).reshape(4, 3),
+        "set_transport.mode_out.1.bias": torch.arange(4, dtype=torch.float32),
+    }
+    compatible, migrated, ignored = compatible_state_dict(model_state, old)
+    assert sorted(migrated) == sorted(old)
+    assert not ignored
+    assert torch.equal(compatible["set_transport.mode_out.1.weight"][:4], old["set_transport.mode_out.1.weight"])
+    assert torch.equal(compatible["set_transport.mode_out.1.bias"][:4], old["set_transport.mode_out.1.bias"])
+    assert torch.equal(compatible["set_transport.mode_out.1.weight"][4], model_state["set_transport.mode_out.1.weight"][4])
+    assert compatible["set_transport.mode_out.1.bias"][4].item() == 9.0

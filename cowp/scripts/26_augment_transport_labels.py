@@ -50,6 +50,31 @@ REQUIRED_INPUT_KEYS = (
 _WORKER_CFG: dict | None = None
 
 
+def _canonical_root_weight(
+    weight: np.ndarray,
+    support: np.ndarray,
+    *,
+    probability_floor: float,
+) -> np.ndarray:
+    """Normalize and floor root mass over the filtered natural-option set."""
+    w = np.asarray(weight, dtype=np.float32)
+    support = np.asarray(support, dtype=bool)
+    out = np.zeros_like(w, dtype=np.float32)
+    for a in range(w.shape[0]):
+        mask = support[a]
+        if not np.any(mask):
+            continue
+        raw = np.maximum(w[a], 0.0) * mask.astype(np.float32)
+        total = float(raw.sum())
+        if total <= 1.0e-8:
+            raw = mask.astype(np.float32) / float(mask.sum())
+        else:
+            raw = raw / total
+        eps = float(np.clip(probability_floor, 0.0, 0.25))
+        out[a] = ((1.0 - eps) * raw + eps * mask.astype(np.float32) / float(mask.sum())) * mask.astype(np.float32)
+    return out
+
+
 def _init_worker(cfg: dict) -> None:
     global _WORKER_CFG
     _WORKER_CFG = cfg
@@ -181,8 +206,16 @@ def _derive(data: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
     K, A, M = cand_traj.shape[0], crit_valid.shape[0], nat_valid.shape[-1]
     R = resp_valid.shape[-1]
     min_weight = float(cfg.get("ncf", {}).get("min_alt_weight", 0.03))
-
-    low_support = nat_valid & (nat_weight >= min_weight) & (nat_burden <= beta[:, None])
+    probability_support = nat_valid & (nat_weight >= min_weight)
+    # Degenerate legacy rows should remain usable: if no valid root clears p_min,
+    # retain all valid roots and let the diagnostic expose the anomaly.
+    empty = (~probability_support.any(axis=-1)) & nat_valid.any(axis=-1)
+    probability_support[empty] = nat_valid[empty]
+    canonical_root_weight = _canonical_root_weight(
+        nat_weight, probability_support,
+        probability_floor=float(cfg.get("ncf", {}).get("root_probability_floor", 0.02)),
+    )
+    low_support = probability_support & (nat_burden <= beta[:, None])
     mode_valid = (
         cand_valid[:, None, None]
         & crit_valid[None, :, None]
@@ -304,13 +337,13 @@ def _derive(data: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
                     if low_ok:
                         root_low_score[k, a, root] = 1.0
 
-            conflict_w = nat_weight[a] * mode_valid[k, a] * mode_conflict[k, a]
+            conflict_w = canonical_root_weight[a] * mode_valid[k, a] * mode_conflict[k, a]
             denom = float(conflict_w.sum())
             if denom > 1.0e-8:
                 recovery[k, a] = float((conflict_w * root_low_score[k, a]).sum() / denom)
             transported = mode_retained[k, a].astype(np.float32)
             transported = np.where(mode_conflict[k, a], root_low_score[k, a], transported)
-            transported_opr[k, a] = float(np.clip((nat_weight[a] * transported).sum(), 0.0, 1.0))
+            transported_opr[k, a] = float(np.clip((canonical_root_weight[a] * transported).sum(), 0.0, 1.0))
 
     return {
         "cowp/transport/mode_valid": mode_valid,
@@ -323,6 +356,9 @@ def _derive(data: dict[str, np.ndarray], cfg: dict) -> dict[str, np.ndarray]:
         "cowp/transport/root_target_confidence": root_confidence,
         "cowp/transport/root_min_safe_burden": root_min_safe_burden,
         "cowp/transport/transported_opr": transported_opr,
+        # Optional v16.8.1 metadata.  It is intentionally not in TRANSPORT_KEYS so
+        # existing complete overlays remain reusable without an expensive rebuild.
+        "cowp/transport/canonical_root_weight": canonical_root_weight,
     }
 
 

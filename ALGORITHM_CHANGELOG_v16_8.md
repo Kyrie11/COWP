@@ -5,6 +5,91 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.8.1 — Definition-Consistent RCOT, Direct Root Burden, and Recovered Execution Chain
+
+### Triggering evidence
+
+The uploaded `cowp_v16_8_pipeline_v9labels_seed2026` and
+`cowp_v16_8_rcot_v9base_seed2026` runs did not reach training. Both terminate in
+`36_audit_causal_protocol.py` because the launcher requests
+`v16_8_root_conditioned_overlay` while the parser accepts only `v15` and
+`v9_reuse`. The cache/overlay diagnostics immediately before the failure are
+healthy: 20,440/20,440 train files, 5,013/5,013 validation files, zero overlay
+errors, zero split filename overlap, complete critical mapping, and no response
+root indices out of range.
+
+### Definition corrections
+
+1. **Implemented the complete root transport equation in model forward.** The
+   predicted transported root probability is now
+   `retain_prob + conflict_prob * mode_recovery_prob`, i.e.
+   `s=(1-c)r+cq`. Earlier forward inference omitted `c*q`, even when supervision
+   rebuilt transported OPR.
+2. **Separated low-burden recoverability from minimum safe burden.** The
+   candidate--agent--root head now predicts `q_ikm` and `b*_ikm` through separate
+   channels from a shared root-conditioned latent. `q=0` no longer forces the
+   no-safe-response sentinel; a finite high-burden safe response remains
+   representable.
+3. **Added confidence-masked q--b* consistency.** On confidently labelled
+   conflicting roots, the loss aligns `q` with a smooth thresholding of `b*`
+   around the adaptive burden budget while preserving direct supervision and
+   independent outputs.
+4. **Made the direct root representation the primary certificate.** OPR and
+   root-CVaR use direct `q`/`b*`. The compact generic response bank is retained
+   only for auxiliary reconstruction, qualitative visualization, and ablation.
+5. **Unified the natural-root probability measure.** Label adaptation, future
+   overlay generation, and model inference now apply the same `p_min` support,
+   surviving-mass renormalization, and active-support probability floor.
+6. **Removed recovery-loss dilution.** The main recovery objective is
+   conflict-only BCE plus conflict-conditioned ranking; the all-root recovery
+   BCE is disabled.
+
+### Execution and engineering corrections
+
+1. `36_audit_causal_protocol.py` now accepts
+   `v16_8_root_conditioned_overlay` and separately reports engineering,
+   mechanism-overlay, and fresh-v15 protocol status.
+2. Added an audited checkpoint compatibility loader for the exact 4-to-5-row
+   expansion of `set_transport.mode_out`; all other shape mismatches remain
+   hard failures.
+3. Fixed the background launcher so the parent exits after spawning the nohup
+   child.
+4. The natural transfer manifest now records both checkpoint and training
+   history with SHA-256 hashes. New probe/full launchers restore them in a fresh
+   shell instead of assuming inherited environment variables.
+5. Added `NEXT_RUN_COMMANDS_V16_8_PROBE_CN.sh`; full evaluation is separated
+   from probe and requires a completed probe delta.
+6. Changed default output to
+   `outputs/cowp_v16_8_1_rcot_consistent_v9base_seed2026` to preserve strict
+   provenance and prevent reuse of artifacts produced by the incorrect code.
+
+### Dataset decision
+
+- Reuse the existing v16.8 overlay for the next mechanism run; no rebuild is
+  required for these model/loss fixes.
+- Keep log-divergence supervision disabled because finite coverage is zero.
+- Treat cached Waymax outcomes as partial auxiliary labels, not unbiased
+  full-candidate closed-loop evidence.
+- Do not use this v9-base overlay as evidence that the fresh v15/v16 causal-label
+  protocol has been validated.
+
+### Validation
+
+- Full test suite: 144 passed, 5 skipped after the new launcher regression test.
+- Python compileall: passed.
+- All top-level shell scripts: `bash -n` passed.
+- CPU realistic model/loss preflight: passed.
+- Causal-audit smoke: engineering and mechanism-overlay protocol passed; fresh
+  v15 label protocol correctly remained false.
+
+### Next decision rule
+
+Do not enter Waymax probe unless the disjoint learned-offline report has both
+`pass=true` and `calibration_feasible=true`, including priority RootTransport
+AUPRC, NCF recall/precision, acceptance, fallback, PBTR improvement, and global
+false-safe improvement gates. Do not respond to a failed gate by only increasing
+`BCOT_RISK_BUDGET`.
+
 ## v16.8 — Root-Conditioned Counterfactual Transport (RCOT), Canonical OPR, and Immutable Mechanism Checkpoint
 
 ### Evidence from the uploaded v16.7 mechanism-isolation run

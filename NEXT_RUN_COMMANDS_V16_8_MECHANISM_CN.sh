@@ -5,7 +5,7 @@ cd "$ROOT"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 SOURCE_NATURAL_ROOT="${SOURCE_NATURAL_ROOT:-outputs/cowp_v16_6_natural_recovery_v9labels_seed2026}"
 ATTR_GATE="${ATTR_GATE:-outputs/cowp_v16_6_natural_attribution_aligned_v9labels_seed2026/natural_component_attribution_gate.json}"
-export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_mechanism_v9labels_seed2026}"
+export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_1_rcot_consistent_v9base_seed2026}"
 NAT_BASIS_GATE="$SOURCE_NATURAL_ROOT/eval/learned_offline/natural_basis_gate.json"
 NAT_EFFECT_GATE="$SOURCE_NATURAL_ROOT/eval/learned_offline/natural_effectiveness_gate.json"
 MAIN_REPORT="$SOURCE_NATURAL_ROOT/eval/learned_offline/learned_natural_effectiveness.json"
@@ -48,7 +48,7 @@ export NATURAL_HISTORY="$SOURCE_NATURAL_ROOT/checkpoints/natural/history_natural
 # earlier checkpoint epoch; that is valid development evidence for the same
 # architecture, but it is not silently treated as exact-checkpoint paper proof.
 mkdir -p "$OUT_ROOT/configs"
-"$PYTHON_BIN" - "$NATURAL_CKPT" "$MAIN_REPORT" "$ATTR_GATE" "$OUT_ROOT/configs/natural_attribution_transfer_manifest.json" <<'PY'
+"$PYTHON_BIN" - "$NATURAL_CKPT" "$NATURAL_HISTORY" "$MAIN_REPORT" "$ATTR_GATE" "$OUT_ROOT/configs/natural_attribution_transfer_manifest.json" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
 
@@ -59,7 +59,7 @@ def sha256(path):
             h.update(chunk)
     return h.hexdigest()
 
-ckpt,report_path,attr_path,out_path=map(Path,sys.argv[1:])
+ckpt,history_path,report_path,attr_path,out_path=map(Path,sys.argv[1:])
 report=json.loads(report_path.read_text(encoding='utf-8'))
 attr=json.loads(attr_path.read_text(encoding='utf-8'))
 selected_epoch=int(report.get('checkpoint_epoch',-1))
@@ -72,6 +72,8 @@ payload={
     'schema_version':'cowp_natural_attribution_transfer_v1',
     'natural_checkpoint':str(ckpt),
     'natural_checkpoint_sha256':sha256(ckpt),
+    'natural_history':str(history_path),
+    'natural_history_sha256':sha256(history_path),
     'natural_effectiveness_report':str(report_path),
     'natural_selected_epoch':selected_epoch,
     'attribution_gate':str(attr_path),

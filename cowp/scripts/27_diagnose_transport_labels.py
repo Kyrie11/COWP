@@ -81,6 +81,7 @@ def main() -> None:
         "cowp/transport/root_target_confidence",
         "cowp/transport/root_min_safe_burden",
         "cowp/transport/transported_opr",
+        "cowp/transport/canonical_root_weight",
     })
     bins = max(int(args.quantile_bins), 100)
     q_lo, q_hi = 0.0, 1.0
@@ -120,7 +121,16 @@ def main() -> None:
                 clipped = np.clip(finite_rec, q_lo, q_hi)
                 result.recovery_hist = np.histogram(clipped, bins=bins, range=(q_lo, q_hi))[0].astype(np.int64)
 
-            ww = w[None, :, :]
+            canonical_w = data.get("cowp/transport/canonical_root_weight")
+            if canonical_w is not None:
+                base_w = np.asarray(canonical_w, dtype=np.float32)
+            else:
+                # Existing v16.8 overlays did not persist the filtered/floor-smoothed
+                # measure.  Preserve their stored self-consistency diagnostic here;
+                # training/evaluation rebuild the canonical measure in
+                # paper_aligned_supervision_batch.
+                base_w = w
+            ww = base_w[None, :, :]
             denom = (ww * mv).sum(axis=-1)
             conf = (ww * mv * mc).sum(axis=-1)
             root_score = np.asarray(

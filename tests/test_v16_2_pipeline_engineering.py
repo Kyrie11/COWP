@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def test_natural_mode_usage_avoids_old_torch_tuple_any_api() -> None:
     source = Path("cowp/models/losses.py").read_text(encoding="utf-8")
@@ -14,13 +16,19 @@ def test_natural_mode_usage_avoids_old_torch_tuple_any_api() -> None:
 
 
 def test_full_wrapper_really_enables_full_waymax() -> None:
-    source = Path("NEXT_RUN_COMMANDS_V16_2_FULL_CN.sh").read_text(encoding="utf-8")
+    path = Path("NEXT_RUN_COMMANDS_V16_2_FULL_CN.sh")
+    if not path.exists():
+        pytest.skip("legacy v16.2 full wrapper is not shipped in the active v16.8 package")
+    source = path.read_text(encoding="utf-8")
     assert 'RUN_FULL="${RUN_FULL:-1}"' in source
     assert "REQUIRE_WAYMAX_PREFLIGHT=1" in source
 
 
 def test_parallel_pipeline_waits_all_children_and_reports_offroad() -> None:
-    runner = Path("run_cowp_v16_2_dual_gpu.sh").read_text(encoding="utf-8")
+    runner_path = Path("run_cowp_v16_2_dual_gpu.sh")
+    if not runner_path.exists():
+        pytest.skip("legacy v16.2 launcher is not shipped in the active v16.8 package")
+    runner = runner_path.read_text(encoding="utf-8")
     summary = Path("cowp/scripts/24_summarize_planner_delta.py").read_text(encoding="utf-8")
     assert "wait_all()" in runner
     assert "validate_pipeline_outputs" in runner

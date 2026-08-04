@@ -48,6 +48,7 @@ from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+from cowp.utils.checkpoint_compat import compatible_state_dict
 from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, paper_aligned_supervision_batch, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
 
 
@@ -962,11 +963,13 @@ def _load_model_state_robust(
                 return
             except RuntimeError as exc:
                 last_error = exc
-        compatible = {k: v for k, v in cand.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+        compatible, migrated, ignored = compatible_state_dict(model_state, cand)
         missing = sorted(set(model_state) - set(compatible))
-        unexpected = sorted(set(cand) - set(compatible))
+        unexpected = sorted(set(ignored))
         if compatible:
             model.load_state_dict(compatible, strict=False)
+            if migrated:
+                print(f"Migrated leading rows for {len(migrated)} expanded checkpoint tensors: {migrated}")
             if prefixes:
                 reset_keys = [k for k in model_state if any(k == p or k.startswith(p + ".") for p in prefixes)]
                 print(f"Explicitly reinitialized {len(reset_keys)} checkpoint keys under prefixes={prefixes}")

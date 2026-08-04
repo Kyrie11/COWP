@@ -8,6 +8,7 @@ import numpy as np
 from cowp.core.constants import MacroType
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
 from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory, repair_planar_kinematics
+from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
 def _load_state_dict_compatible(model, state: dict) -> None:
@@ -17,15 +18,14 @@ def _load_state_dict_compatible(model, state: dict) -> None:
         return
     except Exception:
         pass
-    if state and all(str(k).startswith("_orig_mod.") for k in state.keys()):
-        state = {k[len("_orig_mod."):]: v for k, v in state.items()}
-        try:
-            model.load_state_dict(state)
-            return
-        except Exception:
-            pass
+    state = strip_compiled_prefix(state)
+    try:
+        model.load_state_dict(state)
+        return
+    except Exception:
+        pass
     model_state = model.state_dict()
-    compatible = {k: v for k, v in state.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+    compatible, _, _ = compatible_state_dict(model_state, state)
     model.load_state_dict(compatible, strict=False)
 
 

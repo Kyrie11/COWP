@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}"
-OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_pipeline_v9labels_seed2026}"
+OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_1_rcot_consistent_v9base_seed2026}"
 RAW_TRAIN_CACHE="${RAW_TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax}"
 RAW_VAL_CACHE="${RAW_VAL_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val_waymax}"
 TRAIN_CACHE="${TRAIN_CACHE:-/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train_waymax_transport_v16_8}"
@@ -142,6 +142,9 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \
   --file "cowp/scripts/25_verify_mechanism_effect.py=cowp/scripts/25_verify_mechanism_effect.py" \
   --file "cowp/scripts/31_calibrate_bcot_budget.py=cowp/scripts/31_calibrate_bcot_budget.py" \
+  --file "cowp/scripts/36_audit_causal_protocol.py=cowp/scripts/36_audit_causal_protocol.py" \
+  --file "cowp/scripts/39_diagnose_learned_natural.py=cowp/scripts/39_diagnose_learned_natural.py" \
+  --file "cowp/utils/checkpoint_compat.py=cowp/utils/checkpoint_compat.py" \
   --file "cowp/waymax_eval/rollout.py=cowp/waymax_eval/rollout.py" \
   --file "cowp/waymax_eval/policy_wrapper.py=cowp/waymax_eval/policy_wrapper.py" \
   --file "run_cowp_v16_8_dual_gpu.sh=$0" | tee "$OUT_ROOT/logs/run_provenance.log"

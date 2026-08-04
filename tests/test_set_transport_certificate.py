@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from cowp.models.response_decoder import ResponseDecoder
@@ -47,12 +48,57 @@ def test_compact_response_decode_does_not_allocate_trajectory():
     assert out["source_logits"].shape == (1, 3, 1, 4, 4)
 
 
-def test_set_certificate_is_monotone_in_required_safe_burden():
+def test_generic_response_burden_is_auxiliary_to_root_conditioned_certificate():
     head = SetTransportCertificateHead(d_model=8, hidden=8)
-    # Isolate the analytic certificate from its bounded learned calibration.
+    # The generic response bank still reconstructs an interpretable global
+    # minimum, but it must not override the RCOT root-conditioned certificate.
     low = head(**_inputs(burden=0.20), calibration_scale=0.0, alpha_opr=0.10)
     high = head(**_inputs(burden=1.20), calibration_scale=0.0, alpha_opr=0.10)
     assert low["witness_prob"].shape == (1, 2, 1)
     assert torch.all(high["min_safe_burden"] > low["min_safe_burden"])
-    assert torch.all(high["witness_prob"] > low["witness_prob"])
+    assert torch.allclose(high["witness_prob"], low["witness_prob"])
     assert torch.all((low["opr"] >= 0.0) & (low["opr"] <= 1.0))
+
+
+def test_root_conditioned_burden_is_monotone_in_certificate():
+    head = SetTransportCertificateHead(d_model=8, hidden=8)
+    inputs = _inputs(burden=0.20)
+    with torch.no_grad():
+        final = head.mode_out[-1]
+        final.weight.zero_()
+        final.bias.zero_()
+        final.bias[0] = 8.0   # conflict
+        final.bias[1] = -8.0  # no retained mass
+        final.bias[3] = -8.0  # no low-burden recovery
+        final.bias[4] = -8.0  # low b*
+    low = head(**inputs, calibration_scale=0.0, alpha_opr=0.10)
+    with torch.no_grad():
+        head.mode_out[-1].bias[4] = 8.0  # high b*
+    high = head(**inputs, calibration_scale=0.0, alpha_opr=0.10)
+    assert torch.all(high["root_min_safe_burden"] > low["root_min_safe_burden"])
+    assert torch.all(high["tail_burden_excess"] > low["tail_burden_excess"])
+    assert torch.all(high["witness_prob"] >= low["witness_prob"])
+
+
+def test_root_probability_measure_applies_pmin_then_floor_on_active_support():
+    head = SetTransportCertificateHead(d_model=8, hidden=8)
+    inputs = _inputs(burden=0.20)
+    # Replace the three uniform roots with masses 0.95, 0.04, 0.01.  p_min=.03
+    # removes only the third root; epsilon=.02 is then distributed over two roots.
+    probs = torch.tensor([0.95, 0.04, 0.01])
+    inputs["natural"]["logits"] = probs.log().view(1, 1, 3)
+    out = head(
+        **inputs,
+        calibration_scale=0.0,
+        root_min_alt_weight=0.03,
+        root_probability_floor=0.02,
+    )
+    base = probs[:2] / probs[:2].sum()
+    expected = torch.tensor([
+        0.98 * base[0] + 0.01,
+        0.98 * base[1] + 0.01,
+        0.0,
+    ])
+    got = out["canonical_root_weight"][0, 0, 0]
+    assert torch.allclose(got, expected, atol=1.0e-6)
+    assert got.sum().item() == pytest.approx(1.0, abs=1.0e-6)

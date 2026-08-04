@@ -11,13 +11,8 @@ x=json.load(open(sys.argv[1],encoding='utf-8'))
 assert bool(x.get('pass',False)), f'mechanism gate failed: {sys.argv[1]}'
 assert bool(x.get('calibration_feasible',False)), f'calibration is infeasible: {sys.argv[1]}'
 assert x.get('gate_role') == 'development_continuation_not_paper_claim'
-print('v16.8.1 mechanism and calibration gates passed')
+print('v16.8.1 mechanism and calibration gates passed; launching Waymax probe')
 PY
-PROBE_DELTA="$OUT_ROOT/eval/probe/delta_conventional_vs_root_transport.json"
-[[ -s "$PROBE_DELTA" ]] || {
-  echo "Full evaluation blocked: run NEXT_RUN_COMMANDS_V16_8_PROBE_CN.sh first and inspect $PROBE_DELTA" >&2
-  exit 2
-}
 TRANSFER_MANIFEST="$OUT_ROOT/configs/natural_attribution_transfer_manifest.json"
 [[ -s "$TRANSFER_MANIFEST" ]] || { echo "missing transfer manifest: $TRANSFER_MANIFEST" >&2; exit 2; }
 mapfile -t NATURAL_TRANSFER < <("$PYTHON_BIN" - "$TRANSFER_MANIFEST" <<'PY'
@@ -38,18 +33,16 @@ export TRANSPORT_CKPT="${TRANSPORT_CKPT:-$OUT_ROOT/checkpoints/transport/cowp_wi
 export CKPT="${CKPT:-$OUT_ROOT/checkpoints/planner/cowp_planner_best.pt}"
 [[ -s "$TRANSPORT_CKPT" ]] || { echo "missing transport checkpoint: $TRANSPORT_CKPT" >&2; exit 2; }
 [[ -s "$CKPT" ]] || { echo "missing planner checkpoint: $CKPT" >&2; exit 2; }
-# The full run is deliberately separated from the probe so a broken online
-# environment or adverse trend cannot silently consume the full evaluation budget.
 export RUN_DIAGNOSE=0
 export RUN_NATURAL=0
 export RUN_TRANSPORT=0
 export RUN_PLANNER=0
 export RUN_OFFLINE=0
-export RUN_PROBE=0
-export RUN_FULL=1
+export RUN_PROBE=1
+export RUN_FULL=0
 export FORCE_TRAIN=0
 export FORCE_EVAL="${FORCE_EVAL:-1}"
-export STOP_AFTER_STAGE=none
+export STOP_AFTER_STAGE=probe
 export REQUIRE_INIT_CKPT=0
 export REQUIRE_WAYMAX_PREFLIGHT=1
 export ALLOW_QUALITY_GATE_FAILURE=0

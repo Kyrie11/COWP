@@ -78,6 +78,7 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/transport/root_target_confidence": FieldSpec(("K", "A", "M"), "f", required=False),
     "cowp/transport/root_min_safe_burden": FieldSpec(("K", "A", "M"), "f", required=False),
     "cowp/transport/transported_opr": FieldSpec(("K", "A"), "f", required=False),
+    "cowp/transport/canonical_root_weight": FieldSpec(("A", "M"), "f", required=False),
     "map/conflict_regions": FieldSpec(("C", 8), "f"),
     "map/conflict_region_valid": FieldSpec(("C",), "b"),
 }

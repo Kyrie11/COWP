@@ -326,6 +326,9 @@ ncf:
   root_probability_floor: 0.02
   cvar_tail_mass: 0.25
 planning:
+  set_transport_min_alt_weight: 0.03
+  set_transport_probability_floor: 0.02
+  set_transport_cvar_tail_mass: 0.25
   online_plan_continuity_weight: 0.2
   online_plan_continuity_horizon_steps: 12
   online_plan_continuity_scale_m: 3.0

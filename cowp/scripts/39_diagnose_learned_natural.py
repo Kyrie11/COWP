@@ -17,6 +17,7 @@ from cowp.data.dataset import TorchCOWPDataset, collate_torch
 from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
+from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
 # v16.7 added these trainable monotone-calibration parameters to the transport
@@ -68,8 +69,9 @@ def _typed_pairwise(pred: torch.Tensor, gt: torch.Tensor, gt_source: torch.Tenso
 
 def _load_checkpoint(model: COWPModel, path: str, device: torch.device) -> dict:
     ckpt = torch.load(path, map_location=device)
-    state = ckpt.get("model", ckpt)
-    result = model.load_state_dict(state, strict=False)
+    state = strip_compiled_prefix(ckpt.get("model", ckpt))
+    compatible, migrated, ignored = compatible_state_dict(model.state_dict(), state)
+    result = model.load_state_dict(compatible, strict=False)
     missing_all = [k for k in result.missing_keys if not k.endswith("num_batches_tracked")]
     optional_missing = [
         k for k in missing_all if k in _NATURAL_DIAG_OPTIONAL_MISSING_KEYS
@@ -77,7 +79,12 @@ def _load_checkpoint(model: COWPModel, path: str, device: torch.device) -> dict:
     missing = [
         k for k in missing_all if k not in _NATURAL_DIAG_OPTIONAL_MISSING_KEYS
     ]
-    unexpected = list(result.unexpected_keys)
+    unexpected = sorted(set(result.unexpected_keys) | set(ignored))
+    # The old four-row transport output is intentionally migrated into the
+    # leading rows of the new five-row output.  Those keys are neither missing
+    # nor unexpected after migration.
+    if migrated:
+        print(f"Migrated expanded SetTransport checkpoint tensors: {migrated}", flush=True)
     if missing or unexpected:
         raise RuntimeError(
             f"Checkpoint/config mismatch for learned-natural diagnosis: missing={missing[:20]}, unexpected={unexpected[:20]}"

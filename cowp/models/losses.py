@@ -159,11 +159,20 @@ def paper_aligned_supervision_batch(
     M = int(mode_valid.shape[-1])
 
     nat_valid = batch["cowp/natural/valid"].bool()[..., :M]
-    p = _safe_float(batch["cowp/natural/weight"])[..., :M] * nat_valid.float()
+    raw_p = _safe_float(batch["cowp/natural/weight"])[..., :M].clamp_min(0.0)
+    # v9 caches predate the manuscript's p_min natural-set filter.  Recreate the
+    # filtered probability measure here so training and evaluation do not mix
+    # raw cache mass with RCOT labels.  If an old/corrupt row has no root above
+    # p_min, fall back to all valid roots rather than producing an empty measure.
+    min_alt_weight = max(float(weights.get("set_transport_min_alt_weight", 0.03)), 0.0)
+    probability_support = nat_valid & (raw_p >= min_alt_weight)
+    empty_support = (~probability_support.any(dim=-1, keepdim=True)) & nat_valid.any(dim=-1, keepdim=True)
+    probability_support = torch.where(empty_support, nat_valid, probability_support)
+    p = raw_p * probability_support.float()
     p = p / p.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
     eps_p = min(max(float(weights.get("set_transport_probability_floor", 0.02)), 0.0), 0.25)
-    valid_count = nat_valid.float().sum(dim=-1, keepdim=True).clamp_min(1.0)
-    p = ((1.0 - eps_p) * p + eps_p * nat_valid.float() / valid_count) * nat_valid.float()
+    valid_count = probability_support.float().sum(dim=-1, keepdim=True).clamp_min(1.0)
+    p = ((1.0 - eps_p) * p + eps_p * probability_support.float() / valid_count) * probability_support.float()
     p_pair = p[:, None, :, :].expand_as(mode_valid.float())
     conflict_mass = (p_pair * mode_conflict.float()).sum(dim=-1).clamp(0.0, 1.0)
 
@@ -213,6 +222,12 @@ def paper_aligned_supervision_batch(
     transported = torch.where(mode_conflict, root_score, mode_retain.float())
     transported = transported * mode_valid.float()
     opr = (p_pair * transported).sum(dim=-1).clamp(0.0, 1.0)
+    conflict_weight = p_pair * mode_conflict.float() * mode_valid.float()
+    conflict_denom = conflict_weight.sum(dim=-1)
+    recovery_mass = (conflict_weight * root_score).sum(dim=-1) / conflict_denom.clamp_min(1.0e-8)
+    recovery_mass = torch.where(
+        conflict_denom > 1.0e-8, recovery_mass, torch.ones_like(recovery_mass)
+    ).clamp(0.0, 1.0)
 
     beta = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
     root_excess = torch.relu(root_min - beta)
@@ -234,6 +249,9 @@ def paper_aligned_supervision_batch(
     )
     out["cowp/witness/exists"] = exists
     out["cowp/witness/opr"] = opr
+    out["cowp/transport/transported_opr"] = opr
+    out["cowp/transport/root_recovery_mass"] = recovery_mass
+    out["cowp/transport/canonical_root_weight"] = p
     out["cowp/witness/natural_conflict_mass"] = conflict_mass
     out["cowp/witness/tail_burden_excess"] = tail
     out["cowp/witness/c_i"] = tail
@@ -2005,6 +2023,71 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         mode_recovery_conflict = _zero_like_loss(pred)
         mode_recovery_rank = _zero_like_loss(pred)
 
+    # Direct root-conditioned minimum burden.  The primary certificate now uses
+    # this primitive together with q_ikm, rather than reconstructing b* through
+    # a generic response bank and a post-hoc root classifier.
+    root_min_target = batch.get("cowp/transport/root_min_safe_burden")
+    mode_root_min_pred = pred.get("mode_root_min_safe_burden")
+    if mode_valid is not None and root_min_target is not None and mode_root_min_pred is not None:
+        mm = mode_valid.bool() & pair[..., None]
+        if mode_conflict_target is not None:
+            mm = mm & mode_conflict_target.bool()
+        target_confidence = batch.get("cowp/transport/root_target_confidence")
+        if target_confidence is not None:
+            mm = mm & (
+                _safe_float(target_confidence)[..., : mm.shape[-1]]
+                >= float(weights.get("set_transport_root_target_min_confidence", 0.25))
+            )
+        aligned_root_min = _align_pred_modes_to_gt(
+            _safe_float(mode_root_min_pred), natural_assignment
+        ).clamp(0.0, 2.0)
+        root_min_target_f = _safe_float(root_min_target)[..., : mm.shape[-1]].clamp(0.0, 2.0)
+        mode_root_burden = masked_mean(
+            torch.nn.functional.smooth_l1_loss(
+                aligned_root_min, root_min_target_f, reduction="none", beta=0.10
+            ),
+            mm,
+        ) if mm.any() else _zero_like_loss(aligned_root_min)
+    else:
+        mode_root_burden = _zero_like_loss(pred)
+
+    # q_ikm and b*_{ikm} are distinct predictions, but their semantics must be
+    # coherent: a high probability of a low-burden recovery should agree with
+    # b* lying below the scene-adaptive beta_i.  Use a smooth, symmetric
+    # agreement regularizer only on confidently labelled conflicting roots; the
+    # two supervised heads remain expressive enough to represent q=0 with a
+    # finite high-burden safe response.
+    if (
+        mode_valid is not None
+        and mode_conflict_target is not None
+        and "mode_recovery_prob" in pred
+        and mode_root_min_pred is not None
+        and "cowp/natural/beta" in batch
+    ):
+        consistency_mask = mode_valid.bool() & pair[..., None] & mode_conflict_target.bool()
+        target_confidence = batch.get("cowp/transport/root_target_confidence")
+        if target_confidence is not None:
+            consistency_mask = consistency_mask & (
+                _safe_float(target_confidence)[..., : consistency_mask.shape[-1]]
+                >= float(weights.get("set_transport_root_target_min_confidence", 0.25))
+            )
+        aligned_q = _align_pred_modes_to_gt(
+            _safe_float(pred["mode_recovery_prob"]), natural_assignment
+        ).clamp(0.0, 1.0)
+        aligned_b = _align_pred_modes_to_gt(
+            _safe_float(mode_root_min_pred), natural_assignment
+        ).clamp(0.0, 2.0)
+        beta_mode = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
+        consistency_tau = max(float(weights.get("set_transport_root_consistency_temperature", 0.08)), 1.0e-3)
+        q_from_burden = torch.sigmoid((beta_mode - aligned_b) / consistency_tau)
+        mode_root_consistency = masked_mean(
+            0.5 * torch.abs(aligned_q - q_from_burden.detach())
+            + 0.5 * torch.abs(aligned_q.detach() - q_from_burden),
+            consistency_mask,
+        ) if consistency_mask.any() else _zero_like_loss(aligned_q)
+    else:
+        mode_root_consistency = _zero_like_loss(pred)
+
     # Keep the old response-bank/root-classifier path as an auxiliary
     # reconstruction constraint.  It is useful for interpretability and response
     # visualization, but no longer defines the decision certificate.
@@ -2142,6 +2225,8 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_mode_recovery", 2.0)) * mode_recovery
         + float(weights.get("set_transport_mode_recovery_conflict", 2.0)) * mode_recovery_conflict
         + float(weights.get("set_transport_mode_recovery_rank", 0.5)) * mode_recovery_rank
+        + float(weights.get("set_transport_mode_root_burden", 1.0)) * mode_root_burden
+        + float(weights.get("set_transport_mode_root_consistency", 0.25)) * mode_root_consistency
         + float(weights.get("set_transport_response_root_aux", 0.15)) * response_root_aux
         + float(weights.get("set_transport_root_recovery", 0.75)) * root_recovery
         + float(weights.get("set_transport_candidate_budget", 2.0)) * candidate_budget
@@ -2152,6 +2237,8 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         "mode_conflict": mode_conflict, "mode_conflict_rank": mode_conflict_rank, "mode_retain": mode_retain,
         "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
         "mode_recovery_conflict": mode_recovery_conflict, "mode_recovery_rank": mode_recovery_rank,
+        "mode_root_burden": mode_root_burden,
+        "mode_root_consistency": mode_root_consistency,
         "response_root_aux": response_root_aux, "root_recovery": root_recovery,
         "candidate_budget": candidate_budget,
         "candidate_budget_coverage": candidate_budget_coverage.detach(),

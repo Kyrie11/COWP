@@ -18,6 +18,7 @@ from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import metrics_from_labels, witness_quality, _progress_reference_m, _trajectory_progress_m
 from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator
+from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
 def _load_state_dict_compatible(model, state: dict) -> None:
@@ -26,15 +27,14 @@ def _load_state_dict_compatible(model, state: dict) -> None:
         return
     except Exception:
         pass
-    if state and all(str(k).startswith("_orig_mod.") for k in state.keys()):
-        state = {k[len("_orig_mod."):]: v for k, v in state.items()}
-        try:
-            model.load_state_dict(state)
-            return
-        except Exception:
-            pass
+    state = strip_compiled_prefix(state)
+    try:
+        model.load_state_dict(state)
+        return
+    except Exception:
+        pass
     model_state = model.state_dict()
-    compatible = {k: v for k, v in state.items() if k in model_state and tuple(model_state[k].shape) == tuple(v.shape)}
+    compatible, _, _ = compatible_state_dict(model_state, state)
     model.load_state_dict(compatible, strict=False)
 
 
@@ -1594,6 +1594,7 @@ def _learned_offline_candidate_eval_many(
             eval_target_weights = {
                 "paper_aligned_witness_targets": 1.0,
                 "set_transport_probability_floor": float(ncf_cfg.get("root_probability_floor", 0.02)),
+                "set_transport_min_alt_weight": float(ncf_cfg.get("min_alt_weight", 0.03)),
                 "set_transport_cvar_tail_mass": float(ncf_cfg.get("cvar_tail_mass", 0.25)),
                 "witness_conflict_mass_floor": float(ncf_cfg.get("positive_min_natural_conflict_mass", 0.10)),
                 "witness_burden_gamma": float(ncf_cfg.get("gamma", 0.10)),

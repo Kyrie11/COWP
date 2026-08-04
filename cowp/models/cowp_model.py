@@ -458,8 +458,9 @@ class COWPModel(nn.Module):
                     calibration_scale=float(pcfg.get("set_transport_calibration_scale", 0.10)),
                     root_mass_scale=float(pcfg.get("set_transport_root_mass_scale", 1.0)),
                     candidate_tail_temperature=float(pcfg.get("candidate_transport_tail_temperature", 0.12)),
-                    root_probability_floor=float(pcfg.get("set_transport_probability_floor", 0.02)),
-                    cvar_tail_mass=float(pcfg.get("set_transport_cvar_tail_mass", 0.25)),
+                    root_probability_floor=float(pcfg.get("set_transport_probability_floor", self.cfg.get("ncf", {}).get("root_probability_floor", 0.02))),
+                    root_min_alt_weight=float(pcfg.get("set_transport_min_alt_weight", self.cfg.get("ncf", {}).get("min_alt_weight", 0.03))),
+                    cvar_tail_mass=float(pcfg.get("set_transport_cvar_tail_mass", self.cfg.get("ncf", {}).get("cvar_tail_mass", 0.25))),
                 )
                 out["set_certificate"] = set_certificate
                 # The selector consumes the mechanistic certificate.  The proxy

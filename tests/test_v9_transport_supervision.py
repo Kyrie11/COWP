@@ -68,6 +68,7 @@ def test_root_and_mode_losses_are_active():
         "mode_retain_prob": torch.rand(B, K, A, M).clamp(0.01, 0.99),
         "mode_uncertainty": torch.rand(B, K, A, M),
         "mode_recovery_logits": torch.randn(B, K, A, M),
+        "mode_root_min_safe_burden": torch.rand(B, K, A, M) * 2.0,
         "response_root_exist_aux": torch.rand(B, K, A, M).clamp(0.01, 0.99),
         "root_recovery_mass": torch.rand(B, K, A),
     }
@@ -80,12 +81,15 @@ def test_root_and_mode_losses_are_active():
         "cowp/transport/mode_conflict": torch.randint(0, 2, (B, K, A, M)).bool(),
         "cowp/transport/mode_retained_low_safe": torch.randint(0, 2, (B, K, A, M)).bool(),
         "cowp/transport/root_recovery_mass": torch.rand(B, K, A),
+        "cowp/transport/root_min_safe_burden": torch.rand(B, K, A, M) * 2.0,
+        "cowp/transport/root_target_confidence": torch.ones(B, K, A, M),
     })
     sl = set_transport_loss(set_pred, batch, {})
     assert torch.isfinite(sl["loss"])
     assert sl["mode_conflict"].item() > 0
     assert sl["mode_retain"].item() > 0
     assert sl["mode_recovery"].item() > 0
+    assert sl["mode_root_burden"].item() > 0
 
 
 def test_direct_root_recovery_target_is_existential_per_natural_mode():

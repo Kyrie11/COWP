@@ -41,7 +41,8 @@ class SetTransportCertificateHead(nn.Module):
         #   0 conflict,
         #   1 retained-low-safe conditional on no conflict,
         #   2 epistemic/aleatoric error proxy,
-        #   3 existence of a low-burden safe response transported from this root.
+        #   3 existence of a low-burden safe response transported from this root,
+        #   4 conditional minimum burden of that root-preserving response.
         #
         # v11 inferred item (3) indirectly from a generic unordered response bank
         # plus a 24-way root classifier.  That is unnecessarily hard and, more
@@ -50,7 +51,7 @@ class SetTransportCertificateHead(nn.Module):
         # primitive is the minimal structural repair: it is still supervised by
         # the explicit response-set/root labels, while making the decision
         # certificate root indexed by construction.
-        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 4))
+        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 5))
         self.calibration = nn.Sequential(
             nn.Linear(d_model * 3, h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, 1), nn.Tanh()
         )
@@ -278,6 +279,7 @@ class SetTransportCertificateHead(nn.Module):
         root_mass_scale: float = 1.0,
         candidate_tail_temperature: float = 0.12,
         root_probability_floor: float = 0.02,
+        root_min_alt_weight: float = 0.03,
         cvar_tail_mass: float = 0.25,
     ) -> dict[str, torch.Tensor]:
         B, K, D = z_candidate.shape
@@ -319,17 +321,47 @@ class SetTransportCertificateHead(nn.Module):
         mode_uncertainty = torch.sigmoid(raw[..., 2].float())
         mode_recovery_logit = raw[..., 3]
         mode_recovery_prob = torch.sigmoid(mode_recovery_logit.float())
+        # Predict the minimum same-root *safe* burden from the same candidate--root
+        # representation as q_ikm, but do not algebraically tie the two outputs.
+        # q=0 means that no response is below the adaptive low-burden threshold
+        # beta_i; a safe same-root response can still exist with b* > beta_i.
+        # Therefore b* must remain an independent continuous quantity (with 2.0
+        # serving only as the finite no-safe-response sentinel in supervision).
+        mode_root_min_safe_burden = 2.0 * torch.sigmoid(raw[..., 4].float())
 
         natural_weight_raw = torch.softmax(natural["logits"].float(), dim=-1)
+        # Use the same p_min support and floor-smoothed probability measure as
+        # label construction and paper_aligned_supervision_batch.  The support
+        # mask is detached: gradients still optimize the retained probabilities,
+        # but cannot exploit the discrete threshold to hide a safety-relevant
+        # root.  If every mode falls below p_min, keep all modes as a safe
+        # fallback rather than creating an empty natural set.
+        min_alt = max(float(root_min_alt_weight), 0.0)
+        support = (natural_weight_raw.detach() >= min_alt)
+        empty = ~support.any(dim=-1, keepdim=True)
+        support = torch.where(empty, torch.ones_like(support), support)
+        natural_weight_base = natural_weight_raw * support.float()
+        natural_weight_base = natural_weight_base / natural_weight_base.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
         eps_p = min(max(float(root_probability_floor), 0.0), 0.25)
-        natural_weight_raw = (1.0 - eps_p) * natural_weight_raw + eps_p / max(M, 1)
-        natural_weight = natural_weight_raw[:, None, :, :].expand(B, K, A, M)
+        support_count = support.float().sum(dim=-1, keepdim=True).clamp_min(1.0)
+        natural_weight_root = (
+            (1.0 - eps_p) * natural_weight_base
+            + eps_p * support.float() / support_count
+        ) * support.float()
+        natural_weight = natural_weight_root[:, None, :, :].expand(B, K, A, M)
         source_prob = torch.softmax(natural["source_logits"].float(), dim=-1)[:, None, :, :, :]
         priority_prob = torch.sigmoid(natural["priority_logits"].float())[:, None, :, :]
 
-        # ``retain_prob`` already includes the no-conflict event by construction.
-        low_safe_option_prob = retain_prob
-        opr = (natural_weight * low_safe_option_prob).sum(dim=-1).clamp(0.0, 1.0)
+        # Paper Eq. s=(1-c)r+cq.  ``retain_prob`` is already (1-c)r, while
+        # ``mode_recovery_prob`` is q.  Earlier v16.8 code omitted c*q here even
+        # though labels and losses used transported OPR; that forced retention
+        # logits to absorb the recovery target and corrupted both OPR calibration
+        # and the RootTransport head.
+        transported_root_prob = (
+            retain_prob + conflict_prob * mode_recovery_prob
+        ).clamp(0.0, 1.0)
+        low_safe_option_prob = transported_root_prob
+        opr = (natural_weight * transported_root_prob).sum(dim=-1).clamp(0.0, 1.0)
         natural_conflict_mass = (natural_weight * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
         priority_conflict_mass = (natural_weight * priority_prob * conflict_prob).sum(dim=-1).clamp(0.0, 1.0)
         natural_mass_by_source = (natural_weight[..., None] * source_prob).sum(dim=-2)
@@ -385,13 +417,18 @@ class SetTransportCertificateHead(nn.Module):
         min_safe_burden = self._soft_min_burden(
             response["burden_total"].float(), response_safe, response_valid, response_weight, burden_temperature
         )
-        root_min_safe_burden = self._soft_root_min_burden(
+        response_root_min_safe_burden_aux = self._soft_root_min_burden(
             response["burden_total"].float(),
             response_safe,
             response_valid,
             root_prob,
             burden_temperature,
         )
+        # The primary certificate must use the same root-conditioned primitive as
+        # q_ikm.  A generic response bank followed by a 24-way assignment is kept
+        # only as an auxiliary reconstruction/visualization path; using it for
+        # CVaR would reintroduce the global-slot truncation bias that RCOT removes.
+        root_min_safe_burden = mode_root_min_safe_burden
 
         beta_pair = beta.float()[:, None, :].expand(B, K, A)
         root_excess = torch.relu(root_min_safe_burden - beta_pair[..., None])
@@ -530,6 +567,10 @@ class SetTransportCertificateHead(nn.Module):
             "opr": opr,
             "min_safe_burden": min_safe_burden,
             "root_min_safe_burden": root_min_safe_burden,
+            "mode_root_min_safe_burden": mode_root_min_safe_burden,
+            "response_root_min_safe_burden_aux": response_root_min_safe_burden_aux,
+            "transported_root_prob": transported_root_prob,
+            "canonical_root_weight": natural_weight,
             "tail_burden_excess": tail_burden_excess,
             "natural_conflict_mass": natural_conflict_mass,
             "priority_conflict_mass": priority_conflict_mass,
