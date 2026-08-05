@@ -711,6 +711,21 @@ def _add_candidate(
     valids.append(bool(conv))
 
 
+def _online_arrival_accel(distance_m: float, speed_mps: float, target_time_s: float, cfg: dict) -> float | None:
+    """Bounded constant-acceleration solution for an online conflict arrival time."""
+    d = float(distance_m)
+    t = float(target_time_s)
+    if not np.isfinite(d) or not np.isfinite(t) or d <= 0.5 or t <= 0.35:
+        return None
+    a = 2.0 * (d - max(float(speed_mps), 0.0) * t) / max(t * t, 1.0e-3)
+    pcfg = cfg.get("planning", {})
+    lo = float(pcfg.get("online_timing_envelope_min_accel_mps2", cfg.get("candidate", {}).get("timing_envelope_min_accel_mps2", -3.5)))
+    hi = float(pcfg.get("online_timing_envelope_max_accel_mps2", cfg.get("candidate", {}).get("timing_envelope_max_accel_mps2", 2.5)))
+    if a < lo - 0.75 or a > hi + 0.75:
+        return None
+    return float(np.clip(a, lo, hi))
+
+
 def _route_lane_aware_candidates(
     agent_state: np.ndarray,
     sdc_index: int,
@@ -782,6 +797,54 @@ def _route_lane_aware_candidates(
                     tr = constant_accel_trajectory(current, H, dt, accel=acc)
                     m = MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND
                     _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
+
+    # v16.8.2 online BCTE.  Find candidate/agent closest-approach times under a
+    # nominal ego path, then solve ego arrival times on both sides of that event.
+    # This expands the bank near the RCOT feasibility boundary instead of mapping
+    # arbitrary offsets directly to acceleration.
+    nominal = constant_accel_trajectory(current, H, dt, accel=0.0)
+    nominal_xy = nominal[:, :2]
+    nominal_step = np.linalg.norm(np.diff(nominal_xy, axis=0, prepend=nominal_xy[:1]), axis=-1)
+    nominal_s = np.cumsum(nominal_step)
+    max_bcte_agents = int(cfg.get("planning", {}).get("online_timing_envelope_max_agents", 6))
+    max_ca_dist = float(cfg.get("planning", {}).get("online_timing_envelope_max_closest_m", 14.0))
+    gap_values = [float(x) for x in cfg.get("planning", {}).get(
+        "online_timing_envelope_gap_s", cfg.get("candidate", {}).get("timing_envelope_gap_s", [0.8, 1.4, 2.0])
+    )]
+    if np.any(valid_other):
+        near_order = np.argsort(np.linalg.norm(agent_state[:, :2] - ego_xy[None], axis=-1))
+        used = 0
+        for j in near_order:
+            if used >= max_bcte_agents:
+                break
+            if j == sdc_index or not valid_other[j]:
+                continue
+            pred_j, cv_j = _agent_future_xy(agent_state, int(j), H, dt, other_future_trajs)
+            agent_xy = pred_j if np.isfinite(pred_j).all() else cv_j
+            if not np.isfinite(agent_xy).all():
+                continue
+            d = np.linalg.norm(nominal_xy - agent_xy[:H, :2], axis=-1)
+            q = int(np.argmin(d))
+            if float(d[q]) > max_ca_dist or q < 2:
+                continue
+            conflict_distance = float(nominal_s[q])
+            event_time = float((q + 1) * dt)
+            for gap in gap_values:
+                for side in (-1.0, 1.0):
+                    target_time = event_time + side * gap
+                    acc = _online_arrival_accel(conflict_distance, speed, target_time, cfg)
+                    if acc is None:
+                        continue
+                    behind = side > 0.0
+                    tr = constant_accel_trajectory(current, H, dt, accel=acc)
+                    _add_candidate(
+                        candidates, macros, utils, conventional, tr,
+                        MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
+                        0.12 + (0.08 * gap if behind else 0.03 * gap),
+                        agent_state, sdc_index, roadgraph, cfg,
+                        other_future_trajs=other_future_trajs,
+                    )
+            used += 1
 
     # Lane-change/cut-in proposals.  Use ±lane_width relative to the local lane
     # heading; the conventional mask filters obvious offroad/collision cases.
@@ -2128,7 +2191,15 @@ class COWPWaymaxPolicy:
                     learned_priority = self.torch.sigmoid(learned_priority[0].float())
                     # Before the new head is trained it may be uncalibrated; blend with
                     # the physically grounded heuristic rather than replacing it.
-                    priority = 0.5 * heuristic_priority + 0.5 * learned_priority
+                    blended_priority = 0.5 * heuristic_priority + 0.5 * learned_priority
+                    # A high-confidence physical priority claim is a hard semantic
+                    # anchor; the learned head may refine unknown relations but may
+                    # not dilute an already protected relation below the gate.
+                    priority = self.torch.where(
+                        heuristic_priority >= float(self.priority_hard_threshold),
+                        heuristic_priority,
+                        blended_priority,
+                    )
                 else:
                     priority = heuristic_priority
                 primary_claim = priority >= float(self.priority_hard_threshold)
@@ -2200,6 +2271,12 @@ class COWPWaymaxPolicy:
                     accepted = cand_valid & conventional
                 else:
                     accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(self.outcome_risk_threshold))
+            # Separate the semantic certificate set from the shortlist used for
+            # one-plan selection.  Online diagnostics and offline gates must refer
+            # to the former, not an arbitrary top-k frontier.
+            certificate_accepted = accepted.clone()
+            selection_mask = accepted
+
             # Scene-adaptive feasibility frontier.  If the absolute witness/OPR
             # calibration is imperfect, restrict COWP to the least-coercive
             # conventional frontier in the current scene.  This makes the online
@@ -2214,7 +2291,7 @@ class COWPWaymaxPolicy:
                 )
                 # Preserve hard semantic feasibility; do not rebuild from generic
                 # conventional safety and silently resurrect rejected witnesses.
-                frontier_base = accepted & physical_ok
+                frontier_base = certificate_accepted & physical_ok
                 if frontier_base.any():
                     pair_risk = transport_risk
                     pair_mix = float(self.cfg.get("planning", {}).get("candidate_pair_risk_mix", 0.20))
@@ -2257,7 +2334,7 @@ class COWPWaymaxPolicy:
                     )
                     frontier = result.frontier
                     if bool(frontier.any().detach().cpu().item()):
-                        accepted = frontier
+                        selection_mask = frontier
                         adjusted_scores = result.adjusted_scores
             # Plan continuity is a tie/selection regularizer only.  It is added
             # after hard feasibility/frontier construction and therefore cannot
@@ -2275,32 +2352,50 @@ class COWPWaymaxPolicy:
             )
             stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
             fallback_flags = self.torch.stack([
-                accepted.any(),
-                (cand_valid & conventional & stop_like).any(),
-                (cand_valid & stop_like).any(),
+                selection_mask.any(),
                 (cand_valid & conventional).any(),
+                cand_valid.any(),
+                (cand_valid & stop_like).any(),
             ]).detach().cpu().tolist()
+            fallback_transport_ucb = (
+                transport_risk
+                + float(pcfg_runtime.get("fallback_transport_ucb_scale", pcfg_runtime.get("candidate_transport_ucb_scale", 0.25))) * transport_uncertainty
+            ).clamp(0.0, 1.0)
+            fallback_score = (
+                float(pcfg_runtime.get("fallback_transport_weight", 2.5)) * fallback_transport_ucb
+                + float(pcfg_runtime.get("fallback_rule_weight", 1.0)) * rule_decision_risk
+                + float(pcfg_runtime.get("fallback_action_weight", 0.75)) * action_decision_risk
+                + float(pcfg_runtime.get("fallback_pressure_weight", 0.75)) * pressure_decision_risk
+                + float(pcfg_runtime.get("fallback_outcome_weight", 0.50)) * outcome_decision_risk
+                + float(pcfg_runtime.get("fallback_utility_weight", 0.05)) * score_decision_risk
+                - float(pcfg_runtime.get("fallback_stop_like_bonus", 0.05)) * stop_like.float()
+            )
             if bool(fallback_flags[0]):
-                select_mask = accepted
+                select_mask = selection_mask
+                select_score = adjusted_scores
                 fallback_used = False
                 fallback_reason = "accepted_ncf" if gate_mode == "hard" else ("accepted_baseline" if gate_mode in {"none", "off"} else "accepted_priority_ncf")
             elif bool(fallback_flags[1]):
-                select_mask = cand_valid & conventional & stop_like
-                fallback_used = True
-                fallback_reason = "no_ncf_use_stop_like"
-            elif bool(fallback_flags[2]):
-                select_mask = cand_valid & stop_like
-                fallback_used = True
-                fallback_reason = "no_conventional_use_neutral"
-            elif bool(fallback_flags[3]):
                 select_mask = cand_valid & conventional
+                select_score = fallback_score
                 fallback_used = True
-                fallback_reason = "no_stop_like_use_conventional"
+                fallback_reason = "no_certificate_use_least_coercive_conventional"
+            elif bool(fallback_flags[2]):
+                select_mask = cand_valid
+                select_score = fallback_score
+                fallback_used = True
+                fallback_reason = "no_conventional_use_least_coercive_valid"
+            elif bool(fallback_flags[3]):
+                select_mask = cand_valid & stop_like
+                select_score = fallback_score
+                fallback_used = True
+                fallback_reason = "emergency_stop_like"
             else:
                 select_mask = cand_valid
+                select_score = fallback_score
                 fallback_used = True
-                fallback_reason = "no_conventional_use_valid"
-            selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if has_valid else 0
+                fallback_reason = "no_valid_candidate"
+            selected = int(self.torch.argmin(self.torch.where(select_mask, select_score, self.torch.full_like(select_score, float("inf")))).item()) if has_valid else 0
             selected_witness = witness[selected]
             selected_opr = opr[selected]
             has_crit = bool(crit_mask.any().detach().cpu().item())
@@ -2314,8 +2409,8 @@ class COWPWaymaxPolicy:
             bsel = self.torch.nan_to_num(burden[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if burden is not None else None
             csel = self.torch.nan_to_num(c_i[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if c_i is not None else None
             diagnostic_tensors = [
-                accepted.sum().float(),
-                frontier_count,
+                certificate_accepted.sum().float(),
+                selection_mask.sum().float(),
                 cand_valid.sum().float(),
                 (cand_valid & conventional).sum().float(),
                 crit_mask.sum().float(),
@@ -2354,6 +2449,7 @@ class COWPWaymaxPolicy:
                 "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                 "step": int(step) if step is not None else -1,
                 "selected_candidate": int(selected),
+                "certificate_accepted_candidates": int(host[0]),
                 "accepted_candidates": int(host[0]),
                 "frontier_candidates": int(host[1]),
                 "valid_candidates": int(host[2]),

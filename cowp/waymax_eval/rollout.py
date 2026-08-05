@@ -586,7 +586,7 @@ def _select_from_learned(
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
     cfg: dict | None = None,
-) -> tuple[list[int], list[np.ndarray]]:
+) -> tuple[list[int], list[np.ndarray], list[np.ndarray], list[bool]]:
     import torch
 
     method, gate_mode = _method_gate_defaults(method, gate_mode)
@@ -719,8 +719,24 @@ def _select_from_learned(
                 )
             else:
                 rule_priority = torch.full_like(witness_prob, 0.25)
-            priority_proxy = (0.50 * learned_priority + 0.50 * rule_priority).clamp(0.0, 1.0)
-            priority_claim = priority_proxy >= float(priority_hard_threshold)
+            # Protected semantics are symbolic, not a soft score.  Agent-priority
+            # (rho=2) and equal/negotiated (rho=3) relations belong to the protected
+            # set by definition and must not be attenuated by an uncalibrated learned
+            # head.  The learned head is used only when rho is unknown.
+            if rho is not None and torch.is_tensor(rho):
+                rule_protected = (rho_l == 2) | (rho_l == 3)
+                rule_ego_priority = rho_l == 1
+                priority_proxy = torch.where(
+                    rule_protected,
+                    torch.ones_like(learned_priority),
+                    torch.where(rule_ego_priority, torch.zeros_like(learned_priority), learned_priority),
+                ).clamp(0.0, 1.0)
+                priority_claim = rule_protected | ((~rule_ego_priority) & (rho_l != 0) & (priority_proxy >= float(priority_hard_threshold)))
+                # For PAD/unknown entries, fall back to the learned claim.
+                priority_claim = torch.where(rho_l == 0, learned_priority >= float(priority_hard_threshold), priority_claim)
+            else:
+                priority_proxy = learned_priority.clamp(0.0, 1.0)
+                priority_claim = priority_proxy >= float(priority_hard_threshold)
             pcfg_gate = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
             hard_max_unc = float(pcfg_gate.get("set_transport_hard_max_uncertainty", 0.40))
             opr_ucb_scale = float(pcfg_gate.get("set_transport_opr_ucb_scale", 0.50))
@@ -791,6 +807,12 @@ def _select_from_learned(
             else:
                 accepted = cand_valid & conventional & ~primary_bad & ~option_bad & ~severe_bad & (outcome_risk <= float(outcome_risk_threshold))
 
+    # ``accepted`` is the semantic certificate set.  The Pareto frontier below is
+    # only a shortlist used to choose one plan; conflating the two makes certificate
+    # recall and accepted-rate depend on an arbitrary top-k implementation detail.
+    certificate_accepted = accepted.clone()
+    selection_mask = accepted
+
     if method == "cowp" and gate_mode in {"priority", "soft"}:
         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
         # explanatory evidence, but selection is anchored by a candidate-level NCF
@@ -853,34 +875,57 @@ def _select_from_learned(
             cfg=pcfg,
         )
         has_frontier = frontier.any(dim=1)
-        accepted = torch.where(has_frontier[:, None], frontier, accepted)
+        selection_mask = torch.where(has_frontier[:, None], frontier, certificate_accepted)
         adjusted_scores = torch.where(has_frontier[:, None], frontier_scores, adjusted_scores)
 
     selected: list[int] = []
-    masks: list[np.ndarray] = []
+    certificate_masks: list[np.ndarray] = []
+    shortlist_masks: list[np.ndarray] = []
+    fallback_flags: list[bool] = []
     B = scores.shape[0]
+    # A fallback is explicitly uncertified.  Rank it by a robust least-coercive
+    # objective rather than restricting to STOP/YIELD macros, which can transfer a
+    # large burden to a close rear or merging vehicle.  Stop-like behavior is only a
+    # weak tie-breaker after transport/rule/action risk.
+    pcfg_fb = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+    transport_ucb_fb = (
+        (transport_risk if transport_risk is not None else candidate_cert_risk.clamp(0.0, 1.0))
+        + float(pcfg_fb.get("fallback_transport_ucb_scale", pcfg_fb.get("candidate_transport_ucb_scale", 0.25))) * transport_uncertainty
+    ).clamp(0.0, 1.0)
+    stop_like_all = _stop_like_mask(batch, cand_valid, conventional)
+    fallback_score = (
+        float(pcfg_fb.get("fallback_transport_weight", 2.5)) * transport_ucb_fb
+        + float(pcfg_fb.get("fallback_rule_weight", 1.0)) * rule_decision_risk
+        + float(pcfg_fb.get("fallback_action_weight", 0.75)) * action_decision_risk
+        + float(pcfg_fb.get("fallback_pressure_weight", 0.75)) * pressure_decision_risk
+        + float(pcfg_fb.get("fallback_outcome_weight", 0.50)) * outcome_decision_risk
+        + float(pcfg_fb.get("fallback_utility_weight", 0.05)) * _scene_normalized_risk_torch(utility_scores, cand_valid, cfg)
+        - float(pcfg_fb.get("fallback_stop_like_bonus", 0.05)) * stop_like_all.float()
+    )
+
     for b in range(B):
-        mask = accepted[b]
+        mask = selection_mask[b]
+        used_fallback = False
         if mask.any():
             masked = torch.where(mask, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
             selected.append(int(torch.argmin(masked).item()))
         else:
-            # Do not silently select the best conventional false-safe candidate
-            # when the learned NCF filter rejects everything.  In closed loop this
-            # corresponds to a conservative stop; in learned-offline metrics mark
-            # it as fallback unless an explicit stop-like/neutral candidate exists
-            # and the caller requested stop_like fallback.
-            if str(offline_fallback).lower() == "stop_like":
-                fallback = _stop_like_mask(batch, cand_valid, conventional)[b]
-                if fallback.any():
-                    masked = torch.where(fallback, adjusted_scores[b], torch.full_like(adjusted_scores[b], float("inf")))
+            used_fallback = True
+            if str(offline_fallback).lower() in {"stop_like", "least_coercive", "certificate_aware"}:
+                pool = cand_valid[b] & conventional[b]
+                if not pool.any():
+                    pool = cand_valid[b]
+                if pool.any():
+                    masked = torch.where(pool, fallback_score[b], torch.full_like(fallback_score[b], float("inf")))
                     selected.append(int(torch.argmin(masked).item()))
                 else:
                     selected.append(-1)
             else:
                 selected.append(-1)
-        masks.append(mask.detach().cpu().numpy())
-    return selected, masks
+        certificate_masks.append(certificate_accepted[b].detach().cpu().numpy())
+        shortlist_masks.append(mask.detach().cpu().numpy())
+        fallback_flags.append(bool(used_fallback))
+    return selected, certificate_masks, shortlist_masks, fallback_flags
 
 
 def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
@@ -1120,15 +1165,19 @@ class _LabelMetricAccumulator:
         self.progress_m_sum = 0.0
         self.progress_norm_sum = 0.0
 
-    def add(self, k: int, label: dict[str, np.ndarray]) -> None:
+    def add(self, k: int, label: dict[str, np.ndarray], *, fallback_used: bool = False) -> None:
         self.n += 1
         ref_progress = max(_progress_reference_m(label), 1e-6)
-        if k < 0:
+        if fallback_used:
             self.fallback_count += 1
+        if k < 0:
+            if not fallback_used:
+                self.fallback_count += 1
             return
         valid = np.asarray(label.get("cowp/candidates/valid", []), dtype=bool)
         if k >= len(valid) or not bool(valid[k]):
-            self.fallback_count += 1
+            if not fallback_used:
+                self.fallback_count += 1
             return
         conv_arr = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool)
         conv = bool(conv_arr[k]) if k < len(conv_arr) else bool(valid[k])
@@ -1238,6 +1287,12 @@ class _LearnedMetricsAccumulator:
         self.scene_any_accepted_ncf = 0
         self.scene_any_priority_ncf = 0
         self.scene_any_accepted_priority_ncf = 0
+        self.shortlist_total = 0
+        self.scene_any_shortlist = 0
+        self.scene_any_shortlist_ncf = 0
+        self.fallback_selected_total = 0
+        self.fallback_selected_priority_false_safe = 0
+        self.fallback_selected_priority_eligible = 0
         # Per-scene protected burden-tail exposure.  Keep the samples so the
         # reported upper-tail CVaR is an actual empirical tail statistic rather
         # than a mean that is merely named CVaR.
@@ -1245,9 +1300,18 @@ class _LearnedMetricsAccumulator:
         self.priority_progress_regret_sum = 0.0
         self.priority_progress_regret_count = 0
 
-    def add_selection(self, selected_idx: int, accepted_mask: np.ndarray, label: dict[str, np.ndarray], cert: dict[str, np.ndarray] | None = None) -> None:
+    def add_selection(
+        self,
+        selected_idx: int,
+        accepted_mask: np.ndarray,
+        label: dict[str, np.ndarray],
+        cert: dict[str, np.ndarray] | None = None,
+        *,
+        shortlist_mask: np.ndarray | None = None,
+        fallback_used: bool = False,
+    ) -> None:
         self.selected_total += 1
-        self.label_metrics.add(selected_idx, label)
+        self.label_metrics.add(selected_idx, label, fallback_used=fallback_used)
         valid = np.asarray(label.get("cowp/candidates/valid", []), dtype=bool)
         if valid.size == 0:
             return
@@ -1268,6 +1332,14 @@ class _LearnedMetricsAccumulator:
             priority_fs = np.zeros_like(valid)
             priority_ncf = np.zeros_like(valid)
         accepted = _align_candidate_vector(accepted_mask, len(valid), fill_value=False, dtype=bool) & valid
+        shortlist = (
+            _align_candidate_vector(shortlist_mask, len(valid), fill_value=False, dtype=bool) & valid
+            if shortlist_mask is not None
+            else accepted.copy()
+        )
+        self.shortlist_total += int(shortlist.sum())
+        self.scene_any_shortlist += int(bool(shortlist.any()))
+        self.scene_any_shortlist_ncf += int(bool((shortlist & ncf).any()))
         self.scene_any_valid += int(bool(valid.any()))
         self.scene_any_conventional_safe += int(bool(conv.any()))
         self.scene_any_ncf += int(bool(ncf.any()))
@@ -1293,8 +1365,14 @@ class _LearnedMetricsAccumulator:
             self.selected_ncf += int(bool(ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
             self.selected_conventional += int(bool(conv[selected_idx]))
-            self.selected_priority_eligible += int(bool(priority_available[selected_idx] and conv[selected_idx]))
-            self.selected_priority_false_safe += int(bool(priority_fs[selected_idx]))
+            selected_priority_eligible = bool(priority_available[selected_idx] and conv[selected_idx])
+            selected_priority_false_safe = bool(priority_fs[selected_idx])
+            self.selected_priority_eligible += int(selected_priority_eligible)
+            self.selected_priority_false_safe += int(selected_priority_false_safe)
+            if fallback_used:
+                self.fallback_selected_total += 1
+                self.fallback_selected_priority_eligible += int(selected_priority_eligible)
+                self.fallback_selected_priority_false_safe += int(selected_priority_false_safe)
             tail = label.get("cowp/witness/tail_burden_excess")
             if tail is not None and witness.ndim == 2:
                 tail_arr = np.asarray(tail, dtype=np.float32)
@@ -1364,6 +1442,11 @@ class _LearnedMetricsAccumulator:
 
     def finish(self, *, auprc: float, rank_good: int, rank_total: int, witness_threshold: float) -> dict[str, object]:
         metrics: dict[str, object] = self.label_metrics.finish()
+        # Version the evaluation semantics so calibration cannot silently reuse
+        # pre-v16.8.2 rows where the Pareto shortlist was mislabeled as the
+        # certificate-accepted set and explicit valid-index fallbacks were lost.
+        metrics["CertificateSemantics/Version"] = "v16_8_2_decoupled"
+        metrics["FallbackSemantics/ExplicitAccounting"] = True
         if self.witness_count:
             for k, v in self.witness_sums.items():
                 metrics[f"WitnessQuality/{k}"] = float(v / max(self.witness_count, 1))
@@ -1373,7 +1456,15 @@ class _LearnedMetricsAccumulator:
         metrics["PriorityBurdenTransferRate"] = float(
             self.selected_priority_false_safe / max(self.selected_priority_eligible, 1)
         )
+        # This is the semantic certificate rate, not the Pareto shortlist rate.
         metrics["LearnedAcceptedCandidateRate"] = float(self.accepted_total / max(self.valid_total, 1))
+        metrics["SelectionShortlist/CandidateRate"] = float(self.shortlist_total / max(self.valid_total, 1))
+        metrics["SelectionShortlist/AnySceneRate"] = float(self.scene_any_shortlist / max(self.selected_total, 1))
+        metrics["SelectionShortlist/AnyNCFSceneRate"] = float(self.scene_any_shortlist_ncf / max(self.selected_total, 1))
+        metrics["FallbackSelection/SelectedCandidateRate"] = float(self.fallback_selected_total / max(self.selected_total, 1))
+        metrics["FallbackSelection/PriorityBurdenTransferRate"] = float(
+            self.fallback_selected_priority_false_safe / max(self.fallback_selected_priority_eligible, 1)
+        )
         metrics["LearnedAcceptNCFRecall"] = float(self.accepted_ncf / max(self.total_ncf, 1))
         metrics["LearnedAcceptNCFPrecision"] = float(self.accepted_ncf / max(self.accepted_total, 1))
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
@@ -1718,7 +1809,7 @@ def _learned_offline_candidate_eval_many(
             # one pass over the validation set.
             for method_name in method_list:
                 for th, budget in operating_points:
-                    batch_selected, batch_accepted_masks = _select_from_learned(
+                    batch_selected, batch_accepted_masks, batch_shortlist_masks, batch_fallback_flags = _select_from_learned(
                         batch,
                         pred,
                         witness_threshold=th,
@@ -1747,7 +1838,14 @@ def _learned_offline_candidate_eval_many(
                             "pressure_prior": pressure_prior_np[i],
                             "rule_risk": rule_risk_np[i],
                         }
-                        acc.add_selection(int(batch_selected[i]), np.asarray(batch_accepted_masks[i], dtype=bool), item, cert=cert_item)
+                        acc.add_selection(
+                            int(batch_selected[i]),
+                            np.asarray(batch_accepted_masks[i], dtype=bool),
+                            item,
+                            cert=cert_item,
+                            shortlist_mask=np.asarray(batch_shortlist_masks[i], dtype=bool),
+                            fallback_used=bool(batch_fallback_flags[i]),
+                        )
                         acc.add_witness_quality(witness_quality(pred_exists[i], pred_token[i], pred_interval[i], gt_exists[i], gt_token[i], gt_interval[i], pair_mask[i]))
             if hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(

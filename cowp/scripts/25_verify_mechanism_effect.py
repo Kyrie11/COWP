@@ -99,6 +99,15 @@ def main() -> None:
     selected_budget = _f(calibration, sweep_kind, _f(calibration, "bcot_risk_budget", float("nan")))
     heldout_budget = _f(main, sweep_kind, _f(main, "bcot_risk_budget", float("nan")))
     operating_point_matches = abs(selected_budget - heldout_budget) <= 1e-9
+    heldout_semantics_current = (
+        str(main.get("CertificateSemantics/Version", "")) == "v16_8_2_decoupled"
+        and bool(main.get("FallbackSemantics/ExplicitAccounting", False))
+    )
+    calibration_semantics_current = (
+        isinstance(selected_metrics, dict)
+        and str(selected_metrics.get("CertificateSemantics/Version", "")) == "v16_8_2_decoupled"
+        and bool(selected_metrics.get("FallbackSemantics/ExplicitAccounting", False))
+    )
 
     p_recall = _f(main, "PriorityCertificate/AcceptNCFRecall", _f(main, "LearnedAcceptNCFRecall"))
     p_precision = _f(main, "PriorityCertificate/AcceptNCFPrecision", _f(main, "LearnedAcceptNCFPrecision"))
@@ -124,6 +133,8 @@ def main() -> None:
         "calibrated_operating_point": selected_budget,
         "heldout_operating_point": heldout_budget,
         "operating_point_matches": operating_point_matches,
+        "heldout_certificate_semantics_current": heldout_semantics_current,
+        "calibration_certificate_semantics_current": calibration_semantics_current,
         "calibration_status": calibration_status,
         "calibration_feasible": calibration_status == "constraints_satisfied",
         "calibration_subset": calibration_subset,
@@ -167,6 +178,8 @@ def main() -> None:
         report["calibration_feasible"]
         and report["calibration_heldout_disjoint"]
         and report["operating_point_matches"]
+        and report["heldout_certificate_semantics_current"]
+        and report["calibration_certificate_semantics_current"]
         and report["threshold_connected_to_selection"]
         and report["priority_ncf_recall_pass"]
         and report["priority_ncf_precision_pass"]

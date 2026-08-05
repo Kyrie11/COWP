@@ -11,7 +11,7 @@ export RAW_TRAIN_CACHE="${RAW_TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}
 export RAW_VAL_CACHE="${RAW_VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax}"
 export TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax_transport_v16_8}"
 export VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax_transport_v16_8}"
-export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_1_rcot_consistent_v9base_seed2026}"
+export OUT_ROOT="${OUT_ROOT:-outputs/cowp_v16_8_2_certificate_consistent_v9base_seed2026}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 
 mkdir -p "$OUT_ROOT/eval" "$OUT_ROOT/logs"
@@ -85,7 +85,7 @@ cfg=yaml.safe_load(Path('configs/train_cowp_v16_8.yaml').read_text())
 assert abs(float(cfg['loss_weights'].get('outcome_logdiv', 0.0))) <= 1e-12
 PY
 
-export DATA_PROTOCOL=v16_8_root_conditioned_overlay
+export DATA_PROTOCOL="${DATA_PROTOCOL:-v16_8_root_conditioned_overlay}"
 export CACHE_REUSE_REPORT
 export TRAIN_VISIBLE_DEVICES="${TRAIN_VISIBLE_DEVICES:-0,1}"
 export TRAIN_NPROC="${TRAIN_NPROC:-2}"

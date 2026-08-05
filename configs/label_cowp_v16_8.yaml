@@ -66,6 +66,13 @@ candidate:
   - 0.4
   - 1.2
   - 2.0
+  # Bidirectional Conflict-Time Envelope (BCTE) proposal coverage repair.
+  timing_envelope_gap_s: [0.8, 1.4, 2.0]
+  timing_envelope_max_agents: 6
+  timing_envelope_agent_radius_m: 80.0
+  timing_envelope_min_approach_cos: 0.15
+  timing_envelope_min_accel_mps2: -3.5
+  timing_envelope_max_accel_mps2: 2.5
   lane_change_duration_s:
   - 2.5
   - 3.5
@@ -436,6 +443,16 @@ planning:
   candidate_transport_residual_scale: 0.2
   candidate_transport_gate_mode: budget
   candidate_transport_aggregate_severe_hard_veto: false
+  # v16.8.2: uncertified fallback is ranked by robust least-coercive risk.
+  # STOP/YIELD is only a weak tie-breaker because braking can coerce rear/merge agents.
+  fallback_transport_ucb_scale: 0.25
+  fallback_transport_weight: 2.5
+  fallback_rule_weight: 1.0
+  fallback_action_weight: 0.75
+  fallback_pressure_weight: 0.75
+  fallback_outcome_weight: 0.5
+  fallback_utility_weight: 0.05
+  fallback_stop_like_bonus: 0.05
 waymax:
   max_delta_yaw_rad: 0.12
 diagnostics:

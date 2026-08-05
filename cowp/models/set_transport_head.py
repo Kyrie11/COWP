@@ -481,13 +481,17 @@ class SetTransportCertificateHead(nn.Module):
         learned_priority_support = (natural_weight * priority_prob).sum(dim=-1).clamp(0.0, 1.0)
         if priority_relation is not None:
             rho = priority_relation.long()
-            rule_support = torch.where(
-                rho == 2, torch.ones_like(learned_priority_support),
-                torch.where(rho == 3, torch.full_like(learned_priority_support, 0.65),
-                            torch.where(rho == 1, torch.full_like(learned_priority_support, 0.10),
-                                        torch.full_like(learned_priority_support, 0.25)))
-            )
-            priority_support = (0.50 * learned_priority_support + 0.50 * rule_support).clamp(0.0, 1.0)
+            # The paper defines the protected set symbolically: agent-priority and
+            # equal/negotiated relations are protected; ego-priority is not.  A
+            # learned probability must not dilute those semantics.  Only unknown
+            # relations are delegated to the learned support head.
+            rule_protected = (rho == 2) | (rho == 3)
+            rule_ego_priority = rho == 1
+            priority_support = torch.where(
+                rule_protected,
+                torch.ones_like(learned_priority_support),
+                torch.where(rule_ego_priority, torch.zeros_like(learned_priority_support), learned_priority_support),
+            ).clamp(0.0, 1.0)
         else:
             priority_support = learned_priority_support
         pair_components = torch.stack(

@@ -1035,17 +1035,21 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
         inactive_penalty = 5.0 if budget_coverage < 1.0e-4 else 0.0
         score = (
             inactive_penalty
-            + 0.10 * total
-            + 0.30 * gw("set_transport/witness")
+            + 0.08 * total
+            + 0.25 * gw("set_transport/witness")
             + 0.20 * gw("set_transport/opr")
-            + 0.15 * gw("set_transport/burden")
-            + 0.35 * gw("set_transport/mode_conflict")
-            + 0.35 * gw("set_transport/mode_retain")
-            + 0.30 * gw("set_transport/mode_recovery")
-            + 0.15 * gw("set_transport/root_recovery")
-            + 0.45 * gw("set_transport/candidate_budget")
-            + 0.10 * gw("response_aux/root")
-            + 0.05 * gw("response_aux/min_burden")
+            + 0.10 * gw("set_transport/burden")
+            + 0.30 * gw("set_transport/mode_conflict")
+            + 0.25 * gw("set_transport/mode_retain")
+            + 0.45 * gw("set_transport/mode_recovery_conflict")
+            + 0.25 * gw("set_transport/mode_recovery_rank")
+            + 0.25 * gw("set_transport/mode_root_burden")
+            + 0.15 * gw("set_transport/mode_root_consistency")
+            + 0.15 * gw("set_transport/mode_uncertainty")
+            + 0.10 * gw("set_transport/root_recovery")
+            + 0.40 * gw("set_transport/candidate_priority_budget")
+            + 0.20 * gw("set_transport/candidate_global_budget")
+            + 0.05 * gw("response_aux/root")
         )
         return float(score), "transport_composite"
     if stage != "planner":
@@ -1056,22 +1060,19 @@ def _checkpoint_selection_score(metrics: dict[str, float], stage: str) -> tuple[
             return value if math.isfinite(value) else default
         except Exception:
             return default
+    # Transport/response are frozen in the planner stage and the generic candidate
+    # certificate is intentionally disabled (weight=0).  Scoring checkpoints with
+    # those constant diagnostics diluted real planner improvement and selected on
+    # quantities the optimizer could not change.
     score = (
-        0.08 * total
-        + 0.20 * g("candidate_cert/risk_rank", 2.0)
-        + 0.15 * g("candidate_cert/risk_bce", 2.0)
-        + 0.10 * g("candidate_cert/rank", 2.0)
-        + 0.45 * g("set_transport/witness", 1.0)
-        + 0.35 * g("set_transport/opr", 1.0)
-        + 0.30 * g("set_transport/conflict", 1.0)
-        + 0.20 * g("set_transport/burden", 1.0)
-        + 0.35 * g("set_transport/mode_conflict", 1.0)
-        + 0.35 * g("set_transport/mode_retain", 1.0)
-        + 0.30 * g("set_transport/mode_recovery", 1.0)
-        + 0.20 * g("set_transport/root_recovery", 1.0)
-        + 0.55 * g("set_transport/candidate_budget", 1.0)
-        + 0.08 * g("planner/outcome_cls", 1.0)
-        + 0.15 * g("planner/ranking", 1.0)
+        0.12 * total
+        + 0.45 * g("planner/ranking", 2.0)
+        + 0.20 * g("planner/ncf", 2.0)
+        + 0.20 * g("planner/false_safe", 2.0)
+        + 0.15 * g("planner/priority_claim", 2.0)
+        + 0.10 * g("planner/imitation", 2.0)
+        + 0.10 * g("planner/outcome_cls", 2.0)
+        + 0.08 * g("planner/outcome_rank", 2.0)
     )
     return float(score), "planner_certificate_composite"
 

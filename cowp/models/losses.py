@@ -1972,19 +1972,10 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         mode_retain = _balanced_mode_bce(rp_logit, mode_retain_target, mm)
     else:
         mode_retain = _zero_like_loss(pred)
-    if (mode_valid is not None and mode_conflict_target is not None and mode_retain_target is not None
-            and "mode_uncertainty" in pred):
-        mm = mode_valid.bool() & pair[..., None]
-        assignment = natural_assignment
-        cp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), assignment)
-        rp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), assignment)
-        u_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_uncertainty"]), assignment)
-        cp_err = torch.abs(cp_aligned.detach() - _binary_target(mode_conflict_target))
-        rp_err = torch.abs(rp_aligned.detach() - _binary_target(mode_retain_target))
-        error_target = (0.5 * (cp_err + rp_err)).clamp(0.0, 1.0)
-        mode_uncertainty = masked_mean(torch.abs(u_aligned - error_target), mm)
-    else:
-        mode_uncertainty = _zero_like_loss(pred)
+    # Certificate uncertainty is computed after q and b* targets are available.
+    # The old target measured only conflict/retain error even though inference adds
+    # this uncertainty to recovery/burden-derived BCOT risk.
+    mode_uncertainty = _zero_like_loss(pred)
 
     # Direct primitive-indexed response recovery.  v11 reconstructed this event
     # only through an unordered response bank and a difficult 24-class root CE;
@@ -2050,6 +2041,49 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         ) if mm.any() else _zero_like_loss(aligned_root_min)
     else:
         mode_root_burden = _zero_like_loss(pred)
+
+    # Train the uncertainty channel on the complete root-certificate error.  It is
+    # a conservative per-root proxy used by one-sided transport UCBs, so use the
+    # maximum of conflict, retention, low-burden recovery and normalized burden
+    # errors rather than the legacy conflict/retain average.
+    if (
+        mode_valid is not None
+        and mode_conflict_target is not None
+        and mode_retain_target is not None
+        and "mode_uncertainty" in pred
+    ):
+        uncertainty_mask = mode_valid.bool() & pair[..., None]
+        cp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_conflict_prob"]), natural_assignment)
+        rp_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_retain_prob"]), natural_assignment)
+        u_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_uncertainty"]), natural_assignment)
+        errors = [
+            torch.abs(cp_aligned.detach() - _binary_target(mode_conflict_target)),
+            torch.abs(rp_aligned.detach() - _binary_target(mode_retain_target)),
+        ]
+        root_error_mask = uncertainty_mask & mode_conflict_target.bool()
+        target_confidence = batch.get("cowp/transport/root_target_confidence")
+        if target_confidence is not None:
+            root_error_mask = root_error_mask & (
+                _safe_float(target_confidence)[..., : root_error_mask.shape[-1]]
+                >= float(weights.get("set_transport_root_target_min_confidence", 0.25))
+            )
+        if root_low_safe_target is not None and "mode_recovery_prob" in pred:
+            q_aligned = _align_pred_modes_to_gt(
+                _safe_float(pred["mode_recovery_prob"]), natural_assignment
+            ).clamp(0.0, 1.0)
+            q_error = torch.abs(q_aligned.detach() - _binary_target(root_low_safe_target))
+            errors.append(torch.where(root_error_mask, q_error, torch.zeros_like(q_error)))
+        if root_min_target is not None and mode_root_min_pred is not None:
+            b_aligned = _align_pred_modes_to_gt(
+                _safe_float(mode_root_min_pred), natural_assignment
+            ).clamp(0.0, 2.0)
+            b_target = _safe_float(root_min_target)[..., : b_aligned.shape[-1]].clamp(0.0, 2.0)
+            b_error = (torch.abs(b_aligned.detach() - b_target) / 2.0).clamp(0.0, 1.0)
+            errors.append(torch.where(root_error_mask, b_error, torch.zeros_like(b_error)))
+        certificate_error_target = torch.stack(errors, dim=0).amax(dim=0).clamp(0.0, 1.0)
+        mode_uncertainty = masked_mean(
+            torch.abs(u_aligned - certificate_error_target), uncertainty_mask
+        )
 
     # q_ikm and b*_{ikm} are distinct predictions, but their semantics must be
     # coherent: a high probability of a low-burden recovery should agree with

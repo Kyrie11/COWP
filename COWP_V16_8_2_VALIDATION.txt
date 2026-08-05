@@ -1,0 +1,82 @@
+COWP v16.8.2 final local validation
+Date: 2026-08-04
+
+[pytest]
+........................................................................ [ 48%]
+........................................................................ [ 96%]
+......                                                                   [100%]
+=============================== warnings summary ===============================
+tests/test_v16_5_attribution_and_speed.py::test_frozen_graph_encoding_is_deterministic_and_has_no_grad_graph
+  /opt/pyvenv/lib/python3.13/site-packages/torch/nn/modules/transformer.py:531: UserWarning: The PyTorch API of nested tensors is in prototype stage and will change in the near future. We recommend specifying layout=torch.jagged when constructing a nested tensor, as this layout receives active development, has better operator coverage, and works with torch.compile. (Triggered internally at /pytorch/aten/src/ATen/NestedTensorImpl.cpp:178.)
+    output = torch._nested_tensor_from_mask(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+150 passed, 1 warning in 11.97s
+
+[compileall]
+PASS
+
+[v16.8.2 execution shell syntax]
+PASS run_cowp_v16_8_dual_gpu.sh
+PASS NEXT_RUN_COMMANDS_V16_8_CN.sh
+PASS NEXT_RUN_COMMANDS_V16_8_2_REEVAL_CURRENT_CN.sh
+PASS NEXT_RUN_COMMANDS_V16_8_2_MECHANISM_CN.sh
+PASS NEXT_RUN_COMMANDS_V16_8_2_PROBE_CN.sh
+PASS NEXT_RUN_COMMANDS_V16_8_2_FULL_CN.sh
+PASS CHECK_RUN_STATUS_V16_8_2.sh
+PASS PREPARE_COWP_V16_8_2_BCTE_DATA_CN.sh
+
+[TeX compile]
+PASS pages=19 bytes=362911
+
+[CPU preflight artifact]
+PASS {"pass": true, "errors": [], "environment": {"python": "3.13.5 (main, May  5 2026, 21:05:52) [GCC 14.2.0]", "platform": "Linux-6.18.35-x86_64-with-glibc2.41", "torch": "2.10.0+cpu", "cuda_available": false, "cuda_device_count": 0, "torchrun": "/opt/pyvenv/bin/torchrun", "dependencies": {"jax": true, "tensorflow": false, "waymax": false}}, "imports": {"cowp.scripts.03_train": "ok", "cowp.scripts.04_eval_closed_loop": "ok", "cowp.scripts.17_merge_waymax_shards": "ok", "cowp.scripts.24_summarize_planner_delta": "ok", "cowp.scripts.25_verify_mechanism_effect": "ok", "cowp.scripts.30_diagnose_bcot_result": "ok", "cowp.scripts.31_calibrate_bcot_budget": "ok", "cowp.scripts.32_gate_natural_basis": "ok", "cowp.scripts.35_diagnose_model_anchor": "ok", "cowp.scripts.39_diagnose_learned_natural": "ok", "cowp.scripts.40_gate_natural_effectiveness": "ok"}, "configs_loaded": ["eval", "label", "model", "train"], "realistic_natural_smoke": {"pass": true, "shape": {"batch": 2, "critical_agents": 6, "modes": 24, "roots": 24, "steps": 8}, "loss": 0.9479548931121826}}
+
+[causal audit smoke artifact]
+PASS
+{"pass": true, "engineering_pass": true, "mechanism_overlay_protocol_pass": true, "fresh_v16_8_2_label_protocol_pass": false, "full_v15_label_protocol_pass": false}
+
+[historical top-level shell audit; diagnostic only]
+LEGACY_FAIL ./CHECK_RUN_STATUS_V16_1.sh: ./CHECK_RUN_STATUS_V16_1.sh: line 20: syntax error: unexpected end of file
+LEGACY_FAIL ./CHECK_RUN_STATUS_V16_2.sh: ./CHECK_RUN_STATUS_V16_2.sh: line 4: syntax error near unexpected token `$'do\r''
+LEGACY_FAIL ./CHECK_RUN_STATUS_V16_3.sh: ./CHECK_RUN_STATUS_V16_3.sh: line 9: syntax error near unexpected token `$'do\r''
+LEGACY_FAIL ./CHECK_RUN_STATUS_V16_4.sh: ./CHECK_RUN_STATUS_V16_4.sh: line 9: syntax error near unexpected token `$'do\r''
+LEGACY_FAIL ./CHECK_RUN_STATUS_V16_5.sh: ./CHECK_RUN_STATUS_V16_5.sh: line 9: syntax error near unexpected token `$'do\r''
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V15_CN.sh: ./NEXT_RUN_COMMANDS_V15_CN.sh: line 31: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_1_CN.sh: ./NEXT_RUN_COMMANDS_V16_1_CN.sh: line 49: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_1_FULL_CN.sh: ./NEXT_RUN_COMMANDS_V16_1_FULL_CN.sh: line 19: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_2_CN.sh: ./NEXT_RUN_COMMANDS_V16_2_CN.sh: line 60: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh: ./NEXT_RUN_COMMANDS_V16_2_ENGINEERING_SMOKE_CN.sh: line 23: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_2_FULL_CN.sh: ./NEXT_RUN_COMMANDS_V16_2_FULL_CN.sh: line 22: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_3_CN.sh: ./NEXT_RUN_COMMANDS_V16_3_CN.sh: line 60: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_3_ENGINEERING_SMOKE_CN.sh: ./NEXT_RUN_COMMANDS_V16_3_ENGINEERING_SMOKE_CN.sh: line 23: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_3_RECOVERY_CN.sh: ./NEXT_RUN_COMMANDS_V16_3_RECOVERY_CN.sh: line 34: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_4_CN.sh: ./NEXT_RUN_COMMANDS_V16_4_CN.sh: line 60: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_4_RECOVERY_CN.sh: ./NEXT_RUN_COMMANDS_V16_4_RECOVERY_CN.sh: line 33: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_5_CN.sh: ./NEXT_RUN_COMMANDS_V16_5_CN.sh: line 60: syntax error near unexpected token `|'
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_5_RECOVERY_CN.sh: ./NEXT_RUN_COMMANDS_V16_5_RECOVERY_CN.sh: line 33: syntax error: unexpected end of file
+LEGACY_FAIL ./NEXT_RUN_COMMANDS_V16_CN.sh: ./NEXT_RUN_COMMANDS_V16_CN.sh: line 49: syntax error near unexpected token `|'
+LEGACY_FAIL ./RUN_FULL_DATA_AUDIT_V16_1_CN.sh: ./RUN_FULL_DATA_AUDIT_V16_1_CN.sh: line 19: syntax error: unexpected end of file
+LEGACY_FAIL ./RUN_NATURAL_ABLATIONS_V16_1_CN.sh: ./RUN_NATURAL_ABLATIONS_V16_1_CN.sh: line 40: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./RUN_NATURAL_ABLATIONS_V16_3_CN.sh: ./RUN_NATURAL_ABLATIONS_V16_3_CN.sh: line 26: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./RUN_NATURAL_ABLATIONS_V16_4_CN.sh: ./RUN_NATURAL_ABLATIONS_V16_4_CN.sh: line 34: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./RUN_NATURAL_ABLATIONS_V16_5_CN.sh: ./RUN_NATURAL_ABLATIONS_V16_5_CN.sh: line 36: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./RUN_NATURAL_ABLATIONS_V16_CN.sh: ./RUN_NATURAL_ABLATIONS_V16_CN.sh: line 26: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./RUN_NATURAL_ATTRIBUTION_V16_6_CN.sh: ./RUN_NATURAL_ATTRIBUTION_V16_6_CN.sh: line 55: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./prepare_cowp_v15_data.sh: ./prepare_cowp_v15_data.sh: line 40: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./prepare_cowp_v9_data.sh: ./prepare_cowp_v9_data.sh: line 30: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_candidate_calibrated_pncf_next.sh: ./run_candidate_calibrated_pncf_next.sh: line 38: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v15_dual_gpu.sh: ./run_cowp_v15_dual_gpu.sh: line 107: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_1_dual_gpu.sh: ./run_cowp_v16_1_dual_gpu.sh: line 148: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_2_dual_gpu.sh: ./run_cowp_v16_2_dual_gpu.sh: line 158: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_3_dual_gpu.sh: ./run_cowp_v16_3_dual_gpu.sh: line 169: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_4_dual_gpu.sh: ./run_cowp_v16_4_dual_gpu.sh: line 169: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_5_dual_gpu.sh: ./run_cowp_v16_5_dual_gpu.sh: line 169: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_6_dual_gpu.sh: ./run_cowp_v16_6_dual_gpu.sh: line 169: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_cowp_v16_dual_gpu.sh: ./run_cowp_v16_dual_gpu.sh: line 107: syntax error near unexpected token `$'{\r''
+LEGACY_FAIL ./run_mpncf_next.sh: ./run_mpncf_next.sh: line 42: syntax error near unexpected token `$'{\r''
+historical_shell_summary total=73 failures=38
+Interpretation: failing legacy v15-v16.6 wrappers are outside the v16.8.2 execution chain; repository-wide shell cleanliness is not claimed.
+
+[environment limitation]
+No local CUDA/Waymax/server checkpoints; corrected GPU convergence and gate metrics were not recomputed.

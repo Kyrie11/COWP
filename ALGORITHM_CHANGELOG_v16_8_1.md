@@ -5,6 +5,132 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.8.2 — Certificate/Shortlist Separation, Explicit Least-Coercive Fallback, Hard Protected Semantics, and BCTE Proposal Repair
+
+### Triggering evidence
+
+The uploaded `cowp_v16_8_1_rcot_consistent_v9base_seed2026` run completed
+transport/planner training and disjoint learned-offline evaluation, but both
+continuation conditions failed:
+
+- `mechanism_verification.pass=false`;
+- `calibration_feasible=false` (`status=least_violation`, selected budget 0.65).
+
+The failure is not a lack of ranking signal. Held-out pair-witness AUPRC is
+0.82033, protected BCOT false-safe AUPRC is 0.96498, and protected
+RootTransport AUPRC is 0.86936. The failing operating-point metrics are
+protected NCF recall 0.21176 (<0.30), protected NCF precision 0.49802 (<0.50),
+accepted-candidate rate 0.06851 (<0.10), fallback 0.35874 (>0.25), and PBTR
+0.59222 (>the calibration constraint 0.45). The proposal bank contains an NCF
+candidate in only 0.27255 of held-out scenes, which is an upstream ceiling on
+certificate selection.
+
+### Confirmed evaluation/engineering defects
+
+1. **Certificate acceptance was overwritten by the Pareto shortlist.**
+   `_select_from_learned` first computed the hard RCOT certificate mask, then
+   replaced it with a top-k Pareto frontier (runtime maximum 8 candidates).
+   `LearnedAcceptedCandidateRate`, NCF recall and certificate coverage were
+   therefore measuring the selector shortlist rather than the semantic
+   certificate set.
+2. **Valid-index fallbacks were undercounted.** Offline fallback selected a
+   stop/yield candidate index, while the accumulator counted fallback only when
+   the selected index was invalid. This made fallback semantics dependent on an
+   implementation detail rather than the actual decision path.
+3. **Calibration could silently consume stale metrics.** Old JSON rows had no
+   marker distinguishing the pre-v16.8.2 shortlist semantics from corrected
+   certificate semantics.
+4. **Checkpoint selection included inactive/frozen objectives.** The witness
+   score emphasized the disabled all-root recovery loss and omitted direct root
+   burden/consistency/budget terms. The planner score included frozen transport
+   and zero-weight candidate-certificate losses, diluting trainable improvement.
+5. **The legacy flat candidate certificate is collapsed but inactive.** Its
+   selected means (`ncf≈0.04`, `false_safe≈0.999`, `quality≈1e-5`) are not a
+   valid main selector signal. It remains diagnostic-only and is excluded from
+   checkpoint selection and paper claims.
+6. **The previous “all top-level shell scripts pass” validation claim is not
+   reproducible from the uploaded archive.** Multiple historical v15--v16.6
+   wrappers retain CRLF or obsolete heredoc syntax. They are outside the
+   v16.8.2 execution chain, but the delivery now validates only the enumerated
+   current scripts and records the historical failures instead of silently
+   treating the whole repository as shell-clean.
+
+### Algorithm corrections
+
+1. **Separate semantic certificate from selection shortlist.** Evaluation and
+   online policy now keep `certificate_accepted` and `selection_shortlist` as
+   different masks. Gates use the former; shortlist diagnostics are reported
+   separately.
+2. **Explicit fallback contract.** Fallback is always marked, even when it
+   returns a valid candidate. It selects the minimum predicted coercion-risk
+   candidate using transport UCB, protected-rule risk, action risk, pressure,
+   cached outcome risk and a small utility term. Stop/yield is only a weak tie
+   preference, not an assumption of non-coerciveness.
+3. **Hard protected-relation anchor.** `AgentPriority` and
+   `EqualOrNegotiated` relations are protected by rule and cannot be diluted by
+   a learned priority head. Learned priority is used only for unknown relations;
+   `Unprotected` remains unprotected.
+4. **Full-certificate uncertainty target.** Mode uncertainty is trained against
+   the maximum normalized error across conflict, retain, same-root recovery and
+   minimum safe burden. It is no longer calibrated only to conflict/retention
+   while being used as a UCB for the complete RCOT risk.
+5. **Bidirectional Conflict-Time Envelope (BCTE).** Candidate generation solves
+   bounded ego acceleration for arrival immediately before/after nearby agents'
+   plausible arrival times at the same conflict region. This targets the
+   measured `AnyNCFSceneRate=0.27255` proposal-coverage bottleneck. BCTE is a
+   proposal repair; it does not weaken the downstream conventional or RCOT
+   certificates.
+6. **Checkpoint scores aligned to active objectives.** Transport selection now
+   uses conflict-conditioned recovery, recovery ranking, root burden,
+   q--b* consistency, uncertainty and candidate budget losses. Planner selection
+   uses only trainable planner losses.
+7. **Versioned metric semantics.** Learned-offline rows now contain
+   `CertificateSemantics/Version=v16_8_2_decoupled` and
+   `FallbackSemantics/ExplicitAccounting=true`. Calibration and verification
+   reject stale rows.
+
+### Training-state decision
+
+The uploaded transport run ended after 14 epochs and the planner after 10; every
+recorded checkpoint improved and both histories end with
+`checkpoint/no_improve_checks=0`. These are schedule-truncated models, not
+converged models. v16.8.2 raises defaults to 24 transport and 16 planner epochs,
+while preserving early stopping. The natural basis remains frozen and is not
+retrained.
+
+### Local validation
+
+- Full test suite: **150 passed**, one upstream PyTorch prototype warning.
+- Python `compileall`: passed.
+- The eight scripts in the v16.8.2 execution chain pass `bash -n`.
+- TeX compiles with `pdflatex` to 19 pages.
+- CPU realistic preflight and mechanism-overlay causal-audit smoke pass.
+- A repository-wide diagnostic finds 38 failures among 73 historical top-level
+  shell scripts, primarily CRLF/obsolete heredoc wrappers from v15--v16.6; they
+  are not in the v16.8.2 execution path and are not represented as clean.
+
+### What is intentionally not claimed
+
+- The corrected selector metrics have not been recomputed here because the
+  uploaded result package omits the large checkpoints and the local environment
+  has no CUDA/Waymax.
+- BCTE proposal coverage is not yet empirically validated; a fresh candidate
+  label/cache rebuild is required for learned-offline evidence.
+- No SOTA or calibrated safety guarantee is claimed from sparse cached outcomes
+  (selected coverage about 20--33%, finite log-divergence count 0).
+
+### Next decision rule
+
+1. Re-evaluate the existing v16.8.1 checkpoints under v16.8.2 semantics to
+   isolate the metric/selector/fallback correction from retraining.
+2. If the gate remains infeasible, retrain transport/planner to convergence with
+   corrected uncertainty and checkpoint scores.
+3. If `ProposalCoverage/AnyNCFSceneRate < 0.35` or PBTR/fallback remain the
+   blockers, rebuild fresh BCTE labels/cache before any budget tuning.
+4. Do not answer failure by only raising the BCOT budget; the previous sweep
+   already shows recall plateauing while PBTR worsens.
+
+
 ## v16.8.1 — Definition-Consistent RCOT, Direct Root Burden, and Recovered Execution Chain
 
 ### Triggering evidence

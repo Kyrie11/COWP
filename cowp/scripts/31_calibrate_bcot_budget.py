@@ -37,6 +37,16 @@ def main() -> None:
     rows = payload.get("bcot_risk_budget_sweep", [])
     if not isinstance(rows, list) or not rows:
         raise ValueError("No bcot_risk_budget_sweep was found")
+    bad_semantics = [
+        idx for idx, row in enumerate(rows)
+        if str(row.get("CertificateSemantics/Version", "")) != "v16_8_2_decoupled"
+        or not bool(row.get("FallbackSemantics/ExplicitAccounting", False))
+    ]
+    if bad_semantics:
+        raise ValueError(
+            "Calibration input uses stale certificate/fallback semantics at rows "
+            f"{bad_semantics[:8]}; rerun learned-offline evaluation with v16.8.2."
+        )
 
     constraints = {
         "min_priority_ncf_recall": float(args.min_priority_ncf_recall),

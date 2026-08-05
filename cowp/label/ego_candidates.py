@@ -78,6 +78,57 @@ def _candidate_valid(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None
     return True
 
 
+
+
+def _constant_accel_for_arrival(distance_m: float, speed_mps: float, target_time_s: float, cfg: dict) -> float | None:
+    """Solve a bounded constant acceleration for a desired conflict arrival time.
+
+    This produces interaction-timing proposals rather than mapping an arbitrary
+    time offset directly to acceleration.  It is intentionally a proposal primitive;
+    downstream conventional and RCOT certificates still decide feasibility.
+    """
+    t = float(target_time_s)
+    d = float(distance_m)
+    if not np.isfinite(t) or not np.isfinite(d) or t <= 0.35 or d <= 0.5:
+        return None
+    v0 = max(float(speed_mps), 0.0)
+    a = 2.0 * (d - v0 * t) / max(t * t, 1.0e-3)
+    cand_cfg = cfg.get("candidate", {})
+    lo = float(cand_cfg.get("timing_envelope_min_accel_mps2", -3.5))
+    hi = float(cand_cfg.get("timing_envelope_max_accel_mps2", 2.5))
+    if a < lo - 0.75 or a > hi + 0.75:
+        return None
+    return float(np.clip(a, lo, hi))
+
+
+def _agent_ttas_to_region(scene: ScenarioData, region_center: np.ndarray, cfg: dict) -> list[float]:
+    """Return plausible surrounding-agent TTAs to one conflict region."""
+    cur = int(scene.current_time_index)
+    states = np.asarray(scene.states[:, cur], dtype=np.float32)
+    max_agents = int(cfg.get("candidate", {}).get("timing_envelope_max_agents", 6))
+    max_dist = float(cfg.get("candidate", {}).get("timing_envelope_agent_radius_m", 80.0))
+    horizon_s = float(cfg.get("time", {}).get("future_steps", 80)) * float(cfg.get("time", {}).get("dt", 0.1))
+    rows: list[tuple[float, float]] = []
+    for j, st in enumerate(states):
+        if j == int(scene.sdc_track_index) or st.shape[0] < 11 or float(st[10]) <= 0.5:
+            continue
+        to_region = np.asarray(region_center, dtype=np.float32)[:2] - st[:2]
+        dist = float(np.linalg.norm(to_region))
+        if not np.isfinite(dist) or dist < 1.0 or dist > max_dist:
+            continue
+        vel = st[3:5]
+        speed = float(max(np.linalg.norm(vel), st[5] if st.shape[0] > 5 else 0.0, 0.0))
+        if speed < 0.35:
+            continue
+        approach = float(np.dot(vel, to_region) / max(speed * dist, 1.0e-6))
+        if approach < float(cfg.get("candidate", {}).get("timing_envelope_min_approach_cos", 0.15)):
+            continue
+        tta = dist / max(speed, 0.35)
+        if 0.35 <= tta <= horizon_s + 2.0:
+            rows.append((tta, dist))
+    rows.sort(key=lambda x: (x[0], x[1]))
+    return [float(t) for t, _ in rows[:max_agents]]
+
 def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: list | None = None) -> dict[str, np.ndarray]:
     limits = cfg.get("limits", {})
     cand_cfg = cfg.get("candidate", {})
@@ -149,10 +200,38 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             stop_after = max(0.0, dist_to_conflict - float(margin))
             add(smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.5, stop_after_m=stop_after), MacroType.STOP_BEFORE_CONFLICT, util=0.7, neutral=True)
         if np.isfinite(tta):
+            # Legacy ego-only timing offsets are retained for ablation/coverage.
             for offset in cand_cfg.get("merge_time_offsets_s", [-1.5, -0.8, 0.0, 0.8, 1.5]):
-                # Negative offset: arrive earlier/aggressive; positive offset: behind/yield.
-                target_acc = float(np.clip(-offset * 0.8, -3.0, 2.0))
-                add(constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc), MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND, util=0.1 + max(0, offset))
+                target_time = max(0.45, float(tta) + float(offset))
+                target_acc = _constant_accel_for_arrival(dist_to_conflict, float(max(ego_cur[5], np.linalg.norm(ego_cur[3:5]), 0.0)), target_time, cfg)
+                if target_acc is not None:
+                    add(
+                        constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc),
+                        MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND,
+                        util=0.1 + max(0.0, float(offset)),
+                        neutral=bool(offset > 0),
+                    )
+
+            # v16.8.2 Bidirectional Conflict-Time Envelope (BCTE): construct
+            # physically solved ego arrival times immediately before/after other
+            # agents' plausible arrival to the same conflict region.  This directly
+            # targets the proposal-coverage ceiling observed in the mechanism gate.
+            ego_speed = float(max(ego_cur[5], np.linalg.norm(ego_cur[3:5]), 0.0))
+            gap_values = [float(x) for x in cand_cfg.get("timing_envelope_gap_s", [0.8, 1.4, 2.0])]
+            for other_tta in _agent_ttas_to_region(scene, nearest.center_xy, cfg):
+                for gap in gap_values:
+                    for side in (-1.0, 1.0):
+                        target_time = float(other_tta + side * gap)
+                        target_acc = _constant_accel_for_arrival(dist_to_conflict, ego_speed, target_time, cfg)
+                        if target_acc is None:
+                            continue
+                        behind = side > 0.0
+                        add(
+                            constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc),
+                            MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
+                            util=(0.15 + 0.08 * gap if behind else 0.05 + 0.03 * gap),
+                            neutral=behind,
+                        )
     for lateral, m in [(-3.5, MacroType.LANE_CHANGE_RIGHT), (3.5, MacroType.LANE_CHANGE_LEFT)]:
         for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5]):
             # Hold the lane during delay, then apply a smoothed lateral offset over the full primitive.

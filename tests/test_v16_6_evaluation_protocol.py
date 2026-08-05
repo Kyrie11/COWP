@@ -30,6 +30,8 @@ def test_learned_offline_public_apis_expose_deterministic_subset_controls() -> N
 def _metrics(remainder: int, false_safe: float = 0.10) -> dict:
     return {
         "bcot_risk_budget": 0.35,
+        "CertificateSemantics/Version": "v16_8_2_decoupled",
+        "FallbackSemantics/ExplicitAccounting": True,
         "EvaluationSubset/Modulo": 2,
         "EvaluationSubset/Remainder": remainder,
         "EvaluationSubset/Scenes": 20,
@@ -106,3 +108,32 @@ def test_mechanism_verifier_uses_disjoint_heldout_metrics(tmp_path: Path) -> Non
     assert report["metrics_source"] == "heldout_input_only"
     assert report["learned_accept_ncf_recall"] == 0.50
     assert report["calibration_heldout_disjoint"] is True
+
+
+def test_certificate_metrics_are_not_overwritten_by_shortlist_and_valid_fallback_is_counted() -> None:
+    import numpy as np
+
+    from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator
+
+    acc = _LearnedMetricsAccumulator()
+    label = {
+        "cowp/candidates/valid": np.asarray([True, True, True, True]),
+        "cowp/candidates/conventional_safe": np.asarray([True, True, True, True]),
+        "cowp/candidates/noncoercive_feasible": np.asarray([True, True, False, False]),
+        "cowp/candidates/false_safe": np.asarray([False, False, True, False]),
+        "cowp/candidates/trajectory": np.zeros((4, 3, 3), dtype=np.float32),
+        "cowp/critical/valid": np.asarray([], dtype=bool),
+    }
+    acc.add_selection(
+        selected_idx=0,
+        accepted_mask=np.asarray([True, True, True, False]),
+        shortlist_mask=np.asarray([True, False, False, False]),
+        fallback_used=True,
+        label=label,
+    )
+    metrics = acc.finish(auprc=0.0, rank_good=0, rank_total=0, witness_threshold=0.7)
+    assert metrics["CertificateSemantics/Version"] == "v16_8_2_decoupled"
+    assert metrics["LearnedAcceptedCandidateRate"] == 0.75
+    assert metrics["SelectionShortlist/CandidateRate"] == 0.25
+    assert metrics["FallbackRate"] == 1.0
+    assert metrics["FallbackSelection/SelectedCandidateRate"] == 1.0

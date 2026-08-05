@@ -1,0 +1,47 @@
+{
+  "pass": true,
+  "errors": [],
+  "environment": {
+    "python": "3.13.5 (main, May  5 2026, 21:05:52) [GCC 14.2.0]",
+    "platform": "Linux-6.18.35-x86_64-with-glibc2.41",
+    "torch": "2.10.0+cpu",
+    "cuda_available": false,
+    "cuda_device_count": 0,
+    "torchrun": "/opt/pyvenv/bin/torchrun",
+    "dependencies": {
+      "jax": true,
+      "tensorflow": false,
+      "waymax": false
+    }
+  },
+  "imports": {
+    "cowp.scripts.03_train": "ok",
+    "cowp.scripts.04_eval_closed_loop": "ok",
+    "cowp.scripts.17_merge_waymax_shards": "ok",
+    "cowp.scripts.24_summarize_planner_delta": "ok",
+    "cowp.scripts.25_verify_mechanism_effect": "ok",
+    "cowp.scripts.30_diagnose_bcot_result": "ok",
+    "cowp.scripts.31_calibrate_bcot_budget": "ok",
+    "cowp.scripts.32_gate_natural_basis": "ok",
+    "cowp.scripts.35_diagnose_model_anchor": "ok",
+    "cowp.scripts.39_diagnose_learned_natural": "ok",
+    "cowp.scripts.40_gate_natural_effectiveness": "ok"
+  },
+  "configs_loaded": [
+    "eval",
+    "label",
+    "model",
+    "train"
+  ],
+  "realistic_natural_smoke": {
+    "pass": true,
+    "shape": {
+      "batch": 2,
+      "critical_agents": 6,
+      "modes": 24,
+      "roots": 24,
+      "steps": 8
+    },
+    "loss": 0.9479548931121826
+  }
+}
