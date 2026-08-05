@@ -34,6 +34,29 @@ class MacroType(IntEnum):
     PAD = 12
 
 
+class ProposalSource(IntEnum):
+    """Provenance of an ego proposal primitive.
+
+    Macro type describes the semantic action, while proposal source records how
+    the trajectory entered the bank.  Keeping these notions separate is useful
+    for proposal-ceiling audits: two MERGE_BEHIND trajectories may come from the
+    legacy ego-only timing lattice or from the interaction-conditioned envelope.
+    """
+
+    PAD = 0
+    LOGGED = 1
+    KEEP = 2
+    ACCELERATE = 3
+    YIELD = 4
+    STOP = 5
+    LEGACY_TIMING = 6
+    ROBUST_BCTE = 7
+    LANE_CHANGE = 8
+    CREEP = 9
+    NEUTRAL = 10
+    TERMINAL = 11
+
+
 class NaturalSource(IntEnum):
     OBS = 0
     NEU = 1

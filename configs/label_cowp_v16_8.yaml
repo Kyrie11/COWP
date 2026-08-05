@@ -73,6 +73,14 @@ candidate:
   timing_envelope_min_approach_cos: 0.15
   timing_envelope_min_accel_mps2: -3.5
   timing_envelope_max_accel_mps2: 2.5
+  # v16.8.3 Robust Multi-Region BCTE (RMR-BCTE).
+  timing_envelope_max_regions: 3
+  timing_envelope_max_agents_per_region: 4
+  timing_envelope_max_candidates: 24
+  timing_envelope_accel_dedup_mps2: 0.10
+  timing_envelope_agent_min_accel_mps2: -2.0
+  timing_envelope_agent_max_accel_mps2: 2.0
+  timing_envelope_agent_max_spread_s: 0.8
   lane_change_duration_s:
   - 2.5
   - 3.5
@@ -384,6 +392,14 @@ planning:
   candidate_selection_rule_weight: 0.6
   candidate_selection_outcome_weight: 0.0
   online_ignore_initial_jerk_steps: 3
+  online_timing_envelope_max_agents: 6
+  online_timing_envelope_max_candidates: 24
+  online_timing_envelope_max_closest_m: 14.0
+  online_timing_envelope_gap_s: [0.8, 1.4, 2.0]
+  online_timing_envelope_uncertainty_s: 0.8
+  online_timing_envelope_accel_dedup_mps2: 0.10
+  online_timing_envelope_min_accel_mps2: -3.5
+  online_timing_envelope_max_accel_mps2: 2.5
   online_extra_accel_values_mps2:
   - -4.0
   - -2.5

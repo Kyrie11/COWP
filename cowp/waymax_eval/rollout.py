@@ -1283,9 +1283,12 @@ class _LearnedMetricsAccumulator:
         self.scene_any_valid = 0
         self.scene_any_conventional_safe = 0
         self.scene_any_ncf = 0
+        self.scene_conventional_without_ncf = 0
         self.scene_any_accepted = 0
         self.scene_any_accepted_ncf = 0
         self.scene_any_priority_ncf = 0
+        self.scene_any_priority_eligible = 0
+        self.scene_priority_eligible_without_ncf = 0
         self.scene_any_accepted_priority_ncf = 0
         self.shortlist_total = 0
         self.scene_any_shortlist = 0
@@ -1293,6 +1296,8 @@ class _LearnedMetricsAccumulator:
         self.fallback_selected_total = 0
         self.fallback_selected_priority_false_safe = 0
         self.fallback_selected_priority_eligible = 0
+        self.fallback_selected_with_ncf_available = 0
+        self.scene_ncf_available_selected_ncf = 0
         # Per-scene protected burden-tail exposure.  Keep the samples so the
         # reported upper-tail CVaR is an actual empirical tail statistic rather
         # than a mean that is merely named CVaR.
@@ -1343,9 +1348,13 @@ class _LearnedMetricsAccumulator:
         self.scene_any_valid += int(bool(valid.any()))
         self.scene_any_conventional_safe += int(bool(conv.any()))
         self.scene_any_ncf += int(bool(ncf.any()))
+        self.scene_conventional_without_ncf += int(bool(conv.any() and not ncf.any()))
         self.scene_any_accepted += int(bool(accepted.any()))
         self.scene_any_accepted_ncf += int(bool((accepted & ncf).any()))
         self.scene_any_priority_ncf += int(bool(priority_ncf.any()))
+        priority_eligible = valid & conv & priority_available
+        self.scene_any_priority_eligible += int(bool(priority_eligible.any()))
+        self.scene_priority_eligible_without_ncf += int(bool(priority_eligible.any() and not priority_ncf.any()))
         self.scene_any_accepted_priority_ncf += int(bool((accepted & priority_ncf).any()))
 
         # Non-coercive progress regret is conditional on the proposal bank
@@ -1363,6 +1372,7 @@ class _LearnedMetricsAccumulator:
 
         if selected_idx >= 0 and selected_idx < len(valid):
             self.selected_ncf += int(bool(ncf[selected_idx]))
+            self.scene_ncf_available_selected_ncf += int(bool(ncf.any() and ncf[selected_idx]))
             self.selected_false_safe += int(bool(fs[selected_idx]))
             self.selected_conventional += int(bool(conv[selected_idx]))
             selected_priority_eligible = bool(priority_available[selected_idx] and conv[selected_idx])
@@ -1371,6 +1381,7 @@ class _LearnedMetricsAccumulator:
             self.selected_priority_false_safe += int(selected_priority_false_safe)
             if fallback_used:
                 self.fallback_selected_total += 1
+                self.fallback_selected_with_ncf_available += int(bool(ncf.any()))
                 self.fallback_selected_priority_eligible += int(selected_priority_eligible)
                 self.fallback_selected_priority_false_safe += int(selected_priority_false_safe)
             tail = label.get("cowp/witness/tail_burden_excess")
@@ -1480,6 +1491,32 @@ class _LearnedMetricsAccumulator:
         metrics["ProposalCoverage/AnyValidSceneRate"] = float(self.scene_any_valid / max(self.selected_total, 1))
         metrics["ProposalCoverage/AnyConventionalSafeSceneRate"] = float(self.scene_any_conventional_safe / max(self.selected_total, 1))
         metrics["ProposalCoverage/AnyNCFSceneRate"] = float(self.scene_any_ncf / max(self.selected_total, 1))
+        proposal_fs_floor = float(self.scene_conventional_without_ncf / max(self.selected_total, 1))
+        metrics["ProposalCoverage/ConventionalWithoutNCFSceneRate"] = proposal_fs_floor
+        metrics["ProposalCoverage/BestCaseSelectedFalseSafeLowerBound"] = proposal_fs_floor
+        metrics["ProposalCoverage/AnyPriorityEligibleSceneRate"] = float(
+            self.scene_any_priority_eligible / max(self.selected_total, 1)
+        )
+        metrics["ProposalCoverage/AnyPriorityNCFSceneRate"] = float(
+            self.scene_any_priority_ncf / max(self.selected_total, 1)
+        )
+        proposal_pbtr_floor = float(
+            self.scene_priority_eligible_without_ncf / max(self.scene_any_priority_eligible, 1)
+        )
+        metrics["ProposalCoverage/PriorityEligibleWithoutNCFSceneRate"] = float(
+            self.scene_priority_eligible_without_ncf / max(self.selected_total, 1)
+        )
+        metrics["ProposalCoverage/BestCasePBTRLowerBound"] = proposal_pbtr_floor
+        metrics["Selector/NCFSelectionRecallGivenAvailable"] = float(
+            self.scene_ncf_available_selected_ncf / max(self.scene_any_ncf, 1)
+        )
+        metrics["Selector/FalseSafeExcessAboveProposalFloor"] = float(
+            metrics["SelectedFalseSafeRate"] - proposal_fs_floor
+        )
+        metrics["FallbackSelection/AnyNCFCandidateSceneRate"] = float(
+            self.fallback_selected_with_ncf_available / max(self.fallback_selected_total, 1)
+        )
+        metrics["ProposalDiagnostics/Version"] = "v16_8_3_proposal_floor"
         metrics["CertificateCoverage/AnyAcceptedSceneRate"] = float(self.scene_any_accepted / max(self.selected_total, 1))
         metrics["CertificateCoverage/AnyAcceptedNCFSceneRate"] = float(self.scene_any_accepted_ncf / max(self.selected_total, 1))
         metrics["CertificateCoverage/EmptySceneRate"] = float(1.0 - self.scene_any_accepted / max(self.selected_total, 1))

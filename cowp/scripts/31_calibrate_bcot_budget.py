@@ -72,6 +72,25 @@ def main() -> None:
         )
 
     feasible = [row for row in rows if feasible_row(row)]
+    proposal_fs_floor = min(
+        (_metric(row, "ProposalCoverage/BestCaseSelectedFalseSafeLowerBound", float("inf")) for row in rows),
+        default=float("inf"),
+    )
+    proposal_pbtr_floor = min(
+        (_metric(row, "ProposalCoverage/BestCasePBTRLowerBound", float("inf")) for row in rows),
+        default=float("inf"),
+    )
+    proposal_diagnostics_available = bool(
+        any(str(row.get("ProposalDiagnostics/Version", "")) == "v16_8_3_proposal_floor" for row in rows)
+    )
+    proposal_infeasible_reasons: list[str] = []
+    if proposal_diagnostics_available and proposal_fs_floor > args.max_selected_global_false_safe:
+        proposal_infeasible_reasons.append(
+            "best_case_selected_false_safe_lower_bound_exceeds_constraint"
+        )
+    if proposal_diagnostics_available and proposal_pbtr_floor > args.max_priority_burden_transfer:
+        proposal_infeasible_reasons.append("best_case_pbtr_lower_bound_exceeds_constraint")
+    proposal_feasible = not proposal_infeasible_reasons
     if feasible:
         selected = min(
             feasible,
@@ -106,7 +125,7 @@ def main() -> None:
             )
 
         selected = min(rows, key=violation)
-        status = "least_violation"
+        status = "proposal_infeasible" if not proposal_feasible else "least_violation"
 
     out = {
         "bcot_risk_budget": _metric(selected, "bcot_risk_budget", 0.35),
@@ -120,6 +139,15 @@ def main() -> None:
         "constraints": constraints,
         "num_operating_points": len(rows),
         "objective": "protected_priority_certificate_with_global_anti_degeneracy",
+        "proposal_diagnostics_available": proposal_diagnostics_available,
+        "proposal_feasible": proposal_feasible,
+        "proposal_infeasible_reasons": proposal_infeasible_reasons,
+        "proposal_best_case_selected_false_safe_lower_bound": (
+            proposal_fs_floor if proposal_diagnostics_available else None
+        ),
+        "proposal_best_case_pbtr_lower_bound": (
+            proposal_pbtr_floor if proposal_diagnostics_available else None
+        ),
     }
     Path(args.output).write_text(
         json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8"

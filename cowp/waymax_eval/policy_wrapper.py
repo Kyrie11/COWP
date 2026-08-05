@@ -717,13 +717,17 @@ def _online_arrival_accel(distance_m: float, speed_mps: float, target_time_s: fl
     t = float(target_time_s)
     if not np.isfinite(d) or not np.isfinite(t) or d <= 0.5 or t <= 0.35:
         return None
-    a = 2.0 * (d - max(float(speed_mps), 0.0) * t) / max(t * t, 1.0e-3)
+    v0 = max(float(speed_mps), 0.0)
+    a = 2.0 * (d - v0 * t) / max(t * t, 1.0e-3)
     pcfg = cfg.get("planning", {})
     lo = float(pcfg.get("online_timing_envelope_min_accel_mps2", cfg.get("candidate", {}).get("timing_envelope_min_accel_mps2", -3.5)))
     hi = float(pcfg.get("online_timing_envelope_max_accel_mps2", cfg.get("candidate", {}).get("timing_envelope_max_accel_mps2", 2.5)))
     if a < lo - 0.75 or a > hi + 0.75:
         return None
-    return float(np.clip(a, lo, hi))
+    a = float(np.clip(a, lo, hi))
+    if v0 + a * t < -1.0e-3:
+        return None
+    return a
 
 
 def _route_lane_aware_candidates(
@@ -798,24 +802,34 @@ def _route_lane_aware_candidates(
                     m = MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND
                     _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
-    # v16.8.2 online BCTE.  Find candidate/agent closest-approach times under a
-    # nominal ego path, then solve ego arrival times on both sides of that event.
-    # This expands the bank near the RCOT feasibility boundary instead of mapping
-    # arbitrary offsets directly to acceleration.
+    # v16.8.3 online robust BCTE. Find candidate/agent closest-approach times
+    # under a nominal ego path, then solve ego arrival times outside a temporal
+    # uncertainty envelope rather than around one over-confident point event.
     nominal = constant_accel_trajectory(current, H, dt, accel=0.0)
     nominal_xy = nominal[:, :2]
     nominal_step = np.linalg.norm(np.diff(nominal_xy, axis=0, prepend=nominal_xy[:1]), axis=-1)
     nominal_s = np.cumsum(nominal_step)
     max_bcte_agents = int(cfg.get("planning", {}).get("online_timing_envelope_max_agents", 6))
+    max_bcte_candidates = int(cfg.get("planning", {}).get("online_timing_envelope_max_candidates", 24))
     max_ca_dist = float(cfg.get("planning", {}).get("online_timing_envelope_max_closest_m", 14.0))
+    time_uncertainty = max(0.0, float(cfg.get("planning", {}).get("online_timing_envelope_uncertainty_s", 0.8)))
+    accel_dedup = max(
+        1.0e-3,
+        float(cfg.get("planning", {}).get(
+            "online_timing_envelope_accel_dedup_mps2",
+            cfg.get("candidate", {}).get("timing_envelope_accel_dedup_mps2", 0.10),
+        )),
+    )
     gap_values = [float(x) for x in cfg.get("planning", {}).get(
         "online_timing_envelope_gap_s", cfg.get("candidate", {}).get("timing_envelope_gap_s", [0.8, 1.4, 2.0])
     )]
     if np.any(valid_other):
         near_order = np.argsort(np.linalg.norm(agent_state[:, :2] - ego_xy[None], axis=-1))
         used = 0
+        bcte_added = 0
+        timing_accel_bins: set[int] = set()
         for j in near_order:
-            if used >= max_bcte_agents:
+            if used >= max_bcte_agents or bcte_added >= max_bcte_candidates or len(candidates) >= K:
                 break
             if j == sdc_index or not valid_other[j]:
                 continue
@@ -830,13 +844,23 @@ def _route_lane_aware_candidates(
             conflict_distance = float(nominal_s[q])
             event_time = float((q + 1) * dt)
             for gap in gap_values:
+                if bcte_added >= max_bcte_candidates or len(candidates) >= K:
+                    break
                 for side in (-1.0, 1.0):
-                    target_time = event_time + side * gap
+                    # Before uses the early boundary; after uses the late
+                    # boundary. The symmetric uncertainty is deliberately
+                    # conservative until a learned arrival distribution is
+                    # introduced in the distributional-RCOT extension.
+                    target_time = event_time + side * (gap + time_uncertainty)
                     acc = _online_arrival_accel(conflict_distance, speed, target_time, cfg)
                     if acc is None:
                         continue
+                    accel_bin = int(round(float(acc) / accel_dedup))
+                    if accel_bin in timing_accel_bins:
+                        continue
                     behind = side > 0.0
                     tr = constant_accel_trajectory(current, H, dt, accel=acc)
+                    before_count = len(candidates)
                     _add_candidate(
                         candidates, macros, utils, conventional, tr,
                         MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
@@ -844,6 +868,9 @@ def _route_lane_aware_candidates(
                         agent_state, sdc_index, roadgraph, cfg,
                         other_future_trajs=other_future_trajs,
                     )
+                    if len(candidates) > before_count:
+                        timing_accel_bins.add(accel_bin)
+                        bcte_added += 1
             used += 1
 
     # Lane-change/cut-in proposals.  Use ±lane_width relative to the local lane

@@ -137,6 +137,14 @@ def main() -> None:
         "calibration_certificate_semantics_current": calibration_semantics_current,
         "calibration_status": calibration_status,
         "calibration_feasible": calibration_status == "constraints_satisfied",
+        "proposal_feasible": bool(calibration.get("proposal_feasible", True)),
+        "proposal_infeasible_reasons": calibration.get("proposal_infeasible_reasons", []),
+        "proposal_best_case_selected_false_safe_lower_bound": calibration.get(
+            "proposal_best_case_selected_false_safe_lower_bound"
+        ),
+        "proposal_best_case_pbtr_lower_bound": calibration.get(
+            "proposal_best_case_pbtr_lower_bound"
+        ),
         "calibration_subset": calibration_subset,
         "heldout_subset": heldout_subset,
         "calibration_heldout_disjoint": subset_disjoint,

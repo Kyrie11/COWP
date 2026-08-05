@@ -1,0 +1,48 @@
+{
+  "schema_version": "cowp_v16_8_3_audit_verdict_v1",
+  "source_run": "cowp_v16_8_2_reeval_v9base_seed2026",
+  "date": "2026-08-05",
+  "gate_summary": {
+    "pipeline_preflight": true,
+    "model_anchor_preflight": true,
+    "natural_basis": true,
+    "natural_effectiveness": true,
+    "mechanism_overlay_protocol": true,
+    "fresh_v16_8_3_label_protocol": false,
+    "calibration_feasible": false,
+    "mechanism_verification": false,
+    "paper_claim_ready": false
+  },
+  "heldout": {
+    "priority_ncf_recall": 0.9706376668314385,
+    "priority_ncf_precision": 0.4762782574949064,
+    "accepted_candidate_rate": 0.3295565494000189,
+    "fallback_rate": 0.38667198723064644,
+    "pbtr": 0.7032868077442593,
+    "conventional_pbtr": 0.7158937415578568,
+    "pbtr_improvement": 0.012606933813597454,
+    "selected_false_safe_rate": 0.6396648044692738,
+    "conventional_selected_false_safe_rate": 0.6520351157222666,
+    "selected_false_safe_improvement": 0.012370311252992816,
+    "witness_auprc": 0.8203298743791256,
+    "protected_bcot_auprc": 0.965127484891429,
+    "protected_root_transport_auprc": 0.8693606505143381
+  },
+  "proposal_ceiling": {
+    "any_conventional_safe_scene_rate": 0.8914605,
+    "any_ncf_scene_rate": 0.2725459,
+    "conventional_without_ncf_lower_bound": 0.6189146,
+    "gate_max_selected_false_safe": 0.55,
+    "selector_excess_above_lower_bound": 0.0207502,
+    "diagnosis": "fixed_proposal_bank_infeasible_for_false_safe_gate"
+  },
+  "engineering_root_cause": "offline candidate validation ignored ignore_initial_jerk_steps and jerk_check_percentile",
+  "data_decision": "run paired 1200-scene label-only proposal probe before full rebuild",
+  "probe_promotion_thresholds": {
+    "min_overall_any_ncf": 0.4,
+    "max_false_safe_floor": 0.55,
+    "min_hard_recovery": 0.2
+  },
+  "implemented_version": "v16.8.3",
+  "next_entrypoint": "NEXT_RUN_COMMANDS_V16_8_3_PROPOSAL_PROBE_CN.sh"
+}
