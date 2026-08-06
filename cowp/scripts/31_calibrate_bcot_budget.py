@@ -81,7 +81,7 @@ def main() -> None:
         default=float("inf"),
     )
     proposal_diagnostics_available = bool(
-        any(str(row.get("ProposalDiagnostics/Version", "")) == "v16_8_3_proposal_floor" for row in rows)
+        any(str(row.get("ProposalDiagnostics/Version", "")) in {"v16_8_3_proposal_floor", "v16_8_4_boundary_consistent_proposal_floor"} for row in rows)
     )
     proposal_infeasible_reasons: list[str] = []
     if proposal_diagnostics_available and proposal_fs_floor > args.max_selected_global_false_safe:

@@ -32,7 +32,7 @@ def main() -> None:
     ap.add_argument("--cache-alignment-report", default=None)
     ap.add_argument(
         "--data-protocol",
-        choices=["v15", "v9_reuse", "v16_8_root_conditioned_overlay", "v16_8_2_fresh", "v16_8_3_fresh"],
+        choices=["v15", "v9_reuse", "v16_8_root_conditioned_overlay", "v16_8_2_fresh", "v16_8_3_fresh", "v16_8_4_fresh"],
         default="v15",
     )
     ap.add_argument("--cache-reuse-report", default=None)
@@ -129,7 +129,7 @@ def main() -> None:
     engineering_failed = [name for name, ok in engineering_checks.items() if not ok]
     label_failed = [name for name, ok in label_protocol_checks.items() if not ok]
     overlay_failed = [name for name, ok in overlay_checks.items() if not ok]
-    require_v15_labels = args.data_protocol in {"v15", "v16_8_2_fresh", "v16_8_3_fresh"}
+    require_v15_labels = args.data_protocol in {"v15", "v16_8_2_fresh", "v16_8_3_fresh", "v16_8_4_fresh"}
     require_overlay = args.data_protocol == "v16_8_root_conditioned_overlay"
     if require_overlay and not args.cache_reuse_report:
         overlay_failed.append("cache_reuse_report_required_for_v16_8_overlay")
@@ -146,6 +146,7 @@ def main() -> None:
         "mechanism_overlay_protocol_pass": bool(overlay_checks) and not overlay_failed,
         "fresh_v16_8_2_label_protocol_pass": (not label_failed) if args.data_protocol == "v16_8_2_fresh" else False,
         "fresh_v16_8_3_label_protocol_pass": (not label_failed) if args.data_protocol == "v16_8_3_fresh" else False,
+        "fresh_v16_8_4_label_protocol_pass": (not label_failed) if args.data_protocol == "v16_8_4_fresh" else False,
         "data_protocol": args.data_protocol,
         "failed_checks": failed,
         "engineering_failed_checks": engineering_failed,
@@ -162,8 +163,9 @@ def main() -> None:
             "Passing this audit removes known causality, coordinate-identity, metric-naming, and selected "
             "overlay-integrity violations. The v16_8_root_conditioned_overlay protocol is valid for isolated "
             "RCOT/certificate development on a v9 base, but it is not a fresh v15/v16 causal-label dataset. "
-            "The v16_8_2_fresh and v16_8_3_fresh protocols additionally require materialized map-filtered and observationally "
-            "decontaminated labels; v16_8_3_fresh also records the RMR-BCTE build fingerprint and proposal provenance. "
+            "The v16_8_2_fresh, v16_8_3_fresh, and v16_8_4_fresh protocols additionally require materialized map-filtered and observationally "
+            "decontaminated labels; v16_8_3_fresh records RMR-BCTE provenance, while v16_8_4_fresh requires boundary-consistent "
+            "BCS-RMR-BCTE proposal provenance and a matching build fingerprint. "
             "No audit result establishes algorithmic SOTA or supplies reactive non-ego ground truth."
         ),
         "cache_alignment_report": args.cache_alignment_report,

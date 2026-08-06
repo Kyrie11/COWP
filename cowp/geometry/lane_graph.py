@@ -153,6 +153,78 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
     return regions[:max_regions]
 
 
+def trajectory_entry_to_region(
+    traj: np.ndarray,
+    region: ConflictRegion,
+    *,
+    current_state: np.ndarray | None = None,
+    radius: float | None = None,
+    dt: float = 0.1,
+) -> tuple[float, float]:
+    """Continuous first-entry time and arc length to a circular conflict region.
+
+    ``tta_to_region`` intentionally keeps its historical sample-index semantics.
+    Interaction-timing proposal generation needs a stronger geometric contract:
+    the distance used by the arrival solver must refer to the *same vehicle
+    envelope / region boundary* used to declare a conflict.  This helper linearly
+    interpolates the first boundary crossing between trajectory samples and
+    returns both crossing time and travelled arc length from the observed current
+    state.
+
+    When ``current_state`` is omitted, the first trajectory sample is treated as
+    time/distance zero.  Passing the current state is preferred for generated
+    ego primitives, whose first row is one integration step in the future.
+    """
+    x = np.asarray(traj, dtype=np.float32)
+    if x.ndim != 2 or len(x) == 0 or x.shape[1] < 7:
+        return float("inf"), float("inf")
+    dt = max(float(dt), 1.0e-6)
+    r = float(radius if radius is not None else region.radius)
+
+    if current_state is not None:
+        cur = np.asarray(current_state, dtype=np.float32).reshape(-1)
+        if cur.size < 2:
+            return float("inf"), float("inf")
+        start_xy = cur[:2]
+        length0 = float(cur[7]) if cur.size > 7 and cur[7] > 0 else float(x[0, 5])
+        width0 = float(cur[8]) if cur.size > 8 and cur[8] > 0 else float(x[0, 6])
+        xy = np.concatenate([start_xy[None, :], x[:, :2]], axis=0)
+        half_diag = np.concatenate(
+            [
+                np.asarray([0.5 * np.sqrt(max(length0, 0.1) ** 2 + max(width0, 0.1) ** 2)], dtype=np.float32),
+                0.5 * np.sqrt(np.maximum(x[:, 5], 0.1) ** 2 + np.maximum(x[:, 6], 0.1) ** 2),
+            ]
+        )
+        times = np.arange(len(xy), dtype=np.float32) * dt
+    else:
+        xy = x[:, :2]
+        half_diag = 0.5 * np.sqrt(np.maximum(x[:, 5], 0.1) ** 2 + np.maximum(x[:, 6], 0.1) ** 2)
+        times = np.arange(len(xy), dtype=np.float32) * dt
+
+    dist = np.linalg.norm(xy - np.asarray(region.center_xy, dtype=np.float32)[None, :2], axis=-1)
+    clearance = dist - (r + half_diag)
+    if not np.all(np.isfinite(clearance)):
+        return float("inf"), float("inf")
+
+    seg = np.linalg.norm(np.diff(xy, axis=0), axis=-1) if len(xy) > 1 else np.zeros(0, dtype=np.float32)
+    cumulative = np.concatenate([np.zeros(1, dtype=np.float32), np.cumsum(seg, dtype=np.float32)])
+    if clearance[0] <= 0.0:
+        return 0.0, 0.0
+    hits = np.where(clearance <= 0.0)[0]
+    if len(hits) == 0:
+        return float("inf"), float("inf")
+    i = int(hits[0])
+    if i <= 0:
+        return 0.0, 0.0
+    c0 = float(clearance[i - 1])
+    c1 = float(clearance[i])
+    denom = c0 - c1
+    frac = float(np.clip(c0 / denom, 0.0, 1.0)) if abs(denom) > 1.0e-9 else 1.0
+    entry_t = float(times[i - 1] + frac * (times[i] - times[i - 1]))
+    entry_s = float(cumulative[i - 1] + frac * seg[i - 1])
+    return entry_t, entry_s
+
+
 def tta_to_region(traj: np.ndarray, region: ConflictRegion, radius: float | None = None, dt: float = 0.1) -> float:
     if len(traj) == 0:
         return float("inf")

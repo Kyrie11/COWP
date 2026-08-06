@@ -17,6 +17,7 @@ WANTED = {
     "cowp/candidates/conventional_safe",
     "cowp/candidates/noncoercive_feasible",
     "cowp/candidates/proposal_source",
+    "cowp/candidates/proposal_target_tta_error_s",
 }
 
 
@@ -34,6 +35,12 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid
     source = np.asarray(row.get("cowp/candidates/proposal_source", np.full_like(valid, int(ProposalSource.PAD))), dtype=np.int64).reshape(-1)[: len(valid)]
     rmr = valid & (source == int(ProposalSource.ROBUST_BCTE))
+    timing_err = np.asarray(
+        row.get("cowp/candidates/proposal_target_tta_error_s", np.full(len(valid), np.nan, dtype=np.float32)),
+        dtype=np.float32,
+    ).reshape(-1)[: len(valid)]
+    rmr_err = np.abs(timing_err[rmr]) if len(timing_err) else np.asarray([], dtype=np.float32)
+    rmr_err = rmr_err[np.isfinite(rmr_err)]
     return {
         "valid_count": int(valid.sum()),
         "any_conv": bool(conv.any()),
@@ -41,6 +48,9 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
         "conv_without_ncf": bool(conv.any() and not ncf.any()),
         "rmr_count": int(rmr.sum()),
         "rmr_ncf_count": int((rmr & ncf).sum()),
+        "rmr_timing_error_count": int(rmr_err.size),
+        "rmr_timing_error_sum_s": float(rmr_err.sum()) if rmr_err.size else 0.0,
+        "rmr_timing_error_max_s": float(rmr_err.max()) if rmr_err.size else 0.0,
     }
 
 
@@ -85,6 +95,12 @@ def _aggregate(ids: list[str], old: dict, new: dict) -> tuple[Counter, list[int]
             new_rmr_ncf_candidates=int(b["rmr_ncf_count"]),
             new_scene_with_rmr=int(int(b["rmr_count"]) > 0),
             new_scene_with_rmr_ncf=int(int(b["rmr_ncf_count"]) > 0),
+            new_rmr_timing_error_count=int(b["rmr_timing_error_count"]),
+            new_rmr_timing_error_sum_s=float(b["rmr_timing_error_sum_s"]),
+        )
+        c["new_rmr_timing_error_max_s"] = max(
+            float(c.get("new_rmr_timing_error_max_s", 0.0)),
+            float(b["rmr_timing_error_max_s"]),
         )
     return c, old_valid, new_valid
 
@@ -100,6 +116,7 @@ def main() -> None:
     ap.add_argument("--min-overall-any-ncf", type=float, default=0.40)
     ap.add_argument("--max-false-safe-floor", type=float, default=0.55)
     ap.add_argument("--min-hard-recovery", type=float, default=0.20)
+    ap.add_argument("--max-rmr-target-tta-error-s", type=float, default=0.20)
     ap.add_argument("--allow-missing-requested", action="store_true", help="Diagnostic-only: allow requested IDs to be absent. Promotion probes should keep the default strict behavior.")
     args = ap.parse_args()
 
@@ -133,13 +150,17 @@ def main() -> None:
     new_any_ncf = _rate(c["new_any_ncf"], n)
     new_floor = _rate(c["new_floor"], n)
     hard_recovery = _rate(hard_c["hard_recovered"], hard_c["old_hard"])
+    rmr_timing_count = int(c["new_rmr_timing_error_count"])
+    rmr_timing_mean = float(c["new_rmr_timing_error_sum_s"]) / max(rmr_timing_count, 1)
+    rmr_timing_max = float(c.get("new_rmr_timing_error_max_s", 0.0))
     gates = {
         "overall_any_ncf": new_any_ncf >= args.min_overall_any_ncf,
         "false_safe_floor": new_floor <= args.max_false_safe_floor,
         "hard_scene_recovery": hard_recovery >= args.min_hard_recovery,
+        "rmr_timing_consistency": rmr_timing_count > 0 and rmr_timing_max <= args.max_rmr_target_tta_error_s + 1e-6,
     }
     result = {
-        "schema_version": "cowp_v16_8_3_paired_proposal_probe_v1",
+        "schema_version": "cowp_v16_8_4_bcs_rmr_bcte_paired_proposal_probe_v1",
         "old_cache": str(Path(args.old_cache).resolve()),
         "new_cache": str(Path(args.new_cache).resolve()),
         "num_common_scenes": len(common),
@@ -163,6 +184,9 @@ def main() -> None:
             "scene_with_rmr_bcte_ncf_rate": _rate(c["new_scene_with_rmr_ncf"], n),
             "rmr_bcte_candidate_count": int(c["new_rmr_candidates"]),
             "rmr_bcte_ncf_candidate_count": int(c["new_rmr_ncf_candidates"]),
+            "rmr_timing_error_count": rmr_timing_count,
+            "rmr_target_tta_error_mean_s": rmr_timing_mean,
+            "rmr_target_tta_error_max_s": rmr_timing_max,
         },
         "paired": {
             "old_hard_scene_count": int(hard_c["old_hard"]),
@@ -174,6 +198,7 @@ def main() -> None:
             "min_overall_any_ncf": args.min_overall_any_ncf,
             "max_false_safe_floor": args.max_false_safe_floor,
             "min_hard_recovery": args.min_hard_recovery,
+            "max_rmr_target_tta_error_s": args.max_rmr_target_tta_error_s,
         },
         "gate_checks": gates,
         "promote_to_full_rebuild": bool(all(gates.values())),

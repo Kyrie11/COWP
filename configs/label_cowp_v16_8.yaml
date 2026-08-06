@@ -81,6 +81,9 @@ candidate:
   timing_envelope_agent_min_accel_mps2: -2.0
   timing_envelope_agent_max_accel_mps2: 2.0
   timing_envelope_agent_max_spread_s: 0.8
+  # v16.8.4: reject RMR timing proposals whose realized conflict-entry TTA
+  # disagrees with the advertised pass-before/pass-after target.
+  timing_envelope_max_target_tta_error_s: 0.20
   lane_change_duration_s:
   - 2.5
   - 3.5

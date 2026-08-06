@@ -31,6 +31,8 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/candidates/proposal_target_agent_index": FieldSpec(("K",), ("i", "u"), required=False),
     "cowp/candidates/proposal_gap_s": FieldSpec(("K",), "f", required=False),
     "cowp/candidates/proposal_accel_mps2": FieldSpec(("K",), "f", required=False),
+    "cowp/candidates/proposal_entry_distance_m": FieldSpec(("K",), "f", required=False),
+    "cowp/candidates/proposal_target_tta_error_s": FieldSpec(("K",), "f", required=False),
     "cowp/critical/track_index": FieldSpec(("A",), ("i", "u")),
     "cowp/critical/track_id": FieldSpec(("A",), ("i", "u"), required=False),
     "cowp/critical/input_index": FieldSpec(("A",), ("i", "u"), required=False),

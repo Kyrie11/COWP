@@ -70,6 +70,69 @@ def constant_accel_trajectory(current: np.ndarray, horizon: int, dt: float, acce
     return repair_planar_kinematics(out, current, dt)
 
 
+def smooth_arrival_trajectory(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    distance_m: float,
+    target_time_s: float,
+) -> np.ndarray | None:
+    """Straight-path cubic timing primitive with zero acceleration at arrival.
+
+    The old RMR-BCTE primitive solved a *constant* acceleration to the conflict
+    region centre.  That construction can enter the actual conflict envelope
+    seconds before its advertised pass-after time, and long delays become
+    impossible once constant deceleration would stop the vehicle.
+
+    We instead use
+
+        s(t) = v0 t + c2 t^2 + c3 t^3,   0 <= t <= T
+
+    with ``s(T)=distance_m`` and ``a(T)=0``.  The resulting acceleration changes
+    linearly to zero, supports substantially later physically feasible arrivals,
+    and has constant finite jerk.  After T, the primitive continues at the
+    terminal speed.  Feasibility bounds are checked by the caller / common
+    candidate validator.
+    """
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    horizon = int(horizon)
+    dt = max(float(dt), 1.0e-4)
+    d = float(distance_m)
+    T = float(target_time_s)
+    if horizon <= 0 or cur.size < 7 or not np.isfinite(d) or not np.isfinite(T) or d <= 0.0 or T <= dt:
+        return None
+
+    x0, y0 = float(cur[0]), float(cur[1])
+    heading = float(cur[6])
+    v0 = float(max(cur[5] if cur.size > 5 else np.linalg.norm(cur[3:5]), 0.0))
+    length = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    width = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+
+    delta = v0 * T - d
+    c3 = delta / max(2.0 * T**3, 1.0e-9)
+    c2 = -3.0 * delta / max(2.0 * T**2, 1.0e-9)
+    vT = v0 + 2.0 * c2 * T + 3.0 * c3 * T * T
+    if not np.isfinite(vT) or vT < -1.0e-5:
+        return None
+    vT = max(float(vT), 0.0)
+
+    direction = np.asarray([np.cos(heading), np.sin(heading)], dtype=np.float32)
+    out = np.zeros((horizon, 7), dtype=np.float32)
+    for k in range(horizon):
+        t = float((k + 1) * dt)
+        if t <= T:
+            s_t = v0 * t + c2 * t * t + c3 * t**3
+            v_t = v0 + 2.0 * c2 * t + 3.0 * c3 * t * t
+        else:
+            s_t = d + vT * (t - T)
+            v_t = vT
+        if not np.isfinite(s_t) or not np.isfinite(v_t) or v_t < -1.0e-4:
+            return None
+        pos = np.asarray([x0, y0], dtype=np.float32) + direction * float(max(s_t, 0.0))
+        out[k] = [pos[0], pos[1], heading, direction[0] * max(v_t, 0.0), direction[1] * max(v_t, 0.0), length, width]
+    return repair_planar_kinematics(out, current=cur, dt=dt)
+
+
 def resample_logged(
     logged: np.ndarray,
     horizon: int,

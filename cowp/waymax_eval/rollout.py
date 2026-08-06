@@ -1516,7 +1516,7 @@ class _LearnedMetricsAccumulator:
         metrics["FallbackSelection/AnyNCFCandidateSceneRate"] = float(
             self.fallback_selected_with_ncf_available / max(self.fallback_selected_total, 1)
         )
-        metrics["ProposalDiagnostics/Version"] = "v16_8_3_proposal_floor"
+        metrics["ProposalDiagnostics/Version"] = "v16_8_4_boundary_consistent_proposal_floor"
         metrics["CertificateCoverage/AnyAcceptedSceneRate"] = float(self.scene_any_accepted / max(self.selected_total, 1))
         metrics["CertificateCoverage/AnyAcceptedNCFSceneRate"] = float(self.scene_any_accepted_ncf / max(self.selected_total, 1))
         metrics["CertificateCoverage/EmptySceneRate"] = float(1.0 - self.scene_any_accepted / max(self.selected_total, 1))

@@ -75,6 +75,8 @@ def build_labels_for_scene(
         "cowp/candidates/proposal_target_agent_index": candidates.get("proposal_target_agent_index", np.full_like(candidates["macro_type"], -1, dtype=np.int32)),
         "cowp/candidates/proposal_gap_s": candidates.get("proposal_gap_s", np.full_like(candidates["ego_utility_prior"], -1.0, dtype=np.float32)),
         "cowp/candidates/proposal_accel_mps2": candidates.get("proposal_accel_mps2", np.full_like(candidates["ego_utility_prior"], -99.0, dtype=np.float32)),
+        "cowp/candidates/proposal_entry_distance_m": candidates.get("proposal_entry_distance_m", np.full_like(candidates["ego_utility_prior"], -1.0, dtype=np.float32)),
+        "cowp/candidates/proposal_target_tta_error_s": candidates.get("proposal_target_tta_error_s", np.full_like(candidates["ego_utility_prior"], -1.0, dtype=np.float32)),
         "cowp/critical/track_index": critical["track_index"],
         "cowp/critical/track_id": np.asarray([scene.track_id[i] if 0 <= i < len(scene.track_id) else -1 for i in critical["track_index"]], dtype=np.int64),
         "cowp/critical/valid": critical["valid"],

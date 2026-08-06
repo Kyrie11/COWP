@@ -7,7 +7,7 @@ import numpy as np
 
 from cowp.core.constants import MacroType
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
-from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory, repair_planar_kinematics
+from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
@@ -730,6 +730,32 @@ def _online_arrival_accel(distance_m: float, speed_mps: float, target_time_s: fl
     return a
 
 
+def _online_smooth_arrival_profile(distance_m: float, speed_mps: float, target_time_s: float, cfg: dict) -> tuple[float, float, float] | None:
+    """Feasibility precheck for the online cubic timing projection.
+
+    Mirrors the offline BCS-RMR-BCTE profile: reach the fixed conflict-path
+    distance at T while tapering longitudinal acceleration to zero.  The
+    profile avoids the stop-before-arrival pathology of constant deceleration
+    and makes offline/online timing semantics materially closer.
+    """
+    d = float(distance_m)
+    T = float(target_time_s)
+    v0 = max(float(speed_mps), 0.0)
+    if not np.isfinite(d) or not np.isfinite(T) or d <= 0.5 or T <= 0.35:
+        return None
+    a0 = 3.0 * (d - v0 * T) / max(T * T, 1.0e-9)
+    jerk = -a0 / max(T, 1.0e-9)
+    vT = -0.5 * v0 + 1.5 * d / max(T, 1.0e-9)
+    pcfg = cfg.get("planning", {})
+    ccfg = cfg.get("candidate", {})
+    lo = float(pcfg.get("online_timing_envelope_min_accel_mps2", ccfg.get("timing_envelope_min_accel_mps2", -3.5)))
+    hi = float(pcfg.get("online_timing_envelope_max_accel_mps2", ccfg.get("timing_envelope_max_accel_mps2", 2.5)))
+    max_jerk = float(ccfg.get("max_jerk_mps3", 8.0))
+    if a0 < lo - 1.0e-6 or a0 > hi + 1.0e-6 or vT < -1.0e-5 or abs(jerk) > max_jerk + 1.0e-6:
+        return None
+    return float(a0), float(jerk), float(max(vT, 0.0))
+
+
 def _route_lane_aware_candidates(
     agent_state: np.ndarray,
     sdc_index: int,
@@ -802,12 +828,15 @@ def _route_lane_aware_candidates(
                     m = MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND
                     _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
-    # v16.8.3 online robust BCTE. Find candidate/agent closest-approach times
-    # under a nominal ego path, then solve ego arrival times outside a temporal
-    # uncertainty envelope rather than around one over-confident point event.
+    # v16.8.4 online BCS timing projection.  Waymax does not expose the offline
+    # proto conflict-region graph at every policy step, so we retain the causal
+    # closest-approach event locator, but project ego timing with the same smooth
+    # arrival family used offline.  This removes the constant-deceleration
+    # stop-before-arrival pathology and includes current->first-step arc length.
     nominal = constant_accel_trajectory(current, H, dt, accel=0.0)
     nominal_xy = nominal[:, :2]
-    nominal_step = np.linalg.norm(np.diff(nominal_xy, axis=0, prepend=nominal_xy[:1]), axis=-1)
+    nominal_xy_from_current = np.concatenate([current[None, :2], nominal_xy], axis=0)
+    nominal_step = np.linalg.norm(np.diff(nominal_xy_from_current, axis=0), axis=-1)
     nominal_s = np.cumsum(nominal_step)
     max_bcte_agents = int(cfg.get("planning", {}).get("online_timing_envelope_max_agents", 6))
     max_bcte_candidates = int(cfg.get("planning", {}).get("online_timing_envelope_max_candidates", 24))
@@ -827,7 +856,7 @@ def _route_lane_aware_candidates(
         near_order = np.argsort(np.linalg.norm(agent_state[:, :2] - ego_xy[None], axis=-1))
         used = 0
         bcte_added = 0
-        timing_accel_bins: set[int] = set()
+        timing_profile_bins: set[tuple[int, int, int]] = set()
         for j in near_order:
             if used >= max_bcte_agents or bcte_added >= max_bcte_candidates or len(candidates) >= K:
                 break
@@ -852,14 +881,22 @@ def _route_lane_aware_candidates(
                     # conservative until a learned arrival distribution is
                     # introduced in the distributional-RCOT extension.
                     target_time = event_time + side * (gap + time_uncertainty)
-                    acc = _online_arrival_accel(conflict_distance, speed, target_time, cfg)
-                    if acc is None:
+                    if target_time <= 0.35 or target_time > float(H * dt):
                         continue
-                    accel_bin = int(round(float(acc) / accel_dedup))
-                    if accel_bin in timing_accel_bins:
+                    profile = _online_smooth_arrival_profile(conflict_distance, speed, target_time, cfg)
+                    if profile is None:
+                        continue
+                    initial_accel, _profile_jerk, _terminal_speed = profile
+                    accel_bin = int(round(float(initial_accel) / accel_dedup))
+                    profile_key = (int(j), int(np.sign(side)), accel_bin)
+                    if profile_key in timing_profile_bins:
                         continue
                     behind = side > 0.0
-                    tr = constant_accel_trajectory(current, H, dt, accel=acc)
+                    tr = smooth_arrival_trajectory(
+                        current, H, dt, distance_m=conflict_distance, target_time_s=target_time
+                    )
+                    if tr is None:
+                        continue
                     before_count = len(candidates)
                     _add_candidate(
                         candidates, macros, utils, conventional, tr,
@@ -869,7 +906,7 @@ def _route_lane_aware_candidates(
                         other_future_trajs=other_future_trajs,
                     )
                     if len(candidates) > before_count:
-                        timing_accel_bins.add(accel_bin)
+                        timing_profile_bins.add(profile_key)
                         bcte_added += 1
             used += 1
 

@@ -1,6 +1,0 @@
-compileall_returncode=0
-pytest_returncode=0
-[32m.[0m[32m.[0m[32m.[0m[32m.[0m[32m                                                                     [100%][0m
-[32m[32m[1m4 passed[0m[32m in 0.04s[0m[0m
-bash_n_returncode=0
-synthetic_audit_returncode=0

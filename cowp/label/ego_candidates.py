@@ -4,8 +4,8 @@ import numpy as np
 
 from cowp.core.constants import MacroType, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
-from cowp.geometry.lane_graph import build_conflict_regions, tta_to_region
-from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged, smooth_stop_trajectory
+from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, trajectory_entry_to_region, tta_to_region
+from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory
 
 
 def _candidate_map_compliant(traj: np.ndarray, lane_points: np.ndarray, cfg: dict) -> bool:
@@ -118,6 +118,37 @@ def _constant_accel_for_arrival(distance_m: float, speed_mps: float, target_time
     return a
 
 
+def _smooth_arrival_profile(
+    distance_m: float,
+    speed_mps: float,
+    target_time_s: float,
+    cfg: dict,
+) -> tuple[float, float, float] | None:
+    """Return (initial_accel, constant_jerk, terminal_speed) for cubic arrival.
+
+    The profile is the closed-form solution used by ``smooth_arrival_trajectory``:
+    it reaches the conflict-envelope entry at ``target_time_s`` while tapering
+    acceleration to zero.  Bounds are applied to the physically meaningful peak
+    acceleration (at t=0), terminal speed, and jerk before we spend a proposal
+    slot on it.
+    """
+    d = float(distance_m)
+    v0 = max(float(speed_mps), 0.0)
+    T = float(target_time_s)
+    if not np.isfinite(d) or not np.isfinite(T) or d <= 0.5 or T <= 0.35:
+        return None
+    a0 = 3.0 * (d - v0 * T) / max(T * T, 1.0e-9)
+    jerk = -a0 / max(T, 1.0e-9)
+    vT = -0.5 * v0 + 1.5 * d / max(T, 1.0e-9)
+    cand_cfg = cfg.get("candidate", {})
+    lo = float(cand_cfg.get("timing_envelope_min_accel_mps2", -3.5))
+    hi = float(cand_cfg.get("timing_envelope_max_accel_mps2", 2.5))
+    max_jerk = float(cand_cfg.get("max_jerk_mps3", 10.0))
+    if a0 < lo - 1.0e-6 or a0 > hi + 1.0e-6 or vT < -1.0e-5 or abs(jerk) > max_jerk + 1.0e-6:
+        return None
+    return float(a0), float(jerk), float(max(vT, 0.0))
+
+
 def _arrival_time_constant_accel(distance_m: float, speed_mps: float, accel_mps2: float) -> float:
     """Earliest positive solution of d = v t + 0.5 a t²."""
     d = float(distance_m)
@@ -138,15 +169,17 @@ def _arrival_time_constant_accel(distance_m: float, speed_mps: float, accel_mps2
 
 def _agent_tta_envelopes_to_region(
     scene: ScenarioData,
-    region_center: np.ndarray,
+    region: ConflictRegion,
     cfg: dict,
 ) -> list[tuple[int, float, float, float]]:
-    """Return (track-index, early, nominal, late) arrival envelopes.
+    """Return causal (track-index, early, nominal, late) entry-time envelopes.
 
-    The original BCTE used ``distance / current_speed`` as a point estimate.  A
-    bounded longitudinal acceleration envelope is still cheap, but prevents the
-    proposal generator from placing both pass-before and pass-after candidates
-    around an over-confident single time.
+    v16.8.3 estimated time to the *region centre* as Euclidean distance divided
+    by radial closing speed.  That is inconsistent with the ego certificate,
+    which declares interaction when a vehicle envelope first enters the conflict
+    region.  Here we intersect the agent's current velocity ray with the inflated
+    circular conflict boundary and put the acceleration envelope on that entry
+    distance.  Only current state is used; no logged future leaks into proposals.
     """
     cur = int(scene.current_time_index)
     states = np.asarray(scene.states[:, cur], dtype=np.float32)
@@ -156,30 +189,48 @@ def _agent_tta_envelopes_to_region(
     horizon_s = float(cfg.get("time", {}).get("future_steps", 80)) * float(cfg.get("time", {}).get("dt", 0.1))
     min_accel = float(cand_cfg.get("timing_envelope_agent_min_accel_mps2", -2.0))
     max_accel = float(cand_cfg.get("timing_envelope_agent_max_accel_mps2", 2.0))
-    # This is a proposal quantile envelope, not a worst-case reachability set.
-    # Wider epistemic protection belongs in the RCOT certificate; an excessively
-    # wide proposal envelope makes pass-after constant-acceleration solutions
-    # physically impossible and collapses bidirectional coverage.
     max_spread = float(cand_cfg.get("timing_envelope_agent_max_spread_s", 0.8))
+    min_approach = float(cand_cfg.get("timing_envelope_min_approach_cos", 0.15))
     rows: list[tuple[float, float, int, float, float]] = []
+    center = np.asarray(region.center_xy, dtype=np.float32)[:2]
     for j, st in enumerate(states):
         if j == int(scene.sdc_track_index) or st.shape[0] < 11 or float(st[10]) <= 0.5:
             continue
-        to_region = np.asarray(region_center, dtype=np.float32)[:2] - st[:2]
-        dist = float(np.linalg.norm(to_region))
-        if not np.isfinite(dist) or dist < 1.0 or dist > max_dist:
+        to_center = center - st[:2]
+        center_dist = float(np.linalg.norm(to_center))
+        if not np.isfinite(center_dist) or center_dist > max_dist:
             continue
         vel = np.asarray(st[3:5], dtype=np.float32)
-        speed = float(max(np.linalg.norm(vel), st[5] if st.shape[0] > 5 else 0.0, 0.0))
-        if speed < 0.35 or dist <= 1.0e-6:
+        vel_speed = float(np.linalg.norm(vel))
+        speed = float(max(vel_speed, st[5] if st.shape[0] > 5 else 0.0, 0.0))
+        if speed < 0.35:
             continue
-        approach = float(np.dot(vel, to_region) / max(speed * dist, 1.0e-6))
-        if approach < float(cand_cfg.get("timing_envelope_min_approach_cos", 0.15)):
+        if vel_speed >= 0.35:
+            direction = vel / max(vel_speed, 1.0e-6)
+        else:
+            heading = float(st[6])
+            direction = np.asarray([np.cos(heading), np.sin(heading)], dtype=np.float32)
+        if center_dist <= 1.0e-6:
             continue
-        closing_speed = max(float(np.dot(vel, to_region / dist)), 0.35)
-        nominal = dist / closing_speed
-        early = _arrival_time_constant_accel(dist, closing_speed, max_accel)
-        late = _arrival_time_constant_accel(dist, closing_speed, min_accel)
+        approach = float(np.dot(direction, to_center) / center_dist)
+        if approach < min_approach:
+            continue
+
+        length = float(st[7]) if st.shape[0] > 7 and st[7] > 0 else 4.8
+        width = float(st[8]) if st.shape[0] > 8 and st[8] > 0 else 1.9
+        inflated_radius = float(region.radius) + 0.5 * float(np.hypot(length, width))
+        along = float(np.dot(to_center, direction))
+        lateral_sq = max(center_dist * center_dist - along * along, 0.0)
+        if along <= 0.0 or lateral_sq > inflated_radius * inflated_radius:
+            continue
+        entry_dist = along - float(np.sqrt(max(inflated_radius * inflated_radius - lateral_sq, 0.0)))
+        entry_dist = max(entry_dist, 0.0)
+        if entry_dist < 0.5:
+            continue
+
+        nominal = entry_dist / max(speed, 0.35)
+        early = _arrival_time_constant_accel(entry_dist, speed, max_accel)
+        late = _arrival_time_constant_accel(entry_dist, speed, min_accel)
         if not np.isfinite(early):
             early = nominal
         if not np.isfinite(late):
@@ -189,7 +240,7 @@ def _agent_tta_envelopes_to_region(
         early = max(nominal - max_spread, early)
         late = min(nominal + max_spread, late)
         if 0.35 <= nominal <= horizon_s + 2.0:
-            rows.append((nominal, dist, int(j), float(early), float(late)))
+            rows.append((nominal, entry_dist, int(j), float(early), float(late)))
     rows.sort(key=lambda x: (x[0], x[1], x[2]))
     return [(j, early, nominal, late) for nominal, _, j, early, late in rows[:max_agents]]
 
@@ -215,6 +266,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     proposal_target_agent_index: list[int] = []
     proposal_gap_s: list[float] = []
     proposal_accel_mps2: list[float] = []
+    proposal_entry_distance_m: list[float] = []
+    proposal_target_tta_error_s: list[float] = []
 
     def _near_duplicate(traj: np.ndarray, m: MacroType) -> bool:
         """Avoid wasting candidate slots on nearly identical keep-lane endings."""
@@ -251,6 +304,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         target_agent_index: int = -1,
         gap_s: float = -1.0,
         accel_mps2: float = -99.0,
+        entry_distance_m: float = -1.0,
+        target_tta_error_s: float = -1.0,
     ) -> bool:
         if len(candidates) >= K:
             return False
@@ -274,6 +329,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             proposal_target_agent_index.append(int(target_agent_index))
             proposal_gap_s.append(float(gap_s))
             proposal_accel_mps2.append(float(accel_mps2))
+            proposal_entry_distance_m.append(float(entry_distance_m))
+            proposal_target_tta_error_s.append(float(target_tta_error_s))
             return True
         return False
 
@@ -313,43 +370,48 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     if regions:
         keep = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0)
         ego_speed = float(max(ego_cur[5], np.linalg.norm(ego_cur[3:5]), 0.0))
-        # Rank regions by nominal ego reachability, not Euclidean distance.  A
-        # nearby region behind the ego must not consume the only interaction
-        # timing envelope while a later forward intersection is ignored.
-        reachable: list[tuple[float, float, object]] = []
+        horizon_s = float(horizon * dt)
+        # v16.8.4 boundary-consistent reachability.  Use the same inflated conflict
+        # boundary as the interaction certificate and measure progress along the
+        # actual primitive, rather than solving timing to the region centre.
+        reachable: list[tuple[float, float, ConflictRegion]] = []
         for region in regions:
-            tta = tta_to_region(keep, region, dt=dt)
-            euclid = float(np.linalg.norm(region.center_xy - ego_cur[:2]))
-            if np.isfinite(tta) and tta >= 0.0:
-                reachable.append((float(tta), euclid, region))
+            entry_tta, entry_dist = trajectory_entry_to_region(keep, region, current_state=ego_cur, dt=dt)
+            if np.isfinite(entry_tta) and np.isfinite(entry_dist) and entry_tta >= 0.0 and entry_dist > 0.5:
+                reachable.append((float(entry_tta), float(entry_dist), region))
         reachable.sort(key=lambda row: (row[0], row[1], int(row[2].conflict_id)))
+
+        # Do not synthesize conflict-timing actions for a map conflict that the
+        # nominal primitive never reaches.  The old nearest-region fallback could
+        # stop for a region behind the ego or advertise timing against a region the
+        # generated trajectory never entered.
         if reachable:
             primary_tta, primary_dist, primary = reachable[0]
-        else:
-            primary = min(regions, key=lambda r: np.linalg.norm(r.center_xy - ego_cur[:2]))
-            primary_tta = tta_to_region(keep, primary, dt=dt)
-            primary_dist = float(np.linalg.norm(primary.center_xy - ego_cur[:2]))
+            for margin in cand_cfg.get("stop_margin_to_conflict_m", [2.0, 5.0, 8.0]):
+                stop_after = max(0.0, primary_dist - float(margin))
+                add(
+                    smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.5, stop_after_m=stop_after),
+                    MacroType.STOP_BEFORE_CONFLICT,
+                    util=0.7,
+                    neutral=True,
+                    source=ProposalSource.STOP,
+                    region_id=int(primary.conflict_id),
+                    accel_mps2=-2.5,
+                    entry_distance_m=primary_dist,
+                )
 
-        for margin in cand_cfg.get("stop_margin_to_conflict_m", [2.0, 5.0, 8.0]):
-            stop_after = max(0.0, primary_dist - float(margin))
-            add(
-                smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.5, stop_after_m=stop_after),
-                MacroType.STOP_BEFORE_CONFLICT,
-                util=0.7,
-                neutral=True,
-                source=ProposalSource.STOP,
-                region_id=int(primary.conflict_id),
-                accel_mps2=-2.5,
-            )
-        if np.isfinite(primary_tta):
-            # Legacy ego-only timing offsets are retained for an explicit
-            # ablation against the interaction-conditioned envelope.
+            # Keep the legacy constant-acceleration lattice as an explicit ablation,
+            # but make even that baseline solve to conflict *entry* rather than the
+            # region centre.
             for offset in cand_cfg.get("merge_time_offsets_s", [-1.5, -0.8, 0.0, 0.8, 1.5]):
                 target_time = max(0.45, float(primary_tta) + float(offset))
                 target_acc = _constant_accel_for_arrival(primary_dist, ego_speed, target_time, cfg)
                 if target_acc is not None:
+                    legacy_traj = constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc)
+                    actual_tta, _ = trajectory_entry_to_region(legacy_traj, primary, current_state=ego_cur, dt=dt)
+                    tta_error = abs(float(actual_tta) - target_time) if np.isfinite(actual_tta) else -1.0
                     add(
-                        constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc),
+                        legacy_traj,
                         MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND,
                         util=0.1 + max(0.0, float(offset)),
                         neutral=bool(offset > 0),
@@ -359,56 +421,80 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                         timing_side=-1 if offset <= 0 else 1,
                         gap_s=abs(float(offset)),
                         accel_mps2=target_acc,
+                        entry_distance_m=primary_dist,
+                        target_tta_error_s=tta_error,
                     )
 
-        # v16.8.3 Robust Multi-Region BCTE (RMR-BCTE).  For each forward
-        # reachable conflict region, construct pass-before candidates against the
-        # earliest plausible agent arrival and pass-after candidates against the
-        # latest plausible arrival.  A quota and acceleration deduplication keep
-        # lane-change/neutral proposals from being starved by near-identical
-        # timing hypotheses.
-        max_regions = max(1, int(cand_cfg.get("timing_envelope_max_regions", 3)))
-        max_bcte = max(0, int(cand_cfg.get("timing_envelope_max_candidates", 24)))
-        accel_dedup = max(float(cand_cfg.get("timing_envelope_accel_dedup_mps2", 0.10)), 1.0e-3)
-        gap_values = [float(x) for x in cand_cfg.get("timing_envelope_gap_s", [0.8, 1.4, 2.0])]
-        timing_accel_bins: set[int] = set()
-        bcte_added = 0
-        region_rows = reachable[:max_regions] if reachable else [(float(primary_tta), primary_dist, primary)]
-        for _, dist_to_conflict, region in region_rows:
-            if bcte_added >= max_bcte or len(candidates) >= K:
-                break
-            envelopes = _agent_tta_envelopes_to_region(scene, region.center_xy, cfg)
-            for agent_index, early_tta, _nominal_tta, late_tta in envelopes:
+            # v16.8.4 Boundary-Consistent Smooth RMR-BCTE (BCS-RMR-BCTE).
+            # For each reachable conflict region, pair a causal agent entry-time
+            # envelope with an ego cubic time projection that reaches the *entry
+            # boundary* at the requested pass-before/pass-after time.  This fixes
+            # the central semantic bug in v16.8.3 where a trajectory could be
+            # tagged pass-after while entering the conflict seconds earlier.
+            max_regions = max(1, int(cand_cfg.get("timing_envelope_max_regions", 3)))
+            max_bcte = max(0, int(cand_cfg.get("timing_envelope_max_candidates", 24)))
+            accel_dedup = max(float(cand_cfg.get("timing_envelope_accel_dedup_mps2", 0.10)), 1.0e-3)
+            gap_values = [float(x) for x in cand_cfg.get("timing_envelope_gap_s", [0.8, 1.4, 2.0])]
+            max_tta_error = float(cand_cfg.get("timing_envelope_max_target_tta_error_s", max(0.20, 2.0 * dt)))
+            timing_profile_bins: set[tuple[int, int, int]] = set()
+            bcte_added = 0
+            for _, dist_to_conflict, region in reachable[:max_regions]:
                 if bcte_added >= max_bcte or len(candidates) >= K:
                     break
-                for gap in gap_values:
+                envelopes = _agent_tta_envelopes_to_region(scene, region, cfg)
+                for agent_index, early_tta, _nominal_tta, late_tta in envelopes:
                     if bcte_added >= max_bcte or len(candidates) >= K:
                         break
-                    for side, agent_boundary in ((-1, early_tta), (1, late_tta)):
-                        target_time = float(agent_boundary + side * gap)
-                        target_acc = _constant_accel_for_arrival(dist_to_conflict, ego_speed, target_time, cfg)
-                        if target_acc is None:
-                            continue
-                        accel_bin = int(round(float(target_acc) / accel_dedup))
-                        if accel_bin in timing_accel_bins:
-                            continue
-                        behind = side > 0
-                        accepted = add(
-                            constant_accel_trajectory(ego_cur, horizon, dt, accel=target_acc),
-                            MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
-                            util=(0.15 + 0.08 * gap if behind else 0.05 + 0.03 * gap),
-                            neutral=behind,
-                            source=ProposalSource.ROBUST_BCTE,
-                            region_id=int(region.conflict_id),
-                            target_time_s=target_time,
-                            timing_side=side,
-                            target_agent_index=int(agent_index),
-                            gap_s=gap,
-                            accel_mps2=target_acc,
-                        )
-                        if accepted:
-                            timing_accel_bins.add(accel_bin)
-                            bcte_added += 1
+                    for gap in gap_values:
+                        if bcte_added >= max_bcte or len(candidates) >= K:
+                            break
+                        for side, agent_boundary in ((-1, early_tta), (1, late_tta)):
+                            target_time = float(agent_boundary + side * gap)
+                            # An explicit timing candidate must realize its event
+                            # inside the planning horizon; long-horizon waiting is
+                            # already represented by yield/stop/creep primitives.
+                            if target_time <= 0.35 or target_time > horizon_s:
+                                continue
+                            profile = _smooth_arrival_profile(dist_to_conflict, ego_speed, target_time, cfg)
+                            if profile is None:
+                                continue
+                            initial_accel, _profile_jerk, _terminal_speed = profile
+                            accel_bin = int(round(float(initial_accel) / accel_dedup))
+                            profile_key = (int(region.conflict_id), int(side), accel_bin)
+                            if profile_key in timing_profile_bins:
+                                continue
+                            timed_traj = smooth_arrival_trajectory(
+                                ego_cur, horizon, dt, distance_m=dist_to_conflict, target_time_s=target_time
+                            )
+                            if timed_traj is None:
+                                continue
+                            actual_tta, actual_entry_dist = trajectory_entry_to_region(
+                                timed_traj, region, current_state=ego_cur, dt=dt
+                            )
+                            if not np.isfinite(actual_tta):
+                                continue
+                            tta_error = abs(float(actual_tta) - target_time)
+                            if tta_error > max_tta_error + 1.0e-6:
+                                continue
+                            behind = side > 0
+                            accepted = add(
+                                timed_traj,
+                                MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
+                                util=(0.15 + 0.08 * gap if behind else 0.05 + 0.03 * gap),
+                                neutral=behind,
+                                source=ProposalSource.ROBUST_BCTE,
+                                region_id=int(region.conflict_id),
+                                target_time_s=target_time,
+                                timing_side=side,
+                                target_agent_index=int(agent_index),
+                                gap_s=gap,
+                                accel_mps2=initial_accel,
+                                entry_distance_m=float(actual_entry_dist),
+                                target_tta_error_s=tta_error,
+                            )
+                            if accepted:
+                                timing_profile_bins.add(profile_key)
+                                bcte_added += 1
     for lateral, m in [(-3.5, MacroType.LANE_CHANGE_RIGHT), (3.5, MacroType.LANE_CHANGE_LEFT)]:
         for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5]):
             # Hold the lane during delay, then apply a smoothed lateral offset over the full primitive.
@@ -463,6 +549,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     proposal_target_agent_arr = np.full(K, -1, dtype=np.int32)
     proposal_gap_arr = np.full(K, -1.0, dtype=np.float32)
     proposal_accel_arr = np.full(K, -99.0, dtype=np.float32)
+    proposal_entry_distance_arr = np.full(K, -1.0, dtype=np.float32)
+    proposal_target_tta_error_arr = np.full(K, -1.0, dtype=np.float32)
     for k, c in enumerate(candidates[:K]):
         traj[k] = c
         valid[k] = True
@@ -477,6 +565,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         proposal_target_agent_arr[k] = proposal_target_agent_index[k]
         proposal_gap_arr[k] = proposal_gap_s[k]
         proposal_accel_arr[k] = proposal_accel_mps2[k]
+        proposal_entry_distance_arr[k] = proposal_entry_distance_m[k]
+        proposal_target_tta_error_arr[k] = proposal_target_tta_error_s[k]
     return {
         "trajectory": traj,
         "macro_type": macro_arr,
@@ -491,6 +581,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         "proposal_target_agent_index": proposal_target_agent_arr,
         "proposal_gap_s": proposal_gap_arr,
         "proposal_accel_mps2": proposal_accel_arr,
+        "proposal_entry_distance_m": proposal_entry_distance_arr,
+        "proposal_target_tta_error_s": proposal_target_tta_error_arr,
         # Use macro type as a coarse topology surrogate.  Downstream diagnostics
         # should not see a degenerate single-topology candidate bank.
         "topology_id": macro_arr.copy(),
