@@ -1,0 +1,31 @@
+{
+  "natural_basis_gate": true,
+  "natural_effectiveness_gate": true,
+  "causal_engineering_audit": true,
+  "fresh_v16_8_3_label_protocol": false,
+  "calibration_feasible": false,
+  "proposal_feasible": false,
+  "mechanism_gate": false,
+  "metrics": {
+    "PairWitnessAUPRC": 0.8494488098404691,
+    "ProtectedBCOTAUPRC": 0.9698392855095161,
+    "ProtectedRootTransportAUPRC": 0.8816678524588918,
+    "PriorityNCFRecall": 0.9789421651013347,
+    "PriorityNCFPrecision": 0.493742208925455,
+    "AcceptedCandidateRate": 0.3207930458883185,
+    "FallbackRate": 0.4134078212290503,
+    "PBTRImprovement": 0.012156686177397624,
+    "FalseSafeImprovement": 0.010375099760574602,
+    "CalibrationProposalFSRFloor": 0.6098923015556442,
+    "CalibrationProposalPBTRFloor": 0.6445729537366548
+  },
+  "cache_decision": {
+    "status": "REUSE_WITH_LOGDIV_DISABLED",
+    "reasons": [
+      "core labels and collision/offroad outcomes are usable, but logdiv is missing or degenerate"
+    ],
+    "recommended_action": "Skip full replay. Train with existing caches, disable logdiv/outcome-risk terms, and run real online Waymax. If logdiv is required for the paper, replay validation first and a targeted training subset rather than all 20k scenes."
+  },
+  "root_cause": "The learned mechanism ranks existing proposals well, but the fixed proposal bank is mathematically infeasible for the configured FSR/PBTR gates. The current cache is an old-base root-conditioned overlay, so v16.8.3 RMR-BCTE and repaired offline filtering were not materialized.",
+  "paper_claim_ready": false
+}
