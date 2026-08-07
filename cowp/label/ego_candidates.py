@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import numpy as np
 
 from cowp.core.constants import MacroType, ProposalSource
@@ -56,37 +58,42 @@ def _local_lane_point_cloud(scene: ScenarioData, center_xy: np.ndarray, cfg: dic
     return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 2), dtype=np.float32)
 
 
-def _candidate_valid(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None = None) -> bool:
+def _candidate_invalid_reason(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None = None) -> str | None:
+    """Return a stable rejection reason for proposal diagnostics.
+
+    v16.8.5 keeps candidate acceptance semantics unchanged; this helper only makes
+    the reason observable when an entire scene loses its proposal bank.  That is
+    essential for a paired proposal probe: a zero-valid scene is evidence about
+    proposal feasibility, not a multiprocessing exception.
+    """
     cand_cfg = cfg.get("candidate", {})
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     if len(traj) < int(cand_cfg.get("min_valid_horizon_steps", 50)):
-        return False
+        return "short_horizon"
     if not np.all(np.isfinite(traj)):
-        return False
+        return "nonfinite"
     speed = np.linalg.norm(traj[:, 3:5], axis=-1)
     acc = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
     jerk = np.diff(acc, prepend=acc[0]) / max(dt, 1e-3)
     if np.nanmax(acc) > float(cand_cfg.get("max_accel_mps2", 4.0)) + 1e-3:
-        return False
+        return "max_accel"
     if -np.nanmin(acc) > float(cand_cfg.get("max_decel_mps2", 6.0)) + 1e-3:
-        return False
-    # The first finite-difference samples contain the synthetic transition from
-    # the observed current state to the primitive acceleration.  The config has
-    # always exposed an ignored prefix and a robust percentile, and online
-    # candidate validation already uses both.  The old offline path ignored the
-    # two options and therefore rejected most ±2.5/−3.5 m/s² timing primitives
-    # solely because of the first derivative impulse.
+        return "max_decel"
     ignore = max(0, int(cand_cfg.get("ignore_initial_jerk_steps", 0)))
     jerk_eval = np.abs(jerk[min(ignore, len(jerk)) :])
     if jerk_eval.size == 0 or not np.isfinite(jerk_eval).any():
-        return False
+        return "jerk_nonfinite"
     percentile = float(np.clip(cand_cfg.get("jerk_check_percentile", 100.0), 0.0, 100.0))
     jerk_stat = float(np.nanpercentile(jerk_eval, percentile))
     if jerk_stat > float(cand_cfg.get("max_jerk_mps3", 6.0)) + 1e-3:
-        return False
+        return "max_jerk"
     if lane_points is not None and not _candidate_map_compliant(traj, lane_points, cfg):
-        return False
-    return True
+        return "map_filter"
+    return None
+
+
+def _candidate_valid(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None = None) -> bool:
+    return _candidate_invalid_reason(traj, cfg, lane_points) is None
 
 
 
@@ -268,6 +275,8 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     proposal_accel_mps2: list[float] = []
     proposal_entry_distance_m: list[float] = []
     proposal_target_tta_error_s: list[float] = []
+    rejection_counts: Counter[str] = Counter()
+    attempted_by_source: Counter[str] = Counter()
 
     def _near_duplicate(traj: np.ndarray, m: MacroType) -> bool:
         """Avoid wasting candidate slots on nearly identical keep-lane endings."""
@@ -307,13 +316,22 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         entry_distance_m: float = -1.0,
         target_tta_error_s: float = -1.0,
     ) -> bool:
+        attempted_by_source[source.name] += 1
         if len(candidates) >= K:
+            rejection_counts["capacity"] += 1
             return False
         traj = traj[:horizon].astype(np.float32)
         # Logged replay is retained as an observed reference even if map geometry
         # is incomplete; all synthetic proposals are map-screened.
         proposal_lane_points = None if logged else lane_points
-        if len(traj) == horizon and _candidate_valid(traj, cfg, proposal_lane_points) and not _near_duplicate(traj, m):
+        reason = _candidate_invalid_reason(traj, cfg, proposal_lane_points)
+        if reason is not None:
+            rejection_counts[reason] += 1
+            return False
+        if _near_duplicate(traj, m):
+            rejection_counts["near_duplicate"] += 1
+            return False
+        if len(traj) == horizon:
             candidates.append(traj)
             macro.append(int(m))
             speed = np.linalg.norm(traj[:, 3:5], axis=-1)
@@ -586,4 +604,14 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         # Use macro type as a coarse topology surrogate.  Downstream diagnostics
         # should not see a degenerate single-topology candidate bank.
         "topology_id": macro_arr.copy(),
+        # Private build-time diagnostics.  label_engine intentionally does not
+        # serialize this object into NPZ; it is attached only to a filtered/error
+        # profile row when no valid proposal survives.
+        "_proposal_debug": {
+            "attempted": int(sum(attempted_by_source.values())),
+            "accepted": int(len(candidates)),
+            "lane_point_count": int(len(lane_points)),
+            "rejection_counts": dict(rejection_counts),
+            "attempted_by_source": dict(attempted_by_source),
+        },
     }

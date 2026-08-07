@@ -15,7 +15,7 @@ import numpy as np
 from cowp.data.parse_scenario_proto import iter_scenario_records, iter_scenarios, scenario_to_scene
 from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, iter_tfexample_records_by_file, parse_tfexample, resolve_glob_patterns, scenario_id_from_parsed_tfexample
 from cowp.geometry.lane_graph import build_conflict_regions
-from cowp.label.label_engine import build_labels_for_scene
+from cowp.label.label_engine import NoValidEgoCandidatesError, build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy, valid_scene_basic
 from cowp.utils.progress import tqdm_iter
 from cowp.data.dataset import align_critical_agents_to_womd_input, mask_out_of_range_critical_agents
@@ -230,7 +230,24 @@ def _build_one_label_from_raw(
 
     t = time.perf_counter()
     engine_timings: dict[str, float] | None = {} if profile_label_engine else None
-    label = build_labels_for_scene(scene, cfg, ablation=ablation, scene_meta=heavy_meta, conflict_regions=regions, profile_timings=engine_timings)
+    try:
+        label = build_labels_for_scene(
+            scene, cfg, ablation=ablation, scene_meta=heavy_meta,
+            conflict_regions=regions, profile_timings=engine_timings,
+        )
+    except NoValidEgoCandidatesError as exc:
+        if engine_timings:
+            timings.update(engine_timings)
+        timings["label_engine_s"] = time.perf_counter() - t
+        return {
+            "status": "filtered",
+            "scenario_id": sid,
+            "filter_reason": "no_valid_ego_candidates",
+            "candidate_diagnostics": exc.diagnostics,
+            "num_conflict_regions": len(regions) if regions is not None else 0,
+            "seconds": time.perf_counter() - t0,
+            "timings": timings,
+        }
     if engine_timings:
         timings.update(engine_timings)
     timings["label_engine_s"] = time.perf_counter() - t
@@ -303,8 +320,13 @@ def build_labels_from_proto(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if profile_jsonl:
-        Path(profile_jsonl).parent.mkdir(parents=True, exist_ok=True)
-        Path(profile_jsonl).write_text("", encoding="utf-8")
+        profile_path = Path(profile_jsonl)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        # A resumable build must retain filtered/no-valid terminal rows because
+        # those requested scenes intentionally have no NPZ file.  Fresh builds
+        # still start from an empty profile.
+        if not (skip_existing and profile_path.exists()):
+            profile_path.write_text("", encoding="utf-8")
 
     count = 0
     scanned = 0
@@ -368,7 +390,8 @@ def build_labels_from_proto(
                 profile_label_engine,
             )
             handle_result(res, iterator)
-            if limit is not None and count >= limit:
+            completed_outputs = count + (skipped_existing if skip_existing else 0)
+            if limit is not None and completed_outputs >= limit:
                 break
             if max_scenarios_scanned is not None and scanned >= max_scenarios_scanned:
                 break
@@ -378,29 +401,81 @@ def build_labels_from_proto(
     max_pending = max(workers * max(1, int(max_pending_multiplier)), workers)
     raw_iter = iter(iter_scenario_records(proto_glob))
     futures = set()
+    future_sids: dict[object, str | None] = {}
     stop_submit = False
     progress_source = range(total) if total is not None else iter(int, 1)
     iterator = tqdm_iter(progress_source, enabled=progress, total=total, desc=f"{desc} ({workers} workers)", unit="scenario")
+
+    # Sparse allowlists (proposal probes) previously sent every raw Scenario
+    # record through multiprocessing IPC and only filtered it inside the worker.
+    # Parse only the lightweight scenario_id in the producer and submit target
+    # scenes.  This does not change label semantics and makes 400+800 probes much
+    # cheaper.
+    # On sparse probes we need the scenario id in the producer to avoid sending
+    # irrelevant protobufs through multiprocessing IPC.  On a resumed full build,
+    # parse ids in the producer only when at least one label already exists; this
+    # lets complete files bypass the worker pool without adding duplicate proto
+    # parsing cost to a brand-new build.
+    parent_skip_existing = bool(skip_existing and any(output_dir.glob("*.npz")))
+    parent_pb2 = _import_scenario_proto() if (allow_scenario_ids is not None or exclude_scenario_ids is not None or parent_skip_existing) else None
+    remaining_allow = set(allow_scenario_ids) if allow_scenario_ids is not None else None
+
+    def parent_sid(raw: bytes) -> str | None:
+        if parent_pb2 is None:
+            return None
+        msg = parent_pb2.Scenario()
+        msg.ParseFromString(raw)
+        return str(msg.scenario_id)
 
     def submit_one(pool: ProcessPoolExecutor) -> bool:
         nonlocal scanned, stop_submit
         if stop_submit:
             return False
-        if max_scenarios_scanned is not None and scanned >= max_scenarios_scanned:
+        if remaining_allow is not None and not remaining_allow:
             stop_submit = True
             return False
-        try:
-            raw = next(raw_iter)
-        except StopIteration:
-            stop_submit = True
-            return False
-        scanned += 1
-        fut = pool.submit(
-            _build_one_label_worker_task,
-            raw,
-        )
-        futures.add(fut)
-        return True
+        while True:
+            if max_scenarios_scanned is not None and scanned >= max_scenarios_scanned:
+                stop_submit = True
+                return False
+            try:
+                raw = next(raw_iter)
+            except StopIteration:
+                stop_submit = True
+                return False
+            scanned += 1
+            sid = parent_sid(raw)
+            if allow_scenario_ids is not None and sid not in allow_scenario_ids:
+                _advance_progress(iterator)
+                continue
+            if exclude_scenario_ids is not None and sid in exclude_scenario_ids:
+                _advance_progress(iterator)
+                continue
+            if remaining_allow is not None and sid is not None:
+                remaining_allow.discard(sid)
+            # Resume fast path: once the producer already paid the lightweight id
+            # parse, do not enqueue a target whose label file is complete.  This is
+            # especially important for the repaired proposal probe, where hundreds
+            # of expensive labels from the interrupted run should be reused without
+            # occupying worker slots.
+            if parent_skip_existing and sid is not None:
+                label_path = output_dir / f"{sid}.npz"
+                if label_path.exists():
+                    t_check = time.perf_counter()
+                    ok, _ = _label_npz_looks_complete(label_path, sid)
+                    if ok:
+                        _advance_progress(iterator)
+                        handle_result({
+                            "status": "existing",
+                            "scenario_id": sid,
+                            "seconds": time.perf_counter() - t_check,
+                            "timings": {"skip_existing_check_s": time.perf_counter() - t_check},
+                        }, iterator)
+                        continue
+            fut = pool.submit(_build_one_label_worker_task, raw)
+            futures.add(fut)
+            future_sids[fut] = sid
+            return True
 
     mp_context = mp.get_context(start_method) if start_method else None
     with ProcessPoolExecutor(
@@ -425,22 +500,31 @@ def build_labels_from_proto(
         while futures:
             done, futures = wait(futures, return_when=FIRST_COMPLETED)
             for fut in done:
+                expected_sid = future_sids.pop(fut, None)
                 try:
                     res = fut.result()
                 except Exception as exc:
-                    res = {"status": "error", "error": repr(exc), "traceback": traceback.format_exc(), "seconds": 0.0}
+                    res = {
+                        "status": "error",
+                        "scenario_id": expected_sid or "",
+                        "error": repr(exc),
+                        "traceback": traceback.format_exc(),
+                        "seconds": 0.0,
+                    }
                     if fail_on_error:
                         _append_profile(profile_jsonl, res)
                         raise
                 _advance_progress(iterator)
                 handle_result(res, iterator)
-            if limit is not None and count >= limit:
+            completed_outputs = count + (skipped_existing if skip_existing else 0)
+            if limit is not None and completed_outputs >= limit:
                 stop_submit = True
                 # Do not let a smoke-test limit overshoot by the whole pending queue.
                 # Running tasks may still finish, but queued tasks are cancelled.
                 for pending in list(futures):
                     if pending.cancel():
                         futures.remove(pending)
+                        future_sids.pop(pending, None)
             while len(futures) < max_pending and not stop_submit and submit_one(pool):
                 pass
     return count

@@ -13,14 +13,26 @@ from cowp.label.safe_responses import generate_safe_responses
 from cowp.label.witness import certify_witnesses
 
 
-def _make_ego_neutral(candidates: dict[str, np.ndarray]) -> np.ndarray:
+class NoValidEgoCandidatesError(ValueError):
+    """Scene-local proposal failure that must not kill a dataset build."""
+
+    def __init__(self, scenario_id: str, diagnostics: dict[str, object] | None = None):
+        self.scenario_id = str(scenario_id)
+        self.diagnostics = dict(diagnostics or {})
+        super().__init__(
+            f"No valid ego candidates available for neutral intervention: scenario_id={self.scenario_id}; "
+            f"diagnostics={self.diagnostics}"
+        )
+
+
+def _make_ego_neutral(candidates: dict[str, object], scenario_id: str = "") -> np.ndarray:
     neutral = np.where(candidates.get("is_neutral", np.zeros(len(candidates["valid"]), dtype=bool)) & candidates["valid"])[0]
     if len(neutral):
         return candidates["trajectory"][int(neutral[0])]
     valid = np.where(candidates["valid"])[0]
     if len(valid):
         return candidates["trajectory"][int(valid[0])]
-    raise ValueError("No valid ego candidates available for neutral intervention.")
+    raise NoValidEgoCandidatesError(scenario_id, candidates.get("_proposal_debug", {}))
 
 
 def build_labels_for_scene(
@@ -40,8 +52,11 @@ def build_labels_for_scene(
 
     regions = conflict_regions if conflict_regions is not None else _timeit("engine_conflict_regions_s", lambda: build_conflict_regions(scene.map_data, cfg))
     candidates = _timeit("engine_candidates_s", lambda: generate_ego_candidates(scene, cfg, conflict_regions=regions))
+    # Fail scene-locally before critical/natural/response work if the proposal
+    # generator produced no valid intervention.  This preserves valid-scene
+    # semantics while avoiding expensive downstream work on a doomed probe row.
+    ego_neutral = _make_ego_neutral(candidates, scene.scenario_id)
     critical = _timeit("engine_critical_agents_s", lambda: select_critical_agents(scene, cfg, candidates, conflict_regions=regions))
-    ego_neutral = _make_ego_neutral(candidates)
     natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
     response = _timeit("engine_safe_responses_s", lambda: generate_safe_responses(scene, candidates, critical, natural, cfg))
     witness = _timeit("engine_witness_s", lambda: certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions))

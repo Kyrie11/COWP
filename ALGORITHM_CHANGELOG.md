@@ -5,6 +5,107 @@ change without new evidence. Every experiment must record the code version, data
 version, seed, checkpoint lineage, learned-offline gate, online paired metrics,
 and the exact simulator-agent setting.
 
+## v16.8.5 — Probe-Resilient Data Decision, PBTR-Sufficient Promotion, and Fast Rebuild Protocol
+
+### Triggering evidence
+
+The v16.8.4 400-hard + 800-random proposal probe aborted after about 5.5 hours with
+768 fresh labels written. The worker exception was `No valid ego candidates available
+for neutral intervention`. This is a scene-local proposal-bank outcome, but the old
+builder propagated it through `Future.result()` and killed the whole multiprocessing
+job. The same run also exposed two cost bugs: scenario allowlisting happened inside
+workers after raw protobufs had already crossed process IPC, and `--limit` counted only
+newly written files instead of valid `--skip-existing` outputs.
+
+The uploaded current-cache audit shows the existing v16.8 transport overlays are
+structurally healthy for core RCOT/BCOT training (20,440 train / 5,013 val, required
+transport/core key coverage complete, response-root assignment valid). They are not a
+fresh BCS-RMR label dataset. On the full old validation cache the proposal ceiling is
+`AnyNCF=0.36246`, selected-false-safe floor `0.53321`, and best-case PBTR floor
+`0.58179`. Because the v16.8 calibration contract uses `max_priority_burden_transfer=0.45`,
+the old proposal bank remains mathematically infeasible for the current mechanism gate
+even though its global false-safe floor is below 0.55.
+
+### Engineering/data-protocol changes (no certificate-definition change)
+
+1. Added `NoValidEgoCandidatesError` with scenario id and proposal-rejection diagnostics.
+   Zero-valid scenes are now returned as `status=filtered, filter_reason=no_valid_ego_candidates`
+   instead of aborting the full build. Candidate acceptance semantics are unchanged.
+2. Added per-scene proposal rejection diagnostics (`map_filter`, accel/decel, jerk,
+   nonfinite, duplicate, capacity) so the next failed scene identifies the physical reason.
+3. Sparse allowlists are filtered in the producer before multiprocessing IPC. Workers now
+   receive only requested Scenario records; the scan stops when all requested IDs have been
+   observed.
+4. Fixed resumable `--limit`: complete existing files count toward the output target.
+   Build profiles are appended when `--skip-existing` is used so filtered/no-valid terminal
+   rows survive a resume. Worker errors now preserve the expected scenario id.
+5. Proposal-probe default changed to `FORCE_REBUILD_PROBE=0`; the 768 already generated
+   fresh labels are reused. The probe records a stage-level profile JSONL.
+6. Promotion is now **proposal-sufficient for both mechanism constraints**: in addition to
+   `AnyNCF>=0.40`, false-safe floor `<=0.55`, hard-scene recovery `>=0.20`, and RMR TTA
+   error `<=0.20 s`, it requires `AnyValid>=0.99` and best-case PBTR floor `<=0.45`.
+   Filtered requested scenes are conservatively counted as zero-valid in the paired probe;
+   unexpected missing/error scenes remain fatal.
+7. `45_diagnose_proposal_ceiling` gained exact index-modulo partition diagnostics matching
+   learned-offline calibration/held-out splitting. This resolves the observed discrepancy
+   between the old full-cache floor and the earlier calibration-partition floor before any
+   expensive decision.
+8. Added `PREPARE_COWP_V16_8_5_DATA_FAST_CN.sh`: reuses existing indexes, profiles label
+   stages, supports true resume, skips visualization diagnostics during the critical path,
+   and defaults `RUN_WAYMAX_REPLAY=0`. Full train-set Waymax replay is not required for
+   natural/response/witness/RCOT/planner core supervision or real online Waymax evaluation.
+9. Planner training gained `USE_WAYMAX_OUTCOME_LABELS=0`, allowing fresh core-only caches;
+   the existing loss code already returns exactly zero outcome loss when those optional
+   tensors are absent. This removes the need to spend large replay cost before the main
+   mechanism experiment.
+10. Resumed builds with existing NPZ files now bypass the worker pool in the producer
+    once the scenario id and file integrity are verified. This preserves semantics while
+    preventing hundreds/thousands of already-complete scenes from occupying expensive
+    label-engine worker slots after an interruption.
+11. Added `49_summarize_label_build_profile.py`, which reports p50/p90/p99 total and
+    per-stage times plus zero-valid rejection causes. Worker-count or algorithmic speed
+    changes should be based on this profile instead of guessed.
+12. Added `50_ablate_proposal_sources.py` for post-build proposal-source ablations
+    (`all`, `without_rmr_bcte`, `without_legacy_timing`, `without_any_timing`) without
+    retraining or Waymax. This isolates the marginal proposal-ceiling contribution of
+    BCS-RMR-BCTE.
+13. Fixed an evaluation-validity bug: historical `cowp_wo_*` architecture/causal-branch
+    names were silently treated as ordinary COWP in learned-offline/online shared-forward
+    evaluation. Those names now fail loudly. Valid shared-forward selection baselines are
+    evaluated in one model/cache pass; causal-branch and graph-architecture ablations must
+    use label-space diagnostics or separately retrained checkpoints.
+14. `05_make_tables.py` no longer rereads every NPZ once per method before recomputing the
+    same decisions; labels are loaded once and reused in memory.
+15. Probe resume now preserves the uploaded v16.8.4 build fingerprint and accepts only
+    that exact known interrupted lineage (or the current fingerprint). A separate semantic-resume
+    manifest records why the 768 successful NPZ labels are compatible: v16.8.5 changed only
+    zero-valid handling/diagnostics for those paths, not serialized tensors for valid scenes.
+16. Fast full rebuild can reuse the audited old cache **scenario-id set** and WOMD indexes while
+    rebuilding every COWP label from fresh Scenario protos. This gives an exact paired dataset,
+    avoids spending label-engine time on scenes that never entered the old training cache, and
+    caps per-process BLAS/TensorFlow threads to prevent multiprocessing oversubscription.
+17. Added staged experiment wrappers for multi-seed mechanism runs and fresh-cache external
+    baselines. Expensive replication is intentionally delayed until the single-seed mechanism and
+    small Waymax probe pass; repository GameFormer/DTPP implementations are treated as matched
+    baselines, not mislabeled as official reproductions.
+
+### Data decision after this round
+
+- **Do not start the four-day full rebuild yet.** Resume and finish the corrected paired
+  fresh proposal probe first.
+- The old cache may be reused for engineering/core-module controls, but it cannot validate
+  the v16.8.4 BCS-RMR proposal claim and cannot satisfy the current PBTR proposal floor.
+- Full fresh rebuild is justified only if the paired fresh bank passes all six proposal
+  checks, especially `BestCasePBTRLowerBound<=0.45`. If it fails, change/refine proposal
+  generation rather than paying for a larger copy of an infeasible bank.
+
+### Validation
+
+- `pytest`: 160 passed.
+- `python -m compileall -q cowp`: pass.
+- Updated/added v16.8.5 shell entrypoints plus `run_cowp_v16_8_dual_gpu.sh`: `bash -n` pass.
+- Note: several historical pre-v16.8 root scripts in the uploaded archive retain legacy CRLF/syntax issues; they are outside this v16.8.5 execution path and were not silently rewritten.
+
 ## v16.8.4 — Boundary-Consistent Smooth RMR-BCTE, Fresh-Cache Hard Gate, and Online Timing Alignment
 
 ### Triggering evidence from the uploaded `cowp_v16_8_3_rmr_bcte_seed2026` run

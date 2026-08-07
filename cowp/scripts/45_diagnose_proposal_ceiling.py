@@ -72,10 +72,19 @@ def main() -> None:
     ap.add_argument("--random-scene-ids", default=None, help="Representative random scene IDs used for unbiased coverage estimates.")
     ap.add_argument("--random-count", type=int, default=800)
     ap.add_argument("--seed", type=int, default=2026)
+    ap.add_argument("--subset-modulo", type=int, default=1, help="Match learned-offline index-modulo partitioning.")
+    ap.add_argument("--subset-remainder", type=int, default=0)
     args = ap.parse_args()
 
     ds = COWPNpzDataset(args.cache_dir)
-    n = len(ds) if args.limit <= 0 else min(len(ds), int(args.limit))
+    modulo = max(int(args.subset_modulo), 1)
+    remainder = int(args.subset_remainder)
+    if remainder < 0 or remainder >= modulo:
+        raise ValueError(f"subset_remainder must be in [0, subset_modulo), got {remainder}/{modulo}")
+    indices = [i for i in range(len(ds)) if i % modulo == remainder]
+    if args.limit > 0:
+        indices = indices[: int(args.limit)]
+    n = len(indices)
     scene_counts = Counter()
     candidate_counts = Counter()
     macro_stats: dict[str, Counter] = defaultdict(Counter)
@@ -85,7 +94,7 @@ def main() -> None:
     all_ids: list[str] = []
     valid_candidate_counts: list[int] = []
 
-    for idx in range(n):
+    for idx in indices:
         row = ds.load(idx, WANTED)
         sid = _scenario_id(row, ds.paths[idx].stem)
         all_ids.append(sid)
@@ -163,9 +172,15 @@ def main() -> None:
     scenes = int(scene_counts["scenes"])
     p_eligible = int(scene_counts["any_priority_eligible"])
     result: dict[str, Any] = {
-        "schema_version": "cowp_v16_8_3_proposal_ceiling_v1",
+        "schema_version": "cowp_v16_8_5_proposal_ceiling_v2",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "num_scenes": scenes,
+        "evaluation_subset": {
+            "subset_modulo": modulo,
+            "subset_remainder": remainder,
+            "dataset_size": len(ds),
+            "subset_size": len(indices),
+        },
         "scene_rates": {
             "any_valid": _rate(scene_counts["any_valid"], scenes),
             "any_conventional_safe": _rate(scene_counts["any_conventional_safe"], scenes),
@@ -201,6 +216,7 @@ def main() -> None:
                 "overall_any_ncf_min": 0.40,
                 "best_case_selected_false_safe_lower_bound_max": 0.55,
                 "hard_scene_ncf_recovery_min": 0.20,
+                "best_case_pbtr_lower_bound_max": 0.45,
             },
         },
     }

@@ -80,6 +80,20 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
         "safety_only": "conventional_safety",
     }
     m = alias.get(m, m)
+    unsupported_shared_forward_ablations = {
+        "cowp_wo_counterfactual",
+        "cowp_wo_neutral_branch",
+        "cowp_wo_priority_branch",
+        "cowp_wo_option_preservation",
+        "cowp_wo_witness_rejection",
+        "cowp_wo_dual_edge",
+        "cowp_wo_conflict_query",
+    }
+    if m in unsupported_shared_forward_ablations:
+        raise ValueError(
+            f"{m} is not a valid shared-forward online ablation. "
+            "Use a separately retrained ablation checkpoint/config for Waymax."
+        )
     g = str(gate_mode or "priority").lower()
     if m == "cowp" and g == "hard":
         g = "priority"

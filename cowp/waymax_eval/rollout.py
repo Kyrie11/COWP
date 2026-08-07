@@ -590,6 +590,24 @@ def _select_from_learned(
     import torch
 
     method, gate_mode = _method_gate_defaults(method, gate_mode)
+    # These historical names are real label-level / architecture ablations, but
+    # they do not alter a shared learned forward pass.  Earlier code silently
+    # treated them as ordinary COWP during learned_offline evaluation, producing
+    # no-op ablation rows.  Fail loudly instead of publishing invalid evidence.
+    unsupported_shared_forward_ablations = {
+        "cowp_wo_counterfactual",
+        "cowp_wo_neutral_branch",
+        "cowp_wo_priority_branch",
+        "cowp_wo_option_preservation",
+        "cowp_wo_witness_rejection",
+        "cowp_wo_dual_edge",
+        "cowp_wo_conflict_query",
+    }
+    if method in unsupported_shared_forward_ablations:
+        raise ValueError(
+            f"{method} is not a valid shared-forward learned_offline ablation. "
+            "Use label/offline module-effect diagnostics or retrain the corresponding ablation model."
+        )
     scores = torch.nan_to_num(pred["planner_score"].detach().float(), nan=1e6, posinf=1e6, neginf=-1e6)
     witness_prob, witness_cert, witness_uncertainty = _witness_probability_and_certificate(pred["witness"], cfg)
     witness_prob = witness_prob.detach()

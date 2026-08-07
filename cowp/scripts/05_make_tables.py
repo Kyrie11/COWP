@@ -6,7 +6,6 @@ from pathlib import Path
 import pandas as pd
 
 from cowp.core.config import load_config
-from cowp.waymax_eval.rollout import offline_candidate_eval
 from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.baselines import planner_for_method
 from cowp.waymax_eval.metrics_cowp import module_effect_metrics, stress_acceptance_metrics, witness_table_from_labels
@@ -31,16 +30,24 @@ def main() -> None:
     for p in tqdm_iter(label_paths, enabled=True, total=len(label_paths), desc="Load labels for tables", unit="file"):
         with np.load(p, allow_pickle=True) as data:
             label_dicts.append({k: data[k] for k in data.files})
+    # v16.8.5: labels are already resident in memory.  The old table script
+    # called offline_candidate_eval once per method, re-reading every NPZ from
+    # disk N times, then ran the planners again for stress metrics.  Reuse one
+    # in-memory label load and one selection pass per method instead.
     rows = []
     stress_rows = []
+    method_decisions: dict[str, list[tuple[int, np.ndarray]]] = {}
     for method in methods:
-        m = offline_candidate_eval(labels_dir, cfg, method=method, progress=True)
-        rows.append({"Method": method, **m})
         planner = planner_for_method(method, cfg)
         decisions = []
+        selected = []
         for label in label_dicts:
             dec = planner.select_from_labels(label)
             decisions.append((dec.candidate_index, dec.accepted_mask))
+            selected.append(int(dec.candidate_index))
+        method_decisions[method] = decisions
+        from cowp.waymax_eval.metrics_cowp import metrics_from_labels
+        rows.append({"Method": method, **metrics_from_labels(selected, label_dicts)})
         stress_rows.append({"Method": method, **stress_acceptance_metrics(decisions, label_dicts)})
     df = pd.DataFrame(rows)
     df.to_csv(out / "main_results.csv", index=False)

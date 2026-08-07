@@ -75,6 +75,7 @@ AMP_DTYPE="${AMP_DTYPE:-auto}"                 # auto|bfloat16|float16
 NATURAL_AMP="${NATURAL_AMP:-1}"
 TRANSPORT_AMP="${TRANSPORT_AMP:-1}"
 PLANNER_AMP="${PLANNER_AMP:-1}"
+USE_WAYMAX_OUTCOME_LABELS="${USE_WAYMAX_OUTCOME_LABELS:-1}"  # set 0 for fresh core-only caches; outcome loss then becomes exactly zero
 
 PROBE_SCENARIOS="${PROBE_SCENARIOS:-100}"
 FULL_SCENARIOS="${FULL_SCENARIOS:-1000}"
@@ -504,6 +505,8 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
     echo "[planner] keep existing $(best_planner)"
   else
     mapfile -t planner_amp_args < <(amp_args "$PLANNER_AMP")
+    planner_outcome_args=()
+    [[ "$USE_WAYMAX_OUTCOME_LABELS" == "1" ]] && planner_outcome_args=(--with-waymax-outcome-labels)
     logrun train_planner_ddp env CUDA_VISIBLE_DEVICES="$TRAIN_VISIBLE_DEVICES" \
       "$TORCHRUN_BIN" --standalone --nproc_per_node="$TRAIN_NPROC" -m cowp.scripts.03_train \
       --data-config configs/data.yaml --model-config "$MODEL_CFG" \
@@ -514,7 +517,7 @@ if [[ "$RUN_PLANNER" == "1" ]]; then
       --val-num-workers "$PLANNER_VAL_NUM_WORKERS" --val-prefetch-factor "$PLANNER_VAL_PREFETCH_FACTOR" \
       --sharing-strategy "$TORCH_SHARING_STRATEGY" \
       --device cuda --output-dir "$OUT_ROOT/checkpoints/planner" \
-      --with-waymax-outcome-labels --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
+      "${planner_outcome_args[@]}" --freeze-backbone-epochs "$FREEZE_BACKBONE_EPOCHS" \
       --early-stop-patience "$EARLY_STOP_PATIENCE" --early-stop-min-delta 1e-4 \
       --lr-scheduler plateau --min-lr 1e-6 --save-every 2 \
       --no-positive-oversampling --no-response-traj --no-response-components \
