@@ -92,11 +92,16 @@ def _make_grad_scaler(enabled: bool):
         return torch.cuda.amp.GradScaler(enabled=True)
 
 
-def _autocast(device: torch.device, enabled: bool):
+def _autocast(device: torch.device, enabled: bool, dtype_name: str = "auto"):
+    if dtype_name == "auto":
+        use_bf16 = bool(device.type == "cuda" and torch.cuda.is_available() and getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+        dtype = torch.bfloat16 if use_bf16 else torch.float16
+    else:
+        dtype = torch.bfloat16 if dtype_name == "bfloat16" else torch.float16
     try:
-        return torch.autocast(device_type=device.type, dtype=torch.float16, enabled=enabled)
+        return torch.autocast(device_type=device.type, dtype=dtype, enabled=enabled)
     except Exception:  # pragma: no cover - older PyTorch fallback
-        return torch.cuda.amp.autocast(enabled=enabled)
+        return torch.cuda.amp.autocast(enabled=enabled, dtype=dtype)
 
 
 def _run_epoch(
@@ -118,6 +123,7 @@ def _run_epoch(
     total_batches = _safe_len(loader)
     log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
     amp_enabled = bool(getattr(args, "amp", False) and device.type == "cuda")
+    amp_dtype = str(getattr(args, "amp_dtype", "auto"))
     _log(f"{phase} {args.baseline} epoch={epoch} start batches={total_batches if total_batches is not None else 'unknown'} batch_size={args.batch_size} workers={args.num_workers} amp={amp_enabled}")
     iterator = tqdm_iter(
         loader,
@@ -131,7 +137,7 @@ def _run_epoch(
     for batch_idx, batch in enumerate(iterator, start=1):
         try:
             ext = make_external_batch(batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates, horizon=args.future_len)
-            with _autocast(device, amp_enabled):
+            with _autocast(device, amp_enabled, amp_dtype):
                 if args.baseline == "gameformer":
                     outputs = model(ext.gameformer_inputs)
                     loss, metrics = gameformer_loss(outputs, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid)
@@ -140,8 +146,11 @@ def _run_epoch(
                     loss, metrics = dtpp_loss(model, ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, best_idx, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid, timesteps=args.future_len)
             if not torch.isfinite(loss):
                 skipped += 1
-                if log_every and (skipped <= 3 or skipped % log_every == 0):
-                    _log(f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite loss")
+                if skipped <= 5 or (log_every and skipped % max(log_every, 1) == 0):
+                    _log(
+                        f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite loss "
+                        f"amp={amp_enabled} amp_dtype={amp_dtype}"
+                    )
                 continue
             if train:
                 optimizer.zero_grad(set_to_none=True)
@@ -198,7 +207,16 @@ def _run_epoch(
     elapsed = max(time.time() - t0, 1e-6)
     if n == 0:
         raise RuntimeError(f"No usable samples in {phase} epoch {epoch}. skipped_batches={skipped}. Set --strict to expose the first malformed batch.")
-    out = {k: v / max(n, 1) for k, v in sums.items()} | {"num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped), "seconds": float(elapsed)}
+    skip_fraction = float(skipped / max(int(total_batches or (skipped + 1)), 1))
+    max_skip_fraction = float(getattr(args, "max_skip_fraction", 0.02))
+    if skip_fraction > max_skip_fraction:
+        raise RuntimeError(
+            f"External baseline {args.baseline} {phase} epoch {epoch} skipped {skipped}/{total_batches} batches "
+            f"({skip_fraction:.3%}) > max_skip_fraction={max_skip_fraction:.3%}. "
+            "Do not publish or continue training a checkpoint learned from a tiny surviving subset. "
+            "Use ego-frame inputs and BF16/FP32 loss computation; rerun with --strict to expose malformed batches."
+        )
+    out = {k: v / max(n, 1) for k, v in sums.items()} | {"num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped), "skip_fraction": skip_fraction, "seconds": float(elapsed)}
     _log(f"{phase} {args.baseline} epoch={epoch} done samples={n} skipped={skipped} seconds={elapsed:.1f} loss={out.get('loss', float('nan')):.6f}")
     return out
 
@@ -229,6 +247,8 @@ def main() -> None:
     ap.add_argument("--dtpp-fixed-cost", action="store_true")
     ap.add_argument("--grad-clip", type=float, default=5.0)
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
+    ap.add_argument("--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto", help="AMP dtype; auto prefers BF16 to avoid FP16 overflow in trajectory/GMM losses.")
+    ap.add_argument("--max-skip-fraction", type=float, default=0.02, help="Fail an epoch when non-finite/malformed batches exceed this fraction.")
     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
     ap.add_argument("--val-prefetch-factor", type=int, default=1)
     ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)

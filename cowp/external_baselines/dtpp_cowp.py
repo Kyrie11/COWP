@@ -271,6 +271,14 @@ class COWPDTPP(nn.Module):
 
 def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, candidate_valid: torch.Tensor, best_idx: torch.Tensor, ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor, neighbors_future_xy: torch.Tensor, neighbors_future_valid: torch.Tensor, timesteps: int = 80) -> tuple[torch.Tensor, dict[str, float]]:
     neighbors_pred, scores, ego_reg, weights = model(inputs, ego_traj_tree, timesteps=timesteps)
+    # Loss-side FP32 keeps AMP forward speed while preventing SmoothL1/score
+    # arithmetic from silently producing non-finite batches.
+    neighbors_pred = neighbors_pred.float()
+    scores = scores.float()
+    ego_reg = ego_reg.float()
+    weights = weights.float()
+    ego_future_xy = ego_future_xy.float()
+    neighbors_future_xy = neighbors_future_xy.float()
     B = scores.shape[0]
     sample_valid = candidate_valid.any(dim=1) & ego_future_valid.any(dim=1)
     if not bool(sample_valid.any()):

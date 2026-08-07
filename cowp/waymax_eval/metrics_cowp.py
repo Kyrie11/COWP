@@ -303,7 +303,15 @@ def policy_diagnostic_episode_summary(rollouts: list[dict]) -> dict[str, float]:
 
 
 
-def module_effect_metrics(label_dicts: list[dict[str, np.ndarray]], cfg: dict, methods: list[str] | None = None) -> dict[str, dict[str, float]]:
+def module_effect_metrics(
+    label_dicts: list[dict[str, np.ndarray]],
+    cfg: dict,
+    methods: list[str] | None = None,
+    *,
+    precomputed_decisions: dict[str, list[tuple[int, np.ndarray]]] | None = None,
+    precomputed_selected: dict[str, list[int]] | None = None,
+    precomputed_metrics: dict[str, dict[str, float]] | None = None,
+) -> dict[str, dict[str, float]]:
     """Quantify whether the paper modules change decisions in label space.
 
     This is intentionally label/certificate based.  It answers: if we disable a
@@ -322,10 +330,12 @@ def module_effect_metrics(label_dicts: list[dict[str, np.ndarray]], cfg: dict, m
         "cowp_wo_witness_rejection",
         "soft_burden_cost_only",
     ]
-    decisions: dict[str, list[tuple[int, np.ndarray]]] = {}
-    selected: dict[str, list[int]] = {}
-    metrics: dict[str, dict[str, float]] = {}
+    decisions: dict[str, list[tuple[int, np.ndarray]]] = dict(precomputed_decisions or {})
+    selected: dict[str, list[int]] = dict(precomputed_selected or {})
+    metrics: dict[str, dict[str, float]] = {k: dict(v) for k, v in (precomputed_metrics or {}).items()}
     for method in methods:
+        if method in decisions and method in selected and method in metrics:
+            continue
         planner = planner_for_method(method, cfg)
         rows: list[tuple[int, np.ndarray]] = []
         idxs: list[int] = []

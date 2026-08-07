@@ -17,17 +17,35 @@ mkdir -p "$OUT_DIR"
   --data-config configs/data.yaml \
   --label-config configs/label_cowp_v16_8.yaml \
   --eval-config configs/eval_cowp_v16_8.yaml \
-  --labels-dir "$LABELS_VAL" --output-dir "$OUT_DIR/label_space"
+  --labels-dir "$LABELS_VAL" --output-dir "$OUT_DIR/label_space" \
+  --load-workers "${LABEL_TABLE_LOAD_WORKERS:-8}"
 
-# 2) Proposal-bank source ablation: isolate the marginal coverage/floor effect of
-# BCS-RMR-BCTE without retraining or running Waymax.
-"$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
-  --cache-dir "$VAL_CACHE" --output "$OUT_DIR/proposal_sources_full.json"
-"$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
-  --cache-dir "$VAL_CACHE" --subset-modulo 2 --subset-remainder 0 \
-  --output "$OUT_DIR/proposal_sources_calibration.json"
-"$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
-  --cache-dir "$VAL_CACHE" --subset-modulo 2 --subset-remainder 1 \
-  --output "$OUT_DIR/proposal_sources_heldout.json"
+# 2) Proposal-source ablation is meaningful ONLY for fresh caches that contain
+# proposal provenance.  Old v16.8 overlays have no proposal_source tensor; the
+# previous script silently labeled all such candidates as PAD and produced a
+# fictitious "RMR increment".  Detect and skip instead.
+if "$PYTHON_BIN" - "$VAL_CACHE" <<'PYPROV'
+import sys
+from cowp.data.dataset import COWPNpzDataset
+ds=COWPNpzDataset(sys.argv[1])
+row=ds.load(0, {"cowp/candidates/proposal_source"})
+raise SystemExit(0 if "cowp/candidates/proposal_source" in row else 2)
+PYPROV
+then
+  "$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
+    --cache-dir "$VAL_CACHE" --output "$OUT_DIR/proposal_sources_full.json"
+  "$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
+    --cache-dir "$VAL_CACHE" --subset-modulo 2 --subset-remainder 0 \
+    --output "$OUT_DIR/proposal_sources_calibration.json"
+  "$PYTHON_BIN" -u -m cowp.scripts.50_ablate_proposal_sources \
+    --cache-dir "$VAL_CACHE" --subset-modulo 2 --subset-remainder 1 \
+    --output "$OUT_DIR/proposal_sources_heldout.json"
+else
+  echo "[proposal-source ablation] SKIP: $VAL_CACHE has no fresh proposal provenance; old-bank source attribution would be invalid."
+  "$PYTHON_BIN" - "$OUT_DIR/proposal_sources_skipped.json" "$VAL_CACHE" <<'PYSKIP'
+import json,sys
+json.dump({"skipped":True,"reason":"missing proposal_source provenance; stale v16.8 bank cannot support source ablation","cache":sys.argv[2]},open(sys.argv[1],'w'),indent=2)
+PYSKIP
+fi
 
 echo "Wrote ablations under $OUT_DIR"

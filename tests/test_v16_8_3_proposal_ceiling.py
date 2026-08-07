@@ -193,3 +193,69 @@ def test_online_bcs_timing_profile_matches_smooth_primitive() -> None:
     k = int(round(target / 0.1)) - 1
     assert abs(float(traj[k, 0]) - distance) < 1e-4
     assert float(np.linalg.norm(traj[k, 3:5])) > 0.0
+
+
+def test_priority_hold_release_is_smooth_valid_and_reaches_advertised_boundary_distance() -> None:
+    from cowp.label.ego_candidates import _candidate_invalid_reason
+    from cowp.label.trajectory_primitives import priority_hold_release_trajectory
+
+    cfg = load_config("configs/label_cowp_v16_8.yaml")
+    current = _state(0.0, 0.0, 10.0, 0.0, 0.0)
+    target = 7.0
+    traj = priority_hold_release_trajectory(
+        current,
+        80,
+        0.1,
+        entry_distance_m=20.0,
+        target_time_s=target,
+        stop_margin_m=3.0,
+        release_speed_mps=4.0,
+        min_hold_s=0.35,
+    )
+    assert traj is not None
+    assert _candidate_invalid_reason(traj, cfg, None) is None
+    k = int(round(target / 0.1)) - 1
+    assert abs(float(traj[k, 0]) - 20.0) < 1e-4
+    speed = np.linalg.norm(traj[:, 3:5], axis=-1)
+    assert int((speed[:k] < 0.2).sum()) >= 3
+    assert np.all(np.diff(traj[:, 0]) >= -1e-4)
+
+
+def test_priority_hold_release_is_generated_for_protected_stop_control_interaction() -> None:
+    from cowp.core.types import Lane
+
+    cfg = load_config("configs/label_cowp_v16_8.yaml")
+    cfg["candidate"]["map_filter_enabled"] = False
+    cfg["limits"]["max_candidates"] = 96
+    steps, cur = 91, 10
+    states = np.zeros((2, steps, 11), dtype=np.float32)
+    for t in range(steps):
+        tau = (t - cur) * 0.1
+        states[0, t] = _state(10.0 * tau, 0.0, 10.0, 0.0, 0.0)
+        states[1, t] = _state(30.0, -30.0 + 5.0 * tau, 0.0, 5.0, np.pi / 2.0)
+    map_data = MapData(lanes={
+        1: Lane(1, np.asarray([[-20.0, 0.0, 0.0], [80.0, 0.0, 0.0]], dtype=np.float32), controlled_by_stop=True),
+        2: Lane(2, np.asarray([[30.0, -60.0, 0.0], [30.0, 60.0, 0.0]], dtype=np.float32), controlled_by_stop=False),
+    })
+    scene = ScenarioData(
+        scenario_id="priority-hold-release-toy",
+        timestamps=np.arange(steps, dtype=np.float32) * 0.1,
+        current_time_index=cur,
+        states=states,
+        object_type=np.asarray([ObjectType.VEHICLE, ObjectType.VEHICLE], dtype=np.int32),
+        track_id=np.asarray([0, 1], dtype=np.int64),
+        sdc_track_index=0,
+        objects_of_interest=np.asarray([1], dtype=np.int64),
+        tracks_to_predict=np.asarray([1], dtype=np.int32),
+        map_data=map_data,
+    )
+    region = ConflictRegion(3, "LANE_INTERSECTION", np.asarray([30.0, 0.0], dtype=np.float32), 3.0, (1, 2))
+    out = generate_ego_candidates(scene, cfg, conflict_regions=[region])
+    valid = out["valid"]
+    phr = valid & (out["proposal_source"] == int(ProposalSource.PRIORITY_HOLD_RELEASE))
+    assert phr.any()
+    assert np.all(out["proposal_timing_side"][phr] == 1)
+    assert np.all(out["proposal_target_agent_index"][phr] == 1)
+    assert np.max(out["proposal_target_tta_error_s"][phr]) <= cfg["candidate"]["timing_envelope_max_target_tta_error_s"] + 1e-6
+    # The core neutral option is reserved before optional interaction proposals.
+    assert np.any(valid & (out["proposal_source"] == int(ProposalSource.NEUTRAL)))

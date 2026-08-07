@@ -7,6 +7,10 @@ cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
+DATA_CONFIG="${DATA_CONFIG:-configs/data.yaml}"
+LABEL_CONFIG="${LABEL_CONFIG:-configs/label.yaml}"
+TRAIN_CONFIG="${TRAIN_CONFIG:-configs/train.yaml}"
+EVAL_CONFIG="${EVAL_CONFIG:-configs/eval.yaml}"
 WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1}"
 COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train_waymax}"
@@ -28,6 +32,8 @@ FORCE_RERUN="${FORCE_RERUN:-0}"
 
 # Speed/resource defaults for learned baselines.
 AMP="${AMP:-1}"
+AMP_DTYPE="${AMP_DTYPE:-auto}"
+MAX_SKIP_FRACTION="${MAX_SKIP_FRACTION:-0.02}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 PREFETCH_FACTOR="${PREFETCH_FACTOR:-2}"
 DEVICE="${DEVICE:-auto}"
@@ -83,6 +89,8 @@ progress_args() {
 amp_args() {
   if [[ "$AMP" == "1" ]]; then
     printf '%s\n' "--amp"
+    printf '%s\n' "--amp-dtype"
+    printf '%s\n' "$AMP_DTYPE"
   fi
 }
 
@@ -243,9 +251,9 @@ train_one() {
   fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.20_train_external_baseline
     --baseline "$b"
-    --data-config configs/data.yaml
-    --label-config configs/label.yaml
-    --train-config configs/train.yaml
+    --data-config "$DATA_CONFIG"
+    --label-config "$LABEL_CONFIG"
+    --train-config "$TRAIN_CONFIG"
     --cache-dir "$TRAIN_CACHE"
     --val-cache-dir "$VAL_CACHE"
     --output-dir "$OUT_ROOT/checkpoints/$b"
@@ -256,7 +264,8 @@ train_one() {
     --device "$dev"
     --max-neighbors "$MAX_NEIGHBORS"
     --max-candidates "$max_candidates"
-    --log-every "$LOG_EVERY")
+    --log-every "$LOG_EVERY"
+    --max-skip-fraction "$MAX_SKIP_FRACTION")
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(amp_args)
   while IFS= read -r arg; do [[ -n "$arg" ]] && cmd+=("$arg"); done < <(progress_args)
   run_logged_env "train_${b}" "$gpu" "$pos" "${cmd[@]}"
@@ -278,9 +287,9 @@ eval_one_offline_learned() {
   fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.21_eval_external_baseline
     --mode learned_offline
-    --data-config configs/data.yaml
-    --label-config configs/label.yaml
-    --eval-config configs/eval.yaml
+    --data-config "$DATA_CONFIG"
+    --label-config "$LABEL_CONFIG"
+    --eval-config "$EVAL_CONFIG"
     --checkpoint "$ckpt"
     --cache-dir "$VAL_CACHE"
     --batch-size "${EVAL_BATCH:-16}"
@@ -310,9 +319,9 @@ eval_one_waymax_learned() {
   fi
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.21_eval_external_baseline
     --mode waymax
-    --data-config configs/data.yaml
-    --label-config configs/label.yaml
-    --eval-config configs/eval.yaml
+    --data-config "$DATA_CONFIG"
+    --label-config "$LABEL_CONFIG"
+    --eval-config "$EVAL_CONFIG"
     --checkpoint "$ckpt"
     --waymax-split validation
     --tfexample-glob "$WAYMAX_VAL"
@@ -339,9 +348,9 @@ eval_one_offline_rule() {
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.22_eval_rule_baseline
     --mode learned_offline
     --baseline "$b"
-    --data-config configs/data.yaml
-    --label-config configs/label.yaml
-    --eval-config configs/eval.yaml
+    --data-config "$DATA_CONFIG"
+    --label-config "$LABEL_CONFIG"
+    --eval-config "$EVAL_CONFIG"
     --cache-dir "$VAL_CACHE"
     --batch-size "${EVAL_BATCH:-64}"
     --num-workers "$NUM_WORKERS"
@@ -361,9 +370,9 @@ eval_one_waymax_rule() {
   local cmd=("$PYTHON_BIN" -u -m cowp.scripts.22_eval_rule_baseline
     --mode waymax
     --baseline "$b"
-    --data-config configs/data.yaml
-    --label-config configs/label.yaml
-    --eval-config configs/eval.yaml
+    --data-config "$DATA_CONFIG"
+    --label-config "$LABEL_CONFIG"
+    --eval-config "$EVAL_CONFIG"
     --waymax-split validation
     --tfexample-glob "$WAYMAX_VAL"
     --num-scenarios "$ONLINE_SCENARIOS"

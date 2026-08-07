@@ -84,6 +84,14 @@ candidate:
   # v16.8.4: reject RMR timing proposals whose realized conflict-entry TTA
   # disagrees with the advertised pass-before/pass-after target.
   timing_envelope_max_target_tta_error_s: 0.20
+  # v16.8.6: explicit early yielding commitment.  This proposal family targets
+  # protected-priority burden transfer rather than merely changing arrival TTA.
+  priority_hold_release_enabled: true
+  priority_hold_release_max_candidates: 8
+  priority_hold_release_stop_margin_m: [3.0, 5.0]
+  priority_hold_release_speed_mps: [2.5, 3.5, 4.0]
+  priority_hold_release_min_hold_s: 0.35
+  priority_hold_release_gap_s: [0.8, 1.4, 2.0]
   lane_change_duration_s:
   - 2.5
   - 3.5

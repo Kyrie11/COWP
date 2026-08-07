@@ -7,7 +7,7 @@ import numpy as np
 
 from cowp.core.constants import MacroType
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
-from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, repair_planar_kinematics
+from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
@@ -808,6 +808,11 @@ def _route_lane_aware_candidates(
         util = -0.03 * progress + 0.08 * abs(acc)
         _add_candidate(candidates, macros, utils, conventional, tr, macro, util, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
+    # Reserve the core neutral option before optional timing/lane-change banks can
+    # saturate K.  Offline v16.8.6 uses the same reservation principle.
+    neutral_tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
+    _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)
+
     # Stop / yield before likely conflicts.  In online mode we do not have proto
     # conflict regions, so estimate conflict distance from nearest forward agent
     # or route distance.
@@ -924,6 +929,65 @@ def _route_lane_aware_candidates(
                         bcte_added += 1
             used += 1
 
+        # v16.8.6 online Priority-Commitment Hold-Release (PCHR).  Use the same
+        # causal closest-approach event approximation as online BCS-RMR, but only
+        # allocate hold-release candidates to priority-like interactions.
+        if bool(cfg.get("planning", {}).get("online_priority_hold_release_enabled", cand_cfg.get("priority_hold_release_enabled", True))):
+            phr_max = int(cfg.get("planning", {}).get("online_priority_hold_release_max_candidates", cand_cfg.get("priority_hold_release_max_candidates", 8)))
+            phr_added = 0
+            margins = [float(x) for x in cfg.get("planning", {}).get("online_priority_hold_release_stop_margin_m", cand_cfg.get("priority_hold_release_stop_margin_m", [3.0, 5.0]))]
+            release_speeds = [float(x) for x in cfg.get("planning", {}).get("online_priority_hold_release_speed_mps", cand_cfg.get("priority_hold_release_speed_mps", [2.5, 3.5, 4.0]))]
+            hold_s = float(cfg.get("planning", {}).get("online_priority_hold_release_min_hold_s", cand_cfg.get("priority_hold_release_min_hold_s", 0.35)))
+            phr_gaps = [float(x) for x in cfg.get("planning", {}).get("online_priority_hold_release_gap_s", cand_cfg.get("priority_hold_release_gap_s", [0.8, 1.4, 2.0]))]
+            ego_lat_vec = np.asarray([-dir_vec[1], dir_vec[0]], dtype=np.float32)
+            for j in near_order:
+                if phr_added >= phr_max or len(candidates) >= K:
+                    break
+                if j == sdc_index or not valid_other[j]:
+                    continue
+                rel_j = agent_state[j, :2] - ego_xy
+                longitudinal = float(np.dot(rel_j, dir_vec))
+                lateral = abs(float(np.dot(rel_j, ego_lat_vec)))
+                closing = float(max(0.0, speed - np.dot(agent_state[j, 3:5], dir_vec)))
+                ttc = longitudinal / max(closing, 1.0e-3) if longitudinal > 0.0 and closing > 0.25 else 99.0
+                priority_like = (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or ttc <= float(cfg.get("planning", {}).get("online_priority_ttc_s", 5.0))
+                if not priority_like:
+                    continue
+                pred_j, cv_j = _agent_future_xy(agent_state, int(j), H, dt, other_future_trajs)
+                agent_xy = pred_j if np.isfinite(pred_j).all() else cv_j
+                if not np.isfinite(agent_xy).all():
+                    continue
+                dca = np.linalg.norm(nominal_xy - agent_xy[:H, :2], axis=-1)
+                q = int(np.argmin(dca))
+                if q < 2 or float(dca[q]) > max_ca_dist:
+                    continue
+                conflict_distance = float(nominal_s[q])
+                event_time = float((q + 1) * dt)
+                for gap in phr_gaps:
+                    target_time = event_time + time_uncertainty + gap
+                    if target_time <= 0.35 or target_time > float(H * dt):
+                        continue
+                    for margin in margins:
+                        for release_speed in release_speeds:
+                            if phr_added >= phr_max or len(candidates) >= K:
+                                break
+                            tr = priority_hold_release_trajectory(
+                                current, H, dt, entry_distance_m=conflict_distance,
+                                target_time_s=target_time, stop_margin_m=margin,
+                                release_speed_mps=release_speed, min_hold_s=hold_s,
+                            )
+                            if tr is None:
+                                continue
+                            before = len(candidates)
+                            _add_candidate(
+                                candidates, macros, utils, conventional, tr, MacroType.MERGE_BEHIND,
+                                0.18 + 0.06 * gap, agent_state, sdc_index, roadgraph, cfg,
+                                other_future_trajs=other_future_trajs,
+                            )
+                            if len(candidates) > before:
+                                phr_added += 1
+                                break
+
     # Lane-change/cut-in proposals.  Use ±lane_width relative to the local lane
     # heading; the conventional mask filters obvious offroad/collision cases.
     lane_widths = cfg.get("planning", {}).get("online_lane_change_offsets_m", [-3.5, 3.5])
@@ -992,7 +1056,7 @@ def _route_lane_aware_candidates(
             progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
             _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
-    # Guaranteed conservative option, even if marked not conventional-safe.
+    # Final neutral retry (normally de-duplicated against the reserved neutral slot).
     if len(candidates) < K:
         tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
         _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)

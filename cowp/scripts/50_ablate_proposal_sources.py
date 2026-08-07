@@ -79,13 +79,15 @@ def main() -> None:
     args = ap.parse_args()
 
     all_nonpad = {int(x) for x in ProposalSource if x != ProposalSource.PAD}
-    timing = {int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE)}
+    timing = {int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)}
     schemes: dict[str, set[int] | None] = {
         "all": None,
+        "without_priority_hold_release": all_nonpad - {int(ProposalSource.PRIORITY_HOLD_RELEASE)},
         "without_rmr_bcte": all_nonpad - {int(ProposalSource.ROBUST_BCTE)},
         "without_legacy_timing": all_nonpad - {int(ProposalSource.LEGACY_TIMING)},
-        "without_any_timing": all_nonpad - timing,
-        "base_plus_rmr_no_legacy": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE)},
+        "without_any_interaction_timing": all_nonpad - timing,
+        "base_plus_rmr_only": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE)},
+        "base_plus_rmr_plus_priority_commitment": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)},
     }
 
     ds = COWPNpzDataset(args.cache_dir)
@@ -100,10 +102,19 @@ def main() -> None:
     counters = {name: Counter() for name in schemes}
     valid_counts = {name: [] for name in schemes}
     source_candidate_counts = Counter()
+    missing_provenance_scenes = 0
+    valid_nonpad_source_candidates = 0
     for i in indices:
         row = ds.load(i, WANTED)
         valid = np.asarray(row.get("cowp/candidates/valid", []), dtype=bool).reshape(-1)
-        src = np.asarray(row.get("cowp/candidates/proposal_source", np.zeros_like(valid)), dtype=np.int64).reshape(-1)[: len(valid)]
+        if "cowp/candidates/proposal_source" not in row:
+            missing_provenance_scenes += 1
+            # Source ablation is undefined on stale caches.  Do not silently map
+            # every candidate to PAD: that makes the entire old bank look like
+            # an RMR increment in the downstream difference.
+            continue
+        src = np.asarray(row["cowp/candidates/proposal_source"], dtype=np.int64).reshape(-1)[: len(valid)]
+        valid_nonpad_source_candidates += int((valid & (src != int(ProposalSource.PAD))).sum())
         for value in src[valid]:
             try:
                 source_candidate_counts[ProposalSource(int(value)).name] += 1
@@ -122,8 +133,16 @@ def main() -> None:
             c["priority_floor"] += int(summary["priority_floor"])
             valid_counts[name].append(nv)
 
+    if missing_provenance_scenes > 0 or valid_nonpad_source_candidates == 0:
+        raise RuntimeError(
+            "Proposal-source ablation requires a fresh cache with cowp/candidates/proposal_source provenance. "
+            f"missing_provenance_scenes={missing_provenance_scenes}/{len(indices)}, "
+            f"valid_nonpad_source_candidates={valid_nonpad_source_candidates}. "
+            "The v16.8 transport overlay cannot retrofit proposal provenance into stale raw candidate tensors."
+        )
+
     result = {
-        "schema_version": "cowp_v16_8_5_proposal_source_ablation_v1",
+        "schema_version": "cowp_v16_8_6_proposal_source_ablation_v2",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "evaluation_subset": {"modulo": modulo, "remainder": remainder, "num_scenes": len(indices)},
         "proposal_source_candidate_counts": dict(source_candidate_counts),
@@ -145,6 +164,13 @@ def main() -> None:
 
     base = result["ablations"]["without_rmr_bcte"]
     full = result["ablations"]["all"]
+    no_commit = result["ablations"]["without_priority_hold_release"]
+    result["priority_hold_release_increment"] = {
+        "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_commit["any_ncf_scene_rate"],
+        "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_commit["best_case_selected_false_safe_lower_bound"],
+        "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_commit["best_case_pbtr_lower_bound"],
+        "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_commit["mean_valid_candidates"],
+    }
     result["rmr_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - base["any_ncf_scene_rate"],
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - base["best_case_selected_false_safe_lower_bound"],

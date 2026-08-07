@@ -4,10 +4,11 @@ from collections import Counter
 
 import numpy as np
 
-from cowp.core.constants import MacroType, ProposalSource
+from cowp.core.constants import MacroType, PriorityRelation, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, trajectory_entry_to_region, tta_to_region
-from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory
+from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory
+from cowp.label.priority import determine_priority
 
 
 def _candidate_map_compliant(traj: np.ndarray, lane_points: np.ndarray, cfg: dict) -> bool:
@@ -251,6 +252,22 @@ def _agent_tta_envelopes_to_region(
     rows.sort(key=lambda x: (x[0], x[1], x[2]))
     return [(j, early, nominal, late) for nominal, _, j, early, late in rows[:max_agents]]
 
+
+def _causal_priority_relation(scene: ScenarioData, agent_index: int, ego_keep: np.ndarray, cfg: dict) -> PriorityRelation:
+    """Priority estimate for proposal allocation using current state only.
+
+    ``determine_priority`` also supports trajectory arrival order.  Passing a
+    constant-velocity extrapolation rather than logged future keeps proposal
+    generation causal while retaining map-control/lane-ownership rules.
+    """
+    cur = int(scene.current_time_index)
+    H = int(cfg.get("time", {}).get("future_steps", 80))
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    st = np.asarray(scene.states[int(agent_index), cur], dtype=np.float32)
+    agent_cv = constant_accel_trajectory(st, H, dt, accel=0.0)
+    return determine_priority(scene, int(agent_index), ego_keep, agent_cv, cfg)
+
+
 def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: list | None = None) -> dict[str, np.ndarray]:
     limits = cfg.get("limits", {})
     cand_cfg = cfg.get("candidate", {})
@@ -384,6 +401,16 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             source=ProposalSource.YIELD,
             accel_mps2=float(decel),
         )
+    # The neutral root is a core COWP mechanism and must never be displaced by
+    # optional interaction-proposal families when the K-slot bank is saturated.
+    add(
+        smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.0, creep_speed=0.0),
+        MacroType.NEUTRAL_EGO,
+        util=0.8,
+        neutral=True,
+        source=ProposalSource.NEUTRAL,
+        accel_mps2=-2.0,
+    )
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     if regions:
         keep = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0)
@@ -513,6 +540,81 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                             if accepted:
                                 timing_profile_bins.add(profile_key)
                                 bcte_added += 1
+
+            # v16.8.6 Priority-Commitment Hold-Release (PCHR) refinement.
+            # Arrival order alone is not sufficient for non-coercion: an ego that
+            # approaches assertively and brakes late can make a protected agent
+            # react even if ego ultimately enters after it.  For causally inferred
+            # AGENT_PRIORITY / negotiated interactions, explicitly commit to a
+            # pre-conflict hold and release only after the agent's late envelope.
+            if bool(cand_cfg.get("priority_hold_release_enabled", True)):
+                phr_max = max(0, int(cand_cfg.get("priority_hold_release_max_candidates", 8)))
+                phr_added = 0
+                phr_margins = [float(x) for x in cand_cfg.get("priority_hold_release_stop_margin_m", [3.0, 5.0])]
+                phr_release_speeds = [float(x) for x in cand_cfg.get("priority_hold_release_speed_mps", [2.5, 3.5, 4.0])]
+                phr_min_hold_s = float(cand_cfg.get("priority_hold_release_min_hold_s", 0.35))
+                phr_gap_values = [float(x) for x in cand_cfg.get("priority_hold_release_gap_s", [0.8, 1.4, 2.0])]
+                protected_rel = {int(PriorityRelation.AGENT_PRIORITY), int(PriorityRelation.EQUAL_OR_NEGOTIATED)}
+                phr_keys: set[tuple[int, int, int, int]] = set()
+                for _, dist_to_conflict, region in reachable[:max_regions]:
+                    if phr_added >= phr_max or len(candidates) >= K:
+                        break
+                    for agent_index, _early_tta, _nominal_tta, late_tta in _agent_tta_envelopes_to_region(scene, region, cfg):
+                        if phr_added >= phr_max or len(candidates) >= K:
+                            break
+                        rho = _causal_priority_relation(scene, int(agent_index), keep, cfg)
+                        if int(rho) not in protected_rel:
+                            continue
+                        for gap in phr_gap_values:
+                            target_time = float(late_tta + gap)
+                            if target_time <= 0.35 or target_time > horizon_s:
+                                continue
+                            for margin in phr_margins:
+                                for release_speed in phr_release_speeds:
+                                    if phr_added >= phr_max or len(candidates) >= K:
+                                        break
+                                    key = (
+                                        int(region.conflict_id), int(agent_index),
+                                        int(round(margin * 10.0)), int(round(target_time * 10.0)),
+                                    )
+                                    if key in phr_keys:
+                                        continue
+                                    tr = priority_hold_release_trajectory(
+                                        ego_cur, horizon, dt,
+                                        entry_distance_m=dist_to_conflict,
+                                        target_time_s=target_time,
+                                        stop_margin_m=margin,
+                                        release_speed_mps=release_speed,
+                                        min_hold_s=phr_min_hold_s,
+                                    )
+                                    if tr is None:
+                                        continue
+                                    actual_tta, actual_entry_dist = trajectory_entry_to_region(
+                                        tr, region, current_state=ego_cur, dt=dt
+                                    )
+                                    if not np.isfinite(actual_tta):
+                                        continue
+                                    tta_error = abs(float(actual_tta) - target_time)
+                                    if tta_error > max_tta_error + 1.0e-6:
+                                        continue
+                                    accepted = add(
+                                        tr,
+                                        MacroType.MERGE_BEHIND,
+                                        util=0.20 + 0.06 * gap,
+                                        neutral=True,
+                                        source=ProposalSource.PRIORITY_HOLD_RELEASE,
+                                        region_id=int(region.conflict_id),
+                                        target_time_s=target_time,
+                                        timing_side=1,
+                                        target_agent_index=int(agent_index),
+                                        gap_s=gap,
+                                        accel_mps2=0.0,
+                                        entry_distance_m=float(actual_entry_dist),
+                                        target_tta_error_s=tta_error,
+                                    )
+                                    if accepted:
+                                        phr_keys.add(key)
+                                        phr_added += 1
     for lateral, m in [(-3.5, MacroType.LANE_CHANGE_RIGHT), (3.5, MacroType.LANE_CHANGE_LEFT)]:
         for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5]):
             # Hold the lane during delay, then apply a smoothed lateral offset over the full primitive.
@@ -524,14 +626,6 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         util=1.0,
         source=ProposalSource.CREEP,
         accel_mps2=-1.0,
-    )
-    add(
-        smooth_stop_trajectory(ego_cur, horizon, dt, decel=-2.0, creep_speed=0.0),
-        MacroType.NEUTRAL_EGO,
-        util=0.8,
-        neutral=True,
-        source=ProposalSource.NEUTRAL,
-        accel_mps2=-2.0,
     )
 
     # Fill remaining slots with terminal speed/position lattice variants.  Both

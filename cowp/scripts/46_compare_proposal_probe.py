@@ -58,6 +58,7 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid
     source = np.asarray(row.get("cowp/candidates/proposal_source", np.full_like(valid, int(ProposalSource.PAD))), dtype=np.int64).reshape(-1)[: len(valid)]
     rmr = valid & (source == int(ProposalSource.ROBUST_BCTE))
+    phr = valid & (source == int(ProposalSource.PRIORITY_HOLD_RELEASE))
     timing_err = np.asarray(
         row.get("cowp/candidates/proposal_target_tta_error_s", np.full(len(valid), np.nan, dtype=np.float32)),
         dtype=np.float32,
@@ -89,6 +90,9 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
         "priority_eligible_without_ncf": bool(priority_eligible.any() and not priority_ncf.any()),
         "rmr_count": int(rmr.sum()),
         "rmr_ncf_count": int((rmr & ncf).sum()),
+        "phr_count": int(phr.sum()),
+        "phr_ncf_count": int((phr & ncf).sum()),
+        "phr_priority_ncf_count": int((phr & priority_ncf).sum()),
         "rmr_timing_error_count": int(rmr_err.size),
         "rmr_timing_error_sum_s": float(rmr_err.sum()) if rmr_err.size else 0.0,
         "rmr_timing_error_max_s": float(rmr_err.max()) if rmr_err.size else 0.0,
@@ -169,6 +173,12 @@ def _aggregate(ids: list[str], old: dict, new: dict) -> tuple[Counter, list[int]
             new_rmr_ncf_candidates=int(b["rmr_ncf_count"]),
             new_scene_with_rmr=int(int(b["rmr_count"]) > 0),
             new_scene_with_rmr_ncf=int(int(b["rmr_ncf_count"]) > 0),
+            new_phr_candidates=int(b.get("phr_count", 0)),
+            new_phr_ncf_candidates=int(b.get("phr_ncf_count", 0)),
+            new_phr_priority_ncf_candidates=int(b.get("phr_priority_ncf_count", 0)),
+            new_scene_with_phr=int(int(b.get("phr_count", 0)) > 0),
+            new_scene_with_phr_ncf=int(int(b.get("phr_ncf_count", 0)) > 0),
+            new_scene_with_phr_priority_ncf=int(int(b.get("phr_priority_ncf_count", 0)) > 0),
             new_rmr_timing_error_count=int(b["rmr_timing_error_count"]),
             new_rmr_timing_error_sum_s=float(b["rmr_timing_error_sum_s"]),
         )
@@ -257,7 +267,7 @@ def main() -> None:
         "no_unexpected_build_errors": not build_errors and not unexpected_missing_new,
     }
     result = {
-        "schema_version": "cowp_v16_8_5_bcs_rmr_bcte_paired_proposal_probe_v2",
+        "schema_version": "cowp_v16_8_6_priority_commitment_paired_proposal_probe_v3",
         "old_cache": str(Path(args.old_cache).resolve()),
         "new_cache": str(Path(args.new_cache).resolve()),
         "new_build_profile": str(Path(args.new_build_profile).resolve()) if args.new_build_profile else None,
@@ -292,6 +302,12 @@ def main() -> None:
             "rmr_timing_error_count": rmr_timing_count,
             "rmr_target_tta_error_mean_s": rmr_timing_mean,
             "rmr_target_tta_error_max_s": rmr_timing_max,
+            "scene_with_priority_hold_release_rate": _rate(c["new_scene_with_phr"], n),
+            "scene_with_priority_hold_release_ncf_rate": _rate(c["new_scene_with_phr_ncf"], n),
+            "scene_with_priority_hold_release_priority_ncf_rate": _rate(c["new_scene_with_phr_priority_ncf"], n),
+            "priority_hold_release_candidate_count": int(c["new_phr_candidates"]),
+            "priority_hold_release_ncf_candidate_count": int(c["new_phr_ncf_candidates"]),
+            "priority_hold_release_priority_ncf_candidate_count": int(c["new_phr_priority_ncf_candidates"]),
         },
         "paired": {
             "old_hard_scene_count": int(hard_c["old_hard"]),

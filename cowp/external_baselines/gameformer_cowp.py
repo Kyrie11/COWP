@@ -291,6 +291,12 @@ class COWPGameFormer(nn.Module):
 
 def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor, valid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     # gmm [B,N,M,T,4], scores [B,N,M], gt [B,N,T,2], valid [B,N,T]
+    # Keep regression/NLL arithmetic in FP32 under AMP.  FP16 squared global or
+    # even moderately large local residuals can overflow before GradScaler sees
+    # the loss; casting here is differentiable and leaves model matmuls in AMP.
+    gmm = gmm.float()
+    scores = scores.float()
+    gt_xy = gt_xy.float()
     valid_f = valid.float()
     agent_valid = valid.any(dim=-1)
     denom_agent = valid_f.sum(dim=-1).clamp_min(1.0)

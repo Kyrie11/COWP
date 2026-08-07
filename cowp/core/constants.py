@@ -55,6 +55,9 @@ class ProposalSource(IntEnum):
     CREEP = 9
     NEUTRAL = 10
     TERMINAL = 11
+    # v16.8.6: early yielding commitment followed by a timed release.  Unlike
+    # ROBUST_BCTE, this source controls the *approach profile*, not only entry TTA.
+    PRIORITY_HOLD_RELEASE = 12
 
 
 class NaturalSource(IntEnum):

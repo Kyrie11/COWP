@@ -133,6 +133,105 @@ def smooth_arrival_trajectory(
     return repair_planar_kinematics(out, current=cur, dt=dt)
 
 
+
+def priority_hold_release_trajectory(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    *,
+    entry_distance_m: float,
+    target_time_s: float,
+    stop_margin_m: float = 4.0,
+    release_speed_mps: float = 3.0,
+    min_hold_s: float = 0.35,
+) -> np.ndarray | None:
+    """Early-commitment yield with a pre-conflict hold and timed release.
+
+    Endpoint-only timing can still be coercive: ego may approach a protected
+    agent aggressively and brake only near the conflict.  This primitive makes
+    the yield commitment observable *early*: ego follows a jerk-smooth quintic
+    segment to rest before the conflict boundary, holds there, then follows a
+    second quintic segment that reaches the boundary no earlier than
+    ``target_time_s``.
+
+    Both moving segments match position, velocity and zero acceleration at their
+    endpoints.  This removes the acceleration discontinuities of the first PCHR
+    prototype and keeps the common proposal validator authoritative for the
+    configured acceleration/jerk/map limits.  If the requested timing contains
+    insufficient physical slack for a stop-hold-release maneuver, ``None`` is
+    returned rather than fabricating a nominally yielding but dynamically
+    assertive trajectory.
+    """
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    H = int(horizon)
+    dt = max(float(dt), 1.0e-4)
+    d = float(entry_distance_m)
+    T = float(target_time_s)
+    margin = float(stop_margin_m)
+    v_release = float(release_speed_mps)
+    min_hold = max(float(min_hold_s), 0.0)
+    if H <= 0 or cur.size < 7 or not all(np.isfinite(x) for x in (d, T, margin, v_release, min_hold)):
+        return None
+    if d <= 1.0 or T <= 2.0 * dt or margin <= 0.5 or margin >= d - 0.25 or v_release <= 0.2:
+        return None
+
+    v0 = float(max(cur[5] if cur.size > 5 else np.linalg.norm(cur[3:5]), 0.0))
+    if v0 <= 0.15:
+        return None
+    stage_s = d - margin
+
+    # Use conservative duration factors for zero-acceleration-endpoint quintics.
+    # The release factor is deliberately longer because compressing a rest-to-
+    # crossing-speed quintic creates large positive acceleration/jerk.  The
+    # downstream validator still applies the exact configured limits.
+    t_stop = max(0.8, 2.0 * stage_s / max(v0, 0.2))
+    t_release = max(0.8, 2.5 * margin / max(v_release, 0.2))
+    if t_stop + min_hold + t_release > T + 1.0e-6:
+        return None
+    release_start = T - t_release
+    if release_start < t_stop + min_hold - 1.0e-6:
+        return None
+
+    x0, y0 = float(cur[0]), float(cur[1])
+    yaw = float(cur[6])
+    length = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    width = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+    direction = np.asarray([np.cos(yaw), np.sin(yaw)], dtype=np.float32)
+
+    def quintic_pos(t: float, duration: float, s0: float, v_start: float, s1: float, v_end: float) -> float:
+        """Quintic Hermite position with zero acceleration at both endpoints."""
+        duration = max(float(duration), 1.0e-6)
+        u = float(np.clip(t / duration, 0.0, 1.0))
+        u2, u3, u4, u5 = u * u, u**3, u**4, u**5
+        h00 = 1.0 - 10.0 * u3 + 15.0 * u4 - 6.0 * u5
+        h10 = u - 6.0 * u3 + 8.0 * u4 - 3.0 * u5
+        h01 = 10.0 * u3 - 15.0 * u4 + 6.0 * u5
+        h11 = -4.0 * u3 + 7.0 * u4 - 3.0 * u5
+        return float(h00 * s0 + h10 * duration * v_start + h01 * s1 + h11 * duration * v_end)
+
+    out = np.zeros((H, 7), dtype=np.float32)
+    prev_s = 0.0
+    for k in range(H):
+        t = float((k + 1) * dt)
+        if t <= t_stop:
+            s_t = quintic_pos(t, t_stop, 0.0, v0, stage_s, 0.0)
+        elif t < release_start:
+            s_t = stage_s
+        elif t <= T:
+            s_t = quintic_pos(t - release_start, t_release, stage_s, 0.0, d, v_release)
+        else:
+            s_t = d + v_release * (t - T)
+        if not np.isfinite(s_t) or s_t < prev_s - 1.0e-3:
+            # A backward segment is not a valid yielding commitment.
+            return None
+        prev_s = float(max(s_t, prev_s))
+        pos = np.asarray([x0, y0], dtype=np.float32) + direction * prev_s
+        # Velocity is repaired from finite differences below; seed it with the
+        # correct direction so malformed intermediate values never leak out.
+        out[k] = [pos[0], pos[1], yaw, 0.0, 0.0, length, width]
+    return repair_planar_kinematics(out, current=cur, dt=dt)
+
+
 def resample_logged(
     logged: np.ndarray,
     horizon: int,
