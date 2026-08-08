@@ -23,6 +23,9 @@ WANTED = {
     "cowp/audit/relevance_mass",
     "cowp/audit/root_affected",
     "cowp/audit/root_unsafe",
+    "cowp/audit/root_budget_crossed",
+    "cowp/audit/root_burden_only_affected",
+    "cowp/audit/canonical_root_weight",
     "cowp/witness/exists",
     "cowp/witness/pair_noncoercive_feasible",
     "cowp/witness/blocker_code",
@@ -31,6 +34,9 @@ WANTED = {
     "cowp/witness/rho",
     "cowp/transport/mode_affected",
     "cowp/transport/mode_conflict",
+    "cowp/transport/mode_valid",
+    "cowp/transport/mode_retained_low_safe",
+    "cowp/transport/canonical_root_weight",
     "cowp/response/valid",
 }
 
@@ -111,15 +117,50 @@ def main() -> None:
 
         affected = np.asarray(row.get("cowp/audit/root_affected", []), dtype=bool)
         unsafe = np.asarray(row.get("cowp/audit/root_unsafe", []), dtype=bool)
+        budget_crossed = np.asarray(row.get("cowp/audit/root_budget_crossed", []), dtype=bool)
+        burden_only_explicit = np.asarray(row.get("cowp/audit/root_burden_only_affected", []), dtype=bool)
         if affected.ndim == 3:
             affected = affected[:len(valid), :len(crit)]
             unsafe = unsafe[:len(valid), :len(crit)] if unsafe.shape == affected.shape else np.zeros_like(affected)
+            if budget_crossed.shape == affected.shape:
+                budget_crossed = budget_crossed[:len(valid), :len(crit)]
+            else:
+                budget_crossed = affected & ~unsafe
+            if burden_only_explicit.shape == affected.shape:
+                burden_only = burden_only_explicit[:len(valid), :len(crit)]
+            else:
+                burden_only = affected & ~unsafe
             roots["affected"] += int(affected.sum())
             roots["unsafe"] += int((affected & unsafe).sum())
-            roots["burden_only"] += int((affected & ~unsafe).sum())
+            roots["budget_crossed"] += int(budget_crossed.sum())
+            roots["burden_only"] += int(burden_only.sum())
+            if np.any(burden_only):
+                scenes["burden_only"] += 1
+                # Count candidate-agent pairs, not just duplicated root entries.
+                pair["burden_only"] += int(burden_only.any(axis=-1).sum())
+            roots["affected_identity_error"] += int(np.logical_xor(affected, unsafe | budget_crossed).sum())
+            roots["burden_only_identity_error"] += int(np.logical_xor(burden_only, budget_crossed & ~unsafe).sum())
         t_aff = np.asarray(row.get("cowp/transport/mode_affected", []), dtype=bool)
+        t_conf = np.asarray(row.get("cowp/transport/mode_conflict", []), dtype=bool)
+        t_valid = np.asarray(row.get("cowp/transport/mode_valid", []), dtype=bool)
+        t_retain = np.asarray(row.get("cowp/transport/mode_retained_low_safe", []), dtype=bool)
         if affected.ndim == 3 and t_aff.shape == affected.shape:
             roots["transport_affected_mismatch"] += int(np.logical_xor(t_aff, affected).sum())
+            if t_conf.shape == unsafe.shape:
+                roots["transport_conflict_mismatch"] += int(np.logical_xor(t_conf, unsafe).sum())
+            else:
+                roots["transport_conflict_mismatch"] += 1
+            if t_valid.shape == affected.shape and t_retain.shape == affected.shape:
+                roots["transport_retain_mismatch"] += int(np.logical_xor(t_retain, t_valid & ~affected).sum())
+            else:
+                roots["transport_retain_mismatch"] += 1
+        aw = np.asarray(row.get("cowp/audit/canonical_root_weight", []), dtype=np.float32)
+        tw = np.asarray(row.get("cowp/transport/canonical_root_weight", []), dtype=np.float32)
+        if aw.size and tw.size:
+            if aw.shape != tw.shape:
+                roots["canonical_weight_mismatch"] += 1
+            else:
+                roots["canonical_weight_mismatch"] += int(np.sum(np.abs(aw - tw) > 1.0e-6))
 
         resp = np.asarray(row.get("cowp/response/valid", []), dtype=bool)
         if resp.ndim == 4:
@@ -150,7 +191,7 @@ def main() -> None:
 
     rows = int(scenes["rows"])
     result = {
-        "schema_version": "cowp_v16_8_9_causal_audit_diagnostic_v1",
+        "schema_version": "cowp_v16_8_9_causal_audit_diagnostic_v2",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "num_scenes": rows,
         "read_errors": read_errors,
@@ -167,6 +208,8 @@ def main() -> None:
             "silent_blocker": _rate(pair["silent_blocker"], pair["base"]),
             "irrelevant_blocker": _rate(pair["irrelevant_blocker"], pair["base"]),
             "burden_only_root_fraction": _rate(roots["burden_only"], roots["affected"]),
+            "burden_only_pair_rate": _rate(pair["burden_only"], pair["base"]),
+            "burden_only_scene_rate": _rate(scenes["burden_only"], rows),
             "response_on_relevant_pair": _rate(pair["relevant_with_response"], pair["relevant"]),
             "response_on_irrelevant_pair": _rate(pair["irrelevant_with_response"], pair["irrelevant"]),
         },
@@ -189,6 +232,11 @@ def main() -> None:
             "no_silent_blockers": pair["silent_blocker"] == 0,
             "no_irrelevant_blockers": pair["irrelevant_blocker"] == 0,
             "transport_affected_matches_audit": roots["transport_affected_mismatch"] == 0,
+            "transport_conflict_matches_audit": roots["transport_conflict_mismatch"] == 0,
+            "transport_retain_matches_audit": roots["transport_retain_mismatch"] == 0,
+            "canonical_root_weight_matches_transport": roots["canonical_weight_mismatch"] == 0,
+            "affected_definition_consistent": roots["affected_identity_error"] == 0,
+            "burden_only_definition_consistent": roots["burden_only_identity_error"] == 0,
             "no_responses_for_irrelevant_pairs": pair["irrelevant_with_response"] == 0,
         },
     }

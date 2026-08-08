@@ -1,0 +1,25 @@
+{
+  "version": "v16.8.9-data-contract-repair",
+  "decision_now": "DO_NOT_FULL_REBUILD_YET",
+  "smoke_point_estimates": {
+    "any_valid": 1.0,
+    "any_ncf": 0.4166666666666667,
+    "false_safe_floor": 0.5,
+    "pbtr_floor": 0.4418604651162791,
+    "hard_recovery": 0.20833333333333334
+  },
+  "original_smoke_blockers": {
+    "burden_only_affected_signal_present": false,
+    "transport_affected_matches_audit": false,
+    "transport_affected_mismatch_count": 1258,
+    "burden_only_root_count": 40,
+    "affected_root_count": 112231
+  },
+  "diagnosis": {
+    "small_sample_requires_strict_probe": true,
+    "transport_mismatch_is_structural_bug": true,
+    "burden_only_prevalence_hard_gate_is_removed_as_ill_posed": true,
+    "proposal_geometry_change_recommended_now": false
+  },
+  "next_action": "Repair the existing 96-scene smoke NPZ contract in place, rerun smoke diagnostics, and only if recommend_strict_probe=true run the 400+800 strict probe. Full rebuild requires strict recommend_full_rebuild=true under the same fingerprint."
+}

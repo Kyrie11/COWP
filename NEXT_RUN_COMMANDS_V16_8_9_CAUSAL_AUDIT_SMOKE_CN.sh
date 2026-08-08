@@ -32,6 +32,7 @@ UNION_IDS="$SMOKE_ROOT/union_scene_ids.txt"
 PAIRED="$SMOKE_ROOT/paired_probe.json"
 ABLATION="$SMOKE_ROOT/proposal_source_ablation.json"
 AUDIT="$SMOKE_ROOT/causal_audit_diagnostic.json"
+SUPERVISION="$SMOKE_ROOT/training_supervision_audit.json"
 SCREEN="$SMOKE_ROOT/v16_8_9_smoke_verdict.json"
 
 mkdir -p "$SMOKE_ROOT/logs"
@@ -92,6 +93,8 @@ run source_ablation "$PYTHON_BIN" -m cowp.scripts.50_ablate_proposal_sources \
 
 run audit "$PYTHON_BIN" -m cowp.scripts.57_diagnose_causal_audit \
   --cache-dir "$FRESH_LABELS" --scene-ids "$UNION_IDS" --output "$AUDIT"
+run supervision "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
+  --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --output "$SUPERVISION"
 
 if [[ -n "$PREV_FRESH_CACHE" && -d "$PREV_FRESH_CACHE" ]]; then
   run compare_previous "$PYTHON_BIN" -m cowp.scripts.46_compare_proposal_probe \
@@ -112,6 +115,7 @@ set -e
 
 echo "SMOKE_VERDICT=$SCREEN"
 echo "CAUSAL_AUDIT=$AUDIT"
+echo "TRAINING_SUPERVISION_AUDIT=$SUPERVISION"
 if [[ "$STATUS" -eq 0 ]]; then
   echo "SMOKE PASS: run NEXT_RUN_COMMANDS_V16_8_9_STRICT_PROPOSAL_PROBE_CN.sh. Do NOT full-rebuild yet."
 else

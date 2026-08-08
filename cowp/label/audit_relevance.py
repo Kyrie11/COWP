@@ -74,6 +74,11 @@ def compute_candidate_agent_audit(
     root_affected = np.zeros((K, A, M), dtype=bool)
     root_unsafe = np.zeros((K, A, M), dtype=bool)
     root_direct_burden = np.zeros((K, A, M), dtype=np.float32)
+    # Keep the budget-crossing subset explicit.  v16.8.9 inferred
+    # ``affected & ~unsafe`` downstream; storing it directly makes the data
+    # contract auditable without forcing a minimum prevalence in a small probe.
+    root_budget_crossed = np.zeros((K, A, M), dtype=bool)
+    root_burden_only_affected = np.zeros((K, A, M), dtype=bool)
     root_weight = canonical_root_weights(natural, cfg)
 
     min_mass = float(cfg.get("ncf", {}).get(
@@ -106,8 +111,12 @@ def compute_candidate_agent_audit(
                 )
                 root_unsafe[k, a, m] = unsafe
                 root_direct_burden[k, a, m] = float(b_under)
-                affected = unsafe or (float(b_under) > beta + direct_margin)
-                root_affected[k, a, m] = bool(affected)
+                budget_crossed = bool(float(b_under) > beta + direct_margin)
+                burden_only = bool(budget_crossed and not unsafe)
+                root_budget_crossed[k, a, m] = budget_crossed
+                root_burden_only_affected[k, a, m] = burden_only
+                affected = bool(unsafe or budget_crossed)
+                root_affected[k, a, m] = affected
             mass = float(np.sum(root_weight[a] * root_affected[k, a].astype(np.float32)))
             relevance_mass[k, a] = mass
             pair_relevant[k, a] = bool(mass > min_mass - 1.0e-8)
@@ -118,5 +127,7 @@ def compute_candidate_agent_audit(
         "root_affected": root_affected,
         "root_unsafe": root_unsafe,
         "root_direct_burden": root_direct_burden,
+        "root_budget_crossed": root_budget_crossed,
+        "root_burden_only_affected": root_burden_only_affected,
         "canonical_root_weight": root_weight,
     }

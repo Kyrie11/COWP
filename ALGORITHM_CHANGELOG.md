@@ -2503,3 +2503,7 @@ v16.3 planner or selector result.
 ## v16.8.9 engineering repair — complete smoke/protocol tooling and numeric-module import fix (2026-08-08)
 
 No algorithm/data-threshold/output-path change. Restored the missing v16.8.9 diagnostic/protocol scripts, upgraded scripts 46/50 to their v16.8.9-compatible implementations, replaced invalid direct imports of numeric-prefixed script 59 with `importlib.import_module`, added a `CASUAL` typo-compatible smoke wrapper, and revalidated the v16.8.9 execution chain. Full Python regression: **175 passed**.
+
+## v16.8.9 data-contract repair — exact audit/transport semantics and supervision sufficiency (2026-08-08)
+
+The completed 96-scene v16.8.9 smoke passed the proposal point-estimate gates (`AnyNCF=0.4167`, false-safe `0.5000`, PBTR `0.4419`, hard recovery `0.2083`) but exposed 1,258 exact audit/transport affected-root mismatches and an overly strong hard requirement on the prevalence of burden-only affected roots. The repair makes root affectedness/conflict/retention and canonical root weights exact across audit and transport, keeps burden-only prevalence advisory rather than threshold-forcing, adds an in-place smoke NPZ repair path, and adds training-supervision sufficiency audits before strict/full training. No NCF/PBTR/proposal threshold or candidate geometry was relaxed. Full regression: **178 passed**.

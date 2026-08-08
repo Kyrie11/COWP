@@ -177,6 +177,30 @@ def certify_witnesses(
             rho_arr[k, a] = int(rho)
             beta = float(natural.get("beta", np.full(A, 0.65))[a])
             pair_relevant = True if audit is None else bool(np.asarray(audit["pair_relevant"], dtype=bool)[k, a])
+            # The transport tensors are a root-level description of the audit and
+            # must not depend on the pair-level relevance threshold.  v16.8.9
+            # only copied them after the relevance early-exit, so sub-threshold
+            # pairs could have audit/root_affected=True while
+            # transport/mode_affected=False.  That was a data-contract mismatch,
+            # not a model/data property.  Populate the canonical root labels
+            # first; relevance only decides whether response/witness search is
+            # needed and whether the pair participates in the certificate loss.
+            if audit is not None:
+                valid_root_mask = np.asarray(natural["valid"][a], dtype=bool) & (
+                    np.asarray(natural["burden_neutral"][a], dtype=np.float32) <= beta
+                )
+                mode_valid[k, a, : len(valid_root_mask)] = valid_root_mask[:M]
+                mode_conflict[k, a, : len(valid_root_mask)] = (
+                    np.asarray(audit["root_unsafe"], dtype=bool)[k, a, : len(valid_root_mask)]
+                    & valid_root_mask[:M]
+                )
+                mode_affected[k, a, : len(valid_root_mask)] = (
+                    np.asarray(audit["root_affected"], dtype=bool)[k, a, : len(valid_root_mask)]
+                    & valid_root_mask[:M]
+                )
+                mode_retained_low_safe[k, a, : len(valid_root_mask)] = (
+                    valid_root_mask[:M] & ~mode_affected[k, a, : len(valid_root_mask)]
+                )
             if not pair_relevant:
                 # A globally critical agent that this candidate does not perturb is
                 # vacuously non-coercive for this intervention.  Earlier versions

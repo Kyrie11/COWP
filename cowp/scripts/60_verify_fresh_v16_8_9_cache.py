@@ -31,6 +31,9 @@ REQUIRED_KEYS = (
     "cowp/audit/root_affected",
     "cowp/audit/root_unsafe",
     "cowp/audit/root_direct_burden",
+    "cowp/audit/root_budget_crossed",
+    "cowp/audit/root_burden_only_affected",
+    "cowp/audit/canonical_root_weight",
     "cowp/witness/exists",
     "cowp/witness/pair_noncoercive_feasible",
     "cowp/witness/blocker_code",
@@ -95,6 +98,8 @@ def main() -> None:
     source_counts = Counter()
     ncf_scenes = valid_scenes = 0
     silent_blockers = irrelevant_blockers = affected_mismatch = 0
+    conflict_mismatch = retain_mismatch = canonical_weight_mismatch = 0
+    affected_definition_error = burden_only_definition_error = 0
     for p in inspect:
         if not p.exists():
             continue
@@ -134,7 +139,12 @@ def main() -> None:
                 req = {k: files.get(k) for k in (
                     "cowp/candidates/valid", "cowp/critical/valid", "cowp/audit/pair_relevant",
                     "cowp/witness/exists", "cowp/witness/pair_noncoercive_feasible",
-                    "cowp/audit/root_affected", "cowp/transport/mode_affected",
+                    "cowp/audit/root_affected", "cowp/audit/root_unsafe",
+                    "cowp/audit/root_budget_crossed", "cowp/audit/root_burden_only_affected",
+                    "cowp/audit/canonical_root_weight",
+                    "cowp/transport/mode_valid", "cowp/transport/mode_conflict",
+                    "cowp/transport/mode_affected", "cowp/transport/mode_retained_low_safe",
+                    "cowp/transport/canonical_root_weight",
                 )}
                 if all(v is not None for v in req.values()):
                     cv = np.asarray(z[req["cowp/candidates/valid"]], dtype=bool)
@@ -146,11 +156,39 @@ def main() -> None:
                     silent_blockers += int((base & rel & ~pn & ~ex).sum())
                     irrelevant_blockers += int((base & ~rel & ~pn).sum())
                     ra = np.asarray(z[req["cowp/audit/root_affected"]], dtype=bool)
+                    ru = np.asarray(z[req["cowp/audit/root_unsafe"]], dtype=bool)
+                    rb = np.asarray(z[req["cowp/audit/root_budget_crossed"]], dtype=bool)
+                    rbo = np.asarray(z[req["cowp/audit/root_burden_only_affected"]], dtype=bool)
+                    tv = np.asarray(z[req["cowp/transport/mode_valid"]], dtype=bool)
+                    tc = np.asarray(z[req["cowp/transport/mode_conflict"]], dtype=bool)
                     ta = np.asarray(z[req["cowp/transport/mode_affected"]], dtype=bool)
+                    tr = np.asarray(z[req["cowp/transport/mode_retained_low_safe"]], dtype=bool)
+                    aw = np.asarray(z[req["cowp/audit/canonical_root_weight"]], dtype=np.float32)
+                    tw = np.asarray(z[req["cowp/transport/canonical_root_weight"]], dtype=np.float32)
                     if ra.shape == ta.shape:
                         affected_mismatch += int(np.logical_xor(ra, ta).sum())
                     else:
                         affected_mismatch += 1
+                    if ru.shape == tc.shape:
+                        conflict_mismatch += int(np.logical_xor(ru, tc).sum())
+                    else:
+                        conflict_mismatch += 1
+                    if ra.shape == tv.shape == tr.shape:
+                        retain_mismatch += int(np.logical_xor(tr, tv & ~ra).sum())
+                    else:
+                        retain_mismatch += 1
+                    if aw.shape == tw.shape:
+                        canonical_weight_mismatch += int(np.sum(np.abs(aw - tw) > 1.0e-6))
+                    else:
+                        canonical_weight_mismatch += 1
+                    if ra.shape == ru.shape == rb.shape:
+                        affected_definition_error += int(np.logical_xor(ra, ru | rb).sum())
+                    else:
+                        affected_definition_error += 1
+                    if rbo.shape == ru.shape == rb.shape:
+                        burden_only_definition_error += int(np.logical_xor(rbo, rb & ~ru).sum())
+                    else:
+                        burden_only_definition_error += 1
         except Exception as exc:
             read_errors.append({"file": p.name, "error": repr(exc)})
             if len(read_errors) >= 20:
@@ -177,9 +215,19 @@ def main() -> None:
         reasons.append(f"irrelevant pair blockers={irrelevant_blockers}")
     if affected_mismatch:
         reasons.append(f"audit/transport affected-root mismatches={affected_mismatch}")
+    if conflict_mismatch:
+        reasons.append(f"audit/transport conflict-root mismatches={conflict_mismatch}")
+    if retain_mismatch:
+        reasons.append(f"transport retained-root definition mismatches={retain_mismatch}")
+    if canonical_weight_mismatch:
+        reasons.append(f"audit/transport canonical-root-weight mismatches={canonical_weight_mismatch}")
+    if affected_definition_error:
+        reasons.append(f"affected-root definition mismatches={affected_definition_error}")
+    if burden_only_definition_error:
+        reasons.append(f"burden-only definition mismatches={burden_only_definition_error}")
 
     result = {
-        "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v1",
+        "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v2",
         "pass": not reasons,
         "cache_dir": str(root.resolve()),
         "files": len(paths),
@@ -198,6 +246,11 @@ def main() -> None:
         "silent_blocker_count": silent_blockers,
         "irrelevant_blocker_count": irrelevant_blockers,
         "affected_root_mismatch_count": affected_mismatch,
+        "conflict_root_mismatch_count": conflict_mismatch,
+        "retained_root_mismatch_count": retain_mismatch,
+        "canonical_root_weight_mismatch_count": canonical_weight_mismatch,
+        "affected_definition_error_count": affected_definition_error,
+        "burden_only_definition_error_count": burden_only_definition_error,
         "reasons": reasons,
     }
     out = Path(args.output)

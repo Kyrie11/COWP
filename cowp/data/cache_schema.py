@@ -60,6 +60,9 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/audit/root_affected": FieldSpec(("K", "A", "M"), "b", required=False),
     "cowp/audit/root_unsafe": FieldSpec(("K", "A", "M"), "b", required=False),
     "cowp/audit/root_direct_burden": FieldSpec(("K", "A", "M"), "f", required=False),
+    "cowp/audit/root_budget_crossed": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/audit/root_burden_only_affected": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/audit/canonical_root_weight": FieldSpec(("A", "M"), "f", required=False),
     "cowp/response/traj": FieldSpec(("K", "A", "R", "T", 7), "f"),
     "cowp/response/valid": FieldSpec(("K", "A", "R"), "b"),
     "cowp/response/source": FieldSpec(("K", "A", "R"), ("i", "u")),
@@ -175,6 +178,26 @@ def validate_numeric_invariants(data: Mapping[str, np.ndarray], cfg: dict) -> li
             code = np.asarray(data["cowp/witness/blocker_code"], dtype=np.int64)
             if np.any(base_pair & (~rel) & (code != 0)):
                 errors.append("irrelevant valid audit pair carries blocker code")
+        if all(k in data for k in (
+            "cowp/audit/root_affected", "cowp/audit/root_unsafe",
+            "cowp/audit/root_budget_crossed", "cowp/audit/root_burden_only_affected",
+        )):
+            ra = np.asarray(data["cowp/audit/root_affected"], dtype=bool)
+            ru = np.asarray(data["cowp/audit/root_unsafe"], dtype=bool)
+            rb = np.asarray(data["cowp/audit/root_budget_crossed"], dtype=bool)
+            rbo = np.asarray(data["cowp/audit/root_burden_only_affected"], dtype=bool)
+            if not (ra.shape == ru.shape == rb.shape == rbo.shape):
+                errors.append("causal-audit root tensors have inconsistent shapes")
+            else:
+                if np.any(np.logical_xor(ra, ru | rb)):
+                    errors.append("root_affected != root_unsafe OR root_budget_crossed")
+                if np.any(np.logical_xor(rbo, rb & ~ru)):
+                    errors.append("root_burden_only_affected != root_budget_crossed AND NOT root_unsafe")
+        if all(k in data for k in ("cowp/audit/root_affected", "cowp/transport/mode_affected")):
+            ra = np.asarray(data["cowp/audit/root_affected"], dtype=bool)
+            ta = np.asarray(data["cowp/transport/mode_affected"], dtype=bool)
+            if ra.shape != ta.shape or np.any(np.logical_xor(ra, ta)):
+                errors.append("transport/mode_affected does not exactly match audit/root_affected")
     if "cowp/witness/exists" in data:
         exists = np.asarray(data["cowp/witness/exists"], dtype=bool)
         if "cowp/audit/relevance_mass" in data:

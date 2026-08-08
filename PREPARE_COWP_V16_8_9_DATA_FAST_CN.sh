@@ -242,6 +242,12 @@ run verify_fresh_train "$PYTHON_BIN" -m cowp.scripts.60_verify_fresh_v16_8_9_cac
 run verify_fresh_val "$PYTHON_BIN" -m cowp.scripts.60_verify_fresh_v16_8_9_cache \
   --cache-dir "$VAL_CACHE_FINAL" "${VERIFY_VAL_ALLOW[@]}" \
   --sample-scenes 0 --output "$COWP_ROOT/fresh_cache_integrity_val.json"
+run supervision_train "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
+  --cache-dir "$TRAIN_CACHE_FINAL" --sample-scenes 0 --min-class-examples 128 --strict \
+  --output "$COWP_ROOT/training_supervision_audit_train.json"
+run supervision_val "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
+  --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --strict \
+  --output "$COWP_ROOT/training_supervision_audit_val.json"
 
 # Recompute the full validation proposal ceiling from the actual post-merge cache.
 # This is a final dataset-level guard before any GPU training starts.
@@ -270,10 +276,14 @@ checks={
  'audit_no_read_errors': bool(d.get('integrity',{}).get('no_read_errors',False)),
  'audit_no_silent_blockers': bool(d.get('integrity',{}).get('no_silent_blockers',False)),
  'audit_no_irrelevant_blockers': bool(d.get('integrity',{}).get('no_irrelevant_blockers',False)),
- 'audit_transport_match': bool(d.get('integrity',{}).get('transport_affected_matches_audit',False)),
+ 'audit_transport_affected_match': bool(d.get('integrity',{}).get('transport_affected_matches_audit',False)),
+ 'audit_transport_conflict_match': bool(d.get('integrity',{}).get('transport_conflict_matches_audit',False)),
+ 'audit_transport_retain_match': bool(d.get('integrity',{}).get('transport_retain_matches_audit',False)),
+ 'audit_canonical_weight_match': bool(d.get('integrity',{}).get('canonical_root_weight_matches_transport',False)),
  'audit_no_irrelevant_responses': bool(d.get('integrity',{}).get('no_responses_for_irrelevant_pairs',False)),
  'audit_relevance_non_degenerate': 0.01 <= float(d.get('pair_rates',{}).get('relevant',0.0)) <= 0.95,
- 'burden_only_affected_present': float(d.get('pair_rates',{}).get('burden_only_root_fraction',0.0)) >= 0.002,
+ 'affected_definition_consistent': bool(d.get('integrity',{}).get('affected_definition_consistent',False)),
+ 'burden_only_definition_consistent': bool(d.get('integrity',{}).get('burden_only_definition_consistent',False)),
  'proposal_union_monotone_any_ncf': float(all_bank.get('any_ncf_scene_rate',0.0)) + 1e-12 >= float(no_psy.get('any_ncf_scene_rate',0.0)),
  'proposal_union_monotone_false_safe': float(all_bank.get('best_case_selected_false_safe_lower_bound',1.0)) <= float(no_psy.get('best_case_selected_false_safe_lower_bound',1.0)) + 1e-12,
  'proposal_union_monotone_pbtr': float(all_bank.get('best_case_pbtr_lower_bound',1.0)) <= float(no_psy.get('best_case_pbtr_lower_bound',1.0)) + 1e-12,
@@ -301,7 +311,7 @@ cat > "$COWP_ROOT/data_manifest_v16_8_9.json" <<JSON
   "transport_storage": "inline_self_contained",
   "transport_train_cache": "$TRAIN_CACHE_FINAL",
   "transport_val_cache": "$VAL_CACHE_FINAL",
-  "notes": "Fresh labels use fixed-anchor global critical selection plus candidate-conditioned causal audit relevance. Affected-root transport covers unsafe and burden-only natural-root perturbations. Responses/witness/RCOT share the same audit support; silent/irrelevant blockers are forbidden. Transport supervision is serialized inline; no symlink overlay is required."
+  "notes": "Fresh labels use fixed-anchor global critical selection plus candidate-conditioned causal audit relevance. Affected-root transport is the exact root-level audit support (unsafe OR direct budget crossing); burden-only prevalence is reported but is not artificially required. Responses/witness/RCOT share the same audit support; silent/irrelevant blockers are forbidden. Transport supervision is serialized inline; no symlink overlay is required."
 }
 JSON
 

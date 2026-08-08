@@ -58,3 +58,37 @@ This repair does **not** change the v16.8.9 algorithm, labels, thresholds, outpu
 4. Added `NEXT_RUN_COMMANDS_V16_8_9_CASUAL_AUDIT_SMOKE_CN.sh` as a typo-compatible alias to the canonical `...CAUSAL_AUDIT...` entrypoint; both preserve the same output paths and behavior.
 5. Verified every `python -m cowp.scripts.*` reference in the v16.8.9 shell entrypoints resolves to a real module.
 6. Regression: `python -m compileall -q cowp` PASS; full `pytest -q`: **175 passed**; core v16.8.9 shell `bash -n` PASS; CLI `--help` smoke for scripts 46/50/57/58/59 PASS; fingerprint import smoke PASS.
+
+## v16.8.9 data-contract repair — exact audit/transport semantics and supervision sufficiency (2026-08-08)
+
+This revision is an engineering/data-contract correction triggered by the completed 96-scene causal-audit smoke. It does **not** relax the NCF, false-safe, PBTR, hard-recovery, relevance, burden, or proposal thresholds, and it does not alter the v16.8.9 candidate geometry.
+
+### Evidence from the completed smoke
+
+- On the 48-scene unbiased representative subset the fresh bank reached `AnyNCF=0.4167`, false-safe floor `0.5000`, PBTR floor `0.4419`, and hard-scene recovery `0.2083`; the paired proposal gate itself therefore passed all point-estimate proposal thresholds.
+- Relative to the v16.8.8 fresh bank on the same representative IDs, `AnyNCF` improved from `0.2083` to `0.4167`, all 10 old NCF scenes were retained, 10 new NCF scenes were gained, and PBTR remained below the target floor. This is a positive signal for candidate-conditioned relevance rather than evidence for another proposal-grid expansion.
+- Final smoke promotion nevertheless failed only because `burden_only_affected_signal_present=false` and `transport_affected_matches_audit=false`.
+- The latter failure was structural: 1,258 root entries had `audit/root_affected != transport/mode_affected`, caused by the witness builder skipping audit-irrelevant pairs before serializing root-level transport support.
+- The former was an ill-posed prevalence gate, not a consistency failure. Under the existing physical-safety semantics, `unsafe_between` already covers collision, near-miss, TTC and RSS-gap violations, so an unchanged natural trajectory that is burden-affected without also becoming unsafe is legitimately rare. The smoke contained only 40 such roots out of more than 112k affected roots. The signal remains observable but is no longer required to exceed an arbitrary dataset prevalence.
+
+### Contract fixes
+
+1. Root-level audit tensors now explicitly serialize `root_budget_crossed`, `root_burden_only_affected`, and `canonical_root_weight` in addition to `root_unsafe`, `root_direct_burden`, and `root_affected`.
+2. `root_affected` is defined and verified exactly as `root_unsafe OR root_budget_crossed`; `root_burden_only_affected` is exactly `root_budget_crossed AND NOT root_unsafe`.
+3. Root-level transport tensors are populated **before** the pair-relevance early exit. Consequently `mode_conflict`, `mode_affected`, and `mode_retained` describe the same root support for relevant and irrelevant global-critical pairs. Pair relevance only decides whether response/witness search and learned pair losses are active.
+4. Diagnostics/full-cache verification now hard-check exact equality of audit/transport conflict support, affected support, retained support and canonical root weights, rather than checking only one affected tensor.
+5. The burden-only affected-root prevalence is retained as an advisory statistic and ablation signal. Promotion no longer manufactures or demands a fixed positive prevalence; hard gates instead enforce the root identities and cross-module consistency.
+6. Added `61_repair_v16_8_9_audit_transport_contract.py` and `RECOVER_V16_8_9_CAUSAL_AUDIT_SMOKE_CONTRACT_CN.sh`. Existing v16.8.9 smoke NPZ files can be repaired in place without recomputing Scenario-proto labels because the repair changes only root-level serialization and does not change candidate trajectories, relevance, responses, witnesses, pair NCF or candidate NCF.
+7. Added `62_audit_training_supervision.py`. Smoke/strict/full data now report whether every core learned head actually receives non-degenerate positive/negative supervision (candidate NCF, pair relevance, witness, pair NCF, conflict/affected transport, affected-root recovery and protected-priority relations). Full train/val caches are blocked before GPU training if a required head is degenerate.
+8. The smoke screen now reports Wilson 95% intervals for the 48-scene representative proposal estimates. This makes explicit that the current point estimates justify a larger strict probe but are not sufficiently precise to justify a four-day full rebuild.
+
+### Promotion consequence
+
+Do not rebuild the 96-scene smoke from WOMD merely to repair the 1,258 transport mismatches. Repair the existing NPZs, rerun diagnostics/screen at the same output paths, and proceed to the 400-hard + 800-random strict probe only if the repaired smoke passes. A full rebuild remains forbidden until the strict probe passes under the exact repaired code/config fingerprint.
+
+### Validation
+
+- `python -m compileall -q cowp`: PASS.
+- Full regression suite: **178 passed**.
+- Core v16.8.9 smoke/strict/full-build/mechanism/Waymax/causal-ablation shell syntax: PASS.
+- Repair and training-supervision audit CLI smoke: PASS.

@@ -11,7 +11,7 @@ export HARD_COUNT="${HARD_COUNT:-400}" RANDOM_COUNT="${RANDOM_COUNT:-800}" LABEL
 SCENARIO_VAL="$WOMD_ROOT/uncompressed/scenario/validation/*.tfrecord*"
 FRESH="$PROBE_ROOT/labels_val_v16_8_9"; PROFILE="$PROBE_ROOT/fresh_probe_profile.jsonl"; SUMMARY="$PROBE_ROOT/fresh_probe_profile_summary.json"
 HARD="$PROBE_ROOT/hard_scene_ids.txt"; RANDOM="$PROBE_ROOT/representative_random_scene_ids.txt"; UNION="$PROBE_ROOT/probe_union_scene_ids.txt"
-PAIRED="$PROBE_ROOT/paired_proposal_probe.json"; ABL="$PROBE_ROOT/proposal_source_ablation.json"; AUDIT="$PROBE_ROOT/causal_audit_diagnostic.json"; VERDICT="$PROBE_ROOT/v16_8_9_strict_verdict.json"
+PAIRED="$PROBE_ROOT/paired_proposal_probe.json"; ABL="$PROBE_ROOT/proposal_source_ablation.json"; AUDIT="$PROBE_ROOT/causal_audit_diagnostic.json"; SUPERVISION="$PROBE_ROOT/training_supervision_audit.json"; VERDICT="$PROBE_ROOT/v16_8_9_strict_verdict.json"
 mkdir -p "$PROBE_ROOT/logs"
 if [[ "$FORCE_REBUILD_PROBE" == 1 ]]; then rm -rf "$FRESH"; rm -f "$PROFILE"; fi; mkdir -p "$FRESH"
 CODE_FP="$($PYTHON_BIN - <<'PY'
@@ -32,6 +32,7 @@ run summarize "$PYTHON_BIN" -m cowp.scripts.49_summarize_label_build_profile --i
 run compare "$PYTHON_BIN" -m cowp.scripts.46_compare_proposal_probe --old-cache "$OLD_VAL_CACHE" --new-cache "$FRESH" --representative-scene-ids "$RANDOM" --hard-scene-ids "$HARD" --new-build-profile "$PROFILE" --output "$PAIRED" --min-overall-any-valid 0.99 --min-overall-any-ncf 0.40 --max-false-safe-floor 0.55 --max-pbtr-floor 0.45 --min-hard-recovery 0.20 --max-rmr-target-tta-error-s 0.20
 run source_ablation "$PYTHON_BIN" -m cowp.scripts.50_ablate_proposal_sources --cache-dir "$FRESH" --output "$ABL"
 run audit "$PYTHON_BIN" -m cowp.scripts.57_diagnose_causal_audit --cache-dir "$FRESH" --scene-ids "$UNION" --output "$AUDIT"
+run supervision "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision --cache-dir "$FRESH" --sample-scenes 0 --min-class-examples 32 --output "$SUPERVISION" --strict
 set +e
 run screen "$PYTHON_BIN" -m cowp.scripts.58_screen_v16_8_9_causal_audit_probe --paired-probe "$PAIRED" --source-ablation "$ABL" --profile-summary "$SUMMARY" --audit-diagnostic "$AUDIT" --output "$VERDICT" --strict
 STATUS=$?
