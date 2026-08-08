@@ -84,14 +84,25 @@ candidate:
   # v16.8.4: reject RMR timing proposals whose realized conflict-entry TTA
   # disagrees with the advertised pass-before/pass-after target.
   timing_envelope_max_target_tta_error_s: 0.20
-  # v16.8.6: explicit early yielding commitment.  This proposal family targets
-  # protected-priority burden transfer rather than merely changing arrival TTA.
-  priority_hold_release_enabled: true
+  # v16.8.6 PCHR is retained as an ablation, but the 191-scene probe generated
+  # only 17 candidates and zero NCF candidates; it is disabled by default in v16.8.8.
+  priority_hold_release_enabled: false
   priority_hold_release_max_candidates: 8
   priority_hold_release_stop_margin_m: [3.0, 5.0]
   priority_hold_release_speed_mps: [2.5, 3.5, 4.0]
   priority_hold_release_min_hold_s: 0.35
   priority_hold_release_gap_s: [0.8, 1.4, 2.0]
+  # v16.8.8 Priority-Smooth-Yield (PSY): a more feasible protected-priority
+  # commitment family.  It reaches the pass-after boundary with a low terminal
+  # speed and requires an observable early speed drop, avoiding PCHR's full-stop
+  # feasibility bottleneck.
+  priority_smooth_yield_enabled: true
+  priority_smooth_yield_max_candidates: 8
+  priority_smooth_yield_terminal_speed_mps: [1.0, 2.0, 3.0]
+  priority_smooth_yield_initial_decel_mps2: [-0.8, -1.4, -2.0]
+  priority_smooth_yield_gap_s: [0.8, 1.4, 2.0]
+  priority_smooth_yield_commitment_check_s: 1.0
+  priority_smooth_yield_min_speed_drop_mps: 0.75
   lane_change_duration_s:
   - 2.5
   - 3.5
@@ -127,6 +138,11 @@ priority:
   gap_loss_threshold_m: 6.0
   gap_loss_threshold_s: 1.0
 critical:
+  # v16.8.8: global critical-agent selection must not depend on the optional
+  # proposal bank; otherwise adding proposals can relabel every old candidate.
+  selection_reference_mode: fixed_anchor_v1
+  anchor_lane_offset_m: 3.5
+  anchor_lane_change_delay_s: 0.5
   max_current_distance_m: 40.0
   max_future_distance_m: 15.0
   always_keep_current_distance_m: 18.0

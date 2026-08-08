@@ -7,7 +7,7 @@ import numpy as np
 from cowp.core.constants import MacroType, PriorityRelation, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, trajectory_entry_to_region, tta_to_region
-from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory
+from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
 from cowp.label.priority import determine_priority
 
 
@@ -294,6 +294,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
     proposal_target_tta_error_s: list[float] = []
     rejection_counts: Counter[str] = Counter()
     attempted_by_source: Counter[str] = Counter()
+    accepted_by_source: Counter[str] = Counter()
 
     def _near_duplicate(traj: np.ndarray, m: MacroType) -> bool:
         """Avoid wasting candidate slots on nearly identical keep-lane endings."""
@@ -350,6 +351,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             return False
         if len(traj) == horizon:
             candidates.append(traj)
+            accepted_by_source[source.name] += 1
             macro.append(int(m))
             speed = np.linalg.norm(traj[:, 3:5], axis=-1)
             progress = float(np.linalg.norm(traj[-1, :2] - traj[0, :2]))
@@ -411,6 +413,22 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         source=ProposalSource.NEUTRAL,
         accel_mps2=-2.0,
     )
+    # v16.8.8 base-bank preservation: semantically distinct lane-change/creep
+    # actions are added before optional RMR/priority refinements.  Optional
+    # proposal families may consume terminal filler slots, but must not silently
+    # delete these core actions when K is saturated.
+    for lateral, m in [(-3.5, MacroType.LANE_CHANGE_RIGHT), (3.5, MacroType.LANE_CHANGE_LEFT)]:
+        for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5]):
+            tr = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0, lateral_offset=lateral, start_delay_s=float(delay))
+            add(tr, m, util=0.3, source=ProposalSource.LANE_CHANGE)
+    add(
+        smooth_stop_trajectory(ego_cur, horizon, dt, decel=-1.0, creep_speed=1.0),
+        MacroType.CREEP,
+        util=1.0,
+        source=ProposalSource.CREEP,
+        accel_mps2=-1.0,
+    )
+
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
     if regions:
         keep = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0)
@@ -615,19 +633,87 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                                     if accepted:
                                         phr_keys.add(key)
                                         phr_added += 1
-    for lateral, m in [(-3.5, MacroType.LANE_CHANGE_RIGHT), (3.5, MacroType.LANE_CHANGE_LEFT)]:
-        for delay in cand_cfg.get("lane_change_start_delay_s", [0.0, 0.5, 1.0, 1.5]):
-            # Hold the lane during delay, then apply a smoothed lateral offset over the full primitive.
-            tr = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0, lateral_offset=lateral, start_delay_s=float(delay))
-            add(tr, m, util=0.3, source=ProposalSource.LANE_CHANGE)
-    add(
-        smooth_stop_trajectory(ego_cur, horizon, dt, decel=-1.0, creep_speed=1.0),
-        MacroType.CREEP,
-        util=1.0,
-        source=ProposalSource.CREEP,
-        accel_mps2=-1.0,
-    )
 
+
+            # v16.8.8 Priority-Smooth-Yield (PSY).  The 191-scene PCHR probe
+            # showed that mandatory stop-hold-release is physically feasible in
+            # too few ordinary interaction windows (17 candidates / 128 random
+            # scenes, zero NCF).  PSY instead reaches the protected agent's late
+            # pass-after boundary at a deliberately low entry speed, and requires
+            # an observable early speed drop.  It preserves the causal protected
+            # relation and common validator, but removes the full-stop bottleneck.
+            if bool(cand_cfg.get("priority_smooth_yield_enabled", True)):
+                psy_max = max(0, int(cand_cfg.get("priority_smooth_yield_max_candidates", 8)))
+                psy_added = 0
+                psy_vt = [float(x) for x in cand_cfg.get("priority_smooth_yield_terminal_speed_mps", [1.0, 2.0, 3.0])]
+                psy_a0 = [float(x) for x in cand_cfg.get("priority_smooth_yield_initial_decel_mps2", [-0.8, -1.4, -2.0])]
+                psy_gaps = [float(x) for x in cand_cfg.get("priority_smooth_yield_gap_s", [0.8, 1.4, 2.0])]
+                commit_t = max(float(cand_cfg.get("priority_smooth_yield_commitment_check_s", 1.0)), dt)
+                min_drop = max(0.0, float(cand_cfg.get("priority_smooth_yield_min_speed_drop_mps", 0.75)))
+                protected_rel = {int(PriorityRelation.AGENT_PRIORITY), int(PriorityRelation.EQUAL_OR_NEGOTIATED)}
+                psy_keys: set[tuple[int, int, int, int]] = set()
+                for _, dist_to_conflict, region in reachable[:max_regions]:
+                    if psy_added >= psy_max or len(candidates) >= K:
+                        break
+                    for agent_index, _early_tta, _nominal_tta, late_tta in _agent_tta_envelopes_to_region(scene, region, cfg):
+                        if psy_added >= psy_max or len(candidates) >= K:
+                            break
+                        rho = _causal_priority_relation(scene, int(agent_index), keep, cfg)
+                        if int(rho) not in protected_rel:
+                            continue
+                        for gap in psy_gaps:
+                            target_time = float(late_tta + gap)
+                            if target_time <= max(0.35, commit_t) or target_time > horizon_s:
+                                continue
+                            for initial_accel in psy_a0:
+                                for terminal_speed in psy_vt:
+                                    if psy_added >= psy_max or len(candidates) >= K:
+                                        break
+                                    vt = float(max(terminal_speed, 0.0))
+                                    key = (
+                                        int(region.conflict_id), int(agent_index),
+                                        int(round(target_time * 10.0)),
+                                        int(round(vt * 10.0)) * 100 + int(round(abs(initial_accel) * 10.0)),
+                                    )
+                                    if key in psy_keys:
+                                        continue
+                                    tr = smooth_terminal_speed_arrival_trajectory(
+                                        ego_cur, horizon, dt, distance_m=dist_to_conflict,
+                                        target_time_s=target_time, terminal_speed_mps=vt,
+                                        initial_accel_mps2=initial_accel,
+                                    )
+                                    if tr is None:
+                                        continue
+                                    check_idx = min(max(int(round(commit_t / dt)) - 1, 0), horizon - 1)
+                                    check_speed = float(np.linalg.norm(tr[check_idx, 3:5]))
+                                    if ego_speed > 1.5 and check_speed > max(ego_speed - min_drop, 0.5) + 1.0e-6:
+                                        continue
+                                    actual_tta, actual_entry_dist = trajectory_entry_to_region(
+                                        tr, region, current_state=ego_cur, dt=dt
+                                    )
+                                    if not np.isfinite(actual_tta):
+                                        continue
+                                    tta_error = abs(float(actual_tta) - target_time)
+                                    if tta_error > max_tta_error + 1.0e-6:
+                                        continue
+                                    accepted = add(
+                                        tr,
+                                        MacroType.MERGE_BEHIND,
+                                        util=0.16 + 0.05 * gap,
+                                        neutral=True,
+                                        source=ProposalSource.PRIORITY_SMOOTH_YIELD,
+                                        region_id=int(region.conflict_id),
+                                        target_time_s=target_time,
+                                        timing_side=1,
+                                        target_agent_index=int(agent_index),
+                                        gap_s=gap,
+                                        accel_mps2=initial_accel,
+                                        entry_distance_m=float(actual_entry_dist),
+                                        target_tta_error_s=tta_error,
+                                    )
+                                    if accepted:
+                                        psy_keys.add(key)
+                                        psy_added += 1
     # Fill remaining slots with terminal speed/position lattice variants.  Both
     # terminal speed and progress offsets affect the primitive geometry; otherwise
     # s_off only changes utility and the lattice collapses to duplicate paths.
@@ -707,5 +793,6 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             "lane_point_count": int(len(lane_points)),
             "rejection_counts": dict(rejection_counts),
             "attempted_by_source": dict(attempted_by_source),
+            "accepted_by_source": dict(accepted_by_source),
         },
     }

@@ -7,7 +7,7 @@ import numpy as np
 
 from cowp.core.constants import MacroType
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
-from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, repair_planar_kinematics
+from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
 
@@ -813,6 +813,28 @@ def _route_lane_aware_candidates(
     neutral_tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
     _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)
 
+    # v16.8.8 online base-bank reservation.  Optional RMR/PSY refinements are
+    # allowed to use spare slots, but they must not erase both lateral escape
+    # directions when K becomes saturated.  Reserve only a compact canonical
+    # subset here; the richer lane-change bank is still expanded later if space
+    # remains.
+    reserve_delays = [float(x) for x in cfg.get("planning", {}).get("online_lane_change_reserve_delays_s", [0.5, 1.5])]
+    lane_widths = cfg.get("planning", {}).get("online_lane_change_offsets_m", [-3.5, 3.5])
+    for lateral_offset in lane_widths:
+        macro = MacroType.LANE_CHANGE_LEFT if float(lateral_offset) > 0 else MacroType.LANE_CHANGE_RIGHT
+        for delay in reserve_delays:
+            tr = _quintic_frenet_trajectory(
+                current, H, dt, accel=0.0, lateral_offset=float(lateral_offset),
+                start_delay_s=float(delay),
+                lane_change_duration_s=float(cfg.get("planning", {}).get("online_lane_change_duration_s", 4.0)),
+            )
+            progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
+            _add_candidate(
+                candidates, macros, utils, conventional, tr, macro,
+                -0.02 * progress + 0.15 + 0.03 * float(delay),
+                agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs,
+            )
+
     # Stop / yield before likely conflicts.  In online mode we do not have proto
     # conflict regions, so estimate conflict distance from nearest forward agent
     # or route distance.
@@ -987,6 +1009,69 @@ def _route_lane_aware_candidates(
                             if len(candidates) > before:
                                 phr_added += 1
                                 break
+
+        # v16.8.8 online Priority-Smooth-Yield (PSY).  Use the same causal
+        # closest-approach event approximation as online RMR but replace the
+        # rarely feasible full-stop PCHR with a low-entry-speed smooth arrival.
+        if bool(cfg.get("planning", {}).get("online_priority_smooth_yield_enabled", cand_cfg.get("priority_smooth_yield_enabled", True))):
+            psy_max = int(cfg.get("planning", {}).get("online_priority_smooth_yield_max_candidates", cand_cfg.get("priority_smooth_yield_max_candidates", 8)))
+            psy_added = 0
+            psy_vt = [float(x) for x in cfg.get("planning", {}).get("online_priority_smooth_yield_terminal_speed_mps", cand_cfg.get("priority_smooth_yield_terminal_speed_mps", [1.0, 2.0, 3.0]))]
+            psy_a0 = [float(x) for x in cfg.get("planning", {}).get("online_priority_smooth_yield_initial_decel_mps2", cand_cfg.get("priority_smooth_yield_initial_decel_mps2", [-0.8, -1.4, -2.0]))]
+            psy_gaps = [float(x) for x in cfg.get("planning", {}).get("online_priority_smooth_yield_gap_s", cand_cfg.get("priority_smooth_yield_gap_s", [0.8, 1.4, 2.0]))]
+            commit_t = max(float(cfg.get("planning", {}).get("online_priority_smooth_yield_commitment_check_s", cand_cfg.get("priority_smooth_yield_commitment_check_s", 1.0))), dt)
+            min_drop = max(0.0, float(cfg.get("planning", {}).get("online_priority_smooth_yield_min_speed_drop_mps", cand_cfg.get("priority_smooth_yield_min_speed_drop_mps", 0.75))))
+            ego_lat_vec = np.asarray([-dir_vec[1], dir_vec[0]], dtype=np.float32)
+            for j in near_order:
+                if psy_added >= psy_max or len(candidates) >= K:
+                    break
+                if j == sdc_index or not valid_other[j]:
+                    continue
+                rel_j = agent_state[j, :2] - ego_xy
+                longitudinal = float(np.dot(rel_j, dir_vec))
+                lateral = abs(float(np.dot(rel_j, ego_lat_vec)))
+                closing = float(max(0.0, speed - np.dot(agent_state[j, 3:5], dir_vec)))
+                ttc = longitudinal / max(closing, 1.0e-3) if longitudinal > 0.0 and closing > 0.25 else 99.0
+                priority_like = (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or ttc <= float(cfg.get("planning", {}).get("online_priority_ttc_s", 5.0))
+                if not priority_like:
+                    continue
+                pred_j, cv_j = _agent_future_xy(agent_state, int(j), H, dt, other_future_trajs)
+                agent_xy = pred_j if np.isfinite(pred_j).all() else cv_j
+                if not np.isfinite(agent_xy).all():
+                    continue
+                dca = np.linalg.norm(nominal_xy - agent_xy[:H, :2], axis=-1)
+                q = int(np.argmin(dca))
+                if q < 2 or float(dca[q]) > max_ca_dist:
+                    continue
+                conflict_distance = float(nominal_s[q])
+                event_time = float((q + 1) * dt)
+                for gap in psy_gaps:
+                    target_time = event_time + time_uncertainty + gap
+                    if target_time <= commit_t or target_time > float(H * dt):
+                        continue
+                    for initial_accel in psy_a0:
+                        for terminal_speed in psy_vt:
+                            if psy_added >= psy_max or len(candidates) >= K:
+                                break
+                            tr = smooth_terminal_speed_arrival_trajectory(
+                                current, H, dt, distance_m=conflict_distance,
+                                target_time_s=target_time, terminal_speed_mps=terminal_speed,
+                                initial_accel_mps2=initial_accel,
+                            )
+                            if tr is None:
+                                continue
+                            idx = min(max(int(round(commit_t / dt)) - 1, 0), H - 1)
+                            check_speed = float(np.linalg.norm(tr[idx, 3:5]))
+                            if speed > 1.5 and check_speed > max(speed - min_drop, 0.5) + 1.0e-6:
+                                continue
+                            before = len(candidates)
+                            _add_candidate(
+                                candidates, macros, utils, conventional, tr, MacroType.MERGE_BEHIND,
+                                0.16 + 0.05 * gap, agent_state, sdc_index, roadgraph, cfg,
+                                other_future_trajs=other_future_trajs,
+                            )
+                            if len(candidates) > before:
+                                psy_added += 1
 
     # Lane-change/cut-in proposals.  Use ±lane_width relative to the local lane
     # heading; the conventional mask filters obvious offroad/collision cases.

@@ -79,15 +79,20 @@ def main() -> None:
     args = ap.parse_args()
 
     all_nonpad = {int(x) for x in ProposalSource if x != ProposalSource.PAD}
-    timing = {int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)}
+    timing = {
+        int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE),
+        int(ProposalSource.PRIORITY_HOLD_RELEASE), int(ProposalSource.PRIORITY_SMOOTH_YIELD),
+    }
     schemes: dict[str, set[int] | None] = {
         "all": None,
         "without_priority_hold_release": all_nonpad - {int(ProposalSource.PRIORITY_HOLD_RELEASE)},
+        "without_priority_smooth_yield": all_nonpad - {int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
         "without_rmr_bcte": all_nonpad - {int(ProposalSource.ROBUST_BCTE)},
         "without_legacy_timing": all_nonpad - {int(ProposalSource.LEGACY_TIMING)},
         "without_any_interaction_timing": all_nonpad - timing,
         "base_plus_rmr_only": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE)},
         "base_plus_rmr_plus_priority_commitment": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)},
+        "base_plus_rmr_plus_priority_smooth_yield": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
     }
 
     ds = COWPNpzDataset(args.cache_dir)
@@ -142,7 +147,7 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": "cowp_v16_8_6_proposal_source_ablation_v2",
+        "schema_version": "cowp_v16_8_8_proposal_source_ablation_v3",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "evaluation_subset": {"modulo": modulo, "remainder": remainder, "num_scenes": len(indices)},
         "proposal_source_candidate_counts": dict(source_candidate_counts),
@@ -165,11 +170,18 @@ def main() -> None:
     base = result["ablations"]["without_rmr_bcte"]
     full = result["ablations"]["all"]
     no_commit = result["ablations"]["without_priority_hold_release"]
+    no_psy = result["ablations"]["without_priority_smooth_yield"]
     result["priority_hold_release_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_commit["any_ncf_scene_rate"],
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_commit["best_case_selected_false_safe_lower_bound"],
         "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_commit["best_case_pbtr_lower_bound"],
         "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_commit["mean_valid_candidates"],
+    }
+    result["priority_smooth_yield_increment"] = {
+        "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_psy["any_ncf_scene_rate"],
+        "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_psy["best_case_selected_false_safe_lower_bound"],
+        "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_psy["best_case_pbtr_lower_bound"],
+        "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_psy["mean_valid_candidates"],
     }
     result["rmr_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - base["any_ncf_scene_rate"],

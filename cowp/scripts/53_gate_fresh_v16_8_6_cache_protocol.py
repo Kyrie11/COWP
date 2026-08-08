@@ -123,7 +123,7 @@ def _scan(cache_dir: str, sample_scenes: int) -> dict[str, Any]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Strict preflight preventing stale v16.8 overlays from being used as v16.8.6 Priority-Commitment BCS-RMR-BCTE data."
+        description="Strict preflight preventing stale proposal caches from being used as v16.8.8 stable-critical PSY data."
     )
     ap.add_argument("--cowp-root", required=True)
     ap.add_argument("--raw-train", required=True)
@@ -138,9 +138,10 @@ def main() -> None:
     cowp_root = Path(args.cowp_root)
     expected = current_fingerprint(code_root)
     fingerprint_path = cowp_root / "build_fingerprint.sha256"
+    manifest_path_v18 = cowp_root / "data_manifest_v16_8_8.json"
     manifest_path_v17 = cowp_root / "data_manifest_v16_8_7.json"
     manifest_path_v16 = cowp_root / "data_manifest_v16_8_6.json"
-    manifest_path = manifest_path_v17 if manifest_path_v17.is_file() else manifest_path_v16
+    manifest_path = manifest_path_v18 if manifest_path_v18.is_file() else (manifest_path_v17 if manifest_path_v17.is_file() else manifest_path_v16)
     stored = fingerprint_path.read_text(encoding="utf-8").strip() if fingerprint_path.is_file() else None
     manifest = None
     manifest_error = None
@@ -158,10 +159,14 @@ def main() -> None:
     elif stored != expected:
         reasons.append("build fingerprint does not match the current BCS-RMR-BCTE candidate/geometry implementation")
     if manifest is None:
-        reasons.append("missing or unreadable data_manifest_v16_8_7.json/data_manifest_v16_8_6.json")
+        reasons.append("missing or unreadable data_manifest_v16_8_8.json/data_manifest_v16_8_7.json/data_manifest_v16_8_6.json")
     else:
         schema = manifest.get("schema_version")
-        if schema not in {"cowp_v16_8_6_priority_commitment_data_v1", "cowp_v16_8_7_priority_commitment_self_contained_data_v1"}:
+        if schema not in {
+            "cowp_v16_8_6_priority_commitment_data_v1",
+            "cowp_v16_8_7_priority_commitment_self_contained_data_v1",
+            "cowp_v16_8_8_stable_critical_psy_self_contained_data_v1",
+        }:
             reasons.append(f"unexpected manifest schema_version={schema!r}")
         if manifest.get("build_fingerprint_sha256") != expected:
             reasons.append("manifest build_fingerprint_sha256 does not match current code")
@@ -198,7 +203,7 @@ def main() -> None:
                 reasons.append(f"{split_name}: transport augmentation is incomplete or has errors")
 
     report = {
-        "schema_version": "cowp_v16_8_7_fresh_cache_protocol_gate_v2",
+        "schema_version": "cowp_v16_8_8_fresh_cache_protocol_gate_v3",
         "pass": not reasons,
         "cowp_root": str(cowp_root.resolve()),
         "current_build_fingerprint_sha256": expected,
@@ -209,9 +214,9 @@ def main() -> None:
         "val": val,
         "reasons": reasons,
         "interpretation": (
-            "Fresh v16.8.6 algorithm cache identity/provenance passed; inline self-contained transport or a valid overlay is available."
+            "Fresh v16.8.8-compatible cache identity/provenance passed; inline self-contained transport or a valid legacy-compatible overlay is available."
             if not reasons else
-            "Do not train v16.8.6 on these caches. In particular, a transport overlay cannot retrofit a new ego proposal bank into stale raw cache files."
+            "Do not train v16.8.8 on these caches. A stale raw proposal bank cannot be upgraded by transport overlay metadata."
         ),
     }
     out = Path(args.output)

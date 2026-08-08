@@ -42,6 +42,7 @@ def build_labels_for_scene(
     scene_meta: dict[str, object] | None = None,
     conflict_regions: list | None = None,
     profile_timings: dict[str, float] | None = None,
+    profile_diagnostics: dict[str, object] | None = None,
 ) -> dict[str, np.ndarray | str]:
     def _timeit(name: str, fn):
         t = time.perf_counter()
@@ -52,11 +53,19 @@ def build_labels_for_scene(
 
     regions = conflict_regions if conflict_regions is not None else _timeit("engine_conflict_regions_s", lambda: build_conflict_regions(scene.map_data, cfg))
     candidates = _timeit("engine_candidates_s", lambda: generate_ego_candidates(scene, cfg, conflict_regions=regions))
+    if profile_diagnostics is not None:
+        profile_diagnostics["candidate"] = dict(candidates.get("_proposal_debug", {}))
     # Fail scene-locally before critical/natural/response work if the proposal
     # generator produced no valid intervention.  This preserves valid-scene
     # semantics while avoiding expensive downstream work on a doomed probe row.
     ego_neutral = _make_ego_neutral(candidates, scene.scenario_id)
     critical = _timeit("engine_critical_agents_s", lambda: select_critical_agents(scene, cfg, candidates, conflict_regions=regions))
+    if profile_diagnostics is not None:
+        profile_diagnostics["critical"] = {
+            "selection_reference_mode": str(cfg.get("critical", {}).get("selection_reference_mode", "fixed_anchor_v1")),
+            "count": int(np.asarray(critical.get("valid", []), dtype=bool).sum()),
+            "track_indices": [int(x) for x in np.asarray(critical.get("track_index", []), dtype=np.int32)[np.asarray(critical.get("valid", []), dtype=bool)].tolist()],
+        }
     natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
     response = _timeit("engine_safe_responses_s", lambda: generate_safe_responses(scene, candidates, critical, natural, cfg))
     witness = _timeit("engine_witness_s", lambda: certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions))

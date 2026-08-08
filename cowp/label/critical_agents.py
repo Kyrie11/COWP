@@ -6,6 +6,7 @@ from cowp.core.constants import ObjectType, PriorityRelation
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
 from cowp.label.priority import determine_priority
+from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory
 
 
 def _id_in_objects_of_interest(scene: ScenarioData, track_idx: int) -> bool:
@@ -14,9 +15,43 @@ def _id_in_objects_of_interest(scene: ScenarioData, track_idx: int) -> bool:
 
 
 def _ego_candidate_bank(scene: ScenarioData, cfg: dict, ego_candidates: dict[str, np.ndarray] | np.ndarray | None) -> list[np.ndarray]:
+    """Return the *screening* ego bank used to choose global critical agents.
+
+    v16.8.8 makes the default bank independent of optional proposal families.
+    Previously every RMR/PCHR proposal participated in global top-A critical-agent
+    selection, so adding a proposal could change the witness set for all existing
+    candidates and destroy NCF labels non-monotonically.  A fixed anchor bank keeps
+    the certificate universe stable while still spanning canonical longitudinal and
+    lateral interactions.  ``proposal_bank_legacy`` remains available only as a
+    named compatibility ablation.
+    """
     cur = scene.current_time_index
     horizon = int(cfg.get("time", {}).get("future_steps", 80))
-    logged = future_states_to_traj7(scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :], horizon, current_state=scene.states[scene.sdc_track_index, cur])
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    current = np.asarray(scene.states[scene.sdc_track_index, cur], dtype=np.float32)
+    logged = future_states_to_traj7(
+        scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + horizon, :],
+        horizon,
+        current_state=current,
+    )
+    mode = str(cfg.get("critical", {}).get("selection_reference_mode", "fixed_anchor_v1"))
+    if mode == "fixed_anchor_v1":
+        bank = [logged]
+        # These anchors are deterministic functions of the factual current state,
+        # not of the algorithm's optional proposal bank.  They intentionally cover
+        # keep/accelerate/yield/stop plus both lateral directions.
+        bank.append(constant_accel_trajectory(current, horizon, dt, accel=0.0))
+        bank.append(constant_accel_trajectory(current, horizon, dt, accel=1.0))
+        bank.append(constant_accel_trajectory(current, horizon, dt, accel=-1.5))
+        bank.append(smooth_stop_trajectory(current, horizon, dt, decel=-2.0, creep_speed=0.0))
+        lane_offset = float(cfg.get("critical", {}).get("anchor_lane_offset_m", 3.5))
+        lane_delay = float(cfg.get("critical", {}).get("anchor_lane_change_delay_s", 0.5))
+        bank.append(constant_accel_trajectory(current, horizon, dt, accel=0.0, lateral_offset=lane_offset, start_delay_s=lane_delay))
+        bank.append(constant_accel_trajectory(current, horizon, dt, accel=0.0, lateral_offset=-lane_offset, start_delay_s=lane_delay))
+        return [np.asarray(x, dtype=np.float32)[:horizon] for x in bank if x is not None and len(x) >= 2 and np.all(np.isfinite(x))]
+    if mode != "proposal_bank_legacy":
+        raise ValueError(f"Unknown critical.selection_reference_mode={mode!r}")
+
     bank = [logged]
     if ego_candidates is None:
         return bank

@@ -153,6 +153,8 @@ def main() -> None:
                 "conventional_safe": int(conv[k]),
                 "ncf": int(ncf[k]),
                 "false_safe": int(fs[k]),
+                "priority_eligible": int(priority_eligible[k]),
+                "priority_ncf": int(priority_ncf[k]),
             }
             macro_stats[_name(MacroType, int(macro[k]))].update(flags)
             source_stats[_name(ProposalSource, int(source[k]))].update(flags)
@@ -172,7 +174,7 @@ def main() -> None:
     scenes = int(scene_counts["scenes"])
     p_eligible = int(scene_counts["any_priority_eligible"])
     result: dict[str, Any] = {
-        "schema_version": "cowp_v16_8_5_proposal_ceiling_v2",
+        "schema_version": "cowp_v16_8_8_proposal_ceiling_v3",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "num_scenes": scenes,
         "evaluation_subset": {

@@ -30,3 +30,5 @@ planning:
   online_plan_continuity_scale_m: 3.0
   online_other_future_source: constant_velocity
   causal_log_trajectory_fallback: false
+  # Reserve a compact lateral base bank before optional online refinements.
+  online_lane_change_reserve_delays_s: [0.5, 1.5]

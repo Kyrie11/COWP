@@ -134,6 +134,75 @@ def smooth_arrival_trajectory(
 
 
 
+def smooth_terminal_speed_arrival_trajectory(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    *,
+    distance_m: float,
+    target_time_s: float,
+    terminal_speed_mps: float,
+    initial_accel_mps2: float = 0.0,
+) -> np.ndarray | None:
+    """Quintic longitudinal arrival with prescribed low terminal speed.
+
+    This is the v16.8.8 Priority-Smooth-Yield primitive.  It matches current
+    position/speed with a prescribed initial acceleration and reaches ``distance_m`` at
+    ``target_time_s`` with the requested terminal speed and zero terminal
+    acceleration.  Unlike PCHR it does not require a full stop-hold-release,
+    so it remains feasible in ordinary 3--7 s interaction windows while still
+    making a protected-agent yield observable through an early speed reduction.
+    """
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    H = int(horizon)
+    dt = max(float(dt), 1.0e-4)
+    d = float(distance_m)
+    T = float(target_time_s)
+    vT = float(terminal_speed_mps)
+    a0 = float(initial_accel_mps2)
+    if H <= 0 or cur.size < 7 or not all(np.isfinite(x) for x in (d, T, vT, a0)):
+        return None
+    if d <= 0.5 or T <= 2.0 * dt or vT < 0.0:
+        return None
+    v0 = float(max(cur[5] if cur.size > 5 else np.linalg.norm(cur[3:5]), 0.0))
+    # s(t)=v0*t+0.5*a0*t^2+c3*t^3+c4*t^4+c5*t^5.  Solve
+    # x(T),v(T),a(T)=0 while exposing a controlled negative acceleration
+    # immediately, which makes the protected-priority commitment observable.
+    A = np.asarray(
+        [[T**3, T**4, T**5], [3.0*T*T, 4.0*T**3, 5.0*T**4], [6.0*T, 12.0*T*T, 20.0*T**3]],
+        dtype=np.float64,
+    )
+    b = np.asarray([d - v0*T - 0.5*a0*T*T, vT - v0 - a0*T, -a0], dtype=np.float64)
+    try:
+        c3, c4, c5 = np.linalg.solve(A, b).tolist()
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite([c3, c4, c5])):
+        return None
+
+    x0, y0 = float(cur[0]), float(cur[1])
+    yaw = float(cur[6])
+    length = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    width = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+    direction = np.asarray([np.cos(yaw), np.sin(yaw)], dtype=np.float32)
+    out = np.zeros((H, 7), dtype=np.float32)
+    prev_s = 0.0
+    for k in range(H):
+        t = float((k + 1) * dt)
+        if t <= T:
+            s_t = v0*t + 0.5*a0*t*t + c3*t**3 + c4*t**4 + c5*t**5
+            v_t = v0 + a0*t + 3.0*c3*t*t + 4.0*c4*t**3 + 5.0*c5*t**4
+        else:
+            s_t = d + vT * (t - T)
+            v_t = vT
+        if not np.isfinite(s_t) or not np.isfinite(v_t) or s_t < prev_s - 1.0e-3 or v_t < -1.0e-3:
+            return None
+        prev_s = float(max(prev_s, s_t))
+        pos = np.asarray([x0, y0], dtype=np.float32) + direction * prev_s
+        out[k] = [pos[0], pos[1], yaw, direction[0] * max(v_t, 0.0), direction[1] * max(v_t, 0.0), length, width]
+    return repair_planar_kinematics(out, current=cur, dt=dt)
+
+
 def priority_hold_release_trajectory(
     current: np.ndarray,
     horizon: int,

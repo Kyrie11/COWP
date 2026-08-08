@@ -225,6 +225,9 @@ def test_priority_hold_release_is_generated_for_protected_stop_control_interacti
     from cowp.core.types import Lane
 
     cfg = load_config("configs/label_cowp_v16_8.yaml")
+    # v16.8.8 keeps PHR only as an explicit ablation; enable it for this
+    # legacy family-specific regression.
+    cfg["candidate"]["priority_hold_release_enabled"] = True
     cfg["candidate"]["map_filter_enabled"] = False
     cfg["limits"]["max_candidates"] = 96
     steps, cur = 91, 10

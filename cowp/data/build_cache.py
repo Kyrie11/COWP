@@ -230,10 +230,12 @@ def _build_one_label_from_raw(
 
     t = time.perf_counter()
     engine_timings: dict[str, float] | None = {} if profile_label_engine else None
+    engine_diagnostics: dict[str, object] | None = {} if profile_label_engine else None
     try:
         label = build_labels_for_scene(
             scene, cfg, ablation=ablation, scene_meta=heavy_meta,
             conflict_regions=regions, profile_timings=engine_timings,
+            profile_diagnostics=engine_diagnostics,
         )
     except NoValidEgoCandidatesError as exc:
         if engine_timings:
@@ -244,6 +246,7 @@ def _build_one_label_from_raw(
             "scenario_id": sid,
             "filter_reason": "no_valid_ego_candidates",
             "candidate_diagnostics": exc.diagnostics,
+            "engine_diagnostics": engine_diagnostics or {},
             "num_conflict_regions": len(regions) if regions is not None else 0,
             "seconds": time.perf_counter() - t0,
             "timings": timings,
@@ -262,6 +265,7 @@ def _build_one_label_from_raw(
         "num_conflict_regions": len(regions) if regions is not None else 0,
         "seconds": time.perf_counter() - t0,
         "timings": timings,
+        "engine_diagnostics": engine_diagnostics or {},
     }
 
 

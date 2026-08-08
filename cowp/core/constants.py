@@ -58,6 +58,8 @@ class ProposalSource(IntEnum):
     # v16.8.6: early yielding commitment followed by a timed release.  Unlike
     # ROBUST_BCTE, this source controls the *approach profile*, not only entry TTA.
     PRIORITY_HOLD_RELEASE = 12
+    # v16.8.8: smooth low-entry-speed yield for protected-priority interactions.
+    PRIORITY_SMOOTH_YIELD = 13
 
 
 class NaturalSource(IntEnum):

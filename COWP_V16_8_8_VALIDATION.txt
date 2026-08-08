@@ -1,0 +1,40 @@
+COWP v16.8.8 local validation
+Date: 2026-08-07
+
+Source audit basis:
+- uploaded v16.8.7 code
+- recovered v16.8.6 Priority-Commitment micro-probe JSON/profile archive
+
+Regression:
+- pytest -q: 171 passed, 1 upstream PyTorch nested-tensor warning
+- python -m compileall -q cowp: PASS
+- bash -n NEXT_RUN_COMMANDS_V16_8_8_REFINEMENT_SMOKE_CN.sh: PASS
+- bash -n NEXT_RUN_COMMANDS_V16_8_8_STRICT_PROPOSAL_PROBE_CN.sh: PASS
+- bash -n PREPARE_COWP_V16_8_8_DATA_FAST_CN.sh: PASS
+- CLI --help smoke: scripts 45,46,49,50,56 PASS
+
+Targeted regressions:
+- fixed_anchor_v1 critical-agent selection unchanged when an aggressive optional proposal is added
+- PSY quintic hits target distance/terminal low speed with early deceleration
+- PSY is actually generated on a protected stop-controlled intersection toy
+- PCHR is disabled in main config but remains functional when explicitly enabled as an ablation
+
+Recovered micro-probe facts used for the revision:
+- 191 unique requested scenes, 191 written, 0 filtered, 0 build errors
+- representative random n=128
+- old AnyNCF 47/128=0.3671875
+- new AnyNCF 26/128=0.203125
+- old->new NCF retained=18, lost=29, gained=8
+- old false-safe floor 74/128=0.578125
+- new false-safe floor 98/128=0.765625
+- old PBTR floor 71/121=0.5867768595
+- new PBTR floor 53/123=0.4308943089
+- hard recovery 8/64=0.125
+- RMR: 223 candidates, 25 NCF, max TTA error 0.008838 s
+- PCHR: 17 candidates, 0 NCF, 0 priority-NCF
+
+Current decision:
+- DO NOT FULL REBUILD v16.8.6/v16.8.7.
+- Run v16.8.8 48-hard + 48-random smoke.
+- Smoke PASS authorizes only strict 400+800 probe.
+- Only strict recommend_full_rebuild=true under the identical code fingerprint authorizes full build.

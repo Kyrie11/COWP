@@ -40,6 +40,9 @@ def main() -> None:
     filters = Counter(str(r.get("filter_reason", "filtered")) for r in latest.values() if str(r.get("status")) == "filtered")
     rej = Counter()
     attempted = Counter()
+    accepted = Counter()
+    critical_modes = Counter()
+    critical_counts: list[int] = []
     timings: dict[str, list[float]] = defaultdict(list)
     totals: list[float] = []
     slow: list[tuple[float, str, str, dict[str, float]]] = []
@@ -58,6 +61,9 @@ def main() -> None:
                     timings[str(k)].append(fv)
                     numeric_t[str(k)] = fv
         diag = row.get("candidate_diagnostics") or {}
+        engine_diag = row.get("engine_diagnostics") or {}
+        if isinstance(engine_diag, dict) and isinstance(engine_diag.get("candidate"), dict):
+            diag = engine_diag.get("candidate") or diag
         if isinstance(diag, dict):
             for k, v in (diag.get("rejection_counts") or {}).items():
                 try:
@@ -69,6 +75,18 @@ def main() -> None:
                     attempted[str(k)] += int(v)
                 except Exception:
                     pass
+            for k, v in (diag.get("accepted_by_source") or {}).items():
+                try:
+                    accepted[str(k)] += int(v)
+                except Exception:
+                    pass
+        if isinstance(engine_diag, dict) and isinstance(engine_diag.get("critical"), dict):
+            cdiag = engine_diag["critical"]
+            critical_modes[str(cdiag.get("selection_reference_mode", "unknown"))] += 1
+            try:
+                critical_counts.append(int(cdiag.get("count", 0)))
+            except Exception:
+                pass
         slow.append((total, sid, str(row.get("status", "unknown")), numeric_t))
 
     stage_rows = []
@@ -88,14 +106,28 @@ def main() -> None:
     slow.sort(reverse=True)
 
     result = {
-        "schema_version": "cowp_v16_8_5_label_build_profile_summary_v1",
+        "schema_version": "cowp_v16_8_8_label_build_profile_summary_v2",
         "input": str(Path(args.input).resolve()),
         "unique_scenarios": len(latest),
         "malformed_rows": malformed,
         "status_counts": dict(status),
         "filter_reason_counts": dict(filters),
-        "zero_valid_candidate_rejection_counts": dict(rej),
-        "zero_valid_attempted_by_source": dict(attempted),
+        "candidate_rejection_counts_all_profiled_scenes": dict(rej),
+        "candidate_attempted_by_source_all_profiled_scenes": dict(attempted),
+        "candidate_accepted_by_source_all_profiled_scenes": dict(accepted),
+        "candidate_acceptance_rate_by_source": {
+            k: float(accepted.get(k, 0) / max(v, 1)) for k, v in attempted.items()
+        },
+        "critical_selection_reference_modes": dict(critical_modes),
+        "critical_agent_count": {
+            "mean": float(np.mean(critical_counts)) if critical_counts else 0.0,
+            "p50": _pct([float(x) for x in critical_counts], 50),
+            "p90": _pct([float(x) for x in critical_counts], 90),
+            "max": max(critical_counts) if critical_counts else 0,
+        },
+        # Backward-compatible aliases used by the v16.8.5 report.
+        "zero_valid_candidate_rejection_counts": dict(rej) if status.get("filtered", 0) else {},
+        "zero_valid_attempted_by_source": dict(attempted) if status.get("filtered", 0) else {},
         "total_seconds": {
             "mean": float(np.mean(totals)) if totals else 0.0,
             "p50": _pct(totals, 50),
