@@ -2499,3 +2499,7 @@ v16.3 planner or selector result.
 - Do not use a `least_violation` calibration as the paper operating point.
 - Do not interpret logged replay as causal evidence that burden was transferred; report
   it as a learned-mechanism proxy and add reactive-agent plus human-audited stress tests.
+
+## v16.8.9 engineering repair — complete smoke/protocol tooling and numeric-module import fix (2026-08-08)
+
+No algorithm/data-threshold/output-path change. Restored the missing v16.8.9 diagnostic/protocol scripts, upgraded scripts 46/50 to their v16.8.9-compatible implementations, replaced invalid direct imports of numeric-prefixed script 59 with `importlib.import_module`, added a `CASUAL` typo-compatible smoke wrapper, and revalidated the v16.8.9 execution chain. Full Python regression: **175 passed**.

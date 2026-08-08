@@ -47,3 +47,14 @@ These are independent retraining experiments, not shared-checkpoint aliases.
 - Training launchers now accept explicit model/train config sources, allowing genuine independently trained ablations with strict provenance.
 - Local Python regression after the complete v16.8.9 change set: **175 passed**; `compileall` and all v16.8.9/core launchers pass `bash -n`.
 
+
+## v16.8.9 engineering repair — complete smoke/protocol tooling and numeric-module import fix (2026-08-08)
+
+This repair does **not** change the v16.8.9 algorithm, labels, thresholds, output roots, or JSON output locations.
+
+1. Restored the complete v16.8.9 tooling set in the delivered package: `57_diagnose_causal_audit.py`, `58_screen_v16_8_9_causal_audit_probe.py`, `59_gate_fresh_v16_8_9_cache_protocol.py`, and the matching v16.8.8+/v16.8.9 versions of `46_compare_proposal_probe.py` and `50_ablate_proposal_sources.py`.
+2. Replaced invalid source-level imports of the numeric-prefixed module `cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol` with `importlib.import_module(...)`. Python accepts the numeric module name through importlib / `python -m`, but not in a `from ... import ...` statement because `59_...` is not a valid Python identifier token.
+3. Applied the import repair consistently to the smoke, strict-probe, and fast-full-build wrappers.
+4. Added `NEXT_RUN_COMMANDS_V16_8_9_CASUAL_AUDIT_SMOKE_CN.sh` as a typo-compatible alias to the canonical `...CAUSAL_AUDIT...` entrypoint; both preserve the same output paths and behavior.
+5. Verified every `python -m cowp.scripts.*` reference in the v16.8.9 shell entrypoints resolves to a real module.
+6. Regression: `python -m compileall -q cowp` PASS; full `pytest -q`: **175 passed**; core v16.8.9 shell `bash -n` PASS; CLI `--help` smoke for scripts 46/50/57/58/59 PASS; fingerprint import smoke PASS.

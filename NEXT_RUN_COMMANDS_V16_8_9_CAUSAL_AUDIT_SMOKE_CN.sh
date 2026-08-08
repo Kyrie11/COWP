@@ -52,7 +52,9 @@ mkdir -p "$FRESH_LABELS"
 
 CODE_FP="$($PYTHON_BIN - <<'PY'
 from pathlib import Path
-from cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol import current_fingerprint
+from importlib import import_module
+from pathlib import Path
+current_fingerprint = import_module("cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol").current_fingerprint
 print(current_fingerprint(Path.cwd()))
 PY
 )"

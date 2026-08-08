@@ -108,7 +108,9 @@ fi
 FINGERPRINT_FILE="$COWP_ROOT/build_fingerprint.sha256"
 CURRENT_FINGERPRINT="$($PYTHON_BIN - <<'PYHASH'
 from pathlib import Path
-from cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol import current_fingerprint
+from importlib import import_module
+from pathlib import Path
+current_fingerprint = import_module("cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol").current_fingerprint
 print(current_fingerprint(Path.cwd()))
 PYHASH
 )"

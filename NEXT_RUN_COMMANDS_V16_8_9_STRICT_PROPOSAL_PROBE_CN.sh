@@ -16,7 +16,9 @@ mkdir -p "$PROBE_ROOT/logs"
 if [[ "$FORCE_REBUILD_PROBE" == 1 ]]; then rm -rf "$FRESH"; rm -f "$PROFILE"; fi; mkdir -p "$FRESH"
 CODE_FP="$($PYTHON_BIN - <<'PY'
 from pathlib import Path
-from cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol import current_fingerprint
+from importlib import import_module
+from pathlib import Path
+current_fingerprint = import_module("cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol").current_fingerprint
 print(current_fingerprint(Path.cwd()))
 PY
 )"; FP="$PROBE_ROOT/v16_8_9_code_fingerprint.sha256"
