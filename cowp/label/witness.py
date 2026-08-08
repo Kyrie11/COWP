@@ -136,6 +136,23 @@ def certify_witnesses(
     root_low_safe_score = np.zeros((K, A, M), dtype=np.float32)
     root_target_confidence = np.zeros((K, A, M), dtype=np.float32)
     transported_opr = np.ones((K, A), dtype=np.float32)
+    # Canonical natural-root mass is agent-specific, not candidate-specific.
+    # Older code recomputed this normalization inside every (candidate, agent)
+    # pair.  Precomputing it once is exactly equivalent and also lets fresh label
+    # files carry the complete transport contract inline, eliminating the need
+    # for a fragile post-hoc transport overlay.
+    canonical_root_weight = np.zeros((A, M), dtype=np.float32)
+    for a in range(A):
+        if not critical["valid"][a]:
+            continue
+        nat_valid_idx = np.where(natural["valid"][a])[0]
+        if not len(nat_valid_idx):
+            continue
+        raw_weight = np.asarray(natural["weight"][a, nat_valid_idx], dtype=np.float32)
+        raw_weight = np.maximum(raw_weight, 0.0)
+        raw_weight = raw_weight / max(float(np.sum(raw_weight)), 1e-8)
+        eps_p = float(np.clip(cfg.get("ncf", {}).get("root_probability_floor", 0.02), 0.0, 0.25))
+        canonical_root_weight[a, nat_valid_idx] = (1.0 - eps_p) * raw_weight + eps_p / len(nat_valid_idx)
 
     cur = scene.current_time_index
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
@@ -161,13 +178,7 @@ def certify_witnesses(
             rho_arr[k, a] = int(rho)
             beta = float(natural.get("beta", np.full(A, 0.65))[a])
             nat_valid_idx = np.where(natural["valid"][a])[0]
-            root_weight = np.zeros(M, dtype=np.float32)
-            if len(nat_valid_idx):
-                raw_weight = np.asarray(natural["weight"][a, nat_valid_idx], dtype=np.float32)
-                raw_weight = np.maximum(raw_weight, 0.0)
-                raw_weight = raw_weight / max(float(np.sum(raw_weight)), 1e-8)
-                eps_p = float(np.clip(cfg.get("ncf", {}).get("root_probability_floor", 0.02), 0.0, 0.25))
-                root_weight[nat_valid_idx] = (1.0 - eps_p) * raw_weight + eps_p / len(nat_valid_idx)
+            root_weight = canonical_root_weight[a]
             conflict_mass = 0.0
             low_safe_mass = 0.0
             low_natural_mass = 0.0
@@ -378,4 +389,5 @@ def certify_witnesses(
         "transport_root_low_safe_score": root_low_safe_score,
         "transport_root_target_confidence": root_target_confidence,
         "transport_transported_opr": transported_opr,
+        "transport_canonical_root_weight": canonical_root_weight,
     }

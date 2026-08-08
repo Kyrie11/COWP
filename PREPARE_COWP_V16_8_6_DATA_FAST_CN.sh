@@ -20,8 +20,8 @@ COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_6_priority_com
 # audited old tensor cache.  No old COWP label is reused.
 SOURCE_DATA_ROOT="${SOURCE_DATA_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
 REUSE_OLD_SCENE_SET="${REUSE_OLD_SCENE_SET:-1}"
-OLD_SCENESET_TRAIN_CACHE="${OLD_SCENESET_TRAIN_CACHE:-$SOURCE_DATA_ROOT/tensor_cache_train_waymax}"
-OLD_SCENESET_VAL_CACHE="${OLD_SCENESET_VAL_CACHE:-$SOURCE_DATA_ROOT/tensor_cache_val_waymax}"
+OLD_SCENESET_TRAIN_CACHE="${OLD_SCENESET_TRAIN_CACHE:-$SOURCE_DATA_ROOT/tensor_cache_train}"
+OLD_SCENESET_VAL_CACHE="${OLD_SCENESET_VAL_CACHE:-$SOURCE_DATA_ROOT/tensor_cache_val}"
 SOURCE_INDEX_TRAIN="${SOURCE_INDEX_TRAIN:-$SOURCE_DATA_ROOT/index_train.jsonl}"
 SOURCE_INDEX_VAL="${SOURCE_INDEX_VAL:-$SOURCE_DATA_ROOT/index_val.jsonl}"
 TRAIN_LIMIT="${TRAIN_LIMIT:-22000}"
@@ -29,8 +29,6 @@ VAL_LIMIT="${VAL_LIMIT:-5000}"
 LABEL_WORKERS_TRAIN="${LABEL_WORKERS_TRAIN:-32}"
 LABEL_WORKERS_VAL="${LABEL_WORKERS_VAL:-24}"
 CACHE_WORKERS="${CACHE_WORKERS:-8}"
-AUG_WORKERS_TRAIN="${AUG_WORKERS_TRAIN:-12}"
-AUG_WORKERS_VAL="${AUG_WORKERS_VAL:-6}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 RUN_WAYMAX_REPLAY="${RUN_WAYMAX_REPLAY:-0}"
 MAX_REPLAY_CANDIDATES="${MAX_REPLAY_CANDIDATES:-24}"
@@ -54,8 +52,6 @@ BASE_TRAIN="$COWP_ROOT/tensor_cache_train"
 BASE_VAL="$COWP_ROOT/tensor_cache_val"
 RAW_TRAIN="$COWP_ROOT/tensor_cache_train_waymax"
 RAW_VAL="$COWP_ROOT/tensor_cache_val_waymax"
-TRANSPORT_TRAIN="$COWP_ROOT/tensor_cache_train_transport_v16_8_6"
-TRANSPORT_VAL="$COWP_ROOT/tensor_cache_val_transport_v16_8_6"
 REPLAY_DIR="$COWP_ROOT/waymax_replay_v16_8_6"
 TRAIN_OUTCOMES="$REPLAY_DIR/train_cache_bal${MAX_REPLAY_CANDIDATES}_safety.jsonl"
 VAL_OUTCOMES="$REPLAY_DIR/val_cache_bal${MAX_REPLAY_CANDIDATES}_safety.jsonl"
@@ -100,6 +96,12 @@ files = [
     'cowp/label/trajectory_primitives.py',
     'cowp/label/ego_candidates.py',
     'cowp/label/label_engine.py',
+    'cowp/label/critical_agents.py',
+    'cowp/label/natural_alternatives.py',
+    'cowp/label/safe_responses.py',
+    'cowp/label/witness.py',
+    'cowp/label/burden.py',
+    'cowp/label/priority.py',
     'cowp/data/cache_schema.py',
     'configs/label_cowp_v16_8.yaml',
     'configs/eval_cowp_v16_8.yaml',
@@ -221,27 +223,47 @@ else
   echo "[waymax replay] skipped; planner must export USE_WAYMAX_OUTCOME_LABELS=0"
 fi
 
-run augment_train "$PYTHON_BIN" -u -m cowp.scripts.26_augment_transport_labels \
-  --data-config configs/data.yaml --label-config "$LABEL_CFG" \
-  --input-dir "$EFFECTIVE_RAW_TRAIN" --output-dir "$TRANSPORT_TRAIN" \
-  --num-workers "$AUG_WORKERS_TRAIN" --chunksize 2 --storage-mode overlay \
-  --sidecar-subdir .transport_v16_8_6 --force
-run augment_val "$PYTHON_BIN" -u -m cowp.scripts.26_augment_transport_labels \
-  --data-config configs/data.yaml --label-config "$LABEL_CFG" \
-  --input-dir "$EFFECTIVE_RAW_VAL" --output-dir "$TRANSPORT_VAL" \
-  --num-workers "$AUG_WORKERS_VAL" --chunksize 2 --storage-mode overlay \
-  --sidecar-subdir .transport_v16_8_6 --force
+# Fresh v16.8.7 engineering data is intentionally self-contained.  The fresh
+# label engine already emits the complete transport supervision, including
+# root_min_safe_burden and canonical_root_weight, so a second augmentation pass
+# would duplicate expensive geometry work and reintroduce fragile overlay symlinks.
+TRAIN_CACHE_FINAL="$EFFECTIVE_RAW_TRAIN"
+VAL_CACHE_FINAL="$EFFECTIVE_RAW_VAL"
 
-run align_train "$PYTHON_BIN" -u -m cowp.scripts.33_diagnose_cache_alignment \
-  --raw-cache "$EFFECTIVE_RAW_TRAIN" --transport-cache "$TRANSPORT_TRAIN" \
-  --max-scenes 2000 --workers 8 --hash-mode sampled --output "$COWP_ROOT/cache_alignment_train.json"
-run align_val "$PYTHON_BIN" -u -m cowp.scripts.33_diagnose_cache_alignment \
-  --raw-cache "$EFFECTIVE_RAW_VAL" --transport-cache "$TRANSPORT_VAL" \
-  --max-scenes 2000 --workers 8 --hash-mode sampled --output "$COWP_ROOT/cache_alignment_val.json"
+VERIFY_TRAIN_ALLOW=()
+VERIFY_VAL_ALLOW=()
+if [[ -n "$TRAIN_ALLOWLIST" ]]; then VERIFY_TRAIN_ALLOW=(--allowlist "$TRAIN_ALLOWLIST"); fi
+if [[ -n "$VAL_ALLOWLIST" ]]; then VERIFY_VAL_ALLOW=(--allowlist "$VAL_ALLOWLIST"); fi
+run verify_fresh_train "$PYTHON_BIN" -m cowp.scripts.55_verify_fresh_self_contained_cache \
+  --cache-dir "$TRAIN_CACHE_FINAL" "${VERIFY_TRAIN_ALLOW[@]}" \
+  --sample-scenes 0 --output "$COWP_ROOT/fresh_cache_integrity_train.json"
+run verify_fresh_val "$PYTHON_BIN" -m cowp.scripts.55_verify_fresh_self_contained_cache \
+  --cache-dir "$VAL_CACHE_FINAL" "${VERIFY_VAL_ALLOW[@]}" \
+  --sample-scenes 0 --output "$COWP_ROOT/fresh_cache_integrity_val.json"
 
-cat > "$COWP_ROOT/data_manifest_v16_8_6.json" <<JSON
+# Recompute the full validation proposal ceiling from the actual post-merge cache.
+# This is a final dataset-level guard before any GPU training starts.
+run proposal_ceiling_val "$PYTHON_BIN" -m cowp.scripts.45_diagnose_proposal_ceiling \
+  --cache-dir "$VAL_CACHE_FINAL" --output "$COWP_ROOT/fresh_proposal_ceiling_val.json" \
+  --hard-count 0 --random-count 0 --control-count 0 --seed 2026
+"$PYTHON_BIN" - "$COWP_ROOT/fresh_proposal_ceiling_val.json" <<'PYCHECK'
+import json,sys
+p=json.load(open(sys.argv[1],encoding='utf-8'))
+r=p['scene_rates']
+checks={
+ 'any_valid': r['any_valid'] >= 0.99,
+ 'any_ncf': r['any_ncf'] >= 0.40,
+ 'false_safe_floor': r['best_case_selected_false_safe_lower_bound'] <= 0.55,
+ 'pbtr_floor': r['best_case_pbtr_lower_bound'] <= 0.45,
+}
+print('postbuild proposal gates:', checks)
+if not all(checks.values()):
+ raise SystemExit('Fresh full cache is proposal-infeasible after merge; do not train.')
+PYCHECK
+
+cat > "$COWP_ROOT/data_manifest_v16_8_7.json" <<JSON
 {
-  "schema_version": "cowp_v16_8_6_priority_commitment_data_v1",
+  "schema_version": "cowp_v16_8_7_priority_commitment_self_contained_data_v1",
   "build_fingerprint_sha256": "$CURRENT_FINGERPRINT",
   "label_config": "$LABEL_CFG",
   "eval_config": "$EVAL_CFG",
@@ -254,15 +276,16 @@ cat > "$COWP_ROOT/data_manifest_v16_8_6.json" <<JSON
   "waymax_replay_enabled": $([[ "$RUN_WAYMAX_REPLAY" == "1" ]] && echo true || echo false),
   "raw_train_cache": "$EFFECTIVE_RAW_TRAIN",
   "raw_val_cache": "$EFFECTIVE_RAW_VAL",
-  "transport_train_cache": "$TRANSPORT_TRAIN",
-  "transport_val_cache": "$TRANSPORT_VAL",
-  "notes": "Fresh labels include boundary-consistent BCS-RMR-BCTE plus protected-pair Priority-Commitment Hold-Release proposals; neutral capacity is reserved; offline/online proposal semantics are aligned; explicit root-conditioned response search and transported OPR are retained."
+  "transport_storage": "inline_self_contained",
+  "transport_train_cache": "$TRAIN_CACHE_FINAL",
+  "transport_val_cache": "$VAL_CACHE_FINAL",
+  "notes": "Fresh labels include boundary-consistent BCS-RMR-BCTE plus protected-pair Priority-Commitment Hold-Release proposals; transport supervision is serialized inline so no symlink overlay is required; neutral capacity is reserved; offline/online proposal semantics are aligned; explicit root-conditioned response search and transported OPR are retained."
 }
 JSON
 
-echo "[v16.8.6 BCS-RMR-BCTE + Priority-Commitment data] complete: $COWP_ROOT"
+echo "[v16.8.7 self-contained v16.8.6 algorithm data] complete: $COWP_ROOT"
 echo "RAW_TRAIN_CACHE=$EFFECTIVE_RAW_TRAIN"
 echo "RAW_VAL_CACHE=$EFFECTIVE_RAW_VAL"
-echo "TRAIN_CACHE=$TRANSPORT_TRAIN"
-echo "VAL_CACHE=$TRANSPORT_VAL"
+echo "TRAIN_CACHE=$TRAIN_CACHE_FINAL"
+echo "VAL_CACHE=$VAL_CACHE_FINAL"
 echo "USE_WAYMAX_OUTCOME_LABELS=$([[ "$RUN_WAYMAX_REPLAY" == "1" ]] && echo 1 || echo 0)"

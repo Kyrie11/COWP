@@ -1,0 +1,44 @@
+COWP v16.8.7 local validation
+===============================
+
+Scope: engineering/data-lineage revision; v16.8.6 PCHR algorithm semantics retained.
+
+Python compile:
+  python -m compileall -q cowp
+  PASS
+
+Unit/regression suite:
+  pytest -q
+  167 passed, 1 existing PyTorch nested-tensor prototype warning
+
+New regressions:
+  - early broken transport-overlay symlink detection
+  - legacy transport-sidecar rebase onto surviving base cache
+  - complete inline fresh transport tensors including root_min_safe_burden and canonical_root_weight
+
+Shell syntax PASS:
+  RECOVER_V16_8_6_PRIORITY_MICRO_PROBE_FROM_BASE_CN.sh
+  REPAIR_LEGACY_V16_8_TRANSPORT_OVERLAYS_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_4_PROPOSAL_PROBE_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_6_PRIORITY_COMMITMENT_MICRO_PROBE_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_6_PRIORITY_COMMITMENT_PROPOSAL_PROBE_CN.sh
+  PREPARE_COWP_V16_8_6_DATA_FAST_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_6_MECHANISM_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_6_PROBE_CN.sh
+  NEXT_RUN_COMMANDS_V16_8_6_FULL_CN.sh
+
+CLI help/import PASS:
+  cowp.scripts.54_rebase_transport_overlay
+  cowp.scripts.55_verify_fresh_self_contained_cache
+  cowp.scripts.46_compare_proposal_probe
+  cowp.scripts.53_gate_fresh_v16_8_6_cache_protocol
+
+Uploaded micro-probe evidence inspected:
+  hard requested: 64
+  random requested: 128
+  intersection: 1 (a58c0a42edd65669)
+  unique union: 191
+  fresh profile status: 191 written, 0 filtered/error
+  compare stage: failed before old-bank load because legacy overlay backing cache was deleted
+
+No WOMD raw dataset or server cache directories are available locally, so no fabricated paired PCHR metric or full rebuild result is claimed.

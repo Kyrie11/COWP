@@ -13,7 +13,7 @@ export TF_NUM_INTEROP_THREADS="${TF_NUM_INTEROP_THREADS:-1}"
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1}"
 COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
-OLD_VAL_CACHE="${OLD_VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax_transport_v16_8}"
+OLD_VAL_CACHE="${OLD_VAL_CACHE:-$COWP_ROOT/tensor_cache_val}"
 PROBE_ROOT="${PROBE_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_4_bcs_rmr_bcte_proposal_probe}"
 HARD_COUNT="${HARD_COUNT:-400}"
 RANDOM_COUNT="${RANDOM_COUNT:-800}"
@@ -48,6 +48,12 @@ files = [
     'cowp/label/trajectory_primitives.py',
     'cowp/label/ego_candidates.py',
     'cowp/label/label_engine.py',
+    'cowp/label/critical_agents.py',
+    'cowp/label/natural_alternatives.py',
+    'cowp/label/safe_responses.py',
+    'cowp/label/witness.py',
+    'cowp/label/burden.py',
+    'cowp/label/priority.py',
     'cowp/data/cache_schema.py',
     'configs/label_cowp_v16_8.yaml',
     'cowp/scripts/45_diagnose_proposal_ceiling.py',

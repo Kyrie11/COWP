@@ -99,11 +99,22 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     }
 
 
-def _load(cache_dir: str, limit: int) -> dict[str, dict[str, float | bool | int]]:
+def _load(
+    cache_dir: str,
+    limit: int,
+    requested_ids: set[str] | None = None,
+) -> dict[str, dict[str, float | bool | int]]:
     ds = COWPNpzDataset(cache_dir)
-    n = len(ds) if limit <= 0 else min(len(ds), limit)
+    indices = list(range(len(ds)))
+    if requested_ids:
+        # Tensor-cache filenames are scenario IDs by construction.  Restricting
+        # the paired probe to its requested IDs avoids opening thousands of large
+        # legacy NPZ files just to compare a 191/1200-scene subset.
+        indices = [i for i, p in enumerate(ds.paths) if p.stem in requested_ids]
+    if limit > 0:
+        indices = indices[: int(limit)]
     out = {}
-    for i in range(n):
+    for i in indices:
         row = ds.load(i, WANTED)
         out[_sid(row, ds.paths[i].stem)] = _summarize(row)
     return out
@@ -206,12 +217,13 @@ def main() -> None:
     ap.add_argument("--allow-missing-requested", action="store_true")
     args = ap.parse_args()
 
-    old = _load(args.old_cache, int(args.limit))
-    new = _load(args.new_cache, int(args.limit))
-    profile, filter_reasons = _load_profile(args.new_build_profile)
     representative_requested = _read_ids(args.representative_scene_ids)
     hard_requested = _read_ids(args.hard_scene_ids)
     requested_union = (representative_requested or set()).union(hard_requested or set())
+    requested_for_load = requested_union if requested_union else None
+    old = _load(args.old_cache, int(args.limit), requested_for_load)
+    new = _load(args.new_cache, int(args.limit), requested_for_load)
+    profile, filter_reasons = _load_profile(args.new_build_profile)
 
     missing_from_old = sorted(requested_union.difference(old))
     raw_missing_new = sorted(requested_union.difference(new))

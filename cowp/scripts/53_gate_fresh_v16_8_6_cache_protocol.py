@@ -16,6 +16,12 @@ FINGERPRINT_FILES = (
     "cowp/label/trajectory_primitives.py",
     "cowp/label/ego_candidates.py",
     "cowp/label/label_engine.py",
+    "cowp/label/critical_agents.py",
+    "cowp/label/natural_alternatives.py",
+    "cowp/label/safe_responses.py",
+    "cowp/label/witness.py",
+    "cowp/label/burden.py",
+    "cowp/label/priority.py",
     "cowp/data/cache_schema.py",
     "configs/label_cowp_v16_8.yaml",
     "configs/eval_cowp_v16_8.yaml",
@@ -31,6 +37,20 @@ FRESH_PROVENANCE_KEYS = (
     "cowp/candidates/proposal_accel_mps2",
     "cowp/candidates/proposal_entry_distance_m",
     "cowp/candidates/proposal_target_tta_error_s",
+)
+
+INLINE_TRANSPORT_KEYS = (
+    "cowp/transport/mode_valid",
+    "cowp/transport/mode_conflict",
+    "cowp/transport/mode_retained_low_safe",
+    "cowp/transport/response_root_index",
+    "cowp/transport/response_is_min_burden",
+    "cowp/transport/root_recovery_mass",
+    "cowp/transport/root_low_safe_score",
+    "cowp/transport/root_target_confidence",
+    "cowp/transport/root_min_safe_burden",
+    "cowp/transport/transported_opr",
+    "cowp/transport/canonical_root_weight",
 )
 
 
@@ -53,10 +73,12 @@ def _scan(cache_dir: str, sample_scenes: int) -> dict[str, Any]:
     ds = COWPNpzDataset(cache_dir)
     indices = _sample_indices(len(ds), sample_scenes)
     missing = {k: 0 for k in FRESH_PROVENANCE_KEYS}
+    missing_transport = {k: 0 for k in INLINE_TRANSPORT_KEYS}
     read_errors: list[dict[str, str]] = []
     robust_candidates = 0
     finite_timing_errors = 0
     wanted = set(FRESH_PROVENANCE_KEYS)
+    wanted.update(INLINE_TRANSPORT_KEYS)
     wanted.add("cowp/candidates/valid")
     for i in indices:
         try:
@@ -68,6 +90,9 @@ def _scan(cache_dir: str, sample_scenes: int) -> dict[str, Any]:
         for key in FRESH_PROVENANCE_KEYS:
             if key not in row:
                 missing[key] += 1
+        for key in INLINE_TRANSPORT_KEYS:
+            if key not in row:
+                missing_transport[key] += 1
         src = np.asarray(row.get("cowp/candidates/proposal_source", []), dtype=np.int64).reshape(-1)
         valid = np.asarray(row.get("cowp/candidates/valid", np.ones_like(src, dtype=bool)), dtype=bool).reshape(-1)[: len(src)]
         robust = valid & (src == int(ProposalSource.ROBUST_BCTE))
@@ -88,6 +113,8 @@ def _scan(cache_dir: str, sample_scenes: int) -> dict[str, Any]:
         "sample_requested": len(indices),
         "read_errors": read_errors,
         "missing_fresh_provenance_counts": missing,
+        "missing_inline_transport_counts": missing_transport,
+        "inline_transport_complete_in_sample": not any(missing_transport.values()),
         "sampled_robust_bcte_candidates": robust_candidates,
         "sampled_robust_bcte_finite_timing_errors": finite_timing_errors,
         "transport_summary": summary,
@@ -111,7 +138,9 @@ def main() -> None:
     cowp_root = Path(args.cowp_root)
     expected = current_fingerprint(code_root)
     fingerprint_path = cowp_root / "build_fingerprint.sha256"
-    manifest_path = cowp_root / "data_manifest_v16_8_6.json"
+    manifest_path_v17 = cowp_root / "data_manifest_v16_8_7.json"
+    manifest_path_v16 = cowp_root / "data_manifest_v16_8_6.json"
+    manifest_path = manifest_path_v17 if manifest_path_v17.is_file() else manifest_path_v16
     stored = fingerprint_path.read_text(encoding="utf-8").strip() if fingerprint_path.is_file() else None
     manifest = None
     manifest_error = None
@@ -129,10 +158,11 @@ def main() -> None:
     elif stored != expected:
         reasons.append("build fingerprint does not match the current BCS-RMR-BCTE candidate/geometry implementation")
     if manifest is None:
-        reasons.append("missing or unreadable data_manifest_v16_8_6.json")
+        reasons.append("missing or unreadable data_manifest_v16_8_7.json/data_manifest_v16_8_6.json")
     else:
-        if manifest.get("schema_version") != "cowp_v16_8_6_priority_commitment_data_v1":
-            reasons.append(f"unexpected manifest schema_version={manifest.get('schema_version')!r}")
+        schema = manifest.get("schema_version")
+        if schema not in {"cowp_v16_8_6_priority_commitment_data_v1", "cowp_v16_8_7_priority_commitment_self_contained_data_v1"}:
+            reasons.append(f"unexpected manifest schema_version={schema!r}")
         if manifest.get("build_fingerprint_sha256") != expected:
             reasons.append("manifest build_fingerprint_sha256 does not match current code")
         expected_paths = {
@@ -152,18 +182,23 @@ def main() -> None:
         if missing:
             reasons.append(f"{split_name}: sampled scenes are missing v16.8.4 provenance tensors: {missing}")
         meta = split["transport_summary"]
-        if not meta.get("exists") or meta.get("read_error"):
-            reasons.append(f"{split_name}: transport_augmentation_summary.json missing or unreadable")
+        inline_ok = bool(split.get("inline_transport_complete_in_sample", False))
+        if inline_ok:
+            # Preferred v16.8.7 engineering contract: transport supervision is
+            # serialized in each fresh NPZ. No overlay/backing-cache dependency.
+            pass
+        elif not meta.get("exists") or meta.get("read_error"):
+            reasons.append(f"{split_name}: neither complete inline transport tensors nor a readable transport overlay are present")
         else:
             if str(meta.get("storage_mode", "")) != "overlay":
-                reasons.append(f"{split_name}: transport storage_mode is not overlay")
-            if str(meta.get("sidecar_subdir", "")) != ".transport_v16_8_6":
-                reasons.append(f"{split_name}: sidecar_subdir={meta.get('sidecar_subdir')!r}, expected '.transport_v16_8_6'")
+                reasons.append(f"{split_name}: transport storage_mode is neither inline nor overlay")
+            if str(meta.get("sidecar_subdir", "")) not in {".transport_v16_8_6", ".transport_v16_8_4"}:
+                reasons.append(f"{split_name}: unexpected sidecar_subdir={meta.get('sidecar_subdir')!r}")
             if not bool(meta.get("complete", False)) or int(meta.get("error_count", 0)) != 0:
                 reasons.append(f"{split_name}: transport augmentation is incomplete or has errors")
 
     report = {
-        "schema_version": "cowp_v16_8_6_fresh_cache_protocol_gate_v1",
+        "schema_version": "cowp_v16_8_7_fresh_cache_protocol_gate_v2",
         "pass": not reasons,
         "cowp_root": str(cowp_root.resolve()),
         "current_build_fingerprint_sha256": expected,
@@ -174,7 +209,7 @@ def main() -> None:
         "val": val,
         "reasons": reasons,
         "interpretation": (
-            "Fresh v16.8.6 cache identity/provenance passed; training may use these caches."
+            "Fresh v16.8.6 algorithm cache identity/provenance passed; inline self-contained transport or a valid overlay is available."
             if not reasons else
             "Do not train v16.8.6 on these caches. In particular, a transport overlay cannot retrofit a new ego proposal bank into stale raw cache files."
         ),

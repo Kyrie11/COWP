@@ -446,6 +446,27 @@ class COWPNpzDataset:
         )
         if not self.paths:
             raise FileNotFoundError(f"No cache npz files found in {self.cache_dir} matching {pattern}")
+        # Overlay caches intentionally expose base scenario files as symlinks.
+        # A directory listing can therefore look healthy even after its backing
+        # cache was deleted: pathlib/glob still returns the broken link, while
+        # np.load fails much later with a misleading FileNotFoundError.  Fail at
+        # dataset construction with an actionable lineage diagnostic instead of
+        # letting a random sample crash a long experiment.
+        broken = [p for p in self.paths if p.is_symlink() and not p.exists()]
+        if broken:
+            examples = []
+            for bp in broken[:5]:
+                try:
+                    target = bp.readlink()
+                except OSError:
+                    target = "<unreadable>"
+                examples.append(f"{bp.name}->{target}")
+            raise FileNotFoundError(
+                f"Cache {self.cache_dir} contains {len(broken)} broken NPZ symlink(s); "
+                f"examples={examples}. This usually means an overlay backing cache "
+                "was deleted. Use the original base tensor cache, or rebase/rebuild "
+                "the transport overlay; do not treat the visible symlink names as data files."
+            )
         sidecar_name = ".transport_v9"
         summary = self.cache_dir / "transport_augmentation_summary.json"
         if summary.is_file():

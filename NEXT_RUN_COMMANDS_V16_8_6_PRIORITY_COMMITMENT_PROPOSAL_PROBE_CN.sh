@@ -4,7 +4,7 @@ set -euo pipefail
 # Paper-grade proposal promotion probe after the 192-scene micro screen passes.
 export WOMD_ROOT="${WOMD_ROOT:-/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1}"
 export COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal}"
-export OLD_VAL_CACHE="${OLD_VAL_CACHE:-$COWP_ROOT/tensor_cache_val_waymax_transport_v16_8}"
+export OLD_VAL_CACHE="${OLD_VAL_CACHE:-$COWP_ROOT/tensor_cache_val}"
 export PROBE_ROOT="${PROBE_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_6_priority_commitment_proposal_probe}"
 export HARD_COUNT="${HARD_COUNT:-400}"
 export RANDOM_COUNT="${RANDOM_COUNT:-800}"

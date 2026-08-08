@@ -143,7 +143,9 @@ def build_labels_for_scene(
         "cowp/transport/root_recovery_mass": witness["transport_root_recovery_mass"],
         "cowp/transport/root_low_safe_score": witness["transport_root_low_safe_score"],
         "cowp/transport/root_target_confidence": witness["transport_root_target_confidence"],
+        "cowp/transport/root_min_safe_burden": witness["root_min_safe_burden"],
         "cowp/transport/transported_opr": witness["transport_transported_opr"],
+        "cowp/transport/canonical_root_weight": witness["transport_canonical_root_weight"],
         "map/conflict_regions": conflict_tensor,
         "map/conflict_region_valid": conflict_valid,
     }
