@@ -23,12 +23,14 @@ class SetTransportCertificateHead(nn.Module):
         geometry_steps: int = 16,
         geometry_dim: int = 8,
         response_topk: int = 8,
+        use_affected_root_transport: bool = True,
     ):
         super().__init__()
         h = int(hidden)
         self.source_count = int(source_count)
         self.geometry_steps = max(int(geometry_steps), 4)
         self.response_topk = max(int(response_topk), 1)
+        self.use_affected_root_transport = bool(use_affected_root_transport)
         self.cand = nn.Linear(d_model, h, bias=False)
         self.agent = nn.Linear(d_model, h, bias=False)
         self.graph = nn.Linear(d_model, h, bias=False)
@@ -42,7 +44,10 @@ class SetTransportCertificateHead(nn.Module):
         #   1 retained-low-safe conditional on no conflict,
         #   2 epistemic/aleatoric error proxy,
         #   3 existence of a low-burden safe response transported from this root,
-        #   4 conditional minimum burden of that root-preserving response.
+        #   4 conditional minimum burden of that root-preserving response,
+        #   5 candidate-induced affected-root probability (unsafe OR direct burden
+        #     above beta).  Affected is the causal transport support; conflict is
+        #     retained separately for physical-safety explanations.
         #
         # v11 inferred item (3) indirectly from a generic unordered response bank
         # plus a 24-way root classifier.  That is unnecessarily hard and, more
@@ -51,7 +56,12 @@ class SetTransportCertificateHead(nn.Module):
         # primitive is the minimal structural repair: it is still supervised by
         # the explicit response-set/root labels, while making the decision
         # certificate root indexed by construction.
-        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 5))
+        self.mode_out = nn.Sequential(nn.GELU(), nn.Linear(h, 6))
+        # Start the new burden-only affected branch conservatively close to zero
+        # so upgrading a v16.8 checkpoint architecture does not initially mark
+        # half of all non-conflicting roots as affected before supervision.
+        with torch.no_grad():
+            self.mode_out[-1].bias[5] = -3.0
         self.calibration = nn.Sequential(
             nn.Linear(d_model * 3, h), nn.GELU(), nn.LayerNorm(h), nn.Linear(h, 1), nn.Tanh()
         )
@@ -270,6 +280,7 @@ class SetTransportCertificateHead(nn.Module):
         natural_traj: torch.Tensor | None = None,
         critical_mask: torch.Tensor | None = None,
         priority_relation: torch.Tensor | None = None,
+        audit_relevance_prob: torch.Tensor | None = None,
         alpha_opr: float = 0.35,
         gamma: float = 0.10,
         conflict_mass_floor: float = 0.10,
@@ -316,8 +327,6 @@ class SetTransportCertificateHead(nn.Module):
         # and prevents the downstream OPR computation from applying the same
         # no-conflict condition twice.
         retain_conditional_prob = torch.sigmoid(retain_conditional_logit.float())
-        retain_prob = ((1.0 - conflict_prob) * retain_conditional_prob).clamp(1.0e-5, 1.0 - 1.0e-5)
-        retain_logit = torch.logit(retain_prob)
         mode_uncertainty = torch.sigmoid(raw[..., 2].float())
         mode_recovery_logit = raw[..., 3]
         mode_recovery_prob = torch.sigmoid(mode_recovery_logit.float())
@@ -328,6 +337,21 @@ class SetTransportCertificateHead(nn.Module):
         # Therefore b* must remain an independent continuous quantity (with 2.0
         # serving only as the finite no-safe-response sentinel in supervision).
         mode_root_min_safe_burden = 2.0 * torch.sigmoid(raw[..., 4].float())
+        direct_affected_conditional_prob = torch.sigmoid(raw[..., 5].float())
+        # Conflict is a strict subset of causal affectedness.  Factorization keeps
+        # P(affected) >= P(conflict) by construction while allowing non-collision
+        # burden-only perturbations.
+        affected_prob = (1.0 - (1.0 - conflict_prob) * (1.0 - direct_affected_conditional_prob)).clamp(1.0e-5, 1.0 - 1.0e-5)
+        if not self.use_affected_root_transport:
+            # Controlled v16.8.9 learned ablation: transport only roots made
+            # geometrically unsafe.  Keep the sixth output channel in the module
+            # for checkpoint shape compatibility, but do not let burden-only
+            # affectedness change the certificate.
+            affected_prob = conflict_prob
+        affected_logit = torch.logit(affected_prob)
+        # Retained-low-safe means neither unsafe nor burden-affected.
+        retain_prob = ((1.0 - affected_prob) * retain_conditional_prob).clamp(1.0e-5, 1.0 - 1.0e-5)
+        retain_logit = torch.logit(retain_prob)
 
         natural_weight_raw = torch.softmax(natural["logits"].float(), dim=-1)
         # Use the same p_min support and floor-smoothed probability measure as
@@ -352,13 +376,13 @@ class SetTransportCertificateHead(nn.Module):
         source_prob = torch.softmax(natural["source_logits"].float(), dim=-1)[:, None, :, :, :]
         priority_prob = torch.sigmoid(natural["priority_logits"].float())[:, None, :, :]
 
-        # Paper Eq. s=(1-c)r+cq.  ``retain_prob`` is already (1-c)r, while
-        # ``mode_recovery_prob`` is q.  Earlier v16.8 code omitted c*q here even
-        # though labels and losses used transported OPR; that forced retention
-        # logits to absorb the recovery target and corrupted both OPR calibration
-        # and the RootTransport head.
+        # v16.8.9 generalizes transport support from geometric conflict to causal
+        # affectedness.  A root can remain collision-free yet be burden-affected
+        # (e.g. forced early slowdown).  Such a root must be recovered through q
+        # just like an unsafe root.  Using conflict_prob here would make the model
+        # structurally incapable of matching the new affected-root labels.
         transported_root_prob = (
-            retain_prob + conflict_prob * mode_recovery_prob
+            retain_prob + affected_prob * mode_recovery_prob
         ).clamp(0.0, 1.0)
         low_safe_option_prob = transported_root_prob
         opr = (natural_weight * transported_root_prob).sum(dim=-1).clamp(0.0, 1.0)
@@ -408,11 +432,11 @@ class SetTransportCertificateHead(nn.Module):
         # primary transport certificate used by the planner.
         root_response_exist = response_root_exist_aux
         root_transport_exist = mode_recovery_prob
-        conflicted_mass = natural_weight * conflict_prob
-        conflict_denom = conflicted_mass.sum(dim=-1)
-        root_recovery_mass = (conflicted_mass * root_transport_exist).sum(dim=-1) / conflict_denom.clamp_min(1.0e-6)
+        affected_mass = natural_weight * affected_prob
+        affected_denom = affected_mass.sum(dim=-1)
+        root_recovery_mass = (affected_mass * root_transport_exist).sum(dim=-1) / affected_denom.clamp_min(1.0e-6)
         root_recovery_mass = torch.where(
-            conflict_denom > 1.0e-6, root_recovery_mass, torch.ones_like(root_recovery_mass)
+            affected_denom > 1.0e-6, root_recovery_mass, torch.ones_like(root_recovery_mass)
         ).clamp(0.0, 1.0)
         min_safe_burden = self._soft_min_burden(
             response["burden_total"].float(), response_safe, response_valid, response_weight, burden_temperature
@@ -432,22 +456,29 @@ class SetTransportCertificateHead(nn.Module):
 
         beta_pair = beta.float()[:, None, :].expand(B, K, A)
         root_excess = torch.relu(root_min_safe_burden - beta_pair[..., None])
-        conflicted_root_weight = natural_weight * conflict_prob
+        affected_root_weight = natural_weight * affected_prob
         tail_burden_excess = self._weighted_upper_cvar(
             root_excess,
-            conflicted_root_weight,
+            affected_root_weight,
             cvar_tail_mass,
         )
         gt = max(float(gate_temperature), 1.0e-3)
+        if audit_relevance_prob is None:
+            relevance_prob = torch.ones(B, K, A, device=opr.device, dtype=opr.dtype)
+        else:
+            relevance_prob = audit_relevance_prob.float().clamp(0.0, 1.0)
         floor = max(float(conflict_mass_floor), 1.0e-4)
+        natural_affected_mass = (natural_weight * affected_prob).sum(dim=-1).clamp(0.0, 1.0)
         conflict_support = (natural_conflict_mass / floor).clamp(0.0, 1.0)
         conflict_gate = conflict_support * torch.sigmoid((natural_conflict_mass - floor) / gt)
+        affected_support = (natural_affected_mass / floor).clamp(0.0, 1.0)
+        affected_gate = affected_support * torch.sigmoid((natural_affected_mass - floor) / gt)
         burden_gate = torch.sigmoid((tail_burden_excess - float(gamma)) / gt)
         option_gate = torch.sigmoid((float(alpha_opr) - opr) / gt)
         # No independent response-absence heuristic is needed: an absent same-root
         # response receives burden 2.0 and therefore enters the CVaR term.
         failure_union = 1.0 - (1.0 - burden_gate) * (1.0 - option_gate)
-        analytic_witness = (conflict_gate * failure_union).clamp(0.0, 1.0)
+        analytic_witness = (affected_gate * failure_union).clamp(0.0, 1.0)
         response_absence_gate = 1.0 - root_recovery_mass
 
         calib_in = torch.cat([
@@ -456,7 +487,10 @@ class SetTransportCertificateHead(nn.Module):
             z_graph[:, None, None, :].expand(B, K, A, D),
         ], dim=-1)
         residual = self.calibration(calib_in).squeeze(-1) * float(calibration_scale)
-        witness_prob = (analytic_witness + residual).clamp(0.0, 1.0)
+        # Relevance gates the certificate exactly once.  The v16.8.9 draft
+        # multiplied it in both ``analytic_witness`` and here, squaring moderate
+        # relevance probabilities and artificially suppressing witness recall.
+        witness_prob = (relevance_prob * (analytic_witness + residual)).clamp(0.0, 1.0)
         eps = 1.0e-5
         witness_logit = torch.logit(witness_prob.clamp(eps, 1.0 - eps))
         uncertainty = (natural_weight * mode_uncertainty).sum(dim=-1).clamp(0.0, 1.0)
@@ -472,7 +506,7 @@ class SetTransportCertificateHead(nn.Module):
         # pair.  This is monotone in conflict, option loss, burden excess and
         # failed same-root recovery, so a generic candidate classifier cannot
         # silently replace the proposed mechanism.
-        unrecovered_mode_mass = natural_weight * conflict_prob * (1.0 - root_transport_exist)
+        unrecovered_mode_mass = natural_weight * affected_prob * (1.0 - root_transport_exist)
         unrecovered_conflict_mass = unrecovered_mode_mass.sum(dim=-1).clamp(0.0, 1.0)
         option_shortfall = (
             torch.relu(torch.as_tensor(float(alpha_opr), device=opr.device, dtype=opr.dtype) - opr)
@@ -497,16 +531,17 @@ class SetTransportCertificateHead(nn.Module):
         pair_components = torch.stack(
             [
                 unrecovered_conflict_mass,
-                natural_conflict_mass * burden_gate,
+                natural_affected_mass * burden_gate,
                 option_shortfall,
             ],
             dim=-1,
         )
         pair_positive = torch.nn.functional.softplus(self.pair_deficit_raw_weight)
         pair_deficit_weight = pair_positive / pair_positive.sum().clamp_min(1.0e-6)
-        pair_transport_deficit = (pair_components * pair_deficit_weight).sum(dim=-1).clamp(0.0, 1.0)
+        pair_transport_deficit = (relevance_prob * (pair_components * pair_deficit_weight).sum(dim=-1)).clamp(0.0, 1.0)
         pair_global_severe_prob = (
-            conflict_gate
+            relevance_prob
+            * affected_gate
             * response_absence_gate
             * burden_gate
             * (1.0 - 0.5 * uncertainty)
@@ -520,10 +555,10 @@ class SetTransportCertificateHead(nn.Module):
         cm = cmask[:, None, :].expand(B, K, A)
         priority_weight = torch.where(
             cm,
-            0.05 + 0.95 * priority_support,
+            relevance_prob * (0.05 + 0.95 * priority_support),
             torch.zeros_like(priority_support),
         )
-        global_weight = cm.float()
+        global_weight = cm.float() * relevance_prob
         weight_denom = priority_weight.sum(dim=-1).clamp_min(1.0e-6)
         global_denom = global_weight.sum(dim=-1).clamp_min(1.0)
         candidate_mean_deficit = (priority_weight * pair_transport_deficit).sum(dim=-1) / weight_denom
@@ -568,6 +603,7 @@ class SetTransportCertificateHead(nn.Module):
             "exist_logits": witness_logit,
             "witness_prob": witness_prob,
             "analytic_witness_prob": analytic_witness,
+            "audit_relevance_prob": relevance_prob,
             "opr": opr,
             "min_safe_burden": min_safe_burden,
             "root_min_safe_burden": root_min_safe_burden,
@@ -577,6 +613,7 @@ class SetTransportCertificateHead(nn.Module):
             "canonical_root_weight": natural_weight,
             "tail_burden_excess": tail_burden_excess,
             "natural_conflict_mass": natural_conflict_mass,
+            "natural_affected_mass": natural_affected_mass,
             "priority_conflict_mass": priority_conflict_mass,
             "response_low_safe_mass": response_low_safe_mass,
             "response_exist_low_safe": response_exist_low_safe,
@@ -589,9 +626,11 @@ class SetTransportCertificateHead(nn.Module):
             "low_safe_mass_by_source": low_safe_mass_by_source,
             "source_opr": source_opr,
             "mode_conflict_logits": conflict_logit,
+            "mode_affected_logits": affected_logit,
             "mode_retain_logits": retain_logit,
             "mode_retain_conditional_logits": retain_conditional_logit,
             "mode_conflict_prob": conflict_prob,
+            "mode_affected_prob": affected_prob,
             "mode_retain_prob": retain_prob,
             "mode_retain_conditional_prob": retain_conditional_prob,
             "mode_uncertainty": mode_uncertainty,

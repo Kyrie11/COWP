@@ -1,0 +1,39 @@
+{
+  "schema_version": "cowp_v16_8_9_result_verdict_v1",
+  "current_decision": "DO_NOT_FULL_REBUILD_YET",
+  "source_smoke": "v16.8.8 96-scene refinement smoke",
+  "observed_v16_8_8": {
+    "any_valid": 1.0,
+    "any_ncf": 0.20833333333333334,
+    "false_safe_floor": 0.7083333333333334,
+    "pbtr_floor": 0.4418604651162791,
+    "hard_recovery": 0.125,
+    "stable_critical": true,
+    "proposal_union_monotone": true,
+    "psy_attempted": 64,
+    "psy_accepted": 64,
+    "psy_scene_level_any_ncf_increment": 0.0
+  },
+  "diagnosis": [
+    "stable critical and physical proposal generation are no longer the primary failure",
+    "global-critical all-pair supervision lacked candidate-conditioned causal relevance",
+    "conflict-only transport omitted collision-free burden-only affected natural roots",
+    "the old contract allowed silent non-NCF blockers with incomplete explanatory supervision"
+  ],
+  "v16_8_9_repairs": [
+    "candidate-conditioned pair relevance and affected-root labels",
+    "affected-root RootTransport supervision",
+    "pair NCF/blocker and candidate blocker summary labels",
+    "safe-response/witness/loss/model use the same relevance semantics",
+    "real independently retrained causal-relevance and conflict-only transport ablations",
+    "fresh-cache integrity/proposal gates before training"
+  ],
+  "next_required_action": "RUN_V16_8_9_96_SCENE_CAUSAL_AUDIT_SMOKE",
+  "full_rebuild_authorization": "Only v16_8_9_strict_verdict.json with recommend_full_rebuild=true, followed by a matching code fingerprint, may authorize full rebuild.",
+  "local_validation": {
+    "compileall": "pass",
+    "pytest": "175 passed",
+    "bash_n": "pass",
+    "cli_import_smoke": "pass"
+  }
+}

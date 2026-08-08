@@ -327,6 +327,7 @@ def generate_safe_responses(
     critical: dict[str, np.ndarray],
     natural: dict[str, np.ndarray],
     cfg: dict,
+    audit: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     limits = cfg.get("limits", {})
     K = int(limits.get("max_candidates", 64))
@@ -353,6 +354,11 @@ def generate_safe_responses(
             continue
         ego = candidates["trajectory"][k]
         for a, (_, object_type, rho, nat_ref, primitives) in primitive_bank.items():
+            if audit is not None and not bool(np.asarray(audit.get("pair_relevant"))[k, a]):
+                # No factual low-burden natural root is affected by this candidate.
+                # Response search is unnecessary and would only create padded
+                # negatives for an unaudited pair.
+                continue
             evaluated: list[tuple[float, float, np.ndarray, ResponseSource, bool, np.ndarray, int, float]] = []
             if bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True)):
                 curr_idx = int(critical["track_index"][a])

@@ -33,6 +33,10 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/candidates/proposal_accel_mps2": FieldSpec(("K",), "f", required=False),
     "cowp/candidates/proposal_entry_distance_m": FieldSpec(("K",), "f", required=False),
     "cowp/candidates/proposal_target_tta_error_s": FieldSpec(("K",), "f", required=False),
+    "cowp/candidates/audited_pair_count": FieldSpec(("K",), ("i", "u"), required=False),
+    "cowp/candidates/ncf_blocker_count": FieldSpec(("K",), ("i", "u"), required=False),
+    "cowp/candidates/min_audited_opr": FieldSpec(("K",), "f", required=False),
+    "cowp/candidates/max_audited_tail_burden_excess": FieldSpec(("K",), "f", required=False),
     "cowp/critical/track_index": FieldSpec(("A",), ("i", "u")),
     "cowp/critical/track_id": FieldSpec(("A",), ("i", "u"), required=False),
     "cowp/critical/input_index": FieldSpec(("A",), ("i", "u"), required=False),
@@ -51,6 +55,11 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/natural/map_compliant": FieldSpec(("A", "M"), "b", required=False),
     "cowp/natural/map_distance_max": FieldSpec(("A", "M"), "f", required=False),
     "cowp/natural/map_verified": FieldSpec(("A", "M"), "b", required=False),
+    "cowp/audit/pair_relevant": FieldSpec(("K", "A"), "b", required=False),
+    "cowp/audit/relevance_mass": FieldSpec(("K", "A"), "f", required=False),
+    "cowp/audit/root_affected": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/audit/root_unsafe": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/audit/root_direct_burden": FieldSpec(("K", "A", "M"), "f", required=False),
     "cowp/response/traj": FieldSpec(("K", "A", "R", "T", 7), "f"),
     "cowp/response/valid": FieldSpec(("K", "A", "R"), "b"),
     "cowp/response/source": FieldSpec(("K", "A", "R"), ("i", "u")),
@@ -66,6 +75,7 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/witness/burden_components": FieldSpec(("K", "A", 6), "f"),
     "cowp/witness/min_safe_burden": FieldSpec(("K", "A"), "f"),
     "cowp/witness/natural_conflict_mass": FieldSpec(("K", "A"), "f"),
+    "cowp/witness/causal_relevance_mass": FieldSpec(("K", "A"), "f", required=False),
     "cowp/witness/natural_conflict_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
     "cowp/witness/natural_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
     "cowp/witness/low_safe_mass_by_source": FieldSpec(("K", "A", 4), "f", required=False),
@@ -77,8 +87,11 @@ COWP_SCHEMA: dict[str, FieldSpec] = {
     "cowp/witness/conflict_region_id": FieldSpec(("K", "A"), ("i", "u")),
     "cowp/witness/critical_agent_track_index": FieldSpec(("A",), ("i", "u")),
     "cowp/witness/rho": FieldSpec(("K", "A"), ("i", "u")),
+    "cowp/witness/pair_noncoercive_feasible": FieldSpec(("K", "A"), "b", required=False),
+    "cowp/witness/blocker_code": FieldSpec(("K", "A"), ("i", "u"), required=False),
     "cowp/transport/mode_valid": FieldSpec(("K", "A", "M"), "b", required=False),
     "cowp/transport/mode_conflict": FieldSpec(("K", "A", "M"), "b", required=False),
+    "cowp/transport/mode_affected": FieldSpec(("K", "A", "M"), "b", required=False),
     "cowp/transport/mode_retained_low_safe": FieldSpec(("K", "A", "M"), "b", required=False),
     "cowp/transport/response_root_index": FieldSpec(("K", "A", "R"), ("i", "u"), required=False),
     "cowp/transport/response_is_min_burden": FieldSpec(("K", "A", "R"), "b", required=False),
@@ -145,9 +158,33 @@ def validate_numeric_invariants(data: Mapping[str, np.ndarray], cfg: dict) -> li
         comps = np.asarray(data["cowp/response/burden_components"])
         if np.nanmin(comps) < -1e-4 or np.nanmax(comps) > 2.0001:
             errors.append("burden components outside [0,2]")
+    if "cowp/audit/pair_relevant" in data:
+        rel = np.asarray(data["cowp/audit/pair_relevant"], dtype=bool)
+        cand_valid = np.asarray(data.get("cowp/candidates/valid", np.ones(rel.shape[0], dtype=bool)), dtype=bool)
+        crit_valid = np.asarray(data.get("cowp/critical/valid", np.ones(rel.shape[1], dtype=bool)), dtype=bool)
+        base_pair = cand_valid[:, None] & crit_valid[None, :]
+        if "cowp/witness/pair_noncoercive_feasible" in data:
+            pncf = np.asarray(data["cowp/witness/pair_noncoercive_feasible"], dtype=bool)
+            if np.any(base_pair & (~rel) & (~pncf)):
+                errors.append("irrelevant valid audit pair marked non-NCF")
+            if "cowp/witness/exists" in data:
+                exists_pair = np.asarray(data["cowp/witness/exists"], dtype=bool)
+                if np.any(base_pair & rel & (~pncf) & (~exists_pair)):
+                    errors.append("relevant non-NCF pair has no witness (silent blocker)")
+        if "cowp/witness/blocker_code" in data:
+            code = np.asarray(data["cowp/witness/blocker_code"], dtype=np.int64)
+            if np.any(base_pair & (~rel) & (code != 0)):
+                errors.append("irrelevant valid audit pair carries blocker code")
     if "cowp/witness/exists" in data:
         exists = np.asarray(data["cowp/witness/exists"], dtype=bool)
-        mass = np.asarray(data.get("cowp/witness/natural_conflict_mass", np.zeros_like(exists, dtype=float)))
+        if "cowp/audit/relevance_mass" in data:
+            mass = np.asarray(data["cowp/audit/relevance_mass"], dtype=float)
+            delta = float(cfg.get("ncf", {}).get("audit_min_relevance_mass", 0.10))
+            mass_name = "causal relevance"
+        else:
+            mass = np.asarray(data.get("cowp/witness/natural_conflict_mass", np.zeros_like(exists, dtype=float)))
+            delta = float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))
+            mass_name = "conflict"
         opr = np.asarray(data.get("cowp/witness/opr", np.ones_like(exists, dtype=float)))
         tail = data.get("cowp/witness/tail_burden_excess")
         if tail is None:
@@ -158,10 +195,9 @@ def validate_numeric_invariants(data: Mapping[str, np.ndarray], cfg: dict) -> li
             tail = np.asarray(tail)
         alpha_opr = float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
         gamma = float(cfg.get("ncf", {}).get("gamma", 0.10))
-        delta = float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))
         for k, a in zip(*np.where(exists)):
             if not mass[k, a] > delta - 1e-5:
-                errors.append(f"positive witness ({k},{a}) below conflict mass threshold")
+                errors.append(f"positive witness ({k},{a}) below {mass_name} mass threshold")
             if not (tail[k, a] > gamma - 1e-5 or opr[k, a] < alpha_opr):
                 errors.append(f"positive witness ({k},{a}) has neither tail-burden excess nor option collapse")
     return errors

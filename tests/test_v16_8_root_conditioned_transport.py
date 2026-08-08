@@ -106,6 +106,8 @@ def _controlled_head_output(*, conflict: float, retain_conditional: float, recov
         bias[2] = 0.0
         bias[3] = torch.logit(torch.tensor(recovery).clamp(1.0e-5, 1.0 - 1.0e-5))
         bias[4] = torch.logit(torch.tensor(root_min_burden / 2.0).clamp(1.0e-5, 1.0 - 1.0e-5))
+        # No additional burden-only affectedness in this conflict-only control.
+        bias[5] = -100.0
     natural = {
         "mode_latent": torch.zeros(b, a, m, d),
         "logits": torch.zeros(b, a, m),

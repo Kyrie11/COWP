@@ -197,7 +197,7 @@ def test_bfloat16_retain_probability_to_logit_stays_finite_at_saturation() -> No
     with torch.no_grad():
         final = head.mode_out[-1]
         final.weight.zero_()
-        final.bias.copy_(torch.tensor([-100.0, 100.0, 0.0, 0.0, 0.0]))
+        final.bias.copy_(torch.tensor([-100.0, 100.0, 0.0, 0.0, 0.0, -100.0]))
     with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
         out = head(**_tiny_set_transport_inputs(), calibration_scale=0.0)
     assert out["mode_retain_prob"].dtype == torch.float32

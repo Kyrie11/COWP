@@ -11,6 +11,7 @@ class WitnessDecoder(nn.Module):
         # candidate embedding, graph context, and root-scene natural latent.
         self.pair = nn.Sequential(nn.Linear(d_model * 4, d_model), nn.GELU(), nn.LayerNorm(d_model), nn.Linear(d_model, d_model), nn.GELU())
         self.exist = nn.Linear(d_model, 1)
+        self.relevance = nn.Linear(d_model, 1)
         # Binary evidential head for uncertainty-aware coercion certification.
         # Channel 0 is non-witness evidence, channel 1 is witness evidence.
         self.evidence = nn.Linear(d_model, 2)
@@ -53,6 +54,7 @@ class WitnessDecoder(nn.Module):
         end = torch.maximum(raw_interval[..., 0], raw_interval[..., 1])
         return {
             "exist_logits": self.exist(h).squeeze(-1),
+            "relevance_logit": self.relevance(h).squeeze(-1),
             "evidence_alpha": alpha,
             "evidence_beta": beta,
             "evidential_prob": alpha / strength.clamp_min(1e-6),

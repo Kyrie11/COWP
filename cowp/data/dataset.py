@@ -388,6 +388,7 @@ def _wanted_keys_for_stage(
             "cowp/candidates/macro_type",
             "cowp/candidates/valid",
             "cowp/witness/",
+            "cowp/audit/",
         })
 
     # Candidate-level NCF/false-safe supervision is consumed directly by the

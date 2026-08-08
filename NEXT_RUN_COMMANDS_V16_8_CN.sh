@@ -16,6 +16,13 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 
 mkdir -p "$OUT_ROOT/eval" "$OUT_ROOT/logs"
 
+# Allow paper-grade learned ablations to supply real model/train configs while
+# reusing the same launcher.  Defaults preserve all historical behavior.
+export MODEL_CONFIG_SOURCE="${MODEL_CONFIG_SOURCE:-configs/model_cowp_v16_8.yaml}"
+export LABEL_CONFIG_SOURCE="${LABEL_CONFIG_SOURCE:-configs/label_cowp_v16_8.yaml}"
+export TRAIN_CONFIG_SOURCE="${TRAIN_CONFIG_SOURCE:-configs/train_cowp_v16_8.yaml}"
+export EVAL_CONFIG_SOURCE="${EVAL_CONFIG_SOURCE:-configs/eval_cowp_v16_8.yaml}"
+
 # 默认把整个流程放到后台；所有总输出进入 driver.nohup.log，各阶段仍保留独立日志。
 # 前台调试可显式设置 BACKGROUND=0。
 export BACKGROUND="${BACKGROUND:-1}"
@@ -33,10 +40,10 @@ fi
 preflight_args=(--require-cuda)
 [[ "${REQUIRE_WAYMAX_PREFLIGHT:-0}" == "1" ]] && preflight_args+=(--require-waymax)
 python -u -m cowp.scripts.43_pipeline_preflight \
-  --model-config configs/model_cowp_v16_8.yaml \
-  --label-config configs/label_cowp_v16_8.yaml \
-  --train-config configs/train_cowp_v16_8.yaml \
-  --eval-config configs/eval_cowp_v16_8.yaml \
+  --model-config "$MODEL_CONFIG_SOURCE" \
+  --label-config "$LABEL_CONFIG_SOURCE" \
+  --train-config "$TRAIN_CONFIG_SOURCE" \
+  --eval-config "$EVAL_CONFIG_SOURCE" \
   --output "$OUT_ROOT/eval/pipeline_preflight.json" \
   "${preflight_args[@]}" | tee "$OUT_ROOT/logs/pipeline_preflight.log"
 
@@ -80,8 +87,8 @@ fi
 # 本轮首先验证 CNOB dynamics decoder 与新 loss，本脚本不会重建数据。
 python - <<'PY'
 from pathlib import Path
-import yaml
-cfg=yaml.safe_load(Path('configs/train_cowp_v16_8.yaml').read_text())
+import os, yaml
+cfg=yaml.safe_load(Path(os.environ['TRAIN_CONFIG_SOURCE']).read_text())
 assert abs(float(cfg['loss_weights'].get('outcome_logdiv', 0.0))) <= 1e-12
 PY
 

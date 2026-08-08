@@ -30,6 +30,12 @@ class COWPModel(nn.Module):
         m = cfg.get("model", cfg)
         d_model = int(m.get("d_model", 128))
         ab = cfg.get("ablation", {})
+        # v16.8.9 paper ablations are real forward-path switches rather than
+        # evaluation aliases.  Rich fresh labels are a superset, so these
+        # mechanisms can be removed at training/inference without rebuilding a
+        # different dataset.
+        self.use_causal_audit_relevance = bool(ab.get("use_causal_audit_relevance", True))
+        self.use_affected_root_transport = bool(ab.get("use_affected_root_transport", True))
         self.graph = GraphEncoder(
             int(m.get("d_state", 11)),
             d_model,
@@ -70,6 +76,7 @@ class COWPModel(nn.Module):
             source_count=4,
             geometry_steps=int(m.get("set_transport_geometry_steps", 16)),
             response_topk=int(m.get("set_transport_response_topk", 8)),
+            use_affected_root_transport=self.use_affected_root_transport,
         )
         self.planner = PlannerHead(d_model=d_model)
         # Candidate-level calibrated non-coercive feasibility certificate.
@@ -450,6 +457,11 @@ class COWPModel(nn.Module):
                     natural_traj=natural_out.get("traj"),
                     critical_mask=critical_mask,
                     priority_relation=batch.get("cowp/witness/rho"),
+                    audit_relevance_prob=(
+                        torch.sigmoid(witness["relevance_logit"]).detach()
+                        if self.use_causal_audit_relevance else
+                        torch.ones_like(witness["relevance_logit"])
+                    ),
                     alpha_opr=float(pcfg.get("alpha_opr_infer", self.cfg.get("ncf", {}).get("alpha_opr", 0.35))),
                     gamma=float(pcfg.get("ncf_gamma_infer", self.cfg.get("ncf", {}).get("gamma", 0.10))),
                     conflict_mass_floor=float(pcfg.get("set_transport_conflict_mass_floor", self.cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))),
@@ -510,8 +522,19 @@ class COWPModel(nn.Module):
             # The witness head still receives its own explicitly scaled witness loss.
             detach_witness = bool(pcfg.get("planner_detach_witness_features", True))
             detach_backbone = bool(pcfg.get("planner_detach_backbone_features", True))
-            witness_for_planner = witness_prob.detach() if detach_witness else witness_prob
-            opr_for_planner = witness["opr"].detach() if detach_witness else witness["opr"]
+            relevance_prob = (
+                torch.sigmoid(witness.get("relevance_logit", torch.full_like(witness_prob, 8.0)))
+                if self.use_causal_audit_relevance else torch.ones_like(witness_prob)
+            )
+            relevance_for_planner = relevance_prob.detach() if detach_witness else relevance_prob
+            raw_witness_for_planner = witness_prob.detach() if detach_witness else witness_prob
+            raw_opr_for_planner = witness["opr"].detach() if detach_witness else witness["opr"]
+            # Candidate-conditioned audit relevance is a causal support gate: an
+            # unaudited global critical pair is neutral for the candidate, not a
+            # negative witness.  Use a soft learned gate online and the exact label
+            # mask only in supervision.
+            witness_for_planner = raw_witness_for_planner * relevance_for_planner
+            opr_for_planner = 1.0 - relevance_for_planner * (1.0 - raw_opr_for_planner)
             # Strong gradient firewall: candidate certificate, physical outcome,
             # priority, and planner heads may calibrate pretrained representations,
             # but their losses must not rewrite the shared graph/candidate features
@@ -536,6 +559,7 @@ class COWPModel(nn.Module):
                     cm = critical_mask.bool()[:, None, :]
                 else:
                     cm = torch.ones_like(witness_prob, dtype=torch.bool)
+                rel_aux = torch.where(cm, relevance_for_planner, torch.zeros_like(relevance_for_planner))
                 wp_aux = torch.where(cm, witness_for_planner, torch.zeros_like(witness_for_planner))
                 opr_aux = torch.where(cm, opr_for_planner, torch.ones_like(opr_for_planner))
                 uncertainty = witness.get("epistemic_uncertainty")
@@ -570,14 +594,14 @@ class COWPModel(nn.Module):
                     (torch.relu(torch.as_tensor(alpha, device=opr_aux.device, dtype=opr_aux.dtype) - opr_aux) / max(alpha, 1e-6)).clamp(0.0, 1.0),
                     torch.zeros_like(opr_aux),
                 )
-                denom = cm.float().sum(dim=-1).clamp_min(1.0)
+                denom = rel_aux.sum(dim=-1).clamp_min(1.0)
                 max_wit = wp_aux.max(dim=-1).values
                 mean_wit = wp_aux.sum(dim=-1) / denom
                 min_opr = opr_aux.min(dim=-1).values
-                mean_opr = (torch.where(cm, opr_aux, torch.zeros_like(opr_aux)).sum(dim=-1) / denom).clamp(0.0, 1.0)
+                mean_opr = (torch.where(cm, opr_aux * rel_aux, torch.zeros_like(opr_aux)).sum(dim=-1) / denom).clamp(0.0, 1.0)
                 max_burden_excess = burden_excess.max(dim=-1).values.clamp(0.0, 2.0) / 2.0
                 max_ci_excess = ci_excess.max(dim=-1).values.clamp(0.0, 2.0) / 2.0
-                collapse_fraction = option_collapse.sum(dim=-1) / denom
+                collapse_fraction = (option_collapse * rel_aux).sum(dim=-1) / denom
                 max_uncertainty = uncertainty.max(dim=-1).values.clamp(0.0, 1.0)
                 set_certificate = out.get("set_certificate")
                 if isinstance(set_certificate, dict) and "candidate_transport_risk" in set_certificate:

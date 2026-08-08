@@ -9,6 +9,7 @@ from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_fo
 from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
 from cowp.label.safe_responses import root_conditioned_recovery_search
+from cowp.label.audit_relevance import canonical_root_weights
 
 
 def _event_interval(mask: np.ndarray) -> tuple[int, int]:
@@ -100,6 +101,7 @@ def certify_witnesses(
     cfg: dict,
     ablation: dict | None = None,
     conflict_regions: list | None = None,
+    audit: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     ablation = ablation or {}
     use_option = bool(ablation.get("use_option_preservation", True))
@@ -129,6 +131,7 @@ def certify_witnesses(
     ncf = np.zeros(K, dtype=bool)
     mode_valid = np.zeros((K, A, M), dtype=bool)
     mode_conflict = np.zeros((K, A, M), dtype=bool)
+    mode_affected = np.zeros((K, A, M), dtype=bool)
     mode_retained_low_safe = np.zeros((K, A, M), dtype=bool)
     response_root_index = np.full((K, A, R), -1, dtype=np.int32)
     response_is_min_burden = np.zeros((K, A, R), dtype=bool)
@@ -136,23 +139,19 @@ def certify_witnesses(
     root_low_safe_score = np.zeros((K, A, M), dtype=np.float32)
     root_target_confidence = np.zeros((K, A, M), dtype=np.float32)
     transported_opr = np.ones((K, A), dtype=np.float32)
-    # Canonical natural-root mass is agent-specific, not candidate-specific.
-    # Older code recomputed this normalization inside every (candidate, agent)
-    # pair.  Precomputing it once is exactly equivalent and also lets fresh label
-    # files carry the complete transport contract inline, eliminating the need
-    # for a fragile post-hoc transport overlay.
-    canonical_root_weight = np.zeros((A, M), dtype=np.float32)
-    for a in range(A):
-        if not critical["valid"][a]:
-            continue
-        nat_valid_idx = np.where(natural["valid"][a])[0]
-        if not len(nat_valid_idx):
-            continue
-        raw_weight = np.asarray(natural["weight"][a, nat_valid_idx], dtype=np.float32)
-        raw_weight = np.maximum(raw_weight, 0.0)
-        raw_weight = raw_weight / max(float(np.sum(raw_weight)), 1e-8)
-        eps_p = float(np.clip(cfg.get("ncf", {}).get("root_probability_floor", 0.02), 0.0, 0.25))
-        canonical_root_weight[a, nat_valid_idx] = (1.0 - eps_p) * raw_weight + eps_p / len(nat_valid_idx)
+    # Canonical natural-root mass is shared with the candidate-conditioned audit.
+    # One probability measure must drive relevance, OPR, CVaR, and RootTransport.
+    if audit is not None and "canonical_root_weight" in audit:
+        canonical_root_weight = np.asarray(audit["canonical_root_weight"], dtype=np.float32)
+    else:
+        canonical_root_weight = canonical_root_weights(natural, cfg)
+
+    pair_noncoercive = np.zeros((K, A), dtype=bool)
+    blocker_code = np.zeros((K, A), dtype=np.int32)
+    candidate_audited_pair_count = np.zeros(K, dtype=np.int32)
+    candidate_ncf_blocker_count = np.zeros(K, dtype=np.int32)
+    candidate_min_audited_opr = np.ones(K, dtype=np.float32)
+    candidate_max_audited_tail = np.zeros(K, dtype=np.float32)
 
     cur = scene.current_time_index
     regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
@@ -177,6 +176,17 @@ def certify_witnesses(
             rho = PriorityRelation(int(critical.get("base_priority", np.zeros(A, dtype=np.int32))[a]))
             rho_arr[k, a] = int(rho)
             beta = float(natural.get("beta", np.full(A, 0.65))[a])
+            pair_relevant = True if audit is None else bool(np.asarray(audit["pair_relevant"], dtype=bool)[k, a])
+            if not pair_relevant:
+                # A globally critical agent that this candidate does not perturb is
+                # vacuously non-coercive for this intervention.  Earlier versions
+                # still enforced OPR/CVaR here, creating silent blockers without a
+                # causal witness.
+                opr[k, a] = 1.0
+                transported_opr[k, a] = 1.0
+                pair_noncoercive[k, a] = True
+                continue
+            candidate_audited_pair_count[k] += 1
             nat_valid_idx = np.where(natural["valid"][a])[0]
             root_weight = canonical_root_weight[a]
             conflict_mass = 0.0
@@ -187,22 +197,36 @@ def certify_witnesses(
                 nat = natural["traj"][a, m]
                 w = float(root_weight[m])
                 low_neu = float(natural["burden_neutral"][a, m]) <= beta
-                unsafe = unsafe_between(ego, nat, cfg, agent_type=object_type)
-                b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
+                if audit is not None:
+                    unsafe_flag = bool(np.asarray(audit["root_unsafe"], dtype=bool)[k, a, m])
+                    affected_flag = bool(np.asarray(audit["root_affected"], dtype=bool)[k, a, m])
+                    b_under = float(np.asarray(audit["root_direct_burden"], dtype=np.float32)[k, a, m])
+                else:
+                    unsafe_obj = unsafe_between(ego, nat, cfg, agent_type=object_type)
+                    unsafe_flag = bool(unsafe_obj.unsafe)
+                    b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
+                    affected_flag = bool(unsafe_flag or (float(b_under) > beta))
                 if m < M and low_neu:
                     mode_valid[k, a, m] = True
-                    mode_conflict[k, a, m] = bool(unsafe.unsafe)
-                    mode_retained_low_safe[k, a, m] = bool((not unsafe.unsafe) and b_under <= beta)
+                    mode_conflict[k, a, m] = unsafe_flag
+                    mode_affected[k, a, m] = affected_flag
+                    mode_retained_low_safe[k, a, m] = bool(not affected_flag)
                 src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, m])
                 src = src if 0 <= src < 4 else int(NaturalSource.PAD)
                 if low_neu:
                     low_natural_mass += w
                     natural_mass_by_source[k, a, src] += w
-                if low_neu and unsafe.unsafe:
+                if low_neu and unsafe_flag:
                     conflict_mass += w
                     natural_conflict_mass_by_source[k, a, src] += w
-                    interval_masks.append(unsafe.event_mask)
-                if low_neu and (not unsafe.unsafe) and b_under <= beta:
+                    # Event intervals are explanation-only.  When the audit was
+                    # precomputed, reconstruct the mask lazily only for affected
+                    # unsafe roots instead of every candidate-root pair.
+                    if audit is None:
+                        interval_masks.append(unsafe_obj.event_mask)
+                    else:
+                        interval_masks.append(unsafe_between(ego, nat, cfg, agent_type=object_type).event_mask)
+                if low_neu and not affected_flag:
                     low_safe_mass += w
                     low_safe_mass_by_source[k, a, src] += w
             natural_conflict_mass[k, a] = conflict_mass
@@ -223,7 +247,7 @@ def certify_witnesses(
             if bool(cfg.get("response", {}).get("root_conditioned_transport", {}).get("enabled", True)):
                 for root in valid_roots:
                     root = int(root)
-                    if not (mode_valid[k, a, root] and mode_conflict[k, a, root]):
+                    if not (mode_valid[k, a, root] and mode_affected[k, a, root]):
                         continue
                     best_b, low_ok, _ = root_conditioned_recovery_search(
                         natural["traj"][a, root], ego, cfg,
@@ -287,12 +311,12 @@ def certify_witnesses(
             # low-burden safe response existed.
             recovered = np.clip(root_low_safe_score[k, a], 0.0, 1.0)
             transported_root = mode_retained_low_safe[k, a].astype(np.float32)
-            transported_root = np.where(mode_conflict[k, a], recovered, transported_root)
+            transported_root = np.where(mode_affected[k, a], recovered, transported_root)
             transported_opr[k, a] = float(np.clip(np.sum(root_weight * transported_root), 0.0, 1.0))
             if use_option:
                 opr[k, a] = transported_opr[k, a]
             for root in valid_roots:
-                if mode_conflict[k, a, root] and recovered[root] > 0.0:
+                if mode_affected[k, a, root] and recovered[root] > 0.0:
                     src = int(natural.get("source", np.full(natural["valid"].shape, int(NaturalSource.PAD), dtype=np.int32))[a, root])
                     src = src if 0 <= src < 4 else int(NaturalSource.PAD)
                     low_safe_mass_by_source[k, a, src] += float(root_weight[root] * recovered[root])
@@ -300,14 +324,14 @@ def certify_witnesses(
             # Both OPR and tail burden use the same floor-smoothed natural-root
             # measure.  CVaR is conditioned on roots that conflict with ego and
             # measures excess over each agent's adaptive burden budget beta.
-            conflict_weight = root_weight * mode_valid[k, a] * mode_conflict[k, a]
-            denom = float(np.sum(conflict_weight))
+            affected_weight = root_weight * mode_valid[k, a] * mode_affected[k, a]
+            denom = float(np.sum(affected_weight))
             if denom > 1e-8:
-                root_recovery_mass[k, a] = float(np.sum(conflict_weight * recovered) / denom)
+                root_recovery_mass[k, a] = float(np.sum(affected_weight * recovered) / denom)
             root_excess = np.maximum(root_min_safe_burden[k, a] - beta, 0.0)
             tail_burden_excess[k, a] = _weighted_upper_cvar(
                 root_excess,
-                conflict_weight,
+                affected_weight,
                 float(cfg.get("ncf", {}).get("cvar_tail_mass", 0.25)),
             )
 
@@ -331,8 +355,15 @@ def certify_witnesses(
             c_i[k, a] = tail_burden_excess[k, a]
             option_collapsed = use_option and opr[k, a] < float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
             gamma = float(cfg.get("ncf", {}).get("gamma", 0.10))
-            positive = (
-                conflict_mass > float(cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10))
+            relevance_mass = (
+                float(np.asarray(audit["relevance_mass"], dtype=np.float32)[k, a])
+                if audit is not None else float(np.sum(affected_weight))
+            )
+            positive = bool(
+                relevance_mass > float(cfg.get("ncf", {}).get(
+                    "audit_min_relevance_mass",
+                    cfg.get("ncf", {}).get("positive_min_natural_conflict_mass", 0.10),
+                )) - 1.0e-8
                 and (tail_burden_excess[k, a] > gamma or option_collapsed)
             )
             exists[k, a] = bool(positive)
@@ -356,6 +387,19 @@ def certify_witnesses(
                 and opr[k, a] >= float(cfg.get("ncf", {}).get("alpha_opr", 0.35))
                 and not positive
             )
+            pair_noncoercive[k, a] = bool(pair_ncf)
+            code = 0
+            if tail_burden_excess[k, a] > gamma:
+                code |= 1
+            if opr[k, a] < float(cfg.get("ncf", {}).get("alpha_opr", 0.35)):
+                code |= 2
+            if positive:
+                code |= 4
+            blocker_code[k, a] = int(code)
+            if not pair_ncf:
+                candidate_ncf_blocker_count[k] += 1
+            candidate_min_audited_opr[k] = min(candidate_min_audited_opr[k], float(opr[k, a]))
+            candidate_max_audited_tail[k] = max(candidate_max_audited_tail[k], float(tail_burden_excess[k, a]))
             all_ncf = all_ncf and pair_ncf
         false_safe[k] = conventional_safe[k] and bool(np.any(exists[k] & critical["valid"]))
         ncf[k] = bool(all_ncf)
@@ -366,6 +410,10 @@ def certify_witnesses(
         "burden_components": burden_components,
         "min_safe_burden": min_safe_burden,
         "natural_conflict_mass": natural_conflict_mass,
+        "causal_relevance_mass": (
+            np.asarray(audit["relevance_mass"], dtype=np.float32)
+            if audit is not None else natural_conflict_mass.copy()
+        ),
         "natural_conflict_mass_by_source": natural_conflict_mass_by_source,
         "natural_mass_by_source": natural_mass_by_source,
         "low_safe_mass_by_source": low_safe_mass_by_source,
@@ -377,11 +425,18 @@ def certify_witnesses(
         "conflict_region_id": conflict_region_id,
         "critical_agent_track_index": critical["track_index"].astype(np.int32),
         "rho": rho_arr,
+        "pair_noncoercive_feasible": pair_noncoercive,
+        "blocker_code": blocker_code,
+        "candidate_audited_pair_count": candidate_audited_pair_count,
+        "candidate_ncf_blocker_count": candidate_ncf_blocker_count,
+        "candidate_min_audited_opr": candidate_min_audited_opr,
+        "candidate_max_audited_tail_burden_excess": candidate_max_audited_tail,
         "candidate_conventional_safe": conventional_safe,
         "candidate_false_safe": false_safe,
         "candidate_noncoercive_feasible": ncf,
         "transport_mode_valid": mode_valid,
         "transport_mode_conflict": mode_conflict,
+        "transport_mode_affected": mode_affected,
         "transport_mode_retained_low_safe": mode_retained_low_safe,
         "transport_response_root_index": response_root_index,
         "transport_response_is_min_burden": response_is_min_burden,

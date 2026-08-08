@@ -43,6 +43,10 @@ def main() -> None:
     accepted = Counter()
     critical_modes = Counter()
     critical_counts: list[int] = []
+    audit_valid_pairs = 0
+    audit_relevant_pairs = 0
+    audit_relevance_mass_sum = 0.0
+    audit_scenes = 0
     timings: dict[str, list[float]] = defaultdict(list)
     totals: list[float] = []
     slow: list[tuple[float, str, str, dict[str, float]]] = []
@@ -87,6 +91,17 @@ def main() -> None:
                 critical_counts.append(int(cdiag.get("count", 0)))
             except Exception:
                 pass
+        if isinstance(engine_diag, dict) and isinstance(engine_diag.get("audit"), dict):
+            adiag = engine_diag["audit"]
+            try:
+                vp = int(adiag.get("valid_pair_count", 0))
+                rp = int(adiag.get("relevant_pair_count", 0))
+                audit_valid_pairs += vp
+                audit_relevant_pairs += rp
+                audit_relevance_mass_sum += float(adiag.get("mean_relevance_mass", 0.0))
+                audit_scenes += 1
+            except Exception:
+                pass
         slow.append((total, sid, str(row.get("status", "unknown")), numeric_t))
 
     stage_rows = []
@@ -106,7 +121,7 @@ def main() -> None:
     slow.sort(reverse=True)
 
     result = {
-        "schema_version": "cowp_v16_8_8_label_build_profile_summary_v2",
+        "schema_version": "cowp_v16_8_9_label_build_profile_summary_v3",
         "input": str(Path(args.input).resolve()),
         "unique_scenarios": len(latest),
         "malformed_rows": malformed,
@@ -119,6 +134,13 @@ def main() -> None:
             k: float(accepted.get(k, 0) / max(v, 1)) for k, v in attempted.items()
         },
         "critical_selection_reference_modes": dict(critical_modes),
+        "audit_relevance": {
+            "profiled_scenes": audit_scenes,
+            "valid_pair_count": audit_valid_pairs,
+            "relevant_pair_count": audit_relevant_pairs,
+            "relevant_pair_rate": float(audit_relevant_pairs / max(audit_valid_pairs, 1)),
+            "mean_scene_mean_relevance_mass": float(audit_relevance_mass_sum / max(audit_scenes, 1)),
+        },
         "critical_agent_count": {
             "mean": float(np.mean(critical_counts)) if critical_counts else 0.0,
             "p50": _pct([float(x) for x in critical_counts], 50),

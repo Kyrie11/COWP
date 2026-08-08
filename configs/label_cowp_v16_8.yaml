@@ -363,6 +363,11 @@ burden:
 ncf:
   alpha_opr: 0.35
   gamma: 0.1
+  # v16.8.9: candidate-conditioned causal audit support.  A globally critical
+  # agent is audited only when the ego candidate perturbs at least this canonical
+  # mass of low-burden natural roots (by unsafe interaction or direct burden).
+  audit_min_relevance_mass: 0.10
+  audit_direct_burden_margin: 0.0
   min_alt_weight: 0.03
   positive_min_natural_conflict_mass: 0.1
   root_probability_floor: 0.02

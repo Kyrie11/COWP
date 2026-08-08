@@ -77,6 +77,13 @@ TRANSPORT_AMP="${TRANSPORT_AMP:-1}"
 PLANNER_AMP="${PLANNER_AMP:-1}"
 USE_WAYMAX_OUTCOME_LABELS="${USE_WAYMAX_OUTCOME_LABELS:-1}"  # set 0 for fresh core-only caches; outcome loss then becomes exactly zero
 
+# Real learned-ablation config sources.  The launcher copies these into canonical
+# run-local names, so checkpoint provenance remains deterministic.
+MODEL_CONFIG_SOURCE="${MODEL_CONFIG_SOURCE:-configs/model_cowp_v16_8.yaml}"
+LABEL_CONFIG_SOURCE="${LABEL_CONFIG_SOURCE:-configs/label_cowp_v16_8.yaml}"
+TRAIN_CONFIG_SOURCE="${TRAIN_CONFIG_SOURCE:-configs/train_cowp_v16_8.yaml}"
+EVAL_CONFIG_SOURCE="${EVAL_CONFIG_SOURCE:-configs/eval_cowp_v16_8.yaml}"
+
 PROBE_SCENARIOS="${PROBE_SCENARIOS:-100}"
 FULL_SCENARIOS="${FULL_SCENARIOS:-1000}"
 ROLLOUT_HORIZON="${ROLLOUT_HORIZON:-80}"
@@ -110,12 +117,12 @@ mkdir -p "$OUT_ROOT"/{logs,configs,checkpoints/natural,checkpoints/transport,che
 CONFIG_CANDIDATE_DIR="$(mktemp -d "$OUT_ROOT/configs/.candidate_v16_8.XXXXXX")"
 cleanup_candidate_configs() { rm -rf "$CONFIG_CANDIDATE_DIR"; }
 trap cleanup_candidate_configs EXIT
-cp configs/model_cowp_v16_8.yaml "$CONFIG_CANDIDATE_DIR/model_cowp_v16_8.yaml"
-cp configs/label_cowp_v16_8.yaml "$CONFIG_CANDIDATE_DIR/label_cowp_v16_8.yaml"
+cp "$MODEL_CONFIG_SOURCE" "$CONFIG_CANDIDATE_DIR/model_cowp_v16_8.yaml"
+cp "$LABEL_CONFIG_SOURCE" "$CONFIG_CANDIDATE_DIR/label_cowp_v16_8.yaml"
 cp configs/label_cowp_v16_8_pareto_ablation.yaml "$CONFIG_CANDIDATE_DIR/label_cowp_v16_8_pareto_ablation.yaml"
 cp configs/label_cowp_v16_8_pairmax_ablation.yaml "$CONFIG_CANDIDATE_DIR/label_cowp_v16_8_pairmax_ablation.yaml"
-cp configs/train_cowp_v16_8.yaml "$CONFIG_CANDIDATE_DIR/train_cowp_v16_8.yaml"
-cp configs/eval_cowp_v16_8.yaml "$CONFIG_CANDIDATE_DIR/eval_cowp_v16_8.yaml"
+cp "$TRAIN_CONFIG_SOURCE" "$CONFIG_CANDIDATE_DIR/train_cowp_v16_8.yaml"
+cp "$EVAL_CONFIG_SOURCE" "$CONFIG_CANDIDATE_DIR/eval_cowp_v16_8.yaml"
 sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE_DIR/train_cowp_v16_8.yaml"
 
 # Never mix checkpoints/evaluations produced by different code or config states
@@ -135,9 +142,11 @@ sed -i -E "0,/^  seed:/{s/^  seed:.*/  seed: ${TRAIN_SEED}/}" "$CONFIG_CANDIDATE
   --file "cowp/label/safe_responses.py=cowp/label/safe_responses.py" \
   --file "cowp/label/witness.py=cowp/label/witness.py" \
   --file "cowp/label/label_engine.py=cowp/label/label_engine.py" \
+  --file "cowp/label/audit_relevance.py=cowp/label/audit_relevance.py" \
   --file "cowp/data/cache_schema.py=cowp/data/cache_schema.py" \
   --file "cowp/scripts/26_augment_transport_labels.py=cowp/scripts/26_augment_transport_labels.py" \
   --file "cowp/scripts/27_diagnose_transport_labels.py=cowp/scripts/27_diagnose_transport_labels.py" \
+  --file "cowp/models/witness_decoder.py=cowp/models/witness_decoder.py" \
   --file "cowp/models/cowp_model.py=cowp/models/cowp_model.py" \
   --file "cowp/models/set_transport_head.py=cowp/models/set_transport_head.py" \
   --file "cowp/scripts/03_train.py=cowp/scripts/03_train.py" \

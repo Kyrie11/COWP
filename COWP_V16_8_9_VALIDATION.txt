@@ -1,0 +1,15 @@
+COWP v16.8.9 validation
+
+python -m compileall -q cowp: PASS
+pytest -q: 175 passed, 1 warning (PyTorch nested tensor prototype warning only)
+v16.8.9/core launchers bash -n: PASS
+new diagnostic/gate CLI import smoke: PASS
+
+Validated core semantic invariants:
+- candidate-conditioned irrelevant pair is vacuously noncoercive
+- burden-only affected natural root enters affected-root transport support
+- conflict-only learned ablation disables burden-only affected support without tensor-shape mismatch
+- fresh configs expose causal relevance and affected-root transport switches
+- full-build post-cache gate includes no-read-errors / no-silent-blockers / no-irrelevant-blockers / audit-transport agreement
+
+Current rebuild verdict: DO NOT FULL REBUILD until v16.8.9 smoke and subsequent strict probe pass.

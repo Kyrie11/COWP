@@ -7,6 +7,7 @@ import numpy as np
 from cowp.core.types import ScenarioData
 from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.critical_agents import select_critical_agents
+from cowp.label.audit_relevance import compute_candidate_agent_audit
 from cowp.label.ego_candidates import generate_ego_candidates
 from cowp.label.natural_alternatives import generate_natural_alternatives
 from cowp.label.safe_responses import generate_safe_responses
@@ -67,8 +68,18 @@ def build_labels_for_scene(
             "track_indices": [int(x) for x in np.asarray(critical.get("track_index", []), dtype=np.int32)[np.asarray(critical.get("valid", []), dtype=bool)].tolist()],
         }
     natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
-    response = _timeit("engine_safe_responses_s", lambda: generate_safe_responses(scene, candidates, critical, natural, cfg))
-    witness = _timeit("engine_witness_s", lambda: certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions))
+    audit = _timeit("engine_audit_relevance_s", lambda: compute_candidate_agent_audit(scene, candidates, critical, natural, cfg))
+    if profile_diagnostics is not None:
+        valid_pair = np.asarray(candidates["valid"], dtype=bool)[:, None] & np.asarray(critical["valid"], dtype=bool)[None, :]
+        rel = np.asarray(audit["pair_relevant"], dtype=bool) & valid_pair
+        profile_diagnostics["audit"] = {
+            "valid_pair_count": int(valid_pair.sum()),
+            "relevant_pair_count": int(rel.sum()),
+            "relevant_pair_rate": float(rel.sum() / max(int(valid_pair.sum()), 1)),
+            "mean_relevance_mass": float(np.asarray(audit["relevance_mass"], dtype=np.float32)[valid_pair].mean()) if np.any(valid_pair) else 0.0,
+        }
+    response = _timeit("engine_safe_responses_s", lambda: generate_safe_responses(scene, candidates, critical, natural, cfg, audit=audit))
+    witness = _timeit("engine_witness_s", lambda: certify_witnesses(scene, candidates, critical, natural, response, cfg, ablation=ablation, conflict_regions=regions, audit=audit))
     max_c = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
     conflict_tensor = np.zeros((max_c, 8), dtype=np.float32)
     conflict_valid = np.zeros(max_c, dtype=bool)
@@ -118,6 +129,11 @@ def build_labels_for_scene(
         "cowp/natural/map_compliant": natural["map_compliant"],
         "cowp/natural/map_distance_max": natural["map_distance_max"],
         "cowp/natural/map_verified": natural["map_verified"],
+        "cowp/audit/pair_relevant": audit["pair_relevant"],
+        "cowp/audit/relevance_mass": audit["relevance_mass"],
+        "cowp/audit/root_affected": audit["root_affected"],
+        "cowp/audit/root_unsafe": audit["root_unsafe"],
+        "cowp/audit/root_direct_burden": audit["root_direct_burden"],
         "cowp/response/traj": response["traj"],
         "cowp/response/valid": response["valid"],
         "cowp/response/source": response["source"],
@@ -133,6 +149,7 @@ def build_labels_for_scene(
         "cowp/witness/burden_components": witness["burden_components"],
         "cowp/witness/min_safe_burden": witness["min_safe_burden"],
         "cowp/witness/natural_conflict_mass": witness["natural_conflict_mass"],
+        "cowp/witness/causal_relevance_mass": witness["causal_relevance_mass"],
         "cowp/witness/natural_conflict_mass_by_source": witness["natural_conflict_mass_by_source"],
         "cowp/witness/natural_mass_by_source": witness["natural_mass_by_source"],
         "cowp/witness/low_safe_mass_by_source": witness["low_safe_mass_by_source"],
@@ -144,8 +161,15 @@ def build_labels_for_scene(
         "cowp/witness/conflict_region_id": witness["conflict_region_id"],
         "cowp/witness/critical_agent_track_index": witness["critical_agent_track_index"],
         "cowp/witness/rho": witness["rho"],
+        "cowp/witness/pair_noncoercive_feasible": witness["pair_noncoercive_feasible"],
+        "cowp/witness/blocker_code": witness["blocker_code"],
+        "cowp/candidates/audited_pair_count": witness["candidate_audited_pair_count"],
+        "cowp/candidates/ncf_blocker_count": witness["candidate_ncf_blocker_count"],
+        "cowp/candidates/min_audited_opr": witness["candidate_min_audited_opr"],
+        "cowp/candidates/max_audited_tail_burden_excess": witness["candidate_max_audited_tail_burden_excess"],
         "cowp/transport/mode_valid": witness["transport_mode_valid"],
         "cowp/transport/mode_conflict": witness["transport_mode_conflict"],
+        "cowp/transport/mode_affected": witness["transport_mode_affected"],
         "cowp/transport/mode_retained_low_safe": witness["transport_mode_retained_low_safe"],
         "cowp/transport/response_root_index": witness["transport_response_root_index"],
         "cowp/transport/response_is_min_burden": witness["transport_response_is_min_burden"],

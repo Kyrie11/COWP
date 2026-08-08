@@ -45,7 +45,7 @@ loss_weights:
   witness_exist: 2.0
   witness_relevance: 0.75
   use_causal_audit_relevance: 1.0
-  set_transport_use_affected_roots: 1.0
+  set_transport_use_affected_roots: 0.0
   witness_token: 1.0
   witness_burden: 0.5
   witness_burden_components: 0.25
@@ -130,7 +130,6 @@ loss_weights:
   set_transport_mode_conflict: 2.5
   set_transport_mode_conflict_rank: 0.75
   set_transport_mode_conflict_rank_margin: 0.5
-  # v16.8.9: supervise causal affectedness separately from geometric conflict.
   set_transport_mode_affected: 2.5
   set_transport_mode_affected_rank: 0.75
   set_transport_mode_affected_rank_margin: 0.5

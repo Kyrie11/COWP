@@ -128,13 +128,19 @@ def paper_aligned_supervision_batch(
     batch: dict[str, torch.Tensor],
     weights: dict[str, float],
 ) -> dict[str, torch.Tensor]:
-    """Rebuild v16.6 certificate targets from v9 transport primitives.
+    """Rebuild certificate targets from the transport primitives in a batch.
 
-    This is a shallow-copy adapter: large tensors are not duplicated.  It makes
-    old augmented caches obey the manuscript's current equations without a full
-    WOMD rebuild: floor-smoothed transported OPR, conflict-conditioned same-root
-    CVaR burden, gamma-separated witness existence, and primitive burden with no
-    circular option component.
+    v16.8.9 extends the manuscript-aligned adapter with two semantics that must
+    be identical between fresh label construction and training:
+
+    * candidate-conditioned causal audit relevance; and
+    * affected-root transport, where a natural root is affected either by an
+      unsafe interaction or by a direct burden increase beyond beta.
+
+    Fresh caches carry these tensors explicitly.  Legacy caches fall back to the
+    historical all-critical/conflict-only semantics, so this adapter remains
+    backwards compatible for diagnostics without silently pretending that old
+    data contain v16.8.9 supervision.
     """
     if float(weights.get("paper_aligned_witness_targets", 1.0)) <= 0.0:
         return batch
@@ -152,18 +158,22 @@ def paper_aligned_supervision_batch(
 
     cand = batch["cowp/candidates/valid"].bool()
     crit = batch["cowp/critical/valid"].bool()
-    pair = cand[:, :, None] & crit[:, None, :]
-    mode_valid = batch["cowp/transport/mode_valid"].bool() & pair[..., None]
+    base_pair = cand[:, :, None] & crit[:, None, :]
+    audit_target = batch.get("cowp/audit/pair_relevant")
+    has_audit = audit_target is not None
+    pair = base_pair & audit_target.bool() if has_audit else base_pair
+
+    mode_valid = batch["cowp/transport/mode_valid"].bool() & base_pair[..., None]
     mode_conflict = batch["cowp/transport/mode_conflict"].bool() & mode_valid
+    mode_affected_raw = batch.get("cowp/transport/mode_affected")
+    mode_affected = (
+        mode_affected_raw.bool() & mode_valid if mode_affected_raw is not None else mode_conflict
+    )
     mode_retain = batch["cowp/transport/mode_retained_low_safe"].bool() & mode_valid
     M = int(mode_valid.shape[-1])
 
     nat_valid = batch["cowp/natural/valid"].bool()[..., :M]
     raw_p = _safe_float(batch["cowp/natural/weight"])[..., :M].clamp_min(0.0)
-    # v9 caches predate the manuscript's p_min natural-set filter.  Recreate the
-    # filtered probability measure here so training and evaluation do not mix
-    # raw cache mass with RCOT labels.  If an old/corrupt row has no root above
-    # p_min, fall back to all valid roots rather than producing an empty measure.
     min_alt_weight = max(float(weights.get("set_transport_min_alt_weight", 0.03)), 0.0)
     probability_support = nat_valid & (raw_p >= min_alt_weight)
     empty_support = (~probability_support.any(dim=-1, keepdim=True)) & nat_valid.any(dim=-1, keepdim=True)
@@ -175,6 +185,7 @@ def paper_aligned_supervision_batch(
     p = ((1.0 - eps_p) * p + eps_p * probability_support.float() / valid_count) * probability_support.float()
     p_pair = p[:, None, :, :].expand_as(mode_valid.float())
     conflict_mass = (p_pair * mode_conflict.float()).sum(dim=-1).clamp(0.0, 1.0)
+    affected_mass = (p_pair * mode_affected.float()).sum(dim=-1).clamp(0.0, 1.0)
 
     response_valid = batch["cowp/response/valid"].bool()
     response_safe = batch["cowp/response/is_safe"].bool()
@@ -184,9 +195,6 @@ def paper_aligned_supervision_batch(
     if response_low is not None:
         low_safe = low_safe & response_low.bool()
     else:
-        # Older caches may omit the explicit low-burden flag.  Safety alone is
-        # not q_ikm: derive the missing predicate from the agent-adaptive beta
-        # rather than labelling every safe but coercive response as recovery.
         beta_response = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
         low_safe = low_safe & (response_b <= beta_response)
     safe = response_valid & response_safe & pair[..., None]
@@ -206,40 +214,49 @@ def paper_aligned_supervision_batch(
     if direct_root_min is not None:
         root_min = torch.minimum(root_min, _safe_float(direct_root_min)[..., :M].clamp(0.0, 2.0))
 
-    # q_ikm: explicit/soft same-root low-burden recovery.  v16.7 rebuilt OPR
-    # from mode_retain only, so every conflicting root was counted as destroyed
-    # even when a same-root response existed.  This contradicted Eq. s=(1-c)r+cq
-    # and made train/eval labels systematically over-conservative.
     root_score = batch.get("cowp/transport/root_low_safe_score")
     if root_score is None:
         root_score = torch.zeros_like(mode_valid, dtype=torch.float32)
-        root_score.scatter_add_(
-            -1, root_idx, (low_safe & root_in_range).float()
-        )
+        root_score.scatter_add_(-1, root_idx, (low_safe & root_in_range).float())
         root_score = root_score.clamp(0.0, 1.0)
     else:
         root_score = _safe_float(root_score)[..., :M].clamp(0.0, 1.0)
-    transported = torch.where(mode_conflict, root_score, mode_retain.float())
+
+    # s=(1-a)r + a*q, where a denotes causal affectedness.  Conflict is a
+    # diagnostic subset of affectedness, not the transport support itself.
+    transported = torch.where(mode_affected, root_score, mode_retain.float())
     transported = transported * mode_valid.float()
-    opr = (p_pair * transported).sum(dim=-1).clamp(0.0, 1.0)
-    conflict_weight = p_pair * mode_conflict.float() * mode_valid.float()
-    conflict_denom = conflict_weight.sum(dim=-1)
-    recovery_mass = (conflict_weight * root_score).sum(dim=-1) / conflict_denom.clamp_min(1.0e-8)
+    opr_raw = (p_pair * transported).sum(dim=-1).clamp(0.0, 1.0)
+    opr = torch.where(pair, opr_raw, torch.ones_like(opr_raw))
+
+    affected_weight = p_pair * mode_affected.float() * mode_valid.float()
+    affected_denom = affected_weight.sum(dim=-1)
+    recovery_mass = (affected_weight * root_score).sum(dim=-1) / affected_denom.clamp_min(1.0e-8)
     recovery_mass = torch.where(
-        conflict_denom > 1.0e-8, recovery_mass, torch.ones_like(recovery_mass)
+        affected_denom > 1.0e-8, recovery_mass, torch.ones_like(recovery_mass)
     ).clamp(0.0, 1.0)
 
     beta = _safe_float(batch["cowp/natural/beta"])[:, None, :, None]
     root_excess = torch.relu(root_min - beta)
-    tail = _weighted_upper_cvar_target(
+    tail_raw = _weighted_upper_cvar_target(
         root_excess,
-        p_pair * mode_conflict.float(),
+        affected_weight,
         float(weights.get("set_transport_cvar_tail_mass", 0.25)),
     )
+    tail = torch.where(pair, tail_raw, torch.zeros_like(tail_raw))
+
     delta = float(weights.get("witness_conflict_mass_floor", 0.10))
     gamma = float(weights.get("witness_burden_gamma", 0.10))
     alpha = float(weights.get("witness_opr_alpha", weights.get("priority_claim_opr_alpha", 0.35)))
-    exists = pair & (conflict_mass > delta) & ((tail > gamma) | (opr < alpha))
+    if has_audit:
+        relevance_mass = _safe_float(batch.get("cowp/audit/relevance_mass", affected_mass)).clamp(0.0, 1.0)
+        # ``pair`` already encodes the dataset's causal-support threshold.  Every
+        # relevant pair that violates burden/OPR must have a witness; this makes
+        # silent blockers impossible by construction.
+        exists = pair & ((tail > gamma) | (opr < alpha))
+    else:
+        relevance_mass = conflict_mass
+        exists = pair & (conflict_mass > delta) & ((tail > gamma) | (opr < alpha))
 
     primitive_total, primitive_comps = _primitive_burden_targets(batch, weights)
     out = dict(batch)
@@ -253,6 +270,7 @@ def paper_aligned_supervision_batch(
     out["cowp/transport/root_recovery_mass"] = recovery_mass
     out["cowp/transport/canonical_root_weight"] = p
     out["cowp/witness/natural_conflict_mass"] = conflict_mass
+    out["cowp/witness/causal_relevance_mass"] = relevance_mass
     out["cowp/witness/tail_burden_excess"] = tail
     out["cowp/witness/c_i"] = tail
     out["cowp/witness/root_min_safe_burden"] = root_min
@@ -262,17 +280,27 @@ def paper_aligned_supervision_batch(
     if primitive_comps is not None:
         out["cowp/witness/burden_components"] = primitive_comps
 
+    pair_good = (~pair) | ((tail <= gamma) & (opr >= alpha) & ~exists)
+    out["cowp/witness/pair_noncoercive_feasible"] = pair_good & base_pair
+    blocker = pair & ~pair_good
+    # Bit semantics match fresh label construction: 1 burden, 2 OPR, 4 witness.
+    blocker_code = (
+        (pair & (tail > gamma)).to(torch.int32)
+        + 2 * (pair & (opr < alpha)).to(torch.int32)
+        + 4 * exists.to(torch.int32)
+    )
+    out["cowp/witness/blocker_code"] = blocker_code
+
     conventional = batch.get("cowp/candidates/conventional_safe")
     if conventional is not None:
         conventional_b = conventional.bool() & cand
-        false_safe = conventional_b & (exists & crit[:, None, :]).any(dim=-1)
-        pair_good = (tail <= gamma) & (opr >= alpha)
-        pair_good = pair_good | ~crit[:, None, :]
+        false_safe = conventional_b & exists.any(dim=-1)
         ncf = conventional_b & pair_good.all(dim=-1)
         out["cowp/candidates/false_safe"] = false_safe
         out["cowp/candidates/noncoercive_feasible"] = ncf
+        out["cowp/candidates/ncf_blocker_count"] = blocker.sum(dim=-1).to(torch.int32)
+        out["cowp/candidates/audited_pair_count"] = pair.sum(dim=-1).to(torch.int32)
     return out
-
 
 def _safe_velocity_atan2(y: torch.Tensor, x: torch.Tensor, eps: float = 1.0e-6) -> torch.Tensor:
     """Avoid the undefined backward derivative of atan2 at zero speed."""
@@ -540,7 +568,7 @@ def witness_candidate_consistency_loss(
     fs_target = _binary_target(batch.get("cowp/candidates/false_safe", torch.zeros_like(candidate_prob)))
     fs_loss = masked_mean(F.binary_cross_entropy_with_logits(candidate_logit, fs_target, reduction="none"), cand_mask)
 
-    opr_safe = torch.where(crit_mask[:, None, :], _safe_float(opr).clamp(0.0, 1.0), torch.ones_like(opr))
+    opr_safe = torch.where(pair_mask, _safe_float(opr).clamp(0.0, 1.0), torch.ones_like(opr))
     min_opr = opr_safe.min(dim=-1).values
     alpha = float(weights.get("priority_claim_opr_alpha", weights.get("alpha_opr", 0.35)))
     tau = max(float(weights.get("witness_opr_consistency_tau", 0.08)), 1e-3)
@@ -1300,7 +1328,25 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     cand_mask = batch["cowp/candidates/valid"].bool()
     crit_mask = batch["cowp/critical/valid"].bool()
-    pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
+    base_pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
+    audit_target = batch.get("cowp/audit/pair_relevant")
+    use_audit_relevance = float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5
+    if audit_target is not None and use_audit_relevance:
+        audit_bool = audit_target.bool()
+        pair_mask = base_pair_mask & audit_bool
+    else:
+        audit_bool = base_pair_mask
+        pair_mask = base_pair_mask
+    relevance_logits = pred.get("relevance_logit")
+    if relevance_logits is not None and audit_target is not None and base_pair_mask.any() and use_audit_relevance:
+        relevance = masked_mean(
+            F.binary_cross_entropy_with_logits(
+                _safe_float(relevance_logits), _binary_target(audit_target), reduction="none"
+            ),
+            base_pair_mask,
+        )
+    else:
+        relevance = _zero_like_loss(pred["exist_logits"])
     y = _binary_target(batch["cowp/witness/exists"])
     mined = pair_mined_focal_bce_with_logits(
         pred["exist_logits"],
@@ -1397,13 +1443,14 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
         + weights.get("witness_burden_components", 0.25) * comps
         + weights.get("witness_conflict", 0.3) * interval
         + weights.get("witness_opr", 0.5) * (opr + ci)
+        + weights.get("witness_relevance", 0.75) * relevance
     )
     return {
         "loss": total, "exist": exist, "exist_mined": mined, "exist_balanced": balanced,
         "pair_rank": pair_rank, "candidate_fs": candidate_fs, "candidate_ncf": candidate_ncf,
         "evidence": evidence, "scene_prior": scene_prior, "logit_l2": logit_l2,
         "token": token, "burden": burden, "components": comps,
-        "interval": interval, "opr": opr, "ci": ci,
+        "interval": interval, "opr": opr, "ci": ci, "relevance": relevance,
     }
 
 
@@ -1421,8 +1468,10 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     if valid_logits is not None:
         valid_loss = F.binary_cross_entropy_with_logits(_safe_float(valid_logits), mask.float(), reduction="none")
         # valid supervision includes padded response slots for otherwise valid pairs.
-        pair_mask = batch["cowp/candidates/valid"].bool()[:, :, None, None] & batch["cowp/critical/valid"].bool()[:, None, :, None]
-        loss_valid = masked_mean(valid_loss, pair_mask)
+        pair_mask = batch["cowp/candidates/valid"].bool()[:, :, None] & batch["cowp/critical/valid"].bool()[:, None, :]
+        if "cowp/audit/pair_relevant" in batch and float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5:
+            pair_mask = pair_mask & batch["cowp/audit/pair_relevant"].bool()
+        loss_valid = masked_mean(valid_loss, pair_mask[..., None])
     else:
         loss_valid = _zero_like_loss(pred["safe_logits"])
     if "source_logits" in pred and "cowp/response/source" in batch and mask.any():
@@ -1718,6 +1767,8 @@ def priority_claim_loss(logits: torch.Tensor, batch: dict[str, torch.Tensor], we
     cand_mask = batch["cowp/candidates/valid"].bool()
     crit_mask = batch["cowp/critical/valid"].bool()
     pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
+    if "cowp/audit/pair_relevant" in batch and float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5:
+        pair_mask = pair_mask & batch["cowp/audit/pair_relevant"].bool()
     if logits is None or not pair_mask.any():
         return _zero_like_loss(batch["cowp/candidates/valid"])
     exists = _binary_target(batch.get("cowp/witness/exists", torch.zeros_like(logits))) > 0.5
@@ -1866,7 +1917,10 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     """
     cand = batch["cowp/candidates/valid"].bool()
     crit = batch["cowp/critical/valid"].bool()
-    pair = cand[:, :, None] & crit[:, None, :]
+    base_pair = cand[:, :, None] & crit[:, None, :]
+    audit_target = batch.get("cowp/audit/pair_relevant")
+    use_audit_relevance = float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5
+    pair = base_pair & audit_target.bool() if (audit_target is not None and use_audit_relevance) else base_pair
     if not pair.any():
         z = _zero_like_loss(pred)
         return {"loss": z, "witness": z, "opr": z, "burden": z, "conflict": z, "source": z, "response": z}
@@ -1899,6 +1953,18 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     if conflict_target is None:
         conflict_target = batch.get("cowp/witness/c_i", torch.zeros_like(pred["natural_conflict_mass"]))
     conflict = masked_mean(torch.abs(_safe_float(pred["natural_conflict_mass"]) - _safe_float(conflict_target).clamp(0.0, 1.0)), pair)
+    use_affected_roots = float(weights.get("set_transport_use_affected_roots", 1.0)) > 0.5
+    affected_mass_target = (
+        batch.get("cowp/audit/relevance_mass") if use_affected_roots
+        else batch.get("cowp/witness/natural_conflict_mass")
+    )
+    if affected_mass_target is not None and "natural_affected_mass" in pred:
+        affected_mass = masked_mean(
+            torch.abs(_safe_float(pred["natural_affected_mass"]) - _safe_float(affected_mass_target).clamp(0.0, 1.0)),
+            base_pair,
+        )
+    else:
+        affected_mass = _zero_like_loss(pred)
 
     src_terms = []
     src_mask = pair[..., None]
@@ -1927,6 +1993,11 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     # decompositions can reproduce the same OPR and witness scalar.
     mode_valid = batch.get("cowp/transport/mode_valid")
     mode_conflict_target = batch.get("cowp/transport/mode_conflict")
+    use_affected_roots = float(weights.get("set_transport_use_affected_roots", 1.0)) > 0.5
+    mode_affected_target = (
+        batch.get("cowp/transport/mode_affected", mode_conflict_target)
+        if use_affected_roots else mode_conflict_target
+    )
     mode_retain_target = batch.get("cowp/transport/mode_retained_low_safe")
     # Natural-mode alignment is trajectory-only and identical for every
     # primitive supervision term.  v16.6 recomputed the full predicted-vs-GT
@@ -1961,6 +2032,22 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     else:
         mode_conflict = _zero_like_loss(pred)
         mode_conflict_rank = _zero_like_loss(pred)
+    if mode_valid is not None and mode_affected_target is not None and "mode_affected_prob" in pred:
+        mm = mode_valid.bool() & pair[..., None]
+        if "mode_affected_logits" in pred:
+            ap_logit = _align_pred_modes_to_gt(_safe_float(pred["mode_affected_logits"]), natural_assignment)
+        else:
+            ap = _align_pred_modes_to_gt(_safe_float(pred["mode_affected_prob"]), natural_assignment).clamp(1.0e-5, 1.0 - 1.0e-5)
+            ap_logit = torch.logit(ap)
+        mode_affected = _balanced_mode_bce(ap_logit, mode_affected_target, mm)
+        mode_affected_rank = _within_pair_binary_rank_loss(
+            ap_logit, mode_affected_target, mm,
+            margin=float(weights.get("set_transport_mode_affected_rank_margin", 0.5)),
+            max_roots_per_class=int(weights.get("set_transport_mode_affected_rank_max_roots", 8)),
+        )
+    else:
+        mode_affected = _zero_like_loss(pred)
+        mode_affected_rank = _zero_like_loss(pred)
     if mode_valid is not None and mode_retain_target is not None and "mode_retain_prob" in pred:
         mm = mode_valid.bool() & pair[..., None]
         assignment = natural_assignment
@@ -1997,18 +2084,18 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
             _safe_float(pred["mode_recovery_logits"]), assignment
         )
         mode_recovery = _balanced_mode_bce(recovery_logit, root_low_safe_target, mm)
-        conflict_mm = mm
-        if mode_conflict_target is not None:
-            conflict_mm = conflict_mm & mode_conflict_target.bool()
+        affected_mm = mm
+        if mode_affected_target is not None:
+            affected_mm = affected_mm & mode_affected_target.bool()
         mode_recovery_conflict = _balanced_mode_bce(
-            recovery_logit, root_low_safe_target, conflict_mm
-        ) if conflict_mm.any() else _zero_like_loss(recovery_logit)
+            recovery_logit, root_low_safe_target, affected_mm
+        ) if affected_mm.any() else _zero_like_loss(recovery_logit)
         mode_recovery_rank = _within_pair_binary_rank_loss(
             recovery_logit, (root_low_safe_target >= float(weights.get("set_transport_root_positive_threshold", 0.35))).float(),
-            conflict_mm,
+            affected_mm,
             margin=float(weights.get("set_transport_mode_recovery_rank_margin", 0.35)),
             max_roots_per_class=int(weights.get("set_transport_mode_recovery_rank_max_roots", 8)),
-        ) if conflict_mm.any() else _zero_like_loss(recovery_logit)
+        ) if affected_mm.any() else _zero_like_loss(recovery_logit)
     else:
         mode_recovery = _zero_like_loss(pred)
         mode_recovery_conflict = _zero_like_loss(pred)
@@ -2021,8 +2108,8 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     mode_root_min_pred = pred.get("mode_root_min_safe_burden")
     if mode_valid is not None and root_min_target is not None and mode_root_min_pred is not None:
         mm = mode_valid.bool() & pair[..., None]
-        if mode_conflict_target is not None:
-            mm = mm & mode_conflict_target.bool()
+        if mode_affected_target is not None:
+            mm = mm & mode_affected_target.bool()
         target_confidence = batch.get("cowp/transport/root_target_confidence")
         if target_confidence is not None:
             mm = mm & (
@@ -2060,7 +2147,10 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
             torch.abs(cp_aligned.detach() - _binary_target(mode_conflict_target)),
             torch.abs(rp_aligned.detach() - _binary_target(mode_retain_target)),
         ]
-        root_error_mask = uncertainty_mask & mode_conflict_target.bool()
+        if mode_affected_target is not None and "mode_affected_prob" in pred:
+            ap_aligned = _align_pred_modes_to_gt(_safe_float(pred["mode_affected_prob"]), natural_assignment)
+            errors.append(torch.abs(ap_aligned.detach() - _binary_target(mode_affected_target)))
+        root_error_mask = uncertainty_mask & (mode_affected_target.bool() if mode_affected_target is not None else mode_conflict_target.bool())
         target_confidence = batch.get("cowp/transport/root_target_confidence")
         if target_confidence is not None:
             root_error_mask = root_error_mask & (
@@ -2093,12 +2183,12 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     # finite high-burden safe response.
     if (
         mode_valid is not None
-        and mode_conflict_target is not None
+        and mode_affected_target is not None
         and "mode_recovery_prob" in pred
         and mode_root_min_pred is not None
         and "cowp/natural/beta" in batch
     ):
-        consistency_mask = mode_valid.bool() & pair[..., None] & mode_conflict_target.bool()
+        consistency_mask = mode_valid.bool() & pair[..., None] & mode_affected_target.bool()
         target_confidence = batch.get("cowp/transport/root_target_confidence")
         if target_confidence is not None:
             consistency_mask = consistency_mask & (
@@ -2148,10 +2238,10 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
             torch.logit(rp), has_recovery, pair,
             max_class_weight=float(weights.get("set_transport_recovery_max_pos_weight", 8.0)),
         )
-        conflict_pair = pair
-        if mode_conflict_target is not None:
-            conflict_pair = conflict_pair & mode_conflict_target.bool().any(dim=-1)
-        magnitude = masked_mean(torch.abs(rp - rt), conflict_pair) if conflict_pair.any() else _zero_like_loss(rp)
+        affected_pair = pair
+        if mode_affected_target is not None:
+            affected_pair = affected_pair & mode_affected_target.bool().any(dim=-1)
+        magnitude = masked_mean(torch.abs(rp - rt), affected_pair) if affected_pair.any() else _zero_like_loss(rp)
         root_recovery = 0.5 * presence + 0.5 * magnitude
     else:
         root_recovery = _zero_like_loss(pred)
@@ -2250,10 +2340,13 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         + float(weights.get("set_transport_burden", 0.75)) * burden
         + float(weights.get("set_transport_tail_burden", 1.0)) * tail_burden
         + float(weights.get("set_transport_conflict", 1.0)) * conflict
+        + float(weights.get("set_transport_affected_mass", 1.0)) * affected_mass
         + float(weights.get("set_transport_source", 0.75)) * source
         + float(weights.get("set_transport_response_exist", 0.5)) * response
         + float(weights.get("set_transport_mode_conflict", 1.5)) * mode_conflict
         + float(weights.get("set_transport_mode_conflict_rank", 0.75)) * mode_conflict_rank
+        + float(weights.get("set_transport_mode_affected", 2.0)) * mode_affected
+        + float(weights.get("set_transport_mode_affected_rank", 0.75)) * mode_affected_rank
         + float(weights.get("set_transport_mode_retain", 1.5)) * mode_retain
         + float(weights.get("set_transport_mode_uncertainty", 0.25)) * mode_uncertainty
         + float(weights.get("set_transport_mode_recovery", 2.0)) * mode_recovery
@@ -2267,8 +2360,9 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     )
     return {
         "loss": total, "witness": witness, "opr": opr, "burden": burden,
-        "tail_burden": tail_burden, "conflict": conflict, "source": source, "response": response,
-        "mode_conflict": mode_conflict, "mode_conflict_rank": mode_conflict_rank, "mode_retain": mode_retain,
+        "tail_burden": tail_burden, "conflict": conflict, "affected_mass": affected_mass, "source": source, "response": response,
+        "mode_conflict": mode_conflict, "mode_conflict_rank": mode_conflict_rank,
+        "mode_affected": mode_affected, "mode_affected_rank": mode_affected_rank, "mode_retain": mode_retain,
         "mode_uncertainty": mode_uncertainty, "mode_recovery": mode_recovery,
         "mode_recovery_conflict": mode_recovery_conflict, "mode_recovery_rank": mode_recovery_rank,
         "mode_root_burden": mode_root_burden,

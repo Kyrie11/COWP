@@ -45,5 +45,5 @@ ablation:
   use_typed_edges: true
   use_adaptive_beta: true
   soft_burden_cost_only: false
-  use_causal_audit_relevance: true
+  use_causal_audit_relevance: false
   use_affected_root_transport: true
