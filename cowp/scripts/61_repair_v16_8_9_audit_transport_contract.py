@@ -13,6 +13,37 @@ def _stored(key: str) -> str:
     return key.replace("/", "__")
 
 
+def _key_variants(key: str) -> tuple[str, ...]:
+    """Return the two on-disk encodings used by COWP NPZ artifacts.
+
+    Scenario-label NPZ files produced by ``01_build_labels_from_proto`` keep
+    canonical slash keys (``cowp/audit/...``), while tensor-cache NPZ files
+    encode slashes as ``__``.  Repair/diagnostic tools may be pointed at either
+    representation, so they must not assume only one encoding.
+    """
+    encoded = _stored(key)
+    return (key,) if encoded == key else (key, encoded)
+
+
+def _locate_key(arrays: dict[str, np.ndarray], key: str) -> str | None:
+    for candidate in _key_variants(key):
+        if candidate in arrays:
+            return candidate
+    return None
+
+
+def _preferred_key(arrays: dict[str, np.ndarray], key: str) -> str:
+    existing = _locate_key(arrays, key)
+    if existing is not None:
+        return existing
+    # Label NPZs use canonical slash keys; tensor-cache NPZs use ``__``.
+    # Infer the representation from existing semantic keys so newly-added
+    # fields do not create a mixed-encoding file.
+    if any("/" in k for k in arrays):
+        return key
+    return _stored(key)
+
+
 def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray], *, compress: bool) -> None:
     tmp = path.with_name(path.name + ".repair_tmp")
     with tmp.open("wb") as fh:
@@ -24,10 +55,19 @@ def _atomic_save_npz(path: Path, arrays: dict[str, np.ndarray], *, compress: boo
 
 
 def _get(arrays: dict[str, np.ndarray], key: str) -> np.ndarray:
-    skey = _stored(key)
-    if skey not in arrays:
-        raise KeyError(key)
-    return np.asarray(arrays[skey])
+    actual = _locate_key(arrays, key)
+    if actual is None:
+        available = sorted(k for k in arrays if key.split("/")[-1] in k)[:8]
+        raise KeyError(f"{key}; available_similar={available}")
+    return np.asarray(arrays[actual])
+
+
+def _has(arrays: dict[str, np.ndarray], key: str) -> bool:
+    return _locate_key(arrays, key) is not None
+
+
+def _put(arrays: dict[str, np.ndarray], key: str, value: np.ndarray) -> None:
+    arrays[_preferred_key(arrays, key)] = np.asarray(value)
 
 
 def main() -> None:
@@ -111,26 +151,25 @@ def main() -> None:
             totals["budget_crossed_roots"] += int(budget.sum())
             totals["burden_only_roots"] += int(burden_only.sum())
 
-            canonical_key = _stored("cowp/audit/canonical_root_weight")
             transport_weight = _get(arrays, "cowp/transport/canonical_root_weight").astype(np.float32, copy=False)
 
             changed = (
                 np.any(old_aff != affected)
                 or np.any(old_conf != unsafe)
                 or np.any(old_retain != (mode_valid & ~affected))
-                or _stored("cowp/audit/root_budget_crossed") not in arrays
-                or _stored("cowp/audit/root_burden_only_affected") not in arrays
-                or canonical_key not in arrays
+                or not _has(arrays, "cowp/audit/root_budget_crossed")
+                or not _has(arrays, "cowp/audit/root_burden_only_affected")
+                or not _has(arrays, "cowp/audit/canonical_root_weight")
             )
             if changed:
                 totals["files_changed"] += 1
             if not args.dry_run and changed:
-                arrays[_stored("cowp/audit/root_budget_crossed")] = budget.astype(np.bool_)
-                arrays[_stored("cowp/audit/root_burden_only_affected")] = burden_only.astype(np.bool_)
-                arrays[canonical_key] = transport_weight.astype(np.float32)
-                arrays[_stored("cowp/transport/mode_conflict")] = unsafe.astype(np.bool_)
-                arrays[_stored("cowp/transport/mode_affected")] = affected.astype(np.bool_)
-                arrays[_stored("cowp/transport/mode_retained_low_safe")] = (mode_valid & ~affected).astype(np.bool_)
+                _put(arrays, "cowp/audit/root_budget_crossed", budget.astype(np.bool_))
+                _put(arrays, "cowp/audit/root_burden_only_affected", burden_only.astype(np.bool_))
+                _put(arrays, "cowp/audit/canonical_root_weight", transport_weight.astype(np.float32))
+                _put(arrays, "cowp/transport/mode_conflict", unsafe.astype(np.bool_))
+                _put(arrays, "cowp/transport/mode_affected", affected.astype(np.bool_))
+                _put(arrays, "cowp/transport/mode_retained_low_safe", (mode_valid & ~affected).astype(np.bool_))
                 _atomic_save_npz(path, arrays, compress=bool(args.compress))
         except Exception as exc:
             if len(errors) < 50:

@@ -92,3 +92,11 @@ Do not rebuild the 96-scene smoke from WOMD merely to repair the 1,258 transport
 - Full regression suite: **178 passed**.
 - Core v16.8.9 smoke/strict/full-build/mechanism/Waymax/causal-ablation shell syntax: PASS.
 - Repair and training-supervision audit CLI smoke: PASS.
+
+
+## v16.8.9 engineering repair — NPZ key dual-encoding + strict-probe Bash RANDOM fix
+
+- Fixed `61_repair_v16_8_9_audit_transport_contract.py` to read/write both Scenario-label NPZ slash keys (`cowp/audit/...`) and tensor-cache `__`-encoded keys. The previous repair tool incorrectly assumed only tensor-cache encoding and therefore raised `KeyError` on valid smoke label files.
+- Fixed `NEXT_RUN_COMMANDS_V16_8_9_STRICT_PROPOSAL_PROBE_CN.sh` to avoid Bash's special `$RANDOM` variable. The previous wrapper assigned the representative-random ID path to `RANDOM`, so every expansion became a fresh integer; `45_diagnose_proposal_ceiling` wrote IDs to a numeric filename and the next `cat` terminated the strict pipeline before fresh-label construction.
+- Strict probe now clears stale derived verdict artifacts on forced rebuild, verifies both ID files, and always emits `v16_8_9_strict_verdict.json` on required-stage failures so absence of a verdict cannot be mistaken for an algorithmic gate result.
+- No NCF, PBTR, candidate, causal-audit, response, witness, or model semantics were changed in this engineering repair.
