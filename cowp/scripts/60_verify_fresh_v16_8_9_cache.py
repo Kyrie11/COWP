@@ -73,6 +73,7 @@ def main() -> None:
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--allowlist", default=None)
     ap.add_argument("--sample-scenes", type=int, default=0, help="0 verifies every scenario file.")
+    ap.add_argument("--require-sdc-paths", action="store_true", help="Require every inspected tensor-cache item to carry a positive WOMD-1.3.1 SDC-path contract marker.")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
@@ -100,6 +101,7 @@ def main() -> None:
     silent_blockers = irrelevant_blockers = affected_mismatch = 0
     conflict_mismatch = retain_mismatch = canonical_weight_mismatch = 0
     affected_definition_error = burden_only_definition_error = 0
+    sdc_paths_missing = sdc_paths_not_ready = 0
     for p in inspect:
         if not p.exists():
             continue
@@ -111,6 +113,14 @@ def main() -> None:
                         missing[key] += 1
                 if not any(k in files for k in WAYMAX_READY_ANY):
                     missing["waymax_ready:is_sdc"] += 1
+                if args.require_sdc_paths:
+                    sdc_key = files.get("cache/meta/sdc_paths_ready")
+                    if sdc_key is None:
+                        sdc_paths_missing += 1
+                    else:
+                        ready_arr = np.asarray(z[sdc_key]).reshape(-1)
+                        if ready_arr.size != 1 or not bool(ready_arr[0]):
+                            sdc_paths_not_ready += 1
                 sid_key = files.get("scenario/id")
                 if sid_key is not None:
                     arr = np.asarray(z[sid_key])
@@ -225,6 +235,10 @@ def main() -> None:
         reasons.append(f"affected-root definition mismatches={affected_definition_error}")
     if burden_only_definition_error:
         reasons.append(f"burden-only definition mismatches={burden_only_definition_error}")
+    if args.require_sdc_paths and sdc_paths_missing:
+        reasons.append(f"missing cache/meta/sdc_paths_ready={sdc_paths_missing}")
+    if args.require_sdc_paths and sdc_paths_not_ready:
+        reasons.append(f"SDC-path contract not ready={sdc_paths_not_ready}")
 
     result = {
         "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v2",
@@ -251,6 +265,9 @@ def main() -> None:
         "canonical_root_weight_mismatch_count": canonical_weight_mismatch,
         "affected_definition_error_count": affected_definition_error,
         "burden_only_definition_error_count": burden_only_definition_error,
+        "require_sdc_paths": bool(args.require_sdc_paths),
+        "sdc_paths_missing_marker_count": sdc_paths_missing,
+        "sdc_paths_not_ready_count": sdc_paths_not_ready,
         "reasons": reasons,
     }
     out = Path(args.output)

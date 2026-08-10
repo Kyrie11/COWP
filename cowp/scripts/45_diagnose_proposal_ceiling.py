@@ -71,6 +71,7 @@ def main() -> None:
     ap.add_argument("--control-count", type=int, default=800)
     ap.add_argument("--random-scene-ids", default=None, help="Representative random scene IDs used for unbiased coverage estimates.")
     ap.add_argument("--random-count", type=int, default=800)
+    ap.add_argument("--random-exclude-hard-probe", action="store_true", help="Draw the representative-random set from scenarios not already selected into the hard probe, so a 400+800 strict probe really contains 1200 distinct scenes.")
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--subset-modulo", type=int, default=1, help="Match learned-offline index-modulo partitioning.")
     ap.add_argument("--subset-remainder", type=int, default=0)
@@ -165,8 +166,9 @@ def main() -> None:
     hard_probe_ids = sorted(rng.choice(np.asarray(hard_total_ids, dtype=object), size=hard_count, replace=False).tolist()) if hard_count else []
     control_count = min(max(int(args.control_count), 0), len(other_ids))
     control_ids = sorted(rng.choice(np.asarray(other_ids, dtype=object), size=control_count, replace=False).tolist()) if control_count else []
-    random_count = min(max(int(args.random_count), 0), len(all_ids))
-    random_ids = sorted(rng.choice(np.asarray(all_ids, dtype=object), size=random_count, replace=False).tolist()) if random_count else []
+    random_pool = [sid for sid in all_ids if (not args.random_exclude_hard_probe or sid not in set(hard_probe_ids))]
+    random_count = min(max(int(args.random_count), 0), len(random_pool))
+    random_ids = sorted(rng.choice(np.asarray(random_pool, dtype=object), size=random_count, replace=False).tolist()) if random_count else []
     _write_ids(args.hard_scene_ids, hard_probe_ids)
     _write_ids(args.control_scene_ids, control_ids)
     _write_ids(args.random_scene_ids, random_ids)

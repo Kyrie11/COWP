@@ -8,7 +8,7 @@ from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
 from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
-from cowp.label.safe_responses import root_conditioned_recovery_search
+from cowp.label.safe_responses import build_root_recovery_trajectory_bank, root_conditioned_recovery_search
 from cowp.label.audit_relevance import canonical_root_weights
 
 
@@ -162,6 +162,20 @@ def certify_witnesses(
         fut = scene.states[j, cur + 1 : cur + 1 + int(cfg.get("time", {}).get("future_steps", 80)), :]
         if len(fut) and np.any(fut[:, 10] > 0.5):
             other_logged.append(future_states_to_traj7(fut, int(cfg.get("time", {}).get("future_steps", 80)), current_state=scene.states[j, cur]))
+
+    # Root residual trajectories depend only on the natural root/config, not on
+    # the ego candidate. Reuse the exact deterministic tube while keeping every
+    # safety/burden evaluation candidate-conditioned.
+    recovery_banks: dict[tuple[int, int], list[np.ndarray]] = {}
+    if bool(cfg.get("response", {}).get("root_conditioned_transport", {}).get("enabled", True)):
+        for a in range(A):
+            if not bool(critical["valid"][a]):
+                continue
+            for root in np.where(np.asarray(natural["valid"][a], dtype=bool))[0]:
+                recovery_banks[(a, int(root))] = build_root_recovery_trajectory_bank(
+                    np.asarray(natural["traj"][a, root], dtype=np.float32), cfg
+                )
+
     for k in range(K):
         if not candidates["valid"][k]:
             continue
@@ -216,7 +230,7 @@ def certify_witnesses(
             conflict_mass = 0.0
             low_safe_mass = 0.0
             low_natural_mass = 0.0
-            interval_masks = []
+            interval_bounds: list[tuple[int, int]] = []
             for m in nat_valid_idx:
                 nat = natural["traj"][a, m]
                 w = float(root_weight[m])
@@ -243,13 +257,17 @@ def certify_witnesses(
                 if low_neu and unsafe_flag:
                     conflict_mass += w
                     natural_conflict_mass_by_source[k, a, src] += w
-                    # Event intervals are explanation-only.  When the audit was
-                    # precomputed, reconstruct the mask lazily only for affected
-                    # unsafe roots instead of every candidate-root pair.
+                    # Event intervals are explanation-only. Fresh v16.8.9+ audit
+                    # serializes the exact first/last unsafe timestep so witness
+                    # certification does not repeat collision geometry. Fall back
+                    # to the legacy reconstruction only for older in-memory audits.
                     if audit is None:
-                        interval_masks.append(unsafe_obj.event_mask)
+                        interval_bounds.append(_event_interval(unsafe_obj.event_mask))
+                    elif "root_event_interval" in audit:
+                        bnd = np.asarray(audit["root_event_interval"], dtype=np.int32)[k, a, m]
+                        interval_bounds.append((int(bnd[0]), int(bnd[1])))
                     else:
-                        interval_masks.append(unsafe_between(ego, nat, cfg, agent_type=object_type).event_mask)
+                        interval_bounds.append(_event_interval(unsafe_between(ego, nat, cfg, agent_type=object_type).event_mask))
                 if low_neu and not affected_flag:
                     low_safe_mass += w
                     low_safe_mass_by_source[k, a, src] += w
@@ -276,6 +294,7 @@ def certify_witnesses(
                     best_b, low_ok, _ = root_conditioned_recovery_search(
                         natural["traj"][a, root], ego, cfg,
                         object_type=object_type, beta=beta, rho=rho,
+                        trajectory_bank=recovery_banks.get((a, root)),
                     )
                     root_target_confidence[k, a, root] = 1.0
                     root_min_safe_burden[k, a, root] = min(
@@ -393,11 +412,11 @@ def certify_witnesses(
             exists[k, a] = bool(positive)
             if positive:
                 token[k, a] = int(_mechanism_token(burden_components[k, a], float(opr[k, a]), rho, cfg))
-                if interval_masks:
-                    merged = np.zeros(max(len(x) for x in interval_masks), dtype=bool)
-                    for mask in interval_masks:
-                        merged[: len(mask)] |= mask
-                    conflict_interval[k, a] = np.asarray(_event_interval(merged), dtype=np.int32)
+                if interval_bounds:
+                    starts = [int(x[0]) for x in interval_bounds if int(x[0]) >= 0]
+                    ends = [int(x[1]) for x in interval_bounds if int(x[1]) >= 0]
+                    if starts and ends:
+                        conflict_interval[k, a] = np.asarray([min(starts), max(ends)], dtype=np.int32)
                 if regions:
                     agent_nat = natural["traj"][a, nat_valid_idx[0]] if len(nat_valid_idx) else None
                     if agent_nat is not None:

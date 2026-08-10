@@ -65,6 +65,29 @@ def default_budget_profiles(cfg: dict) -> list[BudgetProfile]:
     return profiles
 
 
+def build_safe_budget_trajectory_bank(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    cfg: dict,
+) -> list[tuple[np.ndarray, BudgetProfile]]:
+    """Precompute candidate-independent safe-budget trajectories for one agent.
+
+    The trajectory rollout depends only on the agent current state and the
+    configured typed profile. Candidate-conditioned safety/burden scoring is
+    deliberately *not* cached, so this is an exact engineering optimization
+    with no label-semantic change.
+    """
+    rows: list[tuple[np.ndarray, BudgetProfile]] = []
+    for prof in default_budget_profiles(cfg):
+        tr = rollout_accel_schedule(
+            current, horizon, dt, prof.schedule,
+            lateral_offset_m=prof.lateral_offset_m,
+        )
+        rows.append((tr, prof))
+    return rows
+
+
 def typed_safe_budget_search(
     current: np.ndarray,
     horizon: int,
@@ -96,6 +119,7 @@ def typed_safe_budget_search_evaluated(
     cfg: dict,
     natural_ref: np.ndarray | None = None,
     rho: PriorityRelation = PriorityRelation.UNKNOWN,
+    trajectory_bank: list[tuple[np.ndarray, BudgetProfile]] | None = None,
 ) -> list[tuple[np.ndarray, str, float, bool, np.ndarray]]:
     """Like typed_safe_budget_search, but returns safety/burden results too.
 
@@ -108,12 +132,11 @@ def typed_safe_budget_search_evaluated(
     s_cfg = cfg.get("response", {}).get("safe_budget_search", {})
     beam_width = int(s_cfg.get("beam_width", 16))
     max_return = int(s_cfg.get("max_return", 16))
-    profiles = default_budget_profiles(cfg)
+    bank = trajectory_bank if trajectory_bank is not None else build_safe_budget_trajectory_bank(current, horizon, dt, cfg)
     rows: list[tuple[float, np.ndarray, str, float, bool, np.ndarray]] = []
     beta_margin = float(s_cfg.get("hard_profile_penalty", 0.25))
     unsafe_penalty = float(s_cfg.get("unsafe_penalty", 100.0))
-    for prof in profiles:
-        tr = rollout_accel_schedule(current, horizon, dt, prof.schedule, lateral_offset_m=prof.lateral_offset_m)
+    for tr, prof in bank:
         unsafe = unsafe_between(ego_candidate, tr, cfg, agent_type=object_type)
         burden, comps = compute_burden(tr, ego_candidate, cfg, object_type, natural_ref=natural_ref, rho=rho)
         priority_cost = 0.05 * prof.priority + (beta_margin if prof.hard else 0.0)

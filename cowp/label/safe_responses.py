@@ -9,7 +9,7 @@ from cowp.core.types import ScenarioData
 from cowp.geometry.collision import unsafe_between
 from cowp.label.burden import compute_burden
 from cowp.label.trajectory_primitives import constant_accel_trajectory
-from cowp.label.safe_budget_search import typed_safe_budget_search_evaluated
+from cowp.label.safe_budget_search import build_safe_budget_trajectory_bank, typed_safe_budget_search_evaluated
 
 
 @dataclass(frozen=True)
@@ -155,22 +155,11 @@ def _root_residual_trajectory(
     return out.astype(np.float32)
 
 
-def root_conditioned_recovery_search(
-    root: np.ndarray,
-    ego: np.ndarray,
-    cfg: dict,
-    *,
-    object_type: int,
-    beta: float,
-    rho: PriorityRelation,
-) -> tuple[float, bool, int]:
-    """Search a bounded time-warp tube around one natural root.
+def build_root_recovery_trajectory_bank(root: np.ndarray, cfg: dict) -> list[np.ndarray]:
+    """Precompute the candidate-independent same-root recovery tube.
 
-    This oracle defines q_ikm independently of the finite response slots used by
-    the neural decoder.  Every conflicting root receives the same control budget,
-    so recoverability cannot become negative merely because another root consumed
-    the global top-R response bank.  All controls preserve the root polyline and
-    only alter its longitudinal timing.
+    Safety and burden remain candidate-conditioned; only deterministic root
+    time-warp construction is reused across ego candidates.
     """
     rcfg = cfg.get("response", {}).get("root_conditioned_transport", {})
     profiles = rcfg.get("label_search_profiles", rcfg.get("profiles", []))
@@ -181,16 +170,40 @@ def root_conditioned_recovery_search(
             {"accel_mps2": 0.75, "start_delay_s": 0.2, "duration_s": 1.5},
         ]
     dt = float(cfg.get("time", {}).get("dt", 0.1))
-    best = float("inf")
-    safe_count = 0
-    for profile in profiles:
-        tr = _root_residual_trajectory(
+    return [
+        _root_residual_trajectory(
             root,
             dt=dt,
             accel=float(profile.get("accel_mps2", 0.0)),
             start_delay_s=float(profile.get("start_delay_s", 0.0)),
             duration_s=float(profile.get("duration_s", 2.0)),
         )
+        for profile in profiles
+    ]
+
+
+def root_conditioned_recovery_search(
+    root: np.ndarray,
+    ego: np.ndarray,
+    cfg: dict,
+    *,
+    object_type: int,
+    beta: float,
+    rho: PriorityRelation,
+    trajectory_bank: list[np.ndarray] | None = None,
+) -> tuple[float, bool, int]:
+    """Search a bounded time-warp tube around one natural root.
+
+    This oracle defines q_ikm independently of the finite response slots used by
+    the neural decoder.  Every conflicting root receives the same control budget,
+    so recoverability cannot become negative merely because another root consumed
+    the global top-R response bank.  All controls preserve the root polyline and
+    only alter its longitudinal timing.
+    """
+    bank = trajectory_bank if trajectory_bank is not None else build_root_recovery_trajectory_bank(root, cfg)
+    best = float("inf")
+    safe_count = 0
+    for tr in bank:
         if unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe:
             continue
         b, _ = compute_burden(
@@ -345,9 +358,16 @@ def generate_safe_responses(
     burden_components = np.zeros((K, A, R, 6), dtype=np.float32)
 
     primitive_bank: dict[int, tuple[int, int, PriorityRelation, np.ndarray, list[_ResponsePrimitive]]] = {}
+    budget_bank: dict[int, list] = {}
+    budget_enabled = bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True))
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
     for a in range(A):
         if critical["valid"][a]:
             primitive_bank[a] = _response_primitives_for_agent(scene, a, critical, natural, cfg)
+            if budget_enabled:
+                curr_idx = int(critical["track_index"][a])
+                curr = scene.states[curr_idx, scene.current_time_index]
+                budget_bank[a] = build_safe_budget_trajectory_bank(curr, H, dt, cfg)
 
     for k in range(K):
         if not candidates["valid"][k]:
@@ -360,18 +380,19 @@ def generate_safe_responses(
                 # negatives for an unaudited pair.
                 continue
             evaluated: list[tuple[float, float, np.ndarray, ResponseSource, bool, np.ndarray, int, float]] = []
-            if bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True)):
+            if budget_enabled:
                 curr_idx = int(critical["track_index"][a])
                 curr = scene.states[curr_idx, scene.current_time_index]
                 for tr, _name, b, safe, comps in typed_safe_budget_search_evaluated(
                     curr,
                     H,
-                    float(cfg.get("time", {}).get("dt", 0.1)),
+                    dt,
                     ego,
                     object_type,
                     cfg,
                     natural_ref=nat_ref,
                     rho=rho,
+                    trajectory_bank=budget_bank[a],
                 ):
                     sort_cost = (0.0 if safe else 10.0) + float(b)
                     evaluated.append((sort_cost, float(b), tr, ResponseSource.OPT, bool(safe), comps, -1, 0.0))

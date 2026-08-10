@@ -45,6 +45,7 @@ def main() -> None:
     ap.add_argument("--start-method", default=None, choices=["fork", "forkserver", "spawn"], help="Multiprocessing start method for --num-workers > 1. forkserver is often stable; fork is fastest on Linux.")
     ap.add_argument("--parallel-scan", action="store_true", help="Force the parallel one-pass scan even if --tfexample-index-jsonl is provided. Recommended for first-time cache construction.")
     ap.add_argument("--require-waymax-ready", action="store_true", help="Fail matched examples that are missing core WOMD keys required by cache-source Waymax replay.")
+    ap.add_argument("--require-sdc-paths", action="store_true", help="Additionally require the WOMD 1.3.1 path_samples contract and at least one valid on-route SDC path. Use for full Waymax route/wrong-way evaluation; safety-only replay may omit it.")
     ap.add_argument("--cpu-only", action="store_true", help="Hide CUDA devices before TensorFlow is imported; tensor-cache construction is CPU/I/O-bound.")
     ap.add_argument("--no-progress", action="store_true", help="Disable tqdm progress display.")
     args = ap.parse_args()
@@ -71,6 +72,7 @@ def main() -> None:
         num_workers=args.num_workers,
         start_method=args.start_method,
         require_waymax_ready=args.require_waymax_ready,
+        require_sdc_paths=args.require_sdc_paths,
         prefer_parallel_scan=args.parallel_scan,
     )
     mode = "compressed" if args.compress else "uncompressed"

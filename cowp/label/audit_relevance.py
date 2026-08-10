@@ -73,6 +73,10 @@ def compute_candidate_agent_audit(
     relevance_mass = np.zeros((K, A), dtype=np.float32)
     root_affected = np.zeros((K, A, M), dtype=bool)
     root_unsafe = np.zeros((K, A, M), dtype=bool)
+    # Explanation-only first/last unsafe timestep. Computing it here reuses the
+    # collision check already required by the audit and avoids repeating exact
+    # geometry in witness certification. [-1,-1] means no unsafe event.
+    root_event_interval = np.full((K, A, M, 2), -1, dtype=np.int32)
     root_direct_burden = np.zeros((K, A, M), dtype=np.float32)
     # Keep the budget-crossing subset explicit.  v16.8.9 inferred
     # ``affected & ~unsafe`` downstream; storing it directly makes the data
@@ -105,7 +109,12 @@ def compute_candidate_agent_audit(
                     # ego cannot be blamed for its exclusion from the certificate.
                     continue
                 nat = np.asarray(natural["traj"][a, m], dtype=np.float32)
-                unsafe = bool(unsafe_between(ego, nat, cfg, agent_type=object_type).unsafe)
+                unsafe_obj = unsafe_between(ego, nat, cfg, agent_type=object_type)
+                unsafe = bool(unsafe_obj.unsafe)
+                if unsafe:
+                    event_idx = np.where(np.asarray(unsafe_obj.event_mask, dtype=bool))[0]
+                    if len(event_idx):
+                        root_event_interval[k, a, m] = [int(event_idx[0]), int(event_idx[-1])]
                 b_under, _ = compute_burden(
                     nat, ego, cfg, object_type, natural_ref=nat, rho=rho,
                 )
@@ -126,6 +135,7 @@ def compute_candidate_agent_audit(
         "relevance_mass": relevance_mass,
         "root_affected": root_affected,
         "root_unsafe": root_unsafe,
+        "root_event_interval": root_event_interval,
         "root_direct_burden": root_direct_burden,
         "root_budget_crossed": root_budget_crossed,
         "root_burden_only_affected": root_burden_only_affected,

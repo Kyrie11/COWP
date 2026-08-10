@@ -133,6 +133,14 @@ run() {
   "$@" > >(tee "$COWP_ROOT/logs/${name}.log") 2> >(tee -a "$COWP_ROOT/logs/${name}.log" >&2)
 }
 
+# Fail before the expensive label build if the raw data is not actually the
+# future-visible WOMD 1.3.1 contract expected by COWP + full Waymax metrics.
+run womd_v131_preflight "$PYTHON_BIN" -m cowp.scripts.64_validate_womd_v131_contract \
+  --tfexample-train-glob "$TFEXAMPLE_TRAIN" --tfexample-val-glob "$TFEXAMPLE_VAL" \
+  --scenario-train-glob "$SCENARIO_TRAIN" --scenario-val-glob "$SCENARIO_VAL" \
+  --sample-shards 64 --scenario-sample-shards 32 --require-sdc-paths \
+  --output "$COWP_ROOT/womd_v1_3_1_preflight.json"
+
 if [[ "$FORCE_INDEX" == "1" || ! -s "$INDEX_TRAIN" ]]; then
   run index_train "$PYTHON_BIN" -m cowp.scripts.00_index_womd \
     --data-config configs/data.yaml --proto-glob "$SCENARIO_TRAIN" \
@@ -167,6 +175,15 @@ run labels_val "$PYTHON_BIN" -m cowp.scripts.01_build_labels_from_proto \
   --max-pending-multiplier 2 --no-compress --skip-existing --skip-diagnostics \
   --profile-jsonl "$COWP_ROOT/profile_labels_val.jsonl" --cpu-only
 
+# Audit active learned-label support before spending additional I/O on WOMD
+# tensor merges. This is stricter than the original seven-head class check.
+run model_support_labels_train "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
+  --cache-dir "$LABELS_TRAIN" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --strict \
+  --output "$COWP_ROOT/model_support_audit_labels_train.json"
+run model_support_labels_val "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
+  --cache-dir "$LABELS_VAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --strict \
+  --output "$COWP_ROOT/model_support_audit_labels_val.json"
+
 if [[ "$RUN_LABEL_DIAGNOSTICS" == "1" ]]; then
 run diagnose_labels_train "$PYTHON_BIN" cowp/scripts/06_diagnose_dataset.py \
   --data-config configs/data.yaml --label-config "$LABEL_CFG" \
@@ -184,13 +201,13 @@ run tensor_train "$PYTHON_BIN" -m cowp.scripts.02_build_tensor_cache \
   --data-config configs/data.yaml --split training --tfexample-glob "$TFEXAMPLE_TRAIN" \
   --labels-dir "$LABELS_TRAIN" --output-dir "$BASE_TRAIN" \
   --num-workers "$CACHE_WORKERS" --start-method forkserver --parallel-scan \
-  --require-waymax-ready --skip-existing --no-compress \
+  --require-waymax-ready --require-sdc-paths --skip-existing --no-compress \
   --profile-jsonl "$COWP_ROOT/profile_tensor_cache_train.jsonl" --cpu-only
 run tensor_val "$PYTHON_BIN" -m cowp.scripts.02_build_tensor_cache \
   --data-config configs/data.yaml --split validation --tfexample-glob "$TFEXAMPLE_VAL" \
   --labels-dir "$LABELS_VAL" --output-dir "$BASE_VAL" \
   --num-workers "$CACHE_WORKERS" --start-method forkserver --parallel-scan \
-  --require-waymax-ready --skip-existing --no-compress \
+  --require-waymax-ready --require-sdc-paths --skip-existing --no-compress \
   --profile-jsonl "$COWP_ROOT/profile_tensor_cache_val.jsonl" --cpu-only
 
 if [[ "$RUN_WAYMAX_REPLAY" == "1" ]]; then
@@ -238,16 +255,22 @@ if [[ -n "$TRAIN_ALLOWLIST" ]]; then VERIFY_TRAIN_ALLOW=(--allowlist "$TRAIN_ALL
 if [[ -n "$VAL_ALLOWLIST" ]]; then VERIFY_VAL_ALLOW=(--allowlist "$VAL_ALLOWLIST"); fi
 run verify_fresh_train "$PYTHON_BIN" -m cowp.scripts.60_verify_fresh_v16_8_9_cache \
   --cache-dir "$TRAIN_CACHE_FINAL" "${VERIFY_TRAIN_ALLOW[@]}" \
-  --sample-scenes 0 --output "$COWP_ROOT/fresh_cache_integrity_train.json"
+  --sample-scenes 0 --require-sdc-paths --output "$COWP_ROOT/fresh_cache_integrity_train.json"
 run verify_fresh_val "$PYTHON_BIN" -m cowp.scripts.60_verify_fresh_v16_8_9_cache \
   --cache-dir "$VAL_CACHE_FINAL" "${VERIFY_VAL_ALLOW[@]}" \
-  --sample-scenes 0 --output "$COWP_ROOT/fresh_cache_integrity_val.json"
+  --sample-scenes 0 --require-sdc-paths --output "$COWP_ROOT/fresh_cache_integrity_val.json"
 run supervision_train "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
   --cache-dir "$TRAIN_CACHE_FINAL" --sample-scenes 0 --min-class-examples 128 --strict \
   --output "$COWP_ROOT/training_supervision_audit_train.json"
 run supervision_val "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
   --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --strict \
   --output "$COWP_ROOT/training_supervision_audit_val.json"
+run model_support_cache_train "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
+  --cache-dir "$TRAIN_CACHE_FINAL" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --strict \
+  --output "$COWP_ROOT/model_support_audit_cache_train.json"
+run model_support_cache_val "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
+  --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --strict \
+  --output "$COWP_ROOT/model_support_audit_cache_val.json"
 
 # Recompute the full validation proposal ceiling from the actual post-merge cache.
 # This is a final dataset-level guard before any GPU training starts.

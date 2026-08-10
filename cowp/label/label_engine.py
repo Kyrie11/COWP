@@ -133,6 +133,7 @@ def build_labels_for_scene(
         "cowp/audit/relevance_mass": audit["relevance_mass"],
         "cowp/audit/root_affected": audit["root_affected"],
         "cowp/audit/root_unsafe": audit["root_unsafe"],
+        "cowp/audit/root_event_interval": audit["root_event_interval"],
         "cowp/audit/root_direct_burden": audit["root_direct_burden"],
         "cowp/audit/root_budget_crossed": audit["root_budget_crossed"],
         "cowp/audit/root_burden_only_affected": audit["root_burden_only_affected"],

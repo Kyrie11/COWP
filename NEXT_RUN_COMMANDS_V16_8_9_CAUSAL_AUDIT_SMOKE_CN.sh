@@ -33,6 +33,7 @@ PAIRED="$SMOKE_ROOT/paired_probe.json"
 ABLATION="$SMOKE_ROOT/proposal_source_ablation.json"
 AUDIT="$SMOKE_ROOT/causal_audit_diagnostic.json"
 SUPERVISION="$SMOKE_ROOT/training_supervision_audit.json"
+MODEL_SUPPORT="$SMOKE_ROOT/model_support_audit.json"
 SCREEN="$SMOKE_ROOT/v16_8_9_smoke_verdict.json"
 
 mkdir -p "$SMOKE_ROOT/logs"
@@ -42,8 +43,13 @@ SOURCE_RANDOM="$SOURCE_PROBE_ROOT/random_scene_ids.txt"
 [[ -s "$SOURCE_HARD" ]] || { echo "missing source hard ids: $SOURCE_HARD" >&2; exit 2; }
 [[ -s "$SOURCE_RANDOM" ]] || { echo "missing source random ids under $SOURCE_PROBE_ROOT" >&2; exit 2; }
 head -n "$HARD_COUNT" "$SOURCE_HARD" > "$HARD_IDS"
-head -n "$RANDOM_COUNT" "$SOURCE_RANDOM" > "$RANDOM_IDS"
-cat "$HARD_IDS" "$RANDOM_IDS" | awk 'NF && !seen[$1]++ {print $1}' > "$UNION_IDS"
+# Keep the smoke contract at exactly HARD_COUNT + RANDOM_COUNT distinct scenes,
+# even when an older representative-random manifest happened to overlap the hard list.
+awk 'NR==FNR{hard[$1]=1; next} NF && !hard[$1] && !seen[$1]++ {print $1}' "$HARD_IDS" "$SOURCE_RANDOM" | head -n "$RANDOM_COUNT" > "$RANDOM_IDS"
+cat "$HARD_IDS" "$RANDOM_IDS" > "$UNION_IDS"
+[[ "$(wc -l < "$HARD_IDS")" -eq "$HARD_COUNT" ]] || { echo "smoke hard manifest is shorter than HARD_COUNT=$HARD_COUNT" >&2; exit 3; }
+[[ "$(wc -l < "$RANDOM_IDS")" -eq "$RANDOM_COUNT" ]] || { echo "smoke random manifest lacks $RANDOM_COUNT IDs after removing hard overlap" >&2; exit 3; }
+[[ "$(sort -u "$UNION_IDS" | wc -l)" -eq $((HARD_COUNT + RANDOM_COUNT)) ]] || { echo "smoke manifest is not unique/disjoint" >&2; exit 3; }
 
 if [[ "$FORCE_REBUILD_SMOKE" == "1" ]]; then
   rm -rf "$FRESH_LABELS"
@@ -96,6 +102,10 @@ run audit "$PYTHON_BIN" -m cowp.scripts.57_diagnose_causal_audit \
 run supervision "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
   --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --output "$SUPERVISION"
 
+run model_support "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
+  --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --min-source-examples 8 \
+  --output "$MODEL_SUPPORT"
+
 if [[ -n "$PREV_FRESH_CACHE" && -d "$PREV_FRESH_CACHE" ]]; then
   run compare_previous "$PYTHON_BIN" -m cowp.scripts.46_compare_proposal_probe \
     --old-cache "$PREV_FRESH_CACHE" --new-cache "$FRESH_LABELS" \
@@ -116,6 +126,7 @@ set -e
 echo "SMOKE_VERDICT=$SCREEN"
 echo "CAUSAL_AUDIT=$AUDIT"
 echo "TRAINING_SUPERVISION_AUDIT=$SUPERVISION"
+echo "MODEL_SUPPORT_AUDIT=$MODEL_SUPPORT"
 if [[ "$STATUS" -eq 0 ]]; then
   echo "SMOKE PASS: run NEXT_RUN_COMMANDS_V16_8_9_STRICT_PROPOSAL_PROBE_CN.sh. Do NOT full-rebuild yet."
 else

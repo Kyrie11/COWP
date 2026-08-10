@@ -681,6 +681,67 @@ def _waymax_missing_required_womd_keys(example: Mapping[str, object]) -> list[st
     return missing
 
 
+def _sdc_path_contract_errors(example: Mapping[str, object]) -> list[str]:
+    """Validate the WOMD 1.3.1 SDC-path tensor contract used by full Waymax metrics.
+
+    This is intentionally separate from the legacy/core ``waymax_ready`` check:
+    safety-only cache replay can operate without route paths, while paper-grade
+    planning evaluation (wrong-way / route progression) must not silently do so.
+    Public WOMD/Waymax data primarily uses ``path_samples/xyz``; the split
+    ``path_samples/{x,y,z}`` layout is accepted for compatibility with older
+    local exports and is semantically equivalent after stacking.
+    """
+    required = (
+        "path_samples/valid",
+        "path_samples/id",
+        "path_samples/arc_length",
+        "path_samples/on_route",
+    )
+    errors = [f"missing:{k}" for k in required if k not in example]
+    has_xyz = "path_samples/xyz" in example
+    has_split_xyz = all(k in example for k in ("path_samples/x", "path_samples/y", "path_samples/z"))
+    if not has_xyz and not has_split_xyz:
+        errors.append("missing:path_samples/xyz_or_x_y_z")
+    if errors:
+        return errors
+
+    if has_xyz:
+        xyz = np.asarray(example["path_samples/xyz"]).reshape(-1)
+    else:
+        x = np.asarray(example["path_samples/x"]).reshape(-1)
+        y = np.asarray(example["path_samples/y"]).reshape(-1)
+        z = np.asarray(example["path_samples/z"]).reshape(-1)
+        if not (x.size == y.size == z.size):
+            return [f"shape:path_samples/x_y_z={x.size},{y.size},{z.size}"]
+        xyz = np.stack([x, y, z], axis=-1).reshape(-1)
+
+    valid = np.asarray(example["path_samples/valid"]).reshape(-1)
+    ids = np.asarray(example["path_samples/id"]).reshape(-1)
+    arc = np.asarray(example["path_samples/arc_length"]).reshape(-1)
+    on_route = np.asarray(example["path_samples/on_route"]).reshape(-1)
+    if valid.size == 0 or on_route.size == 0:
+        errors.append("empty:path_samples")
+        return errors
+    if ids.size != valid.size:
+        errors.append(f"shape:id={ids.size} valid={valid.size}")
+    if arc.size != valid.size:
+        errors.append(f"shape:arc_length={arc.size} valid={valid.size}")
+    if xyz.size != valid.size * 3:
+        errors.append(f"shape:xyz={xyz.size} expected={valid.size * 3}")
+    if valid.size % on_route.size != 0:
+        errors.append(f"shape:valid={valid.size} not_divisible_by_num_paths={on_route.size}")
+    if not np.all(np.isfinite(xyz)):
+        errors.append("nonfinite:path_samples/xyz")
+    if not np.all(np.isfinite(arc)):
+        errors.append("nonfinite:path_samples/arc_length")
+    # Do NOT reject a valid WOMD 1.3.1 scene merely because every path is
+    # off-route or invalid. Waymax defines route metrics for those cases (for
+    # example, route progression returns zero when there is no valid on-route
+    # path).  The dataset contract here validates representation/version
+    # integrity without selection-biasing the official split.
+    return errors
+
+
 def _merge_one_tfexample_to_cache(
     *,
     sid: str,
@@ -690,6 +751,7 @@ def _merge_one_tfexample_to_cache(
     compress: bool,
     verify_cache: bool = False,
     require_waymax_ready: bool = False,
+    require_sdc_paths: bool = False,
 ) -> dict[str, object]:
     """Decode one matched WOMD tf.Example and write the merged tensor cache item."""
     t0 = time.perf_counter()
@@ -701,6 +763,13 @@ def _merge_one_tfexample_to_cache(
     waymax_ready = len(waymax_missing) == 0
     if require_waymax_ready and not waymax_ready:
         raise KeyError(f"WOMD tf.Example for {sid} is missing required Waymax replay keys: {waymax_missing[:8]}")
+    sdc_path_errors = _sdc_path_contract_errors(example)
+    sdc_paths_ready = len(sdc_path_errors) == 0
+    if require_sdc_paths and not sdc_paths_ready:
+        raise KeyError(
+            f"WOMD tf.Example for {sid} does not satisfy the WOMD-1.3.1 SDC-path contract: "
+            f"{sdc_path_errors[:8]}"
+        )
 
     arrays: dict[str, object] = {}
     for key, val in example.items():
@@ -708,6 +777,8 @@ def _merge_one_tfexample_to_cache(
         arrays[f"womd__{safe}"] = np.frombuffer(val, dtype=np.uint8) if isinstance(val, bytes) else np.asarray(val)
     arrays[_npz_key("cache/meta/waymax_ready")] = np.asarray(bool(waymax_ready))
     arrays[_npz_key("cache/meta/waymax_missing_keys")] = np.asarray(";".join(waymax_missing))
+    arrays[_npz_key("cache/meta/sdc_paths_ready")] = np.asarray(bool(sdc_paths_ready))
+    arrays[_npz_key("cache/meta/sdc_path_contract_errors")] = np.asarray(";".join(sdc_path_errors))
 
     t_label = time.perf_counter()
     restored_for_mask: dict[str, object] = {}
@@ -750,6 +821,8 @@ def _merge_one_tfexample_to_cache(
         "compress": bool(compress),
         "waymax_ready": bool(waymax_ready),
         "waymax_missing_keys": waymax_missing,
+        "sdc_paths_ready": bool(sdc_paths_ready),
+        "sdc_path_contract_errors": sdc_path_errors,
     }
 
 
@@ -760,6 +833,7 @@ def _init_tensor_cache_worker(
     compress: bool,
     verify_cache: bool,
     require_waymax_ready: bool,
+    require_sdc_paths: bool,
 ) -> None:
     _CACHE_WORKER_STATE.clear()
     _CACHE_WORKER_STATE.update(
@@ -770,6 +844,7 @@ def _init_tensor_cache_worker(
             "compress": bool(compress),
             "verify_cache": bool(verify_cache),
             "require_waymax_ready": bool(require_waymax_ready),
+            "require_sdc_paths": bool(require_sdc_paths),
         }
     )
 
@@ -784,6 +859,7 @@ def _build_tensor_cache_file_worker(filename: str) -> dict[str, object]:
     compress = bool(_CACHE_WORKER_STATE["compress"])
     verify_cache = bool(_CACHE_WORKER_STATE["verify_cache"])
     require_waymax_ready = bool(_CACHE_WORKER_STATE["require_waymax_ready"])
+    require_sdc_paths = bool(_CACHE_WORKER_STATE.get("require_sdc_paths", False))
     scanned = 0
     matched = 0
     written = 0
@@ -821,6 +897,7 @@ def _build_tensor_cache_file_worker(filename: str) -> dict[str, object]:
                 compress=compress,
                 verify_cache=verify_cache,
                 require_waymax_ready=require_waymax_ready,
+                require_sdc_paths=require_sdc_paths,
             )
             written += 1
             decode_s += float(res.get("decode_seconds", 0.0))
@@ -861,6 +938,7 @@ def _build_tensor_cache_parallel_by_file(
     num_workers: int,
     start_method: str | None,
     require_waymax_ready: bool,
+    require_sdc_paths: bool,
 ) -> int:
     """Parallel tensor-cache merge by TFRecord shard.
 
@@ -887,7 +965,7 @@ def _build_tensor_cache_parallel_by_file(
         max_workers=workers,
         mp_context=mp_context,
         initializer=_init_tensor_cache_worker,
-        initargs=(label_paths_s, str(output_dir), skip_existing, compress, verify_cache, require_waymax_ready),
+        initargs=(label_paths_s, str(output_dir), skip_existing, compress, verify_cache, require_waymax_ready, require_sdc_paths),
     ) as pool:
         futures = [pool.submit(_build_tensor_cache_file_worker, f) for f in files]
         done_count = 0
@@ -938,6 +1016,7 @@ def build_tensor_cache(
     num_workers: int = 1,
     start_method: str | None = None,
     require_waymax_ready: bool = False,
+    require_sdc_paths: bool = False,
     prefer_parallel_scan: bool = False,
 ) -> int:
     labels_dir = Path(labels_dir)
@@ -968,6 +1047,7 @@ def build_tensor_cache(
             num_workers=int(num_workers),
             start_method=start_method,
             require_waymax_ready=require_waymax_ready,
+            require_sdc_paths=require_sdc_paths,
         )
 
     scan_glob: str | list[str] = tfexample_glob
@@ -1087,6 +1167,7 @@ def build_tensor_cache(
             compress=compress,
             verify_cache=False,
             require_waymax_ready=require_waymax_ready,
+            require_sdc_paths=require_sdc_paths,
         )
         decode_seconds += float(res.get("decode_seconds", 0.0))
         write_seconds += float(res.get("write_seconds", 0.0))
