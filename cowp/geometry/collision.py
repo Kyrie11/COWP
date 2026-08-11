@@ -80,8 +80,12 @@ def _center_broadphase_far(traj_a: np.ndarray, traj_b: np.ndarray, cfg: dict, ag
     dist = np.linalg.norm(traj_a[:t, :2] - traj_b[:t, :2], axis=-1)
     dmin = float(np.min(dist)) if len(dist) else float("inf")
     unsafe_cfg = cfg.get("unsafe", cfg)
-    near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0 if agent_type == 1 else 1.5))
-    dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0 if agent_type == 1 else 20.0))
+    if int(agent_type) == 1:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0))
+    else:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vru_m", 1.5))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vru_m", 20.0))
     # Conservative upper bound on vehicle half diagonals.  If the centers never
     # come within this gate, collision, near-miss, TTC and RSS tests cannot fire.
     half_a = 0.5 * np.sqrt(np.maximum(traj_a[:t, 5], 0.1) ** 2 + np.maximum(traj_a[:t, 6], 0.1) ** 2)
@@ -101,25 +105,39 @@ def unsafe_between(ego_traj: np.ndarray, agent_traj: np.ndarray, cfg: dict, agen
     unsafe_cfg = cfg.get("unsafe", cfg)
     t = min(len(ego_traj), len(agent_traj))
     far, dmin_fast = _center_broadphase_far(ego_traj, agent_traj, cfg, agent_type)
-    if far and agent_lane_dist is None:
-        empty = np.zeros(t, dtype=bool)
-        return UnsafeResult(False, False, False, False, False, False, empty, dmin_fast)
-    inflation = float(unsafe_cfg.get("collision_inflation_m", 0.1))
-    collision, col_mask = trajectory_collision(ego_traj, agent_traj, inflation)
-    near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0 if agent_type == 1 else 1.5))
-    near, near_mask, dmin = trajectory_near_miss(ego_traj, agent_traj, near_thresh)
-    ttc_min = float(unsafe_cfg.get("ttc_min_vehicle_s", 1.5 if agent_type == 1 else 2.0))
-    dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0 if agent_type == 1 else 20.0))
-    dang, ttc_mask = dangerous_ttc(ego_traj, agent_traj, ttc_min, dist_gate)
+    if int(agent_type) == 1:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0))
+        ttc_min = float(unsafe_cfg.get("ttc_min_vehicle_s", 1.5))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0))
+    else:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vru_m", 1.5))
+        ttc_min = float(unsafe_cfg.get("ttc_min_vru_s", 2.0))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vru_m", 20.0))
     rss, rss_mask, _ = same_heading_gap_violation(
         rear_traj=agent_traj,
         front_traj=ego_traj,
+        heading_tolerance=np.deg2rad(float(unsafe_cfg.get("rss_heading_tolerance_deg", 35.0))),
         rho=float(unsafe_cfg.get("rss_reaction_time_s", 0.5)),
         a_max_accel=float(unsafe_cfg.get("rss_a_max_accel", 2.0)),
         b_min=float(unsafe_cfg.get("rss_b_min_comfort", 3.0)),
         b_max=float(unsafe_cfg.get("rss_b_max_front", 6.0)),
         min_gap=float(unsafe_cfg.get("rss_min_gap_m", 2.0)),
+        lateral_margin=float(unsafe_cfg.get("rss_lateral_margin_m", 0.75)),
     )
+    # The center broad-phase is an exact negative test for collision/near-miss/TTC,
+    # but *not* for RSS: a same-lane high-speed following pair can violate RSS at
+    # a longitudinal gap greater than the TTC distance gate.  We therefore keep
+    # the cheap vectorized RSS check even on broad-phase-far pairs and skip only
+    # the expensive polygon geometry/TTC work.
+    if far:
+        collision = near = dang = False
+        col_mask = near_mask = ttc_mask = np.zeros(t, dtype=bool)
+        dmin = dmin_fast
+    else:
+        inflation = float(unsafe_cfg.get("collision_inflation_m", 0.1))
+        collision, col_mask = trajectory_collision(ego_traj, agent_traj, inflation)
+        near, near_mask, dmin = trajectory_near_miss(ego_traj, agent_traj, near_thresh)
+        dang, ttc_mask = dangerous_ttc(ego_traj, agent_traj, ttc_min, dist_gate)
     offroad, off_mask = offroad_severe_from_lane_distance(agent_traj, agent_lane_dist, float(unsafe_cfg.get("severe_offroad_distance_m", 4.0)))
     event_mask = np.zeros(t, dtype=bool)
     for m in (col_mask, near_mask, ttc_mask, rss_mask, off_mask):

@@ -110,7 +110,7 @@ loss_weights:
   candidate_certificate_spread: 0.05
   candidate_cert_min_logit_spread: 0.2
   candidate_cert_max_pairs_per_scene: 256
-  response_valid_bce: 0.9
+  response_valid_bce: 0.0
   response_source_ce: 0.2
   witness_response_scale: 0.75
   planner_response_scale: 0.0

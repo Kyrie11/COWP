@@ -13,7 +13,7 @@ from cowp.data.dataset import COWPNpzDataset
 WANTED = {
     "cowp/candidates/valid", "cowp/candidates/conventional_safe", "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible", "cowp/candidates/proposal_source",
-    "cowp/critical/valid", "cowp/critical/base_priority",
+    "cowp/critical/valid", "cowp/critical/agent_type", "cowp/critical/base_priority",
     "cowp/natural/valid", "cowp/natural/source", "cowp/natural/weight", "cowp/natural/traj",
     "cowp/natural/priority_preserved", "cowp/natural/burden_neutral", "cowp/natural/beta",
     "cowp/response/valid", "cowp/response/source", "cowp/response/is_safe", "cowp/response/is_low_burden",
@@ -132,6 +132,7 @@ def main() -> None:
             _finite_values(cont, "witness_burden_components", wcomp, comp_mask)
 
         nv = np.asarray(row["cowp/natural/valid"], dtype=bool)[:crit.size]
+        crit_type = np.asarray(row["cowp/critical/agent_type"], dtype=np.int64).reshape(-1)[:crit.size]
         ns = np.asarray(row["cowp/natural/source"], dtype=np.int64)[:crit.size]
         nw = np.asarray(row["cowp/natural/weight"], dtype=np.float32)[:crit.size]
         nt = np.asarray(row["cowp/natural/traj"], dtype=np.float32)[:crit.size]
@@ -139,20 +140,51 @@ def main() -> None:
         for x in ns[nv & crit[:, None]]:
             source["natural"][int(x)] += 1
         _binary(c, "natural_priority_preserved", pp, nv & crit[:, None] & (ns == int(NaturalSource.PRIO)))
-        if np.any(nv & crit[:, None]):
-            if not np.all(np.isfinite(nt[nv & crit[:, None]])):
-                if len(integrity_errors) < 20:
-                    integrity_errors.append({"file": ds.paths[i].name, "error": "non-finite valid natural trajectory"})
-            for a in np.where(crit)[0]:
-                mask = nv[a]
-                if not np.any(mask):
-                    c["critical_without_natural_roots"] += 1
-                    continue
-                w = np.asarray(nw[a, mask], dtype=np.float64)
-                if np.any(w < -1e-8) or not np.all(np.isfinite(w)) or float(w.sum()) <= 0:
-                    c["invalid_natural_weight_agents"] += 1
-                if int(mask.sum()) < 2:
-                    c["critical_with_lt2_natural_roots"] += 1
+        natural_active = nv & crit[:, None]
+        if np.any(natural_active) and not np.all(np.isfinite(nt[natural_active])):
+            if len(integrity_errors) < 20:
+                integrity_errors.append({"file": ds.paths[i].name, "error": "non-finite valid natural trajectory"})
+
+        # Audit every critical agent, including scenes where *all* critical
+        # agents are rootless.  The old np.any(natural_active) guard enclosed
+        # this loop and therefore under-counted the exact failure mode the gate
+        # was intended to catch.
+        nb = np.asarray(row["cowp/natural/burden_neutral"], dtype=np.float32)[:crit.size]
+        beta = np.asarray(row["cowp/natural/beta"], dtype=np.float32).reshape(-1)[:crit.size]
+        low_eps = 1.0e-6
+        for a in np.where(crit)[0]:
+            mask = nv[a]
+            if not np.any(mask):
+                c["critical_without_natural_roots"] += 1
+                c["critical_without_low_burden_natural_roots"] += 1
+                c["critical_with_lt2_low_burden_natural_roots"] += 1
+                source["critical_without_natural_roots_by_type"][int(crit_type[a])] += 1
+                source["critical_without_low_burden_natural_roots_by_type"][int(crit_type[a])] += 1
+                source["critical_with_lt2_low_burden_natural_roots_by_type"][int(crit_type[a])] += 1
+                continue
+            w = np.asarray(nw[a, mask], dtype=np.float64)
+            if (
+                np.any(w < -1e-8)
+                or not np.all(np.isfinite(w))
+                or not np.isclose(float(w.sum()), 1.0, rtol=1.0e-4, atol=1.0e-4)
+            ):
+                c["invalid_natural_weight_agents"] += 1
+            if int(mask.sum()) < 2:
+                c["critical_with_lt2_natural_roots"] += 1
+                source["critical_with_lt2_natural_roots_by_type"][int(crit_type[a])] += 1
+
+            # COWP's retained-mass/OPR object is explicitly a *low-burden*
+            # natural option set.  Counting arbitrary valid roots is therefore
+            # insufficient support: every critical agent needs low-burden
+            # natural mass, and at least two roots to avoid an accidental
+            # singleton certificate.
+            low_mask = mask & np.isfinite(nb[a]) & (nb[a] <= float(beta[a]) + low_eps)
+            if not np.any(low_mask):
+                c["critical_without_low_burden_natural_roots"] += 1
+                source["critical_without_low_burden_natural_roots_by_type"][int(crit_type[a])] += 1
+            if int(low_mask.sum()) < 2:
+                c["critical_with_lt2_low_burden_natural_roots"] += 1
+                source["critical_with_lt2_low_burden_natural_roots_by_type"][int(crit_type[a])] += 1
 
         rv = np.asarray(row["cowp/response/valid"], dtype=bool)[:cand.size, :crit.size]
         rs = np.asarray(row["cowp/response/source"], dtype=np.int64)[:cand.size, :crit.size]
@@ -161,7 +193,16 @@ def main() -> None:
         rbur = np.asarray(row["cowp/response/burden_total"], dtype=np.float32)[:cand.size, :crit.size]
         pair_response_mask = rel[..., None] & base_pair[..., None]
         response_mask = rv & pair_response_mask
-        _binary(c, "response_valid", rv, np.broadcast_to(pair_response_mask, rv.shape))
+        # response/valid is an occupancy mask for a fixed-cardinality decoded set,
+        # not an active BCE target in the mainline model.  Audit coverage instead:
+        # every causally relevant valid pair must populate every response slot so
+        # inference can safely treat the R decoded slots as active hypotheses.
+        expected_response_slots = np.broadcast_to(pair_response_mask, rv.shape)
+        c["response_slots_expected"] += int(expected_response_slots.sum())
+        c["response_slots_present"] += int((rv & expected_response_slots).sum())
+        c["relevant_pairs_with_incomplete_response_bank"] += int(
+            np.sum(pair_response_mask[..., 0] & (rv.sum(axis=-1) != rv.shape[-1]))
+        )
         _binary(c, "response_safe", safe, response_mask)
         _binary(c, "response_low_burden", low, response_mask)
         rminflag = np.asarray(row["cowp/transport/response_is_min_burden"], dtype=bool)[:cand.size, :crit.size]
@@ -202,7 +243,7 @@ def main() -> None:
     mins = max(int(args.min_source_examples), 1)
     binary_names = (
         "candidate_ncf", "candidate_false_safe", "pair_relevance", "witness_on_relevant",
-        "pair_ncf_on_relevant", "response_valid", "response_safe", "response_low_burden", "response_min_burden",
+        "pair_ncf_on_relevant", "response_safe", "response_low_burden", "response_min_burden",
         "mode_conflict", "mode_affected", "mode_retain", "root_recovery", "protected_candidate_feasible",
     )
     checks: dict[str, bool] = {
@@ -210,11 +251,15 @@ def main() -> None:
         "no_integrity_errors": not integrity_errors,
         "every_critical_has_natural_root": int(c["critical_without_natural_roots"]) == 0,
         "every_critical_has_multi_root_support": int(c["critical_with_lt2_natural_roots"]) == 0,
+        "every_critical_has_low_burden_natural_root": int(c["critical_without_low_burden_natural_roots"]) == 0,
+        "every_critical_has_multi_low_burden_root_support": int(c["critical_with_lt2_low_burden_natural_roots"]) == 0,
         "natural_weights_valid": int(c["invalid_natural_weight_agents"]) == 0,
         "conflict_subset_affected": int(c["conflict_not_affected_violations"]) == 0,
         "unsafe_event_intervals_complete": int(c["unsafe_missing_event_interval"]) == 0,
         "root_indexed_response_support": int(c["root_indexed_responses"]) >= mins,
         "confident_affected_root_support": int(c["confident_affected_roots"]) >= mins,
+        "response_slot_full_coverage": int(c["response_slots_present"]) == int(c["response_slots_expected"]),
+        "every_relevant_pair_has_full_response_bank": int(c["relevant_pairs_with_incomplete_response_bank"]) == 0,
     }
     binary_support = {}
     for name in binary_names:
@@ -250,7 +295,7 @@ def main() -> None:
 
     passed = all(checks.values()) and not read_errors and not integrity_errors
     report = {
-        "schema_version": "cowp_v16_8_9_model_support_audit_v1",
+        "schema_version": "cowp_v16_8_10_model_support_audit_v1",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "inspected_scenes": int(c["scenes"]),
         "min_class_examples": minc,
@@ -259,16 +304,28 @@ def main() -> None:
         "pass": bool(passed),
         "checks": checks,
         "binary_support": binary_support,
-        "source_support": {"proposal": proposal_counts, "natural": natural_counts, "response": response_counts, "witness_token_positive_pairs": token_counts},
+        "source_support": {
+            "proposal": proposal_counts, "natural": natural_counts, "response": response_counts,
+            "witness_token_positive_pairs": token_counts,
+            "critical_without_natural_roots_by_type": dict(source["critical_without_natural_roots_by_type"]),
+            "critical_with_lt2_natural_roots_by_type": dict(source["critical_with_lt2_natural_roots_by_type"]),
+            "critical_without_low_burden_natural_roots_by_type": dict(source["critical_without_low_burden_natural_roots_by_type"]),
+            "critical_with_lt2_low_burden_natural_roots_by_type": dict(source["critical_with_lt2_low_burden_natural_roots_by_type"]),
+        },
         "continuous_support": continuous,
         "auxiliary_counts": {
             "root_indexed_responses": int(c["root_indexed_responses"]),
             "confident_affected_roots": int(c["confident_affected_roots"]),
             "critical_without_natural_roots": int(c["critical_without_natural_roots"]),
             "critical_with_lt2_natural_roots": int(c["critical_with_lt2_natural_roots"]),
+            "critical_without_low_burden_natural_roots": int(c["critical_without_low_burden_natural_roots"]),
+            "critical_with_lt2_low_burden_natural_roots": int(c["critical_with_lt2_low_burden_natural_roots"]),
             "invalid_natural_weight_agents": int(c["invalid_natural_weight_agents"]),
             "conflict_not_affected_violations": int(c["conflict_not_affected_violations"]),
             "unsafe_missing_event_interval": int(c["unsafe_missing_event_interval"]),
+            "response_slots_expected": int(c["response_slots_expected"]),
+            "response_slots_present": int(c["response_slots_present"]),
+            "relevant_pairs_with_incomplete_response_bank": int(c["relevant_pairs_with_incomplete_response_bank"]),
         },
         "read_errors": read_errors,
         "integrity_errors": integrity_errors,

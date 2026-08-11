@@ -242,7 +242,10 @@ def certify_witnesses(
                 else:
                     unsafe_obj = unsafe_between(ego, nat, cfg, agent_type=object_type)
                     unsafe_flag = bool(unsafe_obj.unsafe)
-                    b_under, _ = compute_burden(nat, ego, cfg, object_type, natural_ref=nat, rho=rho)
+                    b_under, _ = compute_burden(
+                        nat, ego, cfg, object_type, natural_ref=nat, rho=rho,
+                        risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe_flag,
+                    )
                     affected_flag = bool(unsafe_flag or (float(b_under) > beta))
                 if m < M and low_neu:
                     mode_valid[k, a, m] = True

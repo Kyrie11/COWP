@@ -18,6 +18,8 @@ model:
   set_transport_hidden: 96
   set_transport_geometry_steps: 20
   set_transport_response_topk: 8
+  # Fixed-cardinality response slots: occupancy is a mask, not a learned class.
+  use_response_valid_gate: false
   natural_decoder_type: typed_causal_dynamics
   natural_obs_capacity_scale: 1.0
   natural_residual_endpoint_budget_obs_m: 20.0

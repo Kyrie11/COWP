@@ -474,6 +474,70 @@ def _validate_stage_supervision(dataset, stage: str, *, samples: int = 32) -> di
     }
 
 
+def _validate_waymax_outcome_supervision(dataset, *, samples: int = 128) -> dict[str, float]:
+    """Fail fast when an enabled closed-loop planner loss has no real outcomes.
+
+    ``planner_outcome_supervision`` intentionally returns zero when Waymax labels
+    are absent.  That behavior is convenient for explicit ablations, but it can
+    silently turn a configured ``closed_loop > 0`` mainline run into a different
+    algorithm.  For the publication/mainline path, require attached rollout
+    validity plus both safe and unsafe replay support before allocating a long
+    planner run.
+    """
+    if len(dataset) == 0:
+        raise RuntimeError("Waymax outcome supervision requested on an empty dataset")
+    n = min(max(int(samples), 1), len(dataset))
+    if n == 1:
+        probe_indices = [0]
+    else:
+        probe_indices = sorted({round(i * (len(dataset) - 1) / (n - 1)) for i in range(n)})
+    required = (
+        "waymax/candidate_rollout_valid",
+        "waymax/candidate_collision",
+        "waymax/candidate_offroad",
+    )
+    missing: set[str] = set()
+    valid_outcomes = safe_outcomes = unsafe_outcomes = 0
+    mixed_scenes = 0
+    for i in probe_indices:
+        item = dataset[i]
+        missing.update(k for k in required if k not in item)
+        if any(k not in item for k in required) or "cowp/candidates/valid" not in item:
+            continue
+        mask = item["cowp/candidates/valid"].bool() & item["waymax/candidate_rollout_valid"].bool()
+        collision = item["waymax/candidate_collision"].float() > 0.5
+        offroad = item["waymax/candidate_offroad"].float() > 0.5
+        unsafe = (collision | offroad) & mask
+        safe = (~(collision | offroad)) & mask
+        valid_outcomes += int(mask.sum().item())
+        safe_outcomes += int(safe.sum().item())
+        unsafe_outcomes += int(unsafe.sum().item())
+        mixed_scenes += int(bool(safe.any() and unsafe.any()))
+    if missing:
+        raise RuntimeError(
+            "closed_loop planner supervision is enabled but attached Waymax outcome keys are missing: "
+            f"{sorted(missing)}. Run candidate replay + attach, or explicitly use a train config with closed_loop=0."
+        )
+    if valid_outcomes <= 0:
+        raise RuntimeError(
+            "closed_loop planner supervision is enabled but the sampled cache has zero valid Waymax candidate rollouts. "
+            "Rebuild/reattach outcomes before planner training."
+        )
+    if safe_outcomes <= 0 or unsafe_outcomes <= 0 or mixed_scenes <= 0:
+        raise RuntimeError(
+            "Waymax outcome labels are present but sampled planner supervision is degenerate: "
+            f"valid={valid_outcomes}, safe={safe_outcomes}, unsafe={unsafe_outcomes}, mixed_scenes={mixed_scenes}. "
+            "Use a broader/balanced replay bank before training the configured closed-loop ranking loss."
+        )
+    return {
+        "sampled_scenes": float(len(probe_indices)),
+        "valid_outcomes": float(valid_outcomes),
+        "safe_outcomes": float(safe_outcomes),
+        "unsafe_outcomes": float(unsafe_outcomes),
+        "mixed_safe_unsafe_scenes": float(mixed_scenes),
+    }
+
+
 def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage: str, loss_weights: dict[str, float]) -> dict[str, torch.Tensor]:
     if stage in ("witness", "planner", "all"):
         batch = paper_aligned_supervision_batch(batch, loss_weights)
@@ -1449,6 +1513,13 @@ def main() -> None:
         loss_weights["response_traj_l1"] = float(args.response_traj_weight)
     if args.no_response_components:
         loss_weights["response_components_l1"] = 0.0
+    configured_closed_loop = float(loss_weights.get("closed_loop", 0.0))
+    if stage in {"planner", "all"} and configured_closed_loop > 0.0 and not args.with_waymax_outcome_labels:
+        raise RuntimeError(
+            f"stage={stage} has loss_weights.closed_loop={configured_closed_loop} > 0, but --with-waymax-outcome-labels is disabled. "
+            "This would silently train a different planner because the outcome objective becomes identically zero. "
+            "Attach Waymax candidate outcomes and enable the flag, or use an explicit ablation train config with closed_loop=0."
+        )
 
     device_arg = args.device or tcfg.get("device", "auto")
     loader_runtime = configure_dataloader_runtime(args.sharing_strategy)
@@ -1555,6 +1626,12 @@ def main() -> None:
         val_supervision = _validate_stage_supervision(val_ds, stage)
         if val_supervision:
             _rank0_print(f"Stage supervision check (val prefix): {val_supervision}")
+    if stage in {"planner", "all"} and configured_closed_loop > 0.0:
+        outcome_supervision = _validate_waymax_outcome_supervision(train_ds)
+        _rank0_print(f"Waymax outcome supervision check (train sample): {outcome_supervision}")
+        if val_ds is not None:
+            val_outcome_supervision = _validate_waymax_outcome_supervision(val_ds, samples=64)
+            _rank0_print(f"Waymax outcome supervision check (val sample): {val_outcome_supervision}")
     oversample_enabled = bool(tcfg.get("positive_pair_oversampling", True)) and not args.no_positive_oversampling
     # Representation/natural stages do not consume witness/candidate labels.
     # Scanning every npz for those labels can add many minutes before the first

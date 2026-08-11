@@ -117,6 +117,7 @@ def compute_candidate_agent_audit(
                         root_event_interval[k, a, m] = [int(event_idx[0]), int(event_idx[-1])]
                 b_under, _ = compute_burden(
                     nat, ego, cfg, object_type, natural_ref=nat, rho=rho,
+                    risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe,
                 )
                 root_unsafe[k, a, m] = unsafe
                 root_direct_burden[k, a, m] = float(b_under)

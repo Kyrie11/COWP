@@ -100,11 +100,11 @@ run source_ablation "$PYTHON_BIN" -m cowp.scripts.50_ablate_proposal_sources \
 run audit "$PYTHON_BIN" -m cowp.scripts.57_diagnose_causal_audit \
   --cache-dir "$FRESH_LABELS" --scene-ids "$UNION_IDS" --output "$AUDIT"
 run supervision "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision \
-  --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --output "$SUPERVISION"
+  --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --output "$SUPERVISION" --strict
 
 run model_support "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
   --cache-dir "$FRESH_LABELS" --sample-scenes 0 --min-class-examples 8 --min-source-examples 8 \
-  --output "$MODEL_SUPPORT"
+  --output "$MODEL_SUPPORT" --strict
 
 if [[ -n "$PREV_FRESH_CACHE" && -d "$PREV_FRESH_CACHE" ]]; then
   run compare_previous "$PYTHON_BIN" -m cowp.scripts.46_compare_proposal_probe \

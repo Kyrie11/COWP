@@ -1,3 +1,35 @@
+## v16.8.10 — Trainable-Support Contract Repair and Exact Label-Build Fast Path (2026-08-10)
+
+### Triggering evidence from the v16.8.9 400-hard + 800-random strict probe
+
+The strict wrapper stopped at `model_support` even though the causal-integrity and training-supervision audits passed.  The active failure combined (i) critical agents with no/marginal natural-root support and (ii) a degenerate `cowp/response/valid` target: every causally relevant response slot in the probe was occupied, while the model still optimized a non-zero validity BCE and gated SetTransport by the predicted validity probability.  The same probe also remained below the independent hard-scene NCF recovery gate, so no full rebuild is authorized by this change alone.
+
+### Repairs
+
+1. The publication mainline non-coercion certificate is vehicle-only (`critical.vehicle_only_main=true`), matching the manuscript's stated pedestrian/cyclist extension as future work.  Conventional collision safety still checks all logged non-SDC actors; this switch narrows only the coercion certificate, not physical collision avoidance.
+2. `response/valid` is now explicitly treated as a fixed-bank occupancy/padding mask rather than a learned semantic class.  Mainline training sets `response_valid_bce=0`, SetTransport uses all decoded response slots, and the support audit requires full slot coverage on every causally relevant pair instead of artificial positive/negative class balance.  The legacy learned gate remains available through `model.use_response_valid_gate=true`.
+3. Added an exact `risk_known_zero` burden fast path.  When `unsafe_between()` has already proved a pair safe, the duplicate TTC/RSS burden computation is skipped because both risk masks are necessarily empty under the same thresholds.  The full burden path now reads the same type-aware TTC and configured RSS parameters as `unsafe_between()`.  The optimization is controlled by `engineering.risk_known_zero_fastpath` (default `true`) so a smoke A/B can disable it and prove semantic equivalence.  It is used in causal-audit, safe-budget, response-bank, witness fallback, and root-recovery hot paths without changing label values.
+4. Expanded the strict code fingerprint to include the active model/train contract, preventing a pre-v16.8.10 strict verdict from authorizing a post-change full rebuild.
+5. Repaired the RSS geometry contract used by both unsafe labeling and burden risk: TTC/near-miss thresholds are now type-aware, longitudinal RSS is laterally gated to the same/merging corridor, and the broad-phase no longer suppresses long-gap high-speed RSS checks. This removes adjacent-lane false RSS blockers and makes the exact safe-pair burden fast path valid under one shared predicate.
+6. Repaired the natural-root budget.  The default v16.8.9 nested OBS loop truncated after eight samples before reaching the identity root; v16.8.10 orders the same configured Cartesian family from `(speed_scale=1, time_shift=0, lateral_offset=0)` outward so finite OBS capacity is not spent entirely on one speed slice.
+7. Added a curved-lane ego-neutral route-geometry fallback.  It uses logged future **geometry only** as an offline supervision path and regenerates timing from the current state under bounded constant acceleration.  This avoids copying potentially ego-induced logged yielding timing while preventing straight-line neutral/prio fallbacks from being deleted wholesale by the map filter on curved lanes.  Fallback roots must pass the same map, priority and low-burden plausibility checks as primary roots.
+8. Strengthened model-support auditing.  The old audit under-counted rootless critical agents whenever an entire scene had no natural roots because the per-agent loop was incorrectly nested under a scene-level `np.any` guard.  The repaired audit scans every critical agent, requires normalized natural mass, and separately requires at least one and at least two **low-burden** roots because OPR/NCF operate on that low-burden natural set rather than arbitrary valid trajectories.
+9. Smoke promotion now treats training-supervision and model-support audits as hard gates, so a 96-scene smoke cannot advance to the expensive 1,200-scene strict probe when the learned-label contract is already invalid.
+10. Added an exact train/validation scenario-ID leakage check to full preparation.  Planner training also fails fast when `loss_weights.closed_loop > 0` but attached Waymax outcomes are disabled/missing or the sampled outcome set has no safe/unsafe ranking support; an explicit `closed_loop=0` config is required for the corresponding ablation.
+11. Added `NEXT_EXECUTION_V16_8_10_CN.sh` to keep WOMD preflight, smoke, exact fast-path A/B, strict probe, full core rebuild, and Waymax outcome attachment as separately gated stages.
+12. Added `ATTACH_WAYMAX_OUTCOMES_V16_8_10_CN.sh` with deterministic resume-safe replay sharding across one or more GPUs, exact per-step safety metrics, incremental attachment, verification, and a full-cache safe/unsafe/mixed-scene support gate.
+13. Added a regression proving that WOMD train/val future tensors may remain in the cache for offline targets/Waymax replay while the model-facing history adapter is invariant to them and consumes only past + current state.
+
+### Promotion rule
+
+A new 96-scene smoke and a fresh 400-hard + 800-random strict probe are mandatory.  Do not lower the existing `AnyNCF`, false-safe, PBTR, hard-recovery, or causal-integrity thresholds.  Full rebuild remains prohibited until the newly fingerprinted strict verdict sets `recommend_full_rebuild=true`.  The core full rebuild may intentionally defer Waymax replay to avoid wasting GPU rollout time before all label/tensor gates pass, but the current mainline planner (`closed_loop=0.35`) must train from the later outcome-attached caches.
+
+### v16.8.10 local validation
+
+- Full Python unit/regression suite after the dataset-contract, RSS, execution-tooling, and future-input guard repairs: **187 passed, 5 skipped**.
+- Added exact fast-path equivalence, fixed-cardinality response-contract, type-aware TTC/RSS, lateral-RSS/broad-phase, identity-first OBS-budget, and curved-route neutral-proxy regressions.
+- No full WOMD smoke/strict/full rebuild was executed in the review environment because the raw WOMD shards are not present there; promotion still depends on the user's fresh 96-scene smoke and 400+800 strict probe.
+
 ## v16.8.9 — Candidate-Conditioned Causal Audit and Affected-Root Transport (2026-08-07)
 
 ### Triggering evidence from the v16.8.8 96-scene smoke

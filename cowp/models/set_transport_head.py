@@ -24,6 +24,7 @@ class SetTransportCertificateHead(nn.Module):
         geometry_dim: int = 8,
         response_topk: int = 8,
         use_affected_root_transport: bool = True,
+        use_response_valid_gate: bool = True,
     ):
         super().__init__()
         h = int(hidden)
@@ -31,6 +32,12 @@ class SetTransportCertificateHead(nn.Module):
         self.geometry_steps = max(int(geometry_steps), 4)
         self.response_topk = max(int(response_topk), 1)
         self.use_affected_root_transport = bool(use_affected_root_transport)
+        # In the current fixed-cardinality response-set contract, response/valid
+        # is an occupancy/padding mask.  It is not a semantic class and is nearly
+        # always one on relevant pairs.  Mainline v16.8.10 therefore treats every
+        # decoded response slot as an active hypothesis; legacy checkpoints can
+        # restore the learned gate with this compatibility switch.
+        self.use_response_valid_gate = bool(use_response_valid_gate)
         self.cand = nn.Linear(d_model, h, bias=False)
         self.agent = nn.Linear(d_model, h, bias=False)
         self.graph = nn.Linear(d_model, h, bias=False)
@@ -395,7 +402,10 @@ class SetTransportCertificateHead(nn.Module):
 
         response_safe = torch.sigmoid(response["safe_logits"].float())
         response_low = torch.sigmoid(response["low_logits"].float())
-        response_valid = torch.sigmoid(response.get("valid_logits", torch.zeros_like(response_safe)).float())
+        if self.use_response_valid_gate:
+            response_valid = torch.sigmoid(response.get("valid_logits", torch.zeros_like(response_safe)).float())
+        else:
+            response_valid = torch.ones_like(response_safe)
         response_weight = torch.softmax(response.get("mode_logits", torch.zeros_like(response_safe)).float(), dim=-1)
         response_low_safe = response_safe * response_low * response_valid
         response_low_safe_mass = (response_weight * response_low_safe).sum(dim=-1).clamp(0.0, 1.0)

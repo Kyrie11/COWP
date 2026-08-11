@@ -98,7 +98,7 @@ def _infer_progress_losses(agent_traj: np.ndarray, natural_ref: np.ndarray | Non
     delay_s = progress_loss_m / max(_mean_speed(natural_ref), 0.5)
     return float(progress_loss_m), float(delay_s)
 
-def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: dict, object_type: int = 1, natural_ref: np.ndarray | None = None, option_loss: float = 0.0, rho: PriorityRelation = PriorityRelation.UNKNOWN, arrival_order_lost_s: float = 0.0, gap_loss_m: float = 0.0) -> np.ndarray:
+def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: dict, object_type: int = 1, natural_ref: np.ndarray | None = None, option_loss: float = 0.0, rho: PriorityRelation = PriorityRelation.UNKNOWN, arrival_order_lost_s: float = 0.0, gap_loss_m: float = 0.0, *, risk_known_zero: bool = False) -> np.ndarray:
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     prof = _profile_for_type(cfg, object_type)
     speed, acc, jerk = kinematics(agent_traj, dt)
@@ -126,14 +126,33 @@ def burden_components(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: 
         b_prog += 0.5 * max(0.0, effective_delay_s) / max(float(prof.get("delay_norm_s", 4.0)), 1e-6)
     b_prog = float(np.clip(b_prog, 0.0, 2.0))
     b_risk = 0.0
-    if ego_traj is not None and len(ego_traj) and len(agent_traj):
+    # Exact fast path: unsafe_between() uses the same TTC/RSS predicates and
+    # parameters as this risk component.  If the caller has already established
+    # that the pair is safe, both TTC and RSS masks are empty and B_risk is
+    # identically zero.  Skipping the duplicate computation changes no label.
+    if (not risk_known_zero) and ego_traj is not None and len(ego_traj) and len(agent_traj):
         T = min(len(ego_traj), len(agent_traj))
         ttc = pairwise_ttc(agent_traj[:T, :2], agent_traj[:T, 3:5], ego_traj[:T, :2], ego_traj[:T, 3:5])
         dist = np.linalg.norm(ego_traj[:T, :2] - agent_traj[:T, :2], axis=-1)
-        ttc_min = float(cfg.get("unsafe", {}).get("ttc_min_vehicle_s", 1.5))
-        gate = float(cfg.get("unsafe", {}).get("ttc_distance_gate_vehicle_m", 15.0))
+        unsafe_cfg = cfg.get("unsafe", {})
+        if int(object_type) == 1:
+            ttc_min = float(unsafe_cfg.get("ttc_min_vehicle_s", 1.5))
+            gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0))
+        else:
+            ttc_min = float(unsafe_cfg.get("ttc_min_vru_s", 2.0))
+            gate = float(unsafe_cfg.get("ttc_distance_gate_vru_m", 20.0))
         ttc_term = np.maximum(0.0, (ttc_min - ttc) / max(ttc_min, 1e-6)) * (dist < gate)
-        rss, rss_mask, d_safe = same_heading_gap_violation(agent_traj[:T], ego_traj[:T])
+        rss, rss_mask, d_safe = same_heading_gap_violation(
+            agent_traj[:T],
+            ego_traj[:T],
+            heading_tolerance=np.deg2rad(float(unsafe_cfg.get("rss_heading_tolerance_deg", 35.0))),
+            rho=float(unsafe_cfg.get("rss_reaction_time_s", 0.5)),
+            a_max_accel=float(unsafe_cfg.get("rss_a_max_accel", 2.0)),
+            b_min=float(unsafe_cfg.get("rss_b_min_comfort", 3.0)),
+            b_max=float(unsafe_cfg.get("rss_b_max_front", 6.0)),
+            min_gap=float(unsafe_cfg.get("rss_min_gap_m", 2.0)),
+            lateral_margin=float(unsafe_cfg.get("rss_lateral_margin_m", 0.75)),
+        )
         rss_term = rss_mask.astype(np.float32)
         b_risk = float(np.clip(np.mean(ttc_term + rss_term) if T else 0.0, 0.0, 2.0))
     b_option = float(np.clip(option_loss, 0.0, 2.0))
@@ -174,6 +193,6 @@ def burden_total(components: np.ndarray, cfg: dict) -> float:
     return float(np.clip(np.sum(np.asarray(components, dtype=np.float32) * w), 0.0, 2.0))
 
 
-def compute_burden(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: dict, object_type: int = 1, natural_ref: np.ndarray | None = None, option_loss: float = 0.0, rho: PriorityRelation = PriorityRelation.UNKNOWN, arrival_order_lost_s: float = 0.0, gap_loss_m: float = 0.0) -> tuple[float, np.ndarray]:
-    comps = burden_components(agent_traj, ego_traj, cfg, object_type, natural_ref, option_loss, rho, arrival_order_lost_s, gap_loss_m)
+def compute_burden(agent_traj: np.ndarray, ego_traj: np.ndarray | None, cfg: dict, object_type: int = 1, natural_ref: np.ndarray | None = None, option_loss: float = 0.0, rho: PriorityRelation = PriorityRelation.UNKNOWN, arrival_order_lost_s: float = 0.0, gap_loss_m: float = 0.0, *, risk_known_zero: bool = False) -> tuple[float, np.ndarray]:
+    comps = burden_components(agent_traj, ego_traj, cfg, object_type, natural_ref, option_loss, rho, arrival_order_lost_s, gap_loss_m, risk_known_zero=risk_known_zero)
     return burden_total(comps, cfg), comps

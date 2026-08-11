@@ -6,7 +6,7 @@ from cowp.core.constants import NaturalSource, PriorityRelation, ObjectType
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.label.burden import adaptive_beta, compute_burden
 from cowp.label.priority import determine_priority, priority_preserved
-from cowp.label.trajectory_primitives import constant_accel_trajectory, resample_logged
+from cowp.label.trajectory_primitives import constant_accel_trajectory, repair_planar_kinematics, resample_logged
 
 
 def _normalize_weights(weights: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -22,6 +22,118 @@ def _traj_distance(a: np.ndarray, b: np.ndarray) -> float:
     if T == 0:
         return float("inf")
     return float(np.mean(np.linalg.norm(a[:T, :2] - b[:T, :2], axis=-1)))
+
+
+def _route_geometry_timed_trajectory(
+    logged: np.ndarray,
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    *,
+    accel: float = 0.0,
+    speed_offset: float = 0.0,
+) -> np.ndarray:
+    """Retiming proxy that preserves route geometry while removing logged timing.
+
+    Offline COWP labels are allowed to use the logged future as supervision, but
+    an ego-neutral root should not simply replay a potentially coerced *timing*
+    profile.  Straight constant-acceleration fallbacks also fail systematically
+    on curved lanes.  This proxy keeps only the observed path geometry, then
+    traverses it with a current-state, constant-acceleration timing law.  It is
+    therefore useful as a map-compliant neutral pseudo-target without treating
+    observed yielding timing as natural behavior.
+
+    The helper is used only in label construction; inference does not receive
+    future logged geometry.
+    """
+    logged = np.asarray(logged, dtype=np.float32)
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    H = int(horizon)
+    dt = max(float(dt), 1.0e-3)
+    if H <= 0 or logged.ndim != 2 or logged.shape[0] == 0 or logged.shape[1] < 7 or cur.size < 7:
+        return constant_accel_trajectory(cur, H, dt, accel=float(accel), speed_offset=float(speed_offset))
+
+    path = np.concatenate([cur[None, :2], logged[:, :2]], axis=0).astype(np.float32)
+    finite = np.all(np.isfinite(path), axis=1)
+    path = path[finite]
+    if len(path) < 2:
+        return constant_accel_trajectory(cur, H, dt, accel=float(accel), speed_offset=float(speed_offset))
+
+    # Remove zero-length segments introduced by invalid-future hold padding.
+    keep = np.ones(len(path), dtype=bool)
+    keep[1:] = np.linalg.norm(np.diff(path, axis=0), axis=1) > 1.0e-3
+    path = path[keep]
+    if len(path) < 2:
+        return constant_accel_trajectory(cur, H, dt, accel=float(accel), speed_offset=float(speed_offset))
+    seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    arc = np.concatenate([[0.0], np.cumsum(seg)]).astype(np.float64)
+    if float(arc[-1]) < 1.0e-3:
+        return constant_accel_trajectory(cur, H, dt, accel=float(accel), speed_offset=float(speed_offset))
+
+    v = max(float(cur[5] if cur.size > 5 else np.linalg.norm(cur[3:5])) + float(speed_offset), 0.0)
+    s_query = np.zeros(H, dtype=np.float64)
+    speed = np.zeros(H, dtype=np.float64)
+    s = 0.0
+    for k in range(H):
+        v = max(0.0, v + float(accel) * dt)
+        s += v * dt
+        s_query[k] = s
+        speed[k] = v
+
+    length = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    width = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+    out = np.zeros((H, 7), dtype=np.float32)
+    last_dir = path[-1] - path[-2]
+    last_norm = max(float(np.linalg.norm(last_dir)), 1.0e-6)
+    last_dir = last_dir / last_norm
+    for k, sq in enumerate(s_query.tolist()):
+        if sq <= float(arc[-1]):
+            j = int(np.clip(np.searchsorted(arc, sq, side="right") - 1, 0, len(path) - 2))
+            span = max(float(arc[j + 1] - arc[j]), 1.0e-6)
+            frac = float(np.clip((sq - float(arc[j])) / span, 0.0, 1.0))
+            pos = path[j] + frac * (path[j + 1] - path[j])
+            direction = path[j + 1] - path[j]
+            norm = max(float(np.linalg.norm(direction)), 1.0e-6)
+            direction = direction / norm
+        else:
+            pos = path[-1] + last_dir * float(sq - float(arc[-1]))
+            direction = last_dir
+        yaw = float(np.arctan2(direction[1], direction[0]))
+        out[k] = [
+            float(pos[0]), float(pos[1]), yaw,
+            float(direction[0] * speed[k]), float(direction[1] * speed[k]),
+            length, width,
+        ]
+    return repair_planar_kinematics(out, current=cur, dt=dt)
+
+
+def _ordered_observational_specs(nat_cfg: dict) -> list[tuple[float, float, float]]:
+    """Order the observational bank from identity outward.
+
+    v16.8.9 truncated the nested cartesian product at ``max_obs_samples``.
+    With the default list order, all eight retained samples used speed_scale
+    0.85 and the exact (1, 0, 0) observational root was never generated.  That
+    is especially harmful on curved lanes because the only route-following roots
+    may be the observational branch.  Sorting by perturbation magnitude keeps
+    the same configured candidate family while spending the finite budget on
+    the most semantically useful roots first.
+    """
+    speed_values = [float(x) for x in nat_cfg.get("obs_speed_scale", [0.85, 0.95, 1.0, 1.05, 1.15])]
+    shift_values = [float(x) for x in nat_cfg.get("obs_time_shift_s", [-0.5, 0.0, 0.5])]
+    lat_values = [float(x) for x in nat_cfg.get("obs_lateral_offset_m", [-0.3, 0.0, 0.3])]
+    specs = [(ss, shift_s, lat) for ss in speed_values for shift_s in shift_values for lat in lat_values]
+    speed_scale = max([abs(float(np.log(max(x, 1.0e-6)))) for x in speed_values] + [1.0e-6])
+    shift_scale = max([abs(x) for x in shift_values] + [1.0e-6])
+    lat_scale = max([abs(x) for x in lat_values] + [1.0e-6])
+
+    def rank(x: tuple[float, float, float]) -> tuple[float, float, float, float, float, float, float]:
+        ds = abs(float(np.log(max(x[0], 1.0e-6)))) / speed_scale
+        dt = abs(x[1]) / shift_scale
+        dl = abs(x[2]) / lat_scale
+        return (ds + dt + dl, max(ds, dt, dl), ds, dt, dl, x[0], x[1])
+
+    specs.sort(key=rank)
+    return specs
 
 
 def _lane_point_cloud(scene: ScenarioData) -> np.ndarray:
@@ -145,23 +257,14 @@ def generate_natural_alternatives(scene: ScenarioData, critical: dict[str, np.nd
         candidates: list[tuple[np.ndarray, NaturalSource, float, float]] = []
         obs_contam = _observed_yield_contamination(scene, idx, logged, ego_neutral_traj, H, dt, nat_cfg)
         if use_obs:
-            count = 0
-            for ss in nat_cfg.get("obs_speed_scale", [0.85, 0.95, 1.0, 1.05, 1.15]):
-                for shift_s in nat_cfg.get("obs_time_shift_s", [-0.5, 0.0, 0.5]):
-                    for lat in nat_cfg.get("obs_lateral_offset_m", [-0.3, 0.0, 0.3]):
-                        if count >= int(nat_cfg.get("max_obs_samples", 8)):
-                            break
-                        tr = resample_logged(
-                            logged, H, time_shift_steps=int(round(float(shift_s) / dt)),
-                            speed_scale=float(ss), lateral_offset=float(lat),
-                            current=scene.states[idx, cur], dt=dt,
-                        )
-                        candidates.append((tr, NaturalSource.OBS, float(nat_cfg.get("source_weight_obs", 1.0)), obs_contam))
-                        count += 1
-                    if count >= int(nat_cfg.get("max_obs_samples", 8)):
-                        break
-                if count >= int(nat_cfg.get("max_obs_samples", 8)):
-                    break
+            max_obs = int(nat_cfg.get("max_obs_samples", 8))
+            for ss, shift_s, lat in _ordered_observational_specs(nat_cfg)[:max_obs]:
+                tr = resample_logged(
+                    logged, H, time_shift_steps=int(round(float(shift_s) / dt)),
+                    speed_scale=float(ss), lateral_offset=float(lat),
+                    current=scene.states[idx, cur], dt=dt,
+                )
+                candidates.append((tr, NaturalSource.OBS, float(nat_cfg.get("source_weight_obs", 1.0)), obs_contam))
         if use_neu:
             count = 0
             for acc in nat_cfg.get("neutral_acc_values_mps2", [-1.0, -0.5, 0.0, 0.5, 1.0]):
@@ -217,14 +320,48 @@ def generate_natural_alternatives(scene: ScenarioData, critical: dict[str, np.nd
                 raw_w[kept] = float(src_weight) * decontam_factor * np.exp(-dist / max(float(nat_cfg.get("sigma_traj_m", 15.0)), 1e-6)) * np.exp(-b_total / max(float(nat_cfg.get("sigma_b", 0.5)), 1e-6))
                 kept += 1
         if kept < int(nat_cfg.get("min_natural_alternatives", 6)):
-            for acc in [-0.5, 0.0, 0.5, 1.0, -1.0, 1.5, -1.5]:
+            # First repair curved-lane support with an ego-neutral timing proxy
+            # that follows logged route geometry.  Only the path geometry is
+            # reused; candidate-specific logged timing/yielding is discarded.
+            # This prevents the old straight-line fallback from being rejected
+            # wholesale by the map filter on turns and curved lanes.
+            fallback_acc = nat_cfg.get("geometry_neutral_acc_values_mps2", [0.0, -0.5, 0.5, -1.0, 1.0])
+            for acc in fallback_acc:
                 if kept >= M:
                     break
-                tr = constant_accel_trajectory(scene.states[idx, cur], H, dt, accel=acc)
+                tr = _route_geometry_timed_trajectory(
+                    logged, scene.states[idx, cur], H, dt, accel=float(acc),
+                )
                 b_total, _ = compute_burden(tr, ego_neutral_traj, cfg, object_type, natural_ref=logged, rho=rho)
                 pr_ok = priority_preserved(tr, logged, rho, cfg)
                 map_ok, map_dist, map_was_verified = _trajectory_map_compliance(tr, lane_points, object_type, nat_cfg)
-                if not (np.all(np.isfinite(tr)) and map_ok and (pr_ok or rho != PriorityRelation.AGENT_PRIORITY)):
+                plausible = b_total <= beta[a] + 0.1
+                if not (np.all(np.isfinite(tr)) and map_ok and plausible and (pr_ok or rho != PriorityRelation.AGENT_PRIORITY)):
+                    continue
+                traj[a, kept] = tr
+                valid[a, kept] = True
+                source[a, kept] = int(NaturalSource.NEU)
+                burden_neutral[a, kept] = float(b_total)
+                priority_ok[a, kept] = bool(pr_ok)
+                map_compliant[a, kept] = bool(map_ok)
+                map_distance_max[a, kept] = float(map_dist)
+                map_verified[a, kept] = bool(map_was_verified)
+                raw_w[kept] = np.exp(-b_total / max(float(nat_cfg.get("sigma_b", 0.5)), 1e-6))
+                kept += 1
+
+        if kept < int(nat_cfg.get("min_natural_alternatives", 6)):
+            # Last-resort straight primitives remain useful on map fragments with
+            # very short/no usable logged future, but unlike v16.8.9 they must
+            # satisfy the same low-burden plausibility contract as primary roots.
+            for acc in nat_cfg.get("straight_fallback_acc_values_mps2", [-0.5, 0.0, 0.5, 1.0, -1.0, 1.5, -1.5]):
+                if kept >= M:
+                    break
+                tr = constant_accel_trajectory(scene.states[idx, cur], H, dt, accel=float(acc))
+                b_total, _ = compute_burden(tr, ego_neutral_traj, cfg, object_type, natural_ref=logged, rho=rho)
+                pr_ok = priority_preserved(tr, logged, rho, cfg)
+                map_ok, map_dist, map_was_verified = _trajectory_map_compliance(tr, lane_points, object_type, nat_cfg)
+                plausible = b_total <= beta[a] + 0.1
+                if not (np.all(np.isfinite(tr)) and map_ok and plausible and (pr_ok or rho != PriorityRelation.AGENT_PRIORITY)):
                     continue
                 traj[a, kept] = tr
                 valid[a, kept] = True

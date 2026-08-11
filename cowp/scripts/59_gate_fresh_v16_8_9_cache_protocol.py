@@ -36,6 +36,11 @@ FINGERPRINT_FILES = (
     "cowp/scripts/64_validate_womd_v131_contract.py",
     "cowp/scripts/65_audit_model_support.py",
     "configs/label_cowp_v16_8.yaml",
+    "configs/model_cowp_v16_8.yaml",
+    "configs/train_cowp_v16_8.yaml",
+    "cowp/models/set_transport_head.py",
+    "cowp/models/cowp_model.py",
+    "cowp/models/losses.py",
     "configs/eval_cowp_v16_8.yaml",
 )
 

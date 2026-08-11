@@ -207,7 +207,7 @@ def root_conditioned_recovery_search(
         if unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe:
             continue
         b, _ = compute_burden(
-            tr, ego, cfg, int(object_type), natural_ref=root, rho=rho,
+            tr, ego, cfg, int(object_type), natural_ref=root, rho=rho, risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)),
         )
         safe_count += 1
         best = min(best, float(b))
@@ -408,6 +408,7 @@ def generate_safe_responses(
                     object_type,
                     natural_ref=primitive.natural_ref,
                     rho=rho,
+                    risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe.unsafe,
                 )
                 sort_cost = (0.0 if not unsafe.unsafe else 10.0) + float(b)
                 evaluated.append(

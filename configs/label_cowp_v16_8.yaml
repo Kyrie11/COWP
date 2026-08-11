@@ -7,6 +7,11 @@ time:
 dataset:
   require_interaction_heavy: true
   collect_scene_metadata: true
+engineering:
+  # Exact speed optimization: after unsafe_between() proves a pair safe, reuse
+  # that fact instead of recomputing the identical TTC/RSS risk masks in burden.
+  # Set false only for semantic A/B equivalence validation.
+  risk_known_zero_fastpath: true
 limits:
   max_agents: 128
   max_critical_agents: 6
@@ -149,7 +154,7 @@ critical:
   current_distance_requires_future_or_conflict: true
   min_score: 1.5
   tta_delta_threshold: 3.0
-  vehicle_only_main: false
+  vehicle_only_main: true
 natural:
   obs_speed_scale:
   - 0.85
@@ -184,6 +189,11 @@ natural:
   prio_speed_min_mps: 0.0
   prio_max_samples: 8
   min_natural_alternatives: 6
+  # v16.8.10: curved-lane neutral fallback.  It reuses only logged route
+  # geometry while retiming from the current state, so it does not copy a
+  # potentially ego-induced yield timing profile.
+  geometry_neutral_acc_values_mps2: [0.0, -0.5, 0.5, -1.0, 1.0]
+  straight_fallback_acc_values_mps2: [-0.5, 0.0, 0.5, 1.0, -1.0, 1.5, -1.5]
   source_weight_obs: 1.0
   source_weight_neu: 0.8
   source_weight_prio: 1.2
@@ -316,6 +326,8 @@ unsafe:
   rss_b_min_comfort: 3.0
   rss_b_max_front: 6.0
   rss_min_gap_m: 2.0
+  rss_heading_tolerance_deg: 35.0
+  rss_lateral_margin_m: 0.75
   severe_offroad_distance_m: 4.0
 burden:
   beta0_vehicle: 0.65

@@ -77,6 +77,7 @@ class COWPModel(nn.Module):
             geometry_steps=int(m.get("set_transport_geometry_steps", 16)),
             response_topk=int(m.get("set_transport_response_topk", 8)),
             use_affected_root_transport=self.use_affected_root_transport,
+            use_response_valid_gate=bool(m.get("use_response_valid_gate", False)),
         )
         self.planner = PlannerHead(d_model=d_model)
         # Candidate-level calibrated non-coercive feasibility certificate.

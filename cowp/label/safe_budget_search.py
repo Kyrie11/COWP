@@ -138,7 +138,10 @@ def typed_safe_budget_search_evaluated(
     unsafe_penalty = float(s_cfg.get("unsafe_penalty", 100.0))
     for tr, prof in bank:
         unsafe = unsafe_between(ego_candidate, tr, cfg, agent_type=object_type)
-        burden, comps = compute_burden(tr, ego_candidate, cfg, object_type, natural_ref=natural_ref, rho=rho)
+        burden, comps = compute_burden(
+            tr, ego_candidate, cfg, object_type, natural_ref=natural_ref, rho=rho,
+            risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe.unsafe,
+        )
         priority_cost = 0.05 * prof.priority + (beta_margin if prof.hard else 0.0)
         # Penalize option component for hard profiles even when collision-free, so
         # the search prefers natural/comfort-preserving responses when available.

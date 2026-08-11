@@ -156,6 +156,13 @@ else
   echo "[index_val] reuse $INDEX_VAL"
 fi
 
+# Exact split-leakage guard.  The algorithm consumes future-visible train/val
+# labels, so any scenario-id overlap would invalidate held-out validation even
+# if every per-scene tensor passed its local integrity checks.
+run split_leakage_check "$PYTHON_BIN" -m cowp.scripts.09_check_splits \
+  --train "$INDEX_TRAIN" --val "$INDEX_VAL" --fail-on-overlap \
+  --output "$COWP_ROOT/train_val_split_audit.json"
+
 LABEL_TRAIN_EXTRA=(--limit "$TRAIN_LIMIT")
 LABEL_VAL_EXTRA=(--limit "$VAL_LIMIT")
 if [[ -n "$TRAIN_ALLOWLIST" ]]; then LABEL_TRAIN_EXTRA=(--allow-scenario-ids "$TRAIN_ALLOWLIST"); fi
