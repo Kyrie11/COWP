@@ -78,6 +78,12 @@ def compute_candidate_agent_audit(
     # geometry in witness certification. [-1,-1] means no unsafe event.
     root_event_interval = np.full((K, A, M, 2), -1, dtype=np.int32)
     root_direct_burden = np.zeros((K, A, M), dtype=np.float32)
+    # Private exact-value cache.  The serialized float32 tensor remains the data
+    # contract; these arrays only let response/witness reuse the *same* identity
+    # evaluation without changing any label semantics.
+    root_direct_evaluated = np.zeros((K, A, M), dtype=bool)
+    root_direct_burden_exact = np.zeros((K, A, M), dtype=np.float64)
+    root_direct_burden_components_exact = np.zeros((K, A, M, 6), dtype=np.float64)
     # Keep the budget-crossing subset explicit.  v16.8.9 inferred
     # ``affected & ~unsafe`` downstream; storing it directly makes the data
     # contract auditable without forcing a minimum prevalence in a small probe.
@@ -115,12 +121,15 @@ def compute_candidate_agent_audit(
                     event_idx = np.where(np.asarray(unsafe_obj.event_mask, dtype=bool))[0]
                     if len(event_idx):
                         root_event_interval[k, a, m] = [int(event_idx[0]), int(event_idx[-1])]
-                b_under, _ = compute_burden(
+                b_under, comps_under = compute_burden(
                     nat, ego, cfg, object_type, natural_ref=nat, rho=rho,
                     risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe,
                 )
                 root_unsafe[k, a, m] = unsafe
                 root_direct_burden[k, a, m] = float(b_under)
+                root_direct_evaluated[k, a, m] = True
+                root_direct_burden_exact[k, a, m] = float(b_under)
+                root_direct_burden_components_exact[k, a, m] = np.asarray(comps_under, dtype=np.float64)
                 budget_crossed = bool(float(b_under) > beta + direct_margin)
                 burden_only = bool(budget_crossed and not unsafe)
                 root_budget_crossed[k, a, m] = budget_crossed
@@ -138,6 +147,9 @@ def compute_candidate_agent_audit(
         "root_unsafe": root_unsafe,
         "root_event_interval": root_event_interval,
         "root_direct_burden": root_direct_burden,
+        "_root_direct_evaluated": root_direct_evaluated,
+        "_root_direct_burden_exact": root_direct_burden_exact,
+        "_root_direct_burden_components_exact": root_direct_burden_components_exact,
         "root_budget_crossed": root_budget_crossed,
         "root_burden_only_affected": root_burden_only_affected,
         "canonical_root_weight": root_weight,

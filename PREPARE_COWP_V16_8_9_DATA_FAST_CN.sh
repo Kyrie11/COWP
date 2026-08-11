@@ -182,6 +182,13 @@ run labels_val "$PYTHON_BIN" -m cowp.scripts.01_build_labels_from_proto \
   --max-pending-multiplier 2 --no-compress --skip-existing --skip-diagnostics \
   --profile-jsonl "$COWP_ROOT/profile_labels_val.jsonl" --cpu-only
 
+# Make root-support failure mechanically diagnosable before the hard model-support
+# gate. This reads only the build profiles; it does not change labels.
+run natural_support_labels_train "$PYTHON_BIN" -m cowp.scripts.68_summarize_natural_support_diagnostics \
+  --input "$COWP_ROOT/profile_labels_train.jsonl" --output "$COWP_ROOT/natural_support_labels_train.json"
+run natural_support_labels_val "$PYTHON_BIN" -m cowp.scripts.68_summarize_natural_support_diagnostics \
+  --input "$COWP_ROOT/profile_labels_val.jsonl" --output "$COWP_ROOT/natural_support_labels_val.json"
+
 # Audit active learned-label support before spending additional I/O on WOMD
 # tensor merges. This is stricter than the original seven-head class check.
 run model_support_labels_train "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \

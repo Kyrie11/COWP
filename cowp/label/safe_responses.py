@@ -27,6 +27,7 @@ class _ResponsePrimitive:
     root_index: int
     natural_ref: np.ndarray
     root_weight: float = 0.0
+    is_identity: bool = False
 
 
 def _subsample_by_source(
@@ -191,6 +192,7 @@ def root_conditioned_recovery_search(
     beta: float,
     rho: PriorityRelation,
     trajectory_bank: list[np.ndarray] | None = None,
+    identity_cache: tuple[float, bool] | None = None,
 ) -> tuple[float, bool, int]:
     """Search a bounded time-warp tube around one natural root.
 
@@ -203,7 +205,15 @@ def root_conditioned_recovery_search(
     bank = trajectory_bank if trajectory_bank is not None else build_root_recovery_trajectory_bank(root, cfg)
     best = float("inf")
     safe_count = 0
-    for tr in bank:
+    for j, tr in enumerate(bank):
+        # label_search_profiles[0] is the exact identity profile in the v16.8
+        # contract.  Reuse the already-computed audit value when available.
+        if j == 0 and identity_cache is not None and np.array_equal(np.asarray(tr, dtype=np.float32), np.asarray(root, dtype=np.float32)):
+            b_cached, safe_cached = identity_cache
+            if bool(safe_cached):
+                safe_count += 1
+                best = min(best, float(b_cached))
+            continue
         if unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe:
             continue
         b, _ = compute_burden(
@@ -277,12 +287,13 @@ def _response_primitives_for_agent(
                         root_index=m,
                         natural_ref=root,
                         root_weight=weight,
+                        is_identity=(j == 0),
                     )
                 )
     else:
         for m in root_order[: min(8, R)]:
             root = np.asarray(natural["traj"][agent_slot, m], dtype=np.float32)
-            primitives.append(_ResponsePrimitive(root, ResponseSource.PRED, m, root, float(natural["weight"][agent_slot, m])))
+            primitives.append(_ResponsePrimitive(root, ResponseSource.PRED, m, root, float(natural["weight"][agent_slot, m]), True))
 
     # Generic primitives are retained as an all-response safety fallback, but they
     # do not receive a hard root identity at generation time.
@@ -400,24 +411,44 @@ def generate_safe_responses(
                 tr = primitive.traj
                 if not np.all(np.isfinite(tr)):
                     continue
-                unsafe = unsafe_between(ego, tr, cfg, agent_type=object_type)
-                b, comps = compute_burden(
-                    tr,
-                    ego,
-                    cfg,
-                    object_type,
-                    natural_ref=primitive.natural_ref,
-                    rho=rho,
-                    risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe.unsafe,
-                )
-                sort_cost = (0.0 if not unsafe.unsafe else 10.0) + float(b)
+                reused_identity = False
+                if audit is not None and primitive.is_identity and int(primitive.root_index) >= 0:
+                    evaluated_mask = audit.get("_root_direct_evaluated")
+                    if evaluated_mask is not None and bool(np.asarray(evaluated_mask, dtype=bool)[k, a, int(primitive.root_index)]):
+                        unsafe_flag = bool(np.asarray(audit["root_unsafe"], dtype=bool)[k, a, int(primitive.root_index)])
+                        b_exact = audit.get("_root_direct_burden_exact", audit.get("root_direct_burden"))
+                        c_exact = audit.get("_root_direct_burden_components_exact")
+                        b = float(np.asarray(b_exact)[k, a, int(primitive.root_index)])
+                        if c_exact is not None:
+                            comps = np.asarray(c_exact)[k, a, int(primitive.root_index)].astype(np.float32)
+                        else:
+                            # Compatibility path for an older audit object; fresh
+                            # v16.8.11 audits always expose exact components.
+                            _, comps = compute_burden(
+                                tr, ego, cfg, object_type, natural_ref=primitive.natural_ref, rho=rho,
+                                risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe_flag,
+                            )
+                        reused_identity = True
+                if not reused_identity:
+                    unsafe_obj = unsafe_between(ego, tr, cfg, agent_type=object_type)
+                    unsafe_flag = bool(unsafe_obj.unsafe)
+                    b, comps = compute_burden(
+                        tr,
+                        ego,
+                        cfg,
+                        object_type,
+                        natural_ref=primitive.natural_ref,
+                        rho=rho,
+                        risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe_flag,
+                    )
+                sort_cost = (0.0 if not unsafe_flag else 10.0) + float(b)
                 evaluated.append(
                     (
                         sort_cost,
                         float(b),
                         tr,
                         primitive.source,
-                        not unsafe.unsafe,
+                        not unsafe_flag,
                         comps,
                         int(primitive.root_index),
                         float(primitive.root_weight),

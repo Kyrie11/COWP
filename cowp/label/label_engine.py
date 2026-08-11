@@ -9,7 +9,7 @@ from cowp.geometry.lane_graph import build_conflict_regions
 from cowp.label.critical_agents import select_critical_agents
 from cowp.label.audit_relevance import compute_candidate_agent_audit
 from cowp.label.ego_candidates import generate_ego_candidates
-from cowp.label.natural_alternatives import generate_natural_alternatives
+from cowp.label.natural_alternatives import build_pair_specific_ego_neutrals, generate_natural_alternatives
 from cowp.label.safe_responses import generate_safe_responses
 from cowp.label.witness import certify_witnesses
 
@@ -59,7 +59,7 @@ def build_labels_for_scene(
     # Fail scene-locally before critical/natural/response work if the proposal
     # generator produced no valid intervention.  This preserves valid-scene
     # semantics while avoiding expensive downstream work on a doomed probe row.
-    ego_neutral = _make_ego_neutral(candidates, scene.scenario_id)
+    ego_neutral_fallback = _make_ego_neutral(candidates, scene.scenario_id)
     critical = _timeit("engine_critical_agents_s", lambda: select_critical_agents(scene, cfg, candidates, conflict_regions=regions))
     if profile_diagnostics is not None:
         profile_diagnostics["critical"] = {
@@ -67,7 +67,18 @@ def build_labels_for_scene(
             "count": int(np.asarray(critical.get("valid", []), dtype=bool).sum()),
             "track_indices": [int(x) for x in np.asarray(critical.get("track_index", []), dtype=np.int32)[np.asarray(critical.get("valid", []), dtype=bool)].tolist()],
         }
+    # A single global stopping trajectory is not a valid neutral intervention for
+    # every actor (e.g. it can itself pressure a rear follower).  Build one fixed,
+    # proposal-bank-independent pressure-removing neutral per critical pair.
+    ego_neutral, neutral_diag = _timeit(
+        "engine_pair_neutral_s",
+        lambda: build_pair_specific_ego_neutrals(scene, critical, ego_neutral_fallback, cfg),
+    )
+    if profile_diagnostics is not None:
+        profile_diagnostics["pair_neutral"] = neutral_diag
     natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
+    if profile_diagnostics is not None:
+        profile_diagnostics["natural"] = list(natural.get("_diagnostics", []))
     audit = _timeit("engine_audit_relevance_s", lambda: compute_candidate_agent_audit(scene, candidates, critical, natural, cfg))
     if profile_diagnostics is not None:
         valid_pair = np.asarray(candidates["valid"], dtype=bool)[:, None] & np.asarray(critical["valid"], dtype=bool)[None, :]

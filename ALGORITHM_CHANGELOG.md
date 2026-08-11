@@ -1,3 +1,44 @@
+## v16.8.11 — Pair-Specific Natural Basis, Jerk-Compatible Root Support, and Train-Split Promotion Gate (2026-08-11)
+
+### Triggering evidence from the uploaded v16.8.10 smoke/strict artifacts
+
+The fresh 400-hard + 800-random validation strict probe already passes every proposal gate: representative `AnyNCF=0.4675`, false-safe lower bound `0.4825`, PBTR lower bound `0.32715`, and hard-scene NCF recovery `0.3025`.  The wrapper stops only at `model_support`: 1,089 vehicle critical-agent instances have no natural root, 1,090 have no low-burden natural root, and 1,147 have fewer than two low-burden roots.  Response, witness, affected-root, candidate and source-supervision targets are otherwise non-degenerate.  Therefore v16.8.11 does **not** spend more proposal budget to repair a natural-basis support failure.
+
+### Root causes
+
+1. Fresh label construction used one global ego-neutral trajectory for all critical actors.  This violates the interaction-specific neutralization contract: a neutral ego motion that removes pressure from a crossing/merge actor can itself pressure a rear vehicle, and vice versa.
+2. Natural NEU/PRIO fallbacks were generated with an instantaneous constant-acceleration primitive but filtered with a comfort-jerk test.  The first discrete acceleration transition could exceed the filter jerk bound, deleting otherwise mild non-zero roots and collapsing AGENT_PRIORITY support to zero/one roots.
+3. Short/invalid WOMD futures were padded by hold states before natural construction.  Treating such padding as if it were a complete measured future can create invalid observational/reference geometry and suppress diversity.
+4. The previous fallback contract triggered on total-root scarcity, not explicitly on **low-burden** root scarcity.  COWP's OPR/NCF semantics require low-burden natural support, so a scene with several valid but high-burden roots was still untrainable.
+5. On curved lanes, straight pseudo-roots can be rejected by the map filter.  Critical selection is intentionally independent of future availability, so the correct repair is a map/topology-based pseudo-root path, not dropping critical agents with incomplete futures.
+
+### Algorithm/data-construction changes
+
+1. Added a fixed, proposal-bank-independent **pair-specific ego-neutral bank**.  For each critical actor, the label engine selects a pressure-removing ego intervention lexicographically by physical safety, actor burden and ego-control deviation.  Candidate proposal families cannot change this natural-basis target.
+2. Replaced non-zero natural/neutral straight acceleration steps by a configurable jerk-bounded ramp (`natural_accel_ramp_jerk_mps3`, default `1.0`).  Logged-path retiming uses the same ramp.  No comfort threshold was relaxed.
+3. OBS roots are now eligible only when the raw WOMD future validity mask has enough measured support (`>=60/80` and `>=0.70` by default).  Incomplete/invalid future rows are not promoted to measured OBS evidence.
+4. Added deterministic lane-graph centreline continuation from the current actor state.  It follows WOMD lane topology and is used as the first natural/reference fallback for curved or short tracks.  Logged future geometry (never logged timing) is a secondary offline fallback; jerk-bounded straight motion is last.
+5. Natural construction now has an explicit support contract: the existing active total-root target (`min_natural_alternatives=6`) and at least two roots satisfying the original low-burden threshold.  Fallback generation continues until both are met or all candidates fail the **same** map/dynamics/priority/burden/contamination filters.  A support failure is never hidden.
+6. Added per-critical diagnostics to the label-build profile: raw future-valid count/fraction, OBS eligibility, reference source, pair-neutral source/safety/burden, fallback attempts/accepts, and map/burden/priority/contamination rejection reasons.
+7. Added exact identity-root reuse from causal audit into response-bank and root-recovery/witness hot paths.  The reused tensors are the same exact `unsafe_between`/`compute_burden` results; no candidate, response, root, threshold or label definition is removed.
+8. Added a **train-split 400-hard + 800-random pilot gate** before the 22k/5k full rebuild.  A validation strict PASS alone can no longer authorize a costly full rebuild when the training split may have different natural-support properties.
+9. Full preparation now emits the new natural-support diagnostic before model-support gating, so a failed full label build has an immediately attributable root-support reason.
+
+### Speed disposition
+
+The uploaded strict profile averages 239.1 s/scene; safe-response generation (109.1 s) and witness construction (91.6 s) dominate.  Candidate generation (~0.74 s) and natural generation (~1.06 s) are not meaningful full-build bottlenecks.  v16.8.11 therefore preserves candidate/root/response budgets and only removes provably duplicate identity-root physical evaluations.  Worker counts still need host-specific throughput benchmarking after the new smoke because repairing rootless actors can increase legitimate response/witness work.
+
+### Promotion rule
+
+Run `preflight -> smoke -> fastpath-ab -> strict -> train-pilot`.  Full core reconstruction is mechanically blocked unless both validation strict and train-pilot verdicts pass under the identical current code fingerprint.  Do not lower `AnyNCF`, false-safe, PBTR, hard-recovery, natural-support, response-bank or causal-integrity thresholds to obtain a PASS.  Attach Waymax outcomes only after the core label/tensor gates pass.
+
+### Local validation
+
+- Added regressions for pair-specific neutral selection, short-future OBS exclusion + lane-route multi-root support, and exact audit-identity reuse.
+- Targeted v16.8.11 tests pass.
+- v16.8.10 contract/causal/root-transport regression subset passes.
+- Full repository regression: **190 passed, 5 skipped** (one upstream PyTorch nested-tensor warning only).
+
 ## v16.8.10 — Trainable-Support Contract Repair and Exact Label-Build Fast Path (2026-08-10)
 
 ### Triggering evidence from the v16.8.9 400-hard + 800-random strict probe

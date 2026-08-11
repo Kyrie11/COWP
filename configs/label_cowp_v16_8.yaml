@@ -189,6 +189,28 @@ natural:
   prio_speed_min_mps: 0.0
   prio_max_samples: 8
   min_natural_alternatives: 6
+  # v16.8.11 model-support contract.  Every audited critical vehicle must carry
+  # more than a singleton natural basis, and at least two roots must remain
+  # low-burden under its *pair-specific* pressure-removing ego intervention.
+  min_low_burden_alternatives: 2
+  plausibility_beta_margin: 0.10
+  root_dedup_mean_distance_m: 0.10
+  # Do not treat padding/held invalid future states as an 8 s measured future.
+  # OBS is a high-fidelity empirical root only when WOMD supplies substantial
+  # valid future support.  Short tracks are reconstructed from lane geometry.
+  obs_min_future_valid_steps: 60
+  obs_min_future_valid_fraction: 0.70
+  logged_reference_min_future_valid_fraction: 0.50
+  # Pair-specific ego-neutral family.  This family is fixed and independent of
+  # optional proposal sources, preventing proposal ablations from changing the
+  # natural-basis ground truth.
+  pair_neutral_acc_values_mps2: [0.0, -0.75, -1.5, -2.5, 0.75]
+  natural_accel_ramp_jerk_mps3: 1.0
+  map_route_max_routes: 6
+  map_route_max_depth: 8
+  map_route_search_radius_m: 8.0
+  map_route_max_link_gap_m: 8.0
+  map_route_length_margin_m: 8.0
   # v16.8.10: curved-lane neutral fallback.  It reuses only logged route
   # geometry while retiming from the current state, so it does not copy a
   # potentially ego-induced yield timing profile.

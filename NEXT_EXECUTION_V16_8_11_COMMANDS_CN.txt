@@ -1,0 +1,62 @@
+cd /path/to/COWP_v16_8_11_optimized
+
+# 建议先显式确认数据根。默认值就是你现有目录；如不同请覆盖。
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+
+# 0) 预检 WOMD v1.3.1：Scenario/tf.Example 同 release、train/val 可读、sdc_paths 可用
+bash NEXT_EXECUTION_V16_8_11_CN.sh preflight
+
+# 1) 新代码 48 hard + 48 random smoke。必须 FORCE，不能复用 v16.8.10 labels。
+export FORCE_REBUILD_SMOKE=1
+export LABEL_WORKERS=24
+bash NEXT_EXECUTION_V16_8_11_CN.sh smoke
+
+# smoke 失败时先看：
+#   $SMOKE_ROOT/natural_support_diagnostic.json
+#   $SMOKE_ROOT/model_support_audit.json
+# 不要继续 strict/full。
+
+# 2) 精确 fast-path A/B：ON/OFF 必须标签语义等价
+export FASTPATH_AB_SCENES=12
+bash NEXT_EXECUTION_V16_8_11_CN.sh fastpath-ab
+
+# 3) validation strict：400 hard + 800 random。脚本会断言 recommend_full_rebuild=true
+export FORCE_REBUILD_PROBE=1
+export LABEL_WORKERS=24
+bash NEXT_EXECUTION_V16_8_11_CN.sh strict
+
+# 4) 新增 TRAIN split pilot：400 hard + 800 random。
+# 这是 full rebuild 前第二道硬门，避免 val 通过但 22k train 支撑不足。
+export FORCE_REBUILD_TRAIN_PILOT=1
+export LABEL_WORKERS=32
+bash NEXT_EXECUTION_V16_8_11_CN.sh train-pilot
+
+# 5) 只有 strict + train-pilot 都 PASS 才执行 full core labels + tensor cache。
+# Waymax replay 在这一阶段故意关闭，避免标签/张量门失败时浪费 GPU。
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=24
+export CACHE_WORKERS=8
+bash NEXT_EXECUTION_V16_8_11_CN.sh full-core
+
+# 6) core 完整通过后再生成/附加 Waymax outcome labels。
+# 单 GPU 示例：
+export WAYMAX_GPUS=1
+bash NEXT_EXECUTION_V16_8_11_CN.sh outcomes
+
+# 多 GPU（确定性分片）示例：
+# export WAYMAX_GPUS=0,1,2,3
+# bash NEXT_EXECUTION_V16_8_11_CN.sh outcomes
+
+# 7) 状态检查
+bash NEXT_EXECUTION_V16_8_11_CN.sh check
+
+# mainline planner 必须使用 *_waymax cache，并启用 outcome labels，
+# 因为当前 configs/train_cowp_v16_8.yaml 的 closed_loop loss 非零。
+# TRAIN_CACHE=/data0/senzeyu2/dataset/COWP/formal_v16_8_11_full/tensor_cache_train_waymax
+# VAL_CACHE=/data0/senzeyu2/dataset/COWP/formal_v16_8_11_full/tensor_cache_val_waymax
+# 训练命令继续添加 --with-waymax-outcome-labels。
+
+# 性能调优建议（不改变数据性质）：在 strict/train-pilot PASS 后，用固定 96~192 个场景
+# 分别测 LABEL_WORKERS=24/32/40（若内存足够），比较 scenes/hour 和 p90，而不是直接用最大核数。
+# 不建议为了速度缩小 max_critical_agents / max_natural_alternatives / max_response_samples / recovery profiles。

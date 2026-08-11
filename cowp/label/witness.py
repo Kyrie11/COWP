@@ -294,10 +294,19 @@ def certify_witnesses(
                     root = int(root)
                     if not (mode_valid[k, a, root] and mode_affected[k, a, root]):
                         continue
+                    identity_cache = None
+                    if audit is not None and "_root_direct_evaluated" in audit:
+                        if bool(np.asarray(audit["_root_direct_evaluated"], dtype=bool)[k, a, root]):
+                            b_exact = audit.get("_root_direct_burden_exact", audit.get("root_direct_burden"))
+                            identity_cache = (
+                                float(np.asarray(b_exact)[k, a, root]),
+                                not bool(np.asarray(audit["root_unsafe"], dtype=bool)[k, a, root]),
+                            )
                     best_b, low_ok, _ = root_conditioned_recovery_search(
                         natural["traj"][a, root], ego, cfg,
                         object_type=object_type, beta=beta, rho=rho,
                         trajectory_bank=recovery_banks.get((a, root)),
+                        identity_cache=identity_cache,
                     )
                     root_target_confidence[k, a, root] = 1.0
                     root_min_safe_burden[k, a, root] = min(
