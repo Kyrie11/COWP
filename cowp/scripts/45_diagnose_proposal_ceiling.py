@@ -71,6 +71,7 @@ def main() -> None:
     ap.add_argument("--control-count", type=int, default=800)
     ap.add_argument("--random-scene-ids", default=None, help="Representative random scene IDs used for unbiased coverage estimates.")
     ap.add_argument("--random-count", type=int, default=800)
+    ap.add_argument("--probe-total-count", type=int, default=0, help="If >0, keep up to --hard-count hard scenes and fill the remainder of this total with representative random scenes. This prevents a probe from failing merely because the old cache contains fewer hard scenes than the preferred target.")
     ap.add_argument("--random-exclude-hard-probe", action="store_true", help="Draw the representative-random set from scenarios not already selected into the hard probe, so a 400+800 strict probe really contains 1200 distinct scenes.")
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--subset-modulo", type=int, default=1, help="Match learned-offline index-modulo partitioning.")
@@ -162,12 +163,20 @@ def main() -> None:
 
     rng = np.random.default_rng(int(args.seed))
     hard_total_ids = sorted(hard_ids)
-    hard_count = len(hard_total_ids) if int(args.hard_count) <= 0 else min(int(args.hard_count), len(hard_total_ids))
+    preferred_hard = len(hard_total_ids) if int(args.hard_count) <= 0 else max(int(args.hard_count), 0)
+    probe_total = max(int(args.probe_total_count), 0)
+    hard_count = min(preferred_hard, len(hard_total_ids))
+    if probe_total > 0:
+        hard_count = min(hard_count, probe_total)
     hard_probe_ids = sorted(rng.choice(np.asarray(hard_total_ids, dtype=object), size=hard_count, replace=False).tolist()) if hard_count else []
     control_count = min(max(int(args.control_count), 0), len(other_ids))
     control_ids = sorted(rng.choice(np.asarray(other_ids, dtype=object), size=control_count, replace=False).tolist()) if control_count else []
-    random_pool = [sid for sid in all_ids if (not args.random_exclude_hard_probe or sid not in set(hard_probe_ids))]
-    random_count = min(max(int(args.random_count), 0), len(random_pool))
+    hard_probe_set = set(hard_probe_ids)
+    random_pool = [sid for sid in all_ids if (not args.random_exclude_hard_probe or sid not in hard_probe_set)]
+    requested_random = max(int(args.random_count), 0)
+    if probe_total > 0:
+        requested_random = max(probe_total - len(hard_probe_ids), 0)
+    random_count = min(requested_random, len(random_pool))
     random_ids = sorted(rng.choice(np.asarray(random_pool, dtype=object), size=random_count, replace=False).tolist()) if random_count else []
     _write_ids(args.hard_scene_ids, hard_probe_ids)
     _write_ids(args.control_scene_ids, control_ids)
@@ -176,7 +185,7 @@ def main() -> None:
     scenes = int(scene_counts["scenes"])
     p_eligible = int(scene_counts["any_priority_eligible"])
     result: dict[str, Any] = {
-        "schema_version": "cowp_v16_8_8_proposal_ceiling_v3",
+        "schema_version": "cowp_v16_8_14_proposal_ceiling_v4",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "num_scenes": scenes,
         "evaluation_subset": {
@@ -207,7 +216,11 @@ def main() -> None:
         "macro_stats": {k: dict(v) for k, v in sorted(macro_stats.items())},
         "proposal_source_stats": {k: dict(v) for k, v in sorted(source_stats.items())},
         "hard_scene_total_count": len(hard_total_ids),
+        "hard_scene_preferred_count": int(preferred_hard),
         "hard_scene_probe_count": len(hard_probe_ids),
+        "probe_total_requested": int(probe_total),
+        "probe_total_selected": int(len(hard_probe_ids) + len(random_ids)),
+        "hard_scene_shortfall_from_preferred": int(max(preferred_hard - len(hard_probe_ids), 0)),
         "hard_scene_ids_path": str(Path(args.hard_scene_ids).resolve()) if args.hard_scene_ids else None,
         "control_scene_count": len(control_ids),
         "control_scene_ids_path": str(Path(args.control_scene_ids).resolve()) if args.control_scene_ids else None,

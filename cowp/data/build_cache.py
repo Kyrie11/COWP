@@ -1000,6 +1000,19 @@ def _build_tensor_cache_parallel_by_file(
         )
     return total_written
 
+def _assert_all_label_caches_present(label_paths: dict[str, Path], output_dir: str | Path) -> None:
+    output_dir = Path(output_dir)
+    output_ids = {p.stem for p in output_dir.glob("*.npz")}
+    missing = sorted(set(label_paths) - output_ids)
+    if missing:
+        preview = ", ".join(missing[:20])
+        raise RuntimeError(
+            "Tensor-cache completeness contract failed: "
+            f"{len(missing)} / {len(label_paths)} label scenario ids have no matched tf.Example cache. "
+            f"Examples: {preview}. Repair the WOMD tf.Example split/download before training or Waymax replay."
+        )
+
+
 def build_tensor_cache(
     tfexample_glob: str | list[str],
     labels_dir: str | Path,
@@ -1018,6 +1031,7 @@ def build_tensor_cache(
     require_waymax_ready: bool = False,
     require_sdc_paths: bool = False,
     prefer_parallel_scan: bool = False,
+    require_all_labels_matched: bool = False,
 ) -> int:
     labels_dir = Path(labels_dir)
     output_dir = Path(output_dir)
@@ -1035,7 +1049,7 @@ def build_tensor_cache(
     # than as "build full id index -> scan target records again".  Exact-index
     # mode remains useful when a complete reusable index already exists.
     if int(num_workers) > 1 and (prefer_parallel_scan or tfexample_index_jsonl is None):
-        return _build_tensor_cache_parallel_by_file(
+        written = _build_tensor_cache_parallel_by_file(
             tfexample_glob,
             label_paths,
             output_dir,
@@ -1049,6 +1063,9 @@ def build_tensor_cache(
             require_waymax_ready=require_waymax_ready,
             require_sdc_paths=require_sdc_paths,
         )
+        if require_all_labels_matched:
+            _assert_all_label_caches_present(label_paths, output_dir)
+        return written
 
     scan_glob: str | list[str] = tfexample_glob
     index_stats: dict[str, object] = {}
@@ -1202,4 +1219,6 @@ def build_tensor_cache(
             f"First missing label ids: {missing_preview}. Check that --tfexample-glob and --labels-dir use the same WOMD split/version/shard subset."
             + index_hint
         )
+    if require_all_labels_matched:
+        _assert_all_label_caches_present(label_paths, output_dir)
     return count

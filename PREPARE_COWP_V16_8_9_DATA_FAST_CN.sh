@@ -138,7 +138,7 @@ run() {
 run womd_v131_preflight "$PYTHON_BIN" -m cowp.scripts.64_validate_womd_v131_contract \
   --tfexample-train-glob "$TFEXAMPLE_TRAIN" --tfexample-val-glob "$TFEXAMPLE_VAL" \
   --scenario-train-glob "$SCENARIO_TRAIN" --scenario-val-glob "$SCENARIO_VAL" \
-  --sample-shards 64 --scenario-sample-shards 32 --require-sdc-paths \
+  --sample-shards 64 --scenario-sample-shards 32 --require-sdc-paths --require-complete-primary-splits \
   --output "$COWP_ROOT/womd_v1_3_1_preflight.json"
 
 if [[ "$FORCE_INDEX" == "1" || ! -s "$INDEX_TRAIN" ]]; then
@@ -215,13 +215,13 @@ run tensor_train "$PYTHON_BIN" -m cowp.scripts.02_build_tensor_cache \
   --data-config configs/data.yaml --split training --tfexample-glob "$TFEXAMPLE_TRAIN" \
   --labels-dir "$LABELS_TRAIN" --output-dir "$BASE_TRAIN" \
   --num-workers "$CACHE_WORKERS" --start-method forkserver --parallel-scan \
-  --require-waymax-ready --require-sdc-paths --skip-existing --no-compress \
+  --require-waymax-ready --require-sdc-paths --require-all-labels-matched --skip-existing --no-compress \
   --profile-jsonl "$COWP_ROOT/profile_tensor_cache_train.jsonl" --cpu-only
 run tensor_val "$PYTHON_BIN" -m cowp.scripts.02_build_tensor_cache \
   --data-config configs/data.yaml --split validation --tfexample-glob "$TFEXAMPLE_VAL" \
   --labels-dir "$LABELS_VAL" --output-dir "$BASE_VAL" \
   --num-workers "$CACHE_WORKERS" --start-method forkserver --parallel-scan \
-  --require-waymax-ready --require-sdc-paths --skip-existing --no-compress \
+  --require-waymax-ready --require-sdc-paths --require-all-labels-matched --skip-existing --no-compress \
   --profile-jsonl "$COWP_ROOT/profile_tensor_cache_val.jsonl" --cpu-only
 
 if [[ "$RUN_WAYMAX_REPLAY" == "1" ]]; then

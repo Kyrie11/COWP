@@ -2657,3 +2657,14 @@ The v16.8.12 smoke spent about 101.23 s/scene in safe responses and 45.39 s/scen
 Passing these data-support gates establishes that WOMD-derived labels can support the implemented natural-basis, same-root transport, witness, NCF selector, and logged-Waymax mechanism experiments. It does not make logged WOMD/Waymax replay counterfactual causal ground truth for burden transfer. Publication-level causal burden claims still require the separately specified reactive-agent protocol and held-out human-audited false-safe stress set.
 
 v16.8.13 also propagates the certificate/auditability mask into label-space validation, causal-audit diagnostics, Waymax replay class balancing, and learned-offline label metrics. Certificate-unknown candidates may still be replayed for physical collision/off-road/progress outcomes, but they are never counted as NCF/false-safe negatives or positives. Label-space NCF/false-safe precision/recall and proposal-floor metrics expose certificate-label coverage explicitly, preventing missing counterfactual supervision from being reported as a successful negative class.
+
+## v16.8.14 — WOMD split/completeness contract and adaptive probe manifests
+
+This revision does **not** change the COWP planning/certification algorithm. It repairs dataset engineering contracts discovered before the v16.8.13 smoke run:
+
+- Smoke hard scenes are selected from the current baseline validation cache instead of a stale v16.8.8 manifest.
+- Probe manifests support a preferred hard count plus a fixed total; representative random scenes fill a hard-scene shortfall, while a minimum stress count remains explicit.
+- WOMD 1.3.1 preflight now audits shard-index completeness, rather than treating a readable partial download as complete.
+- Primary COWP data contract is Scenario training/validation for authoritative labels plus scenario-ID-matched tf.Example training/validation for model/Waymax tensors.
+- Tensor-cache construction can require every proto-derived label scenario to have a matching tf.Example; partial training tensors are a hard error.
+- Added a split-layout auditor for training/validation/testing and local challenge/auxiliary directories. `validation_interactive` is secondary stress data until scenario-ID overlap with standard validation is explicitly audited; blind testing splits are not used to fabricate future-dependent COWP mechanism labels.

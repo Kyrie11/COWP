@@ -2,13 +2,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import numpy as np
 
 from cowp.data.build_cache import _sdc_path_contract_errors, _waymax_missing_required_womd_keys
 from cowp.data.parse_scenario_proto import _import_scenario_proto, resolve_glob_patterns as resolve_scenario_files
-from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records_by_file, parse_tfexample, resolve_glob_patterns as resolve_tfexample_files, scenario_id_from_parsed_tfexample
+from cowp.data.parse_tfexample import (
+    decode_parsed_tfexample,
+    iter_tfexample_records_by_file,
+    parse_tfexample,
+    resolve_glob_patterns as resolve_tfexample_files,
+    scenario_id_from_parsed_tfexample,
+)
+
+# Official Waymax WOMD 1.3.1 DatasetConfig uses @1000 train, @150 validation,
+# @150 testing for tf.Example. Scenario proto uses the same primary split shard
+# cardinalities in the public WOMD release. We still parse the ``of-N`` suffix
+# from local filenames so a future release/layout mismatch is visible rather
+# than silently coerced to these constants.
+PRIMARY_EXPECTED_SHARDS = {
+    ("tfexample", "training"): 1000,
+    ("tfexample", "validation"): 150,
+    ("scenario", "training"): 1000,
+    ("scenario", "validation"): 150,
+}
+
+_SHARD_RE = re.compile(r"(?:^|[-_.])(?P<index>\d{5})-of-(?P<total>\d{5})(?:\D|$)")
 
 
 def _sample_files(files: list[str], count: int) -> list[str]:
@@ -19,14 +40,77 @@ def _sample_files(files: list[str], count: int) -> list[str]:
     return [files[i] for i in idx]
 
 
+def _shard_manifest(files: list[str], *, expected: int | None = None) -> dict:
+    """Audit local shard completeness from filenames and an optional contract.
+
+    WOMD shard names encode both the zero-based shard index and total shard
+    count (e.g. ``...-00556-of-01000``). Counting whatever happens to be on
+    disk is therefore not a sufficient preflight: a partial download can look
+    perfectly readable while omitting hundreds of shards.
+    """
+    parsed: list[tuple[int, int, str]] = []
+    unparsed: list[str] = []
+    for f in files:
+        name = Path(f).name
+        m = _SHARD_RE.search(name)
+        if m is None:
+            unparsed.append(name)
+            continue
+        parsed.append((int(m.group("index")), int(m.group("total")), name))
+
+    encoded_totals = sorted({total for _, total, _ in parsed})
+    encoded_total = encoded_totals[0] if len(encoded_totals) == 1 else None
+    expected_total = int(expected) if expected is not None else encoded_total
+    indices = sorted({idx for idx, _, _ in parsed})
+    duplicate_index_count = max(0, len(parsed) - len(indices))
+    missing: list[int] = []
+    if expected_total is not None:
+        idx_set = set(indices)
+        missing = [i for i in range(expected_total) if i not in idx_set]
+
+    complete_by_names = bool(
+        files
+        and not unparsed
+        and len(encoded_totals) == 1
+        and expected_total is not None
+        and encoded_total == expected_total
+        and duplicate_index_count == 0
+        and len(indices) == expected_total
+        and not missing
+    )
+    return {
+        "present_shards": len(files),
+        "parsed_shard_names": len(parsed),
+        "unparsed_shard_name_count": len(unparsed),
+        "unparsed_shard_name_examples": unparsed[:10],
+        "encoded_totals": encoded_totals,
+        "encoded_total": encoded_total,
+        "contract_expected_total": expected_total,
+        "unique_shard_indices": len(indices),
+        "duplicate_shard_index_count": duplicate_index_count,
+        "missing_shard_count": len(missing),
+        "missing_shard_indices_preview": missing[:50],
+        "complete": complete_by_names,
+    }
+
+
 def _first_tfexample(filename: str):
     for _f, _idx, raw in iter_tfexample_records_by_file([filename]):
         return parse_tfexample(raw)
     raise RuntimeError(f"empty TFRecord shard: {filename}")
 
 
-def _audit_tfexample_split(name: str, glob_pattern: str, samples: int, require_sdc_paths: bool) -> dict:
+def _audit_tfexample_split(
+    name: str,
+    glob_pattern: str,
+    samples: int,
+    require_sdc_paths: bool,
+    *,
+    expected_shards: int | None,
+    require_complete: bool,
+) -> dict:
     files = resolve_tfexample_files(glob_pattern)
+    shard_manifest = _shard_manifest(files, expected=expected_shards)
     selected = _sample_files(files, samples)
     errors: list[dict[str, object]] = []
     scenario_ids: list[str] = []
@@ -77,27 +161,42 @@ def _audit_tfexample_split(name: str, glob_pattern: str, samples: int, require_s
                 errors.append({"file": filename, "scenario_id": sid, "errors": local[:32]})
         except Exception as exc:
             errors.append({"file": filename, "scenario_id": None, "errors": [repr(exc)]})
+
+    completeness_ok = bool(shard_manifest["complete"]) if require_complete else bool(files)
     return {
         "split": name,
         "glob": glob_pattern,
         "num_shards": len(files),
+        "shard_manifest": shard_manifest,
+        "require_complete": bool(require_complete),
         "sampled_shards": len(selected),
         "core_waymax_ready_samples": core_ready,
         "sdc_paths_ready_samples": path_ready,
         "unique_sampled_scenario_ids": len(set(scenario_ids)),
         "errors": errors[:50],
-        "pass": not errors,
+        "pass": bool(not errors and completeness_ok),
     }
 
 
-def _audit_scenario_split(name: str, glob_pattern: str, samples: int) -> dict:
+def _audit_scenario_split(
+    name: str,
+    glob_pattern: str,
+    samples: int,
+    *,
+    expected_shards: int | None,
+    require_complete: bool,
+) -> dict:
     files = resolve_scenario_files(glob_pattern)
+    shard_manifest = _shard_manifest(files, expected=expected_shards)
     selected = _sample_files(files, samples)
     scenario_pb2 = _import_scenario_proto()
-    # TensorFlow is imported lazily by the parser module helper via TFRecordDataset.
     from cowp.data.parse_scenario_proto import _import_tensorflow
+
     tf = _import_tensorflow()
     errors: list[dict[str, object]] = []
+    sampled_ids: list[str] = []
+    object_interest_counts: list[int] = []
+    tracks_to_predict_counts: list[int] = []
     for filename in selected:
         try:
             ds = tf.data.TFRecordDataset([filename]).take(1)
@@ -106,6 +205,9 @@ def _audit_scenario_split(name: str, glob_pattern: str, samples: int) -> dict:
                 raise RuntimeError("empty TFRecord shard")
             sc = scenario_pb2.Scenario()
             sc.ParseFromString(bytes(raw.numpy()))
+            sampled_ids.append(str(sc.scenario_id))
+            object_interest_counts.append(len(sc.objects_of_interest))
+            tracks_to_predict_counts.append(len(sc.tracks_to_predict))
             local: list[str] = []
             if len(sc.timestamps_seconds) != 91:
                 local.append(f"timestamps={len(sc.timestamps_seconds)}, expected=91")
@@ -123,13 +225,26 @@ def _audit_scenario_split(name: str, glob_pattern: str, samples: int) -> dict:
                 errors.append({"file": filename, "scenario_id": str(sc.scenario_id), "errors": local})
         except Exception as exc:
             errors.append({"file": filename, "scenario_id": None, "errors": [repr(exc)]})
+
+    completeness_ok = bool(shard_manifest["complete"]) if require_complete else bool(files)
     return {
         "split": name,
         "glob": glob_pattern,
         "num_shards": len(files),
+        "shard_manifest": shard_manifest,
+        "require_complete": bool(require_complete),
         "sampled_shards": len(selected),
+        "unique_sampled_scenario_ids": len(set(sampled_ids)),
+        "sampled_objects_of_interest": {
+            "mean": float(np.mean(object_interest_counts)) if object_interest_counts else 0.0,
+            "max": int(max(object_interest_counts)) if object_interest_counts else 0,
+        },
+        "sampled_tracks_to_predict": {
+            "mean": float(np.mean(tracks_to_predict_counts)) if tracks_to_predict_counts else 0.0,
+            "max": int(max(tracks_to_predict_counts)) if tracks_to_predict_counts else 0,
+        },
         "errors": errors[:50],
-        "pass": not errors,
+        "pass": bool(not errors and completeness_ok),
     }
 
 
@@ -142,27 +257,57 @@ def main() -> None:
     ap.add_argument("--sample-shards", type=int, default=64)
     ap.add_argument("--scenario-sample-shards", type=int, default=32)
     ap.add_argument("--require-sdc-paths", action="store_true")
+    ap.add_argument(
+        "--require-complete-primary-splits",
+        action="store_true",
+        help="Require complete 1000-shard train and 150-shard validation downloads, not merely readable sampled shards.",
+    )
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
 
+    complete = bool(args.require_complete_primary_splits)
     results = {
-        "tfexample_train": _audit_tfexample_split("training", args.tfexample_train_glob, args.sample_shards, args.require_sdc_paths),
-        "tfexample_val": _audit_tfexample_split("validation", args.tfexample_val_glob, args.sample_shards, args.require_sdc_paths),
+        "tfexample_train": _audit_tfexample_split(
+            "training", args.tfexample_train_glob, args.sample_shards, args.require_sdc_paths,
+            expected_shards=PRIMARY_EXPECTED_SHARDS[("tfexample", "training")], require_complete=complete,
+        ),
+        "tfexample_val": _audit_tfexample_split(
+            "validation", args.tfexample_val_glob, args.sample_shards, args.require_sdc_paths,
+            expected_shards=PRIMARY_EXPECTED_SHARDS[("tfexample", "validation")], require_complete=complete,
+        ),
     }
     if args.scenario_train_glob:
-        results["scenario_train"] = _audit_scenario_split("training", args.scenario_train_glob, args.scenario_sample_shards)
+        results["scenario_train"] = _audit_scenario_split(
+            "training", args.scenario_train_glob, args.scenario_sample_shards,
+            expected_shards=PRIMARY_EXPECTED_SHARDS[("scenario", "training")], require_complete=complete,
+        )
     if args.scenario_val_glob:
-        results["scenario_val"] = _audit_scenario_split("validation", args.scenario_val_glob, args.scenario_sample_shards)
+        results["scenario_val"] = _audit_scenario_split(
+            "validation", args.scenario_val_glob, args.scenario_sample_shards,
+            expected_shards=PRIMARY_EXPECTED_SHARDS[("scenario", "validation")], require_complete=complete,
+        )
     passed = all(bool(x.get("pass", False)) for x in results.values())
+
+    incomplete = {
+        name: {
+            "present": int(row.get("num_shards", 0)),
+            "expected": row.get("shard_manifest", {}).get("contract_expected_total"),
+            "missing": row.get("shard_manifest", {}).get("missing_shard_count"),
+        }
+        for name, row in results.items()
+        if not bool(row.get("shard_manifest", {}).get("complete", False))
+    }
     report = {
-        "schema_version": "cowp_womd_v1_3_1_preflight_v1",
+        "schema_version": "cowp_womd_v1_3_1_preflight_v2",
         "pass": bool(passed),
         "require_sdc_paths": bool(args.require_sdc_paths),
+        "require_complete_primary_splits": complete,
         "results": results,
+        "incomplete_primary_splits": incomplete,
         "interpretation": (
-            "Sampled Scenario/tf.Example shards satisfy the expected 1s-history + current + 8s-future contract; full cache construction must still enforce the per-matched-scene SDC-path contract."
+            "Primary WOMD 1.3.1 train/validation Scenario and tf.Example downloads are complete and sampled records satisfy the 1s-history + current + 8s-future / SDC-path contract."
             if passed else
-            "WOMD preflight failed. Do not spend time on the COWP full label rebuild until split/version/path semantics are fixed."
+            "WOMD preflight failed. A readable subset is not sufficient: repair missing shards or split/version/path semantics before COWP smoke/full rebuild."
         ),
     }
     out = Path(args.output)

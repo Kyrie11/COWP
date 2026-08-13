@@ -39,6 +39,7 @@ FINGERPRINT_FILES = (
     "cowp/scripts/63_validate_probe_manifest.py",
     "cowp/scripts/64_validate_womd_v131_contract.py",
     "cowp/scripts/65_audit_model_support.py",
+    "cowp/scripts/69_audit_womd_split_layout.py",
     "cowp/scripts/19_diagnose_waymax_cache_sufficiency.py",
     "configs/label_cowp_v16_8.yaml",
     "configs/model_cowp_v16_8.yaml",

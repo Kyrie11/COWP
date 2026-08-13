@@ -1,0 +1,181 @@
+COWP v16.8.14 下一步执行指令
+========================================
+
+0. 进入代码目录并设置路径
+----------------------------------------
+cd /path/to/COWP_v16_8_14_optimized
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export OLD_VAL_CACHE="$SOURCE_DATA_ROOT/tensor_cache_val"
+
+
+1. 先盘点本地 WOMD split（当前 tf.Example training 预期会报 primary incomplete）
+----------------------------------------
+set +e
+bash NEXT_EXECUTION_V16_8_14_CN.sh split-audit
+SPLIT_AUDIT_RC=$?
+set -e
+cat /data0/senzeyu2/dataset/COWP/formal_v16_8_14_support_smoke/womd_v1_3_1_split_layout.json
+
+echo "split-audit rc=$SPLIT_AUDIT_RC (当前若 training tf.Example 仍为557/1000，rc=2是预期的)"
+
+# 快速人工核对 primary shard 数：
+find "$WOMD_ROOT/uncompressed/scenario/training"   -maxdepth 1 -type f -name '*.tfrecord*' | wc -l
+find "$WOMD_ROOT/uncompressed/scenario/validation" -maxdepth 1 -type f -name '*.tfrecord*' | wc -l
+find "$WOMD_ROOT/uncompressed/tf_example/training" -maxdepth 1 -type f -name '*.tfrecord*' | wc -l
+find "$WOMD_ROOT/uncompressed/tf_example/validation" -maxdepth 1 -type f -name '*.tfrecord*' | wc -l
+
+# 对当前上传的 result.txt，预期分别应修复到：
+# scenario/training      1000
+# scenario/validation     150
+# tf_example/training    1000   <-- 当前只有557，需要先补齐
+# tf_example/validation   150
+
+
+2. 补齐 WOMD v1.3.1 tf.Example training（不要删除已有557个，rsync补缺）
+----------------------------------------
+# 先确认已使用有 WOMD 权限的账号认证：
+gcloud auth login
+# Waymax/ADC 也使用 application-default credential：
+gcloud auth application-default login
+
+mkdir -p "$WOMD_ROOT/uncompressed/tf_example/training"
+gcloud storage rsync -r \
+  gs://waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/training \
+  "$WOMD_ROOT/uncompressed/tf_example/training"
+
+# 如果机器上只有 gsutil，可改用：
+# gsutil -m rsync -r \
+#   gs://waymo_open_dataset_motion_v_1_3_1/uncompressed/tf_example/training \
+#   "$WOMD_ROOT/uncompressed/tf_example/training"
+
+
+3. 补齐后重新做 split inventory + 严格 preflight
+----------------------------------------
+bash NEXT_EXECUTION_V16_8_14_CN.sh split-audit
+bash NEXT_EXECUTION_V16_8_14_CN.sh preflight
+
+cat /data0/senzeyu2/dataset/COWP/formal_v16_8_14_support_smoke/womd_v1_3_1_preflight.json
+
+# 必须满足：
+#   "pass": true
+#   tfexample_train.shard_manifest.complete == true
+#   scenario_train / scenario_val / tfexample_val complete == true
+#   sampled records core_waymax_ready + sdc_paths ready
+
+
+4. 可选但强烈建议：审计 validation_interactive 与标准 validation 的 scenario-ID 关系
+----------------------------------------
+# 这一步可能需要完整扫描两个 Scenario split，耗时明显高于普通 split-audit；
+# 不阻塞 smoke，但在把 validation_interactive 用于论文独立 benchmark 之前必须运行。
+FULL_INTERACTIVE_OVERLAP=1 bash NEXT_EXECUTION_V16_8_14_CN.sh split-audit
+
+# 查看：
+# womd_v1_3_1_split_layout.json -> validation_interactive_overlap
+# 如果 interactive_subset_of_validation=true 或 overlap 很高：
+#   把 validation_interactive 作为 secondary interaction stress/stratum 单独报告，不能与 standard validation 相加当独立样本。
+
+
+5. Fresh v16.8.14 smoke（不再依赖任何 v16.8.8 hard manifest）
+----------------------------------------
+export HARD_COUNT=48
+export RANDOM_COUNT=48
+export MIN_HARD_COUNT=24
+export LABEL_WORKERS=24
+export FORCE_REBUILD_SMOKE=1
+
+bash NEXT_EXECUTION_V16_8_14_CN.sh smoke
+bash NEXT_EXECUTION_V16_8_14_CN.sh check
+
+# 新 smoke 的 manifest 是从当前 OLD_VAL_CACHE 动态生成：
+#   preferred hard <=48
+#   total scenes =96
+#   若 hard pool <48，random 自动补满96
+#   但 hard stress 至少需要 MIN_HARD_COUNT=24
+#
+# 查看：
+# /data0/senzeyu2/dataset/COWP/formal_v16_8_14_support_smoke/old_val_proposal_ceiling.json
+# /data0/senzeyu2/dataset/COWP/formal_v16_8_14_support_smoke/probe_manifest_audit.json
+# /data0/senzeyu2/dataset/COWP/formal_v16_8_14_support_smoke/v16_8_14_smoke_verdict.json
+#
+# 只有 recommend_strict_probe=true 才能继续。
+
+
+6. smoke PASS 后做 exact-fastpath 语义等价验证
+----------------------------------------
+export FASTPATH_AB_SCENES=12
+export FASTPATH_AB_WORKERS=4
+bash NEXT_EXECUTION_V16_8_14_CN.sh fastpath-ab
+
+
+7. Validation strict（总计1200，preferred 400 hard；不足则 random 补总量）
+----------------------------------------
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=24
+export FORCE_REBUILD_PROBE=1
+
+bash NEXT_EXECUTION_V16_8_14_CN.sh strict
+
+# 只有 strict verdict recommend_full_rebuild=true 才进入 train-pilot。
+
+
+8. Train pilot（同样总计1200，避免盲目重建22k train）
+----------------------------------------
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=32
+export FORCE_REBUILD_TRAIN_PILOT=1
+
+bash NEXT_EXECUTION_V16_8_14_CN.sh train-pilot
+bash NEXT_EXECUTION_V16_8_14_CN.sh check
+
+
+9. strict + train-pilot 同 fingerprint PASS 后，才 full-core
+----------------------------------------
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=24
+export CACHE_WORKERS=8
+export REUSE_OLD_SCENE_SET=1
+
+bash NEXT_EXECUTION_V16_8_14_CN.sh full-core
+
+# v16.8.14 full-core 的 tensor merge 默认额外要求：
+# --require-all-labels-matched
+# 因此任何 proto label 没有对应 tf.Example 都会硬失败，不再生成静默的 partial tensor cache。
+
+
+10. Core build 全部过门后再 Waymax outcomes
+----------------------------------------
+export WAYMAX_GPUS=1
+bash NEXT_EXECUTION_V16_8_14_CN.sh outcomes
+bash NEXT_EXECUTION_V16_8_14_CN.sh check
+
+
+Benchmark 使用原则（请勿混用）
+----------------------------------------
+PRIMARY TRAIN:
+  scenario/training -> COWP labels / critical / priority / natural / witness
+  tf_example/training -> matched model tensors + Waymax
+
+PRIMARY VALIDATION:
+  scenario/validation + matched tf_example/validation
+  -> smoke/strict/held-out validation
+
+SECONDARY INTERACTION STRESS:
+  validation_interactive
+  -> 先审 scenario-ID overlap，再单独报告；不替换 standard validation，不与重叠样本相加。
+
+DO NOT BUILD FUTURE-DEPENDENT COWP LABELS FROM:
+  testing
+  testing_interactive
+  （official test future GT hidden）
+
+DO NOT MIX INTO CURRENT 91-STEP PIPELINE WITHOUT REDESIGN:
+  training_20s
+
+Scenario proto 保持 traffic-control/right-of-way label 权威源；
+tf.Example 只做 matched tensor/Waymax source，不用其固定128-object/16-light tensor反向重算 priority GT。
