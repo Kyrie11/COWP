@@ -24,6 +24,7 @@ candidate:
   map_filter_enabled: true
   map_filter_require_available: false
   map_filter_stride: 4
+  map_segment_chunk_size: 2048
   map_filter_lane_point_stride: 2
   map_filter_min_lane_points: 64
   map_filter_local_radius_m: 140.0
@@ -224,6 +225,7 @@ natural:
   map_filter_enabled: true
   map_filter_require_available: false
   map_filter_stride: 4
+  map_segment_chunk_size: 2048
   map_min_compliant_fraction: 0.8
   map_max_distance_vehicle_m: 5.0
   map_max_distance_vru_m: 8.0

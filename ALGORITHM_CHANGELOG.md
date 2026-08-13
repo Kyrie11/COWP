@@ -1,3 +1,37 @@
+## v16.8.12 — Continuous Map Geometry, Neutral-Timing Natural Reference, and Fail-Safe Promotion Verdicts (2026-08-13)
+
+### Triggering evidence from the uploaded v16.8.11 train pilot
+
+The 400-hard + 800-random training pilot completed all 1,200 requested label scenes and passed the manifest and training-supervision audits, but model support remained invalid.  Across 6,611 critical vehicles, 248 (3.751%) had zero natural roots and 354 (5.355%) had fewer than two low-burden natural roots.  Every other active model-support family passed, including full 32-slot relevant-pair response coverage, candidate NCF/false-safe balance, relevance/witness/pair-NCF balance, safe/unsafe and low/high-burden responses, affected-root recovery, protected-candidate feasibility, all natural/response sources, and continuous witness/burden variability.  Re-analysis of the build profile shows that the zero-root agents split into 148 map-dominated and 100 priority-dominated failures; 230/248 used the full logged future as their normative natural reference.
+
+The missing `v16_8_11_train_pilot_verdict.json` was a separate wrapper-control bug: `65_audit_model_support --strict` correctly returned non-zero, but `set -e` terminated the shell before causal/fresh-ceiling diagnostics and the final verdict writer ran.  The pilot therefore failed scientifically, but the wrapper reported that failure as a missing artifact.
+
+### Construction repairs
+
+1. Replaced natural-root map compliance based on distance to discrete lane polyline **sample points** by exact continuous point-to-lane-segment distance.  The physical thresholds (`map_max_distance_*`, compliant fraction and hard maximum) are unchanged.  A trajectory lying on a long/sparse lane segment is no longer declared off-map simply because it is far from the segment endpoints/samples.
+2. Raw logged future timing is no longer the normative `natural_ref`, even when all 80 future samples are valid.  Logged future remains the OBS empirical branch and contamination evidence.  NEU/PRIO burden and priority preservation use a timing-neutral reference: lane-topology route geometry first, logged geometry retimed from the current state second, jerk-bounded straight motion only as the final map-fragment fallback.
+3. Primary NEU and PRIO roots now use the same lane-topology route bank before straight motion.  Lane-graph search is performed once per critical actor at the maximum required route length and the resulting route polylines are retimed for each acceleration/speed intervention, avoiding repeated graph searches without reducing root/candidate budgets.
+4. Route matching against WOMD future geometry now evaluates only the original `valid=1` timestamps.  It no longer treats `sum(valid)` as a contiguous prefix or lets hold-padding choose a route when validity has internal gaps/late appearance.
+5. Hard priority progress uses the same natural-reference projection geometry as the burden functional, and the builder records explicit priority rejection reasons (`max_decel`, `max_accel`, `max_jerk`, `progress_loss`, `gap_loss`).  No priority tolerance is relaxed.
+6. Natural diagnostics now report rootless/<2-low-burden failures by priority relation, reference kind and dominant rejection family, plus priority rejection mechanisms and map-distance/burden summaries.  This makes a failed smoke directly actionable.
+
+### Promotion-control repair
+
+`smoke`, `strict`, and `train-pilot` now distinguish **semantic gate failure** from pipeline/runtime failure.  Strict supervision/model-support commands may return non-zero as designed, but the wrappers continue far enough to write the natural diagnostics and a composite PASS/FAIL verdict.  `full-core` therefore sees an explicit `recommend_full_rebuild=false` rather than a misleading missing-verdict error.  The master chain also enforces same-fingerprint promotion: smoke must authorize strict, strict must authorize train-pilot, and both strict + train-pilot must authorize full-core.
+
+### Performance disposition
+
+The v16.8.11 train pilot averaged 267.95 s/scene.  Safe responses (143.66 s) and witness construction (71.38 s) together account for about 80.3% of label-engine time; natural construction is 7.38 s/scene and pair-neutral construction 4.07 s/scene.  v16.8.12 therefore preserves the 32-response bank and root/candidate semantics.  The natural-stage optimization is deterministic route-bank reuse, not support reduction.  Full worker selection remains host-specific and must be based on the new pilot profile after semantic gates pass.
+
+### Local validation
+
+- Added continuous sparse-lane segment-compliance regression.
+- Added regression proving an 80-step logged future remains OBS evidence but no longer becomes the normative natural timing reference.
+- Added priority-rejection mechanism diagnostics regression.
+- v16.8.11 support regressions remain passing after the reference-policy update.
+- Full repository regression: **194 passed, 5 skipped** (one upstream PyTorch nested-tensor warning only).
+- Shell syntax checks pass for all v16.8.12 promotion entry points.
+
 ## v16.8.11 — Pair-Specific Natural Basis, Jerk-Compatible Root Support, and Train-Split Promotion Gate (2026-08-11)
 
 ### Triggering evidence from the uploaded v16.8.10 smoke/strict artifacts

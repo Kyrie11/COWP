@@ -138,7 +138,7 @@ def test_short_invalid_womd_future_uses_lane_route_and_keeps_two_low_burden_root
 
     assert d["future_valid_steps"] == 12
     assert d["obs_eligible"] is False
-    assert d["reference_kind"] == "map_route"
+    assert d["reference_kind"] == "map_route_neutral_timing"
     assert d["root_count"] >= 2
     assert d["low_burden_root_count"] >= 2
     assert int(np.sum(natural["valid"][0])) >= 2

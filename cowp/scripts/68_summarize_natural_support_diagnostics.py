@@ -22,7 +22,7 @@ def _bucket_future(valid_steps: int) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Summarize v16.8.11 pair-neutral/natural-root construction diagnostics.")
+    ap = argparse.ArgumentParser(description="Summarize v16.8.12 pair-neutral/natural-root construction diagnostics.")
     ap.add_argument("--input", required=True, help="01_build_labels_from_proto --profile-jsonl output")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
@@ -43,6 +43,18 @@ def main() -> None:
     future_total: Counter[str] = Counter()
     future_rootless: Counter[str] = Counter()
     future_lt2: Counter[str] = Counter()
+    rootless_priority: Counter[str] = Counter()
+    lt2_priority: Counter[str] = Counter()
+    rootless_reference: Counter[str] = Counter()
+    lt2_reference: Counter[str] = Counter()
+    rootless_dominant_rejection: Counter[str] = Counter()
+    lt2_dominant_rejection: Counter[str] = Counter()
+    priority_rejection_reason: Counter[str] = Counter()
+    rootless_priority_rejection_reason: Counter[str] = Counter()
+    lt2_priority_rejection_reason: Counter[str] = Counter()
+    map_rejected_min_distances: list[float] = []
+    map_rejected_max_distances: list[float] = []
+    best_rejected_burdens: list[float] = []
     examples = defaultdict(list)
     parse_errors = []
 
@@ -77,16 +89,61 @@ def main() -> None:
                 low = int(d.get("low_burden_root_count", 0))
                 is_rootless = roots <= 0
                 is_lt2 = low < 2
+                reject_row = {str(k): int(v) for k, v in (d.get("rejection_counts", {}) or {}).items()}
+                dominant = max(reject_row.items(), key=lambda kv: (kv[1], kv[0]))[0] if reject_row and max(reject_row.values()) > 0 else "none"
+                rho = str(d.get("rho", "unknown"))
+                ref = str(d.get("reference_kind", "unknown"))
+                pr_reasons = {str(k): int(v) for k, v in (d.get("priority_rejection_reasons", {}) or {}).items()}
+                for k, v in pr_reasons.items():
+                    priority_rejection_reason[k] += v
+                min_map_rej = d.get("map_rejected_min_max_distance_m")
+                max_map_rej = d.get("map_rejected_max_max_distance_m")
+                best_burden = d.get("best_rejected_burden")
+                if min_map_rej is not None:
+                    try: map_rejected_min_distances.append(float(min_map_rej))
+                    except Exception: pass
+                if max_map_rej is not None:
+                    try: map_rejected_max_distances.append(float(max_map_rej))
+                    except Exception: pass
+                if best_burden is not None:
+                    try: best_rejected_burdens.append(float(best_burden))
+                    except Exception: pass
                 if is_rootless:
                     rootless += 1
                     future_rootless[bucket] += 1
+                    rootless_priority[rho] += 1
+                    rootless_reference[ref] += 1
+                    rootless_dominant_rejection[dominant] += 1
+                    for k, v in pr_reasons.items():
+                        rootless_priority_rejection_reason[k] += v
                     if len(examples["rootless"]) < 50:
-                        examples["rootless"].append({"scenario_id": sid, "slot": slot, "track_index": d.get("track_index"), "future_valid_steps": steps, "reference_kind": d.get("reference_kind"), "rejection_counts": d.get("rejection_counts", {})})
+                        examples["rootless"].append({
+                            "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
+                            "rho": d.get("rho"), "future_valid_steps": steps, "reference_kind": ref,
+                            "rejection_counts": reject_row, "dominant_rejection": dominant,
+                            "priority_rejection_reasons": pr_reasons,
+                            "map_rejected_min_max_distance_m": min_map_rej,
+                            "map_rejected_max_max_distance_m": max_map_rej,
+                            "best_rejected_burden": best_burden,
+                        })
                 if is_lt2:
                     lt2_low += 1
                     future_lt2[bucket] += 1
+                    lt2_priority[rho] += 1
+                    lt2_reference[ref] += 1
+                    lt2_dominant_rejection[dominant] += 1
+                    for k, v in pr_reasons.items():
+                        lt2_priority_rejection_reason[k] += v
                     if len(examples["lt2_low"]) < 50:
-                        examples["lt2_low"].append({"scenario_id": sid, "slot": slot, "track_index": d.get("track_index"), "root_count": roots, "low_burden_root_count": low, "future_valid_steps": steps, "reference_kind": d.get("reference_kind"), "rejection_counts": d.get("rejection_counts", {})})
+                        examples["lt2_low"].append({
+                            "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
+                            "rho": d.get("rho"), "root_count": roots, "low_burden_root_count": low,
+                            "future_valid_steps": steps, "reference_kind": ref, "rejection_counts": reject_row,
+                            "dominant_rejection": dominant, "priority_rejection_reasons": pr_reasons,
+                            "map_rejected_min_max_distance_m": min_map_rej,
+                            "map_rejected_max_max_distance_m": max_map_rej,
+                            "best_rejected_burden": best_burden,
+                        })
                 if not bool(d.get("obs_eligible", False)):
                     obs_ineligible += 1
                 ref_kind[str(d.get("reference_kind", "unknown"))] += 1
@@ -108,8 +165,17 @@ def main() -> None:
     def rate(n: int, d: int) -> float:
         return float(n / max(d, 1))
 
+    def quantiles(values: list[float]) -> dict[str, float | None]:
+        if not values:
+            return {"min": None, "p50": None, "p90": None, "max": None}
+        vals = sorted(values)
+        def q(frac: float) -> float:
+            pos = int(round(frac * (len(vals) - 1)))
+            return float(vals[max(0, min(pos, len(vals) - 1))])
+        return {"min": float(vals[0]), "p50": q(0.50), "p90": q(0.90), "max": float(vals[-1])}
+
     report = {
-        "schema_version": "cowp_v16_8_11_natural_support_diagnostic_v1",
+        "schema_version": "cowp_v16_8_12_natural_support_diagnostic_v2",
         "profile_jsonl": str(profile.resolve()),
         "rows": rows,
         "written_scenes": written,
@@ -127,6 +193,18 @@ def main() -> None:
         "natural_rejection_counts": dict(rejection),
         "attempted_by_phase": dict(attempted),
         "accepted_by_phase": dict(accepted),
+        "rootless_by_priority_relation": dict(rootless_priority),
+        "lt2_low_burden_by_priority_relation": dict(lt2_priority),
+        "rootless_by_reference_kind": dict(rootless_reference),
+        "lt2_low_burden_by_reference_kind": dict(lt2_reference),
+        "rootless_dominant_rejection": dict(rootless_dominant_rejection),
+        "lt2_low_burden_dominant_rejection": dict(lt2_dominant_rejection),
+        "priority_rejection_reason_counts": dict(priority_rejection_reason),
+        "rootless_priority_rejection_reason_counts": dict(rootless_priority_rejection_reason),
+        "lt2_low_burden_priority_rejection_reason_counts": dict(lt2_priority_rejection_reason),
+        "map_rejected_min_distance_summary_m": quantiles(map_rejected_min_distances),
+        "map_rejected_max_distance_summary_m": quantiles(map_rejected_max_distances),
+        "best_rejected_burden_summary": quantiles(best_rejected_burdens),
         "future_support": {
             b: {
                 "critical_agents": int(future_total[b]),

@@ -7,7 +7,7 @@ from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.collision import unsafe_between
 from cowp.geometry.map_projection import polyline_arc_length, project_state_to_lane
 from cowp.label.burden import adaptive_beta, compute_burden
-from cowp.label.priority import determine_priority, priority_preserved
+from cowp.label.priority import determine_priority, priority_preserved, priority_preservation_check
 from cowp.label.trajectory_primitives import constant_accel_trajectory, repair_planar_kinematics, resample_logged, smooth_stop_trajectory
 
 
@@ -26,6 +26,24 @@ def _traj_distance(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(np.linalg.norm(a[:T, :2] - b[:T, :2], axis=-1)))
 
 
+def _traj_distance_to_valid_future(traj: np.ndarray, future_states: np.ndarray, valid_mask: np.ndarray) -> float:
+    """Compare a candidate route only at factual WOMD-valid timestamps.
+
+    Counting valid rows and then taking a prefix is incorrect when a track has an
+    interior validity gap or appears after the first future sample.  Route choice
+    is supervision-only, so use the raw validity mask without converting missing
+    rows into hold states.
+    """
+    tr = np.asarray(traj, dtype=np.float32)
+    fut = np.asarray(future_states, dtype=np.float32)
+    mask = np.asarray(valid_mask, dtype=bool).reshape(-1)
+    T = min(len(tr), len(fut), len(mask))
+    if T <= 0:
+        return float("inf")
+    m = mask[:T] & np.all(np.isfinite(fut[:T, :2]), axis=-1) & np.all(np.isfinite(tr[:T, :2]), axis=-1)
+    if not np.any(m):
+        return float("inf")
+    return float(np.mean(np.linalg.norm(tr[:T, :2][m] - fut[:T, :2][m], axis=-1)))
 
 
 def _ramped_accel_schedule(target_accel: float, horizon: int, dt: float, nat_cfg: dict) -> np.ndarray:
@@ -295,6 +313,7 @@ def _timed_polyline_trajectory(
     accel: float = 0.0,
     speed_offset: float = 0.0,
     allow_short: bool = False,
+    nat_cfg: dict | None = None,
 ) -> np.ndarray | None:
     """Retiming of one map polyline under bounded longitudinal acceleration."""
     path = np.asarray(path_xy, dtype=np.float32)
@@ -311,7 +330,7 @@ def _timed_polyline_trajectory(
     s_query = np.zeros(H, dtype=np.float64)
     speed = np.zeros(H, dtype=np.float64)
     s = 0.0
-    accel_schedule = _ramped_accel_schedule(float(accel), H, dt, {})
+    accel_schedule = _ramped_accel_schedule(float(accel), H, dt, nat_cfg or {})
     for t, a_t in enumerate(accel_schedule.tolist()):
         v = max(0.0, v + float(a_t) * dt)
         s += v * dt
@@ -342,6 +361,53 @@ def _timed_polyline_trajectory(
     return out
 
 
+
+def _required_route_length(current: np.ndarray, horizon: int, dt: float, nat_cfg: dict, *, accel: float = 0.0, speed_offset: float = 0.0) -> float:
+    T = float(horizon) * float(dt)
+    v0 = max(float(current[5] if len(current) > 5 else np.linalg.norm(current[3:5])) + float(speed_offset), 0.0)
+    return max(
+        5.0,
+        v0 * T + 0.5 * max(float(accel), 0.0) * T * T + float(nat_cfg.get("map_route_length_margin_m", 8.0)),
+    )
+
+
+def _retime_route_polylines(
+    routes: list[np.ndarray],
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    nat_cfg: dict,
+    *,
+    accel: float = 0.0,
+    speed_offset: float = 0.0,
+) -> list[np.ndarray]:
+    """Retime a precomputed lane-topology route bank without re-running graph search."""
+    out: list[np.ndarray] = []
+    for route in routes:
+        tr = _timed_polyline_trajectory(
+            route,
+            current,
+            horizon,
+            dt,
+            accel=float(accel),
+            speed_offset=float(speed_offset),
+            nat_cfg=nat_cfg,
+        )
+        if tr is not None and np.all(np.isfinite(tr)):
+            out.append(tr)
+    return out
+
+
+def _ordered_neutral_specs(nat_cfg: dict) -> list[tuple[float, float]]:
+    """Spend the finite NEU budget on identity/mild interventions before extremes."""
+    accs = [float(x) for x in nat_cfg.get("neutral_acc_values_mps2", [-1.0, -0.5, 0.0, 0.5, 1.0])]
+    voffs = [float(x) for x in nat_cfg.get("neutral_target_speed_offsets_mps", [-2.0, 0.0, 2.0])]
+    a_scale = max([abs(x) for x in accs] + [1.0])
+    v_scale = max([abs(x) for x in voffs] + [1.0])
+    specs = [(a, v) for a in accs for v in voffs]
+    specs.sort(key=lambda z: (abs(z[0]) / a_scale + abs(z[1]) / v_scale, max(abs(z[0]) / a_scale, abs(z[1]) / v_scale), abs(z[0]), abs(z[1]), z[0], z[1]))
+    return specs
+
 def _map_route_trajectory_variants(
     scene: ScenarioData,
     current: np.ndarray,
@@ -352,16 +418,9 @@ def _map_route_trajectory_variants(
     accel: float = 0.0,
     speed_offset: float = 0.0,
 ) -> list[np.ndarray]:
-    T = float(horizon) * float(dt)
-    v0 = max(float(current[5] if len(current) > 5 else np.linalg.norm(current[3:5])) + float(speed_offset), 0.0)
-    required = max(5.0, v0 * T + 0.5 * max(float(accel), 0.0) * T * T + float(nat_cfg.get("map_route_length_margin_m", 8.0)))
+    required = _required_route_length(current, horizon, dt, nat_cfg, accel=float(accel), speed_offset=float(speed_offset))
     routes = _map_route_polylines(scene, current, required, nat_cfg)
-    out: list[np.ndarray] = []
-    for route in routes:
-        tr = _timed_polyline_trajectory(route, current, horizon, dt, accel=float(accel), speed_offset=float(speed_offset))
-        if tr is not None and np.all(np.isfinite(tr)):
-            out.append(tr)
-    return out
+    return _retime_route_polylines(routes, current, horizon, dt, nat_cfg, accel=float(accel), speed_offset=float(speed_offset))
 
 
 def build_pair_specific_ego_neutrals(
@@ -395,8 +454,10 @@ def build_pair_specific_ego_neutrals(
     # only as an offline fallback, never logged timing.
     controls = [float(x) for x in nat_cfg.get("pair_neutral_acc_values_mps2", [0.0, -0.75, -1.5, -2.5, 0.75])]
     ego_bank: list[tuple[np.ndarray, float, str]] = []
+    max_required = max(_required_route_length(ego_cur, H, dt, nat_cfg, accel=acc) for acc in controls) if controls else 5.0
+    ego_routes = _map_route_polylines(scene, ego_cur, max_required, nat_cfg)
     for acc in controls:
-        for tr in _map_route_trajectory_variants(scene, ego_cur, H, dt, nat_cfg, accel=acc):
+        for tr in _retime_route_polylines(ego_routes, ego_cur, H, dt, nat_cfg, accel=acc):
             ego_bank.append((tr, abs(acc), "map_route"))
     ego_fut = scene.states[scene.sdc_track_index, cur + 1 : cur + 1 + H, :]
     if len(ego_fut) and np.any(ego_fut[:, 10] > 0.5):
@@ -428,7 +489,7 @@ def build_pair_specific_ego_neutrals(
         map_ref = _map_route_trajectory_variants(scene, agent_cur, H, dt, nat_cfg, accel=0.0)
         if map_ref:
             if np.any(fut_valid):
-                agent_ref = min(map_ref, key=lambda tr: _traj_distance(tr, logged))
+                agent_ref = min(map_ref, key=lambda tr: _traj_distance_to_valid_future(tr, fut, fut_valid))
             else:
                 agent_ref = map_ref[0]
             ref_kind = "map_route"
@@ -496,33 +557,75 @@ def _ordered_observational_specs(nat_cfg: dict) -> list[tuple[float, float, floa
     return specs
 
 
-def _lane_point_cloud(scene: ScenarioData) -> np.ndarray:
-    chunks = [np.asarray(lane.xy, dtype=np.float32) for lane in scene.map_data.lanes.values() if len(lane.xy)]
-    if not chunks:
-        return np.zeros((0, 2), dtype=np.float32)
-    return np.concatenate(chunks, axis=0)[:, :2]
+
+def _lane_segment_cloud(scene: ScenarioData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Continuous lane-centre geometry for map compliance.
+
+    The v16.8.11 point-cloud proxy measured distance only to sampled lane points.
+    A trajectory lying exactly on a long lane segment could therefore be farther
+    than 5 m from every *sample point* and be rejected as off-map.  Use exact
+    point-to-segment distance while keeping the same physical thresholds.
+    """
+    starts: list[np.ndarray] = []
+    vecs: list[np.ndarray] = []
+    lens2: list[np.ndarray] = []
+    for lane in scene.map_data.lanes.values():
+        xy = np.asarray(lane.xy, dtype=np.float32)
+        if xy.ndim != 2 or len(xy) < 2:
+            continue
+        a = xy[:-1, :2]
+        v = xy[1:, :2] - a
+        l2 = np.sum(v * v, axis=-1)
+        keep = np.isfinite(l2) & (l2 > 1.0e-8) & np.all(np.isfinite(a), axis=-1) & np.all(np.isfinite(v), axis=-1)
+        if np.any(keep):
+            starts.append(a[keep])
+            vecs.append(v[keep])
+            lens2.append(l2[keep])
+    if not starts:
+        return (
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0, 2), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+        )
+    return (
+        np.concatenate(starts, axis=0).astype(np.float32),
+        np.concatenate(vecs, axis=0).astype(np.float32),
+        np.concatenate(lens2, axis=0).astype(np.float32),
+    )
 
 
 def _trajectory_map_compliance(
-    tr: np.ndarray, lane_points: np.ndarray, object_type: int, nat_cfg: dict
+    tr: np.ndarray,
+    lane_segments: tuple[np.ndarray, np.ndarray, np.ndarray],
+    object_type: int,
+    nat_cfg: dict,
 ) -> tuple[bool, float, bool]:
-    """Best-effort drivable-corridor check used during label construction.
-
-    It intentionally returns ``verified=False`` when no lane geometry exists, so
-    missing map detail is not silently reported as a successful map check.
-    """
+    """Continuous lane-centre corridor check used during label construction."""
     if not bool(nat_cfg.get("map_filter_enabled", True)):
         return True, -1.0, False
-    if lane_points.size == 0:
+    seg_a, seg_v, seg_l2 = lane_segments
+    if seg_a.size == 0:
         return (not bool(nat_cfg.get("map_filter_require_available", False))), -1.0, False
     stride = max(1, int(nat_cfg.get("map_filter_stride", 4)))
     xy = np.asarray(tr, dtype=np.float32)[::stride, :2]
     if xy.size == 0 or not np.all(np.isfinite(xy)):
         return False, float("inf"), True
-    # Lane points in WOMD are dense enough for this sampled point-cloud distance
-    # to be a conservative and much faster proxy than per-step polyline search.
-    d2 = ((xy[:, None, :] - lane_points[None, :, :]) ** 2).sum(axis=-1)
-    d = np.sqrt(np.min(d2, axis=1))
+
+    # Compute exact point-to-polyline-segment distances.  Chunking bounds the
+    # temporary [trajectory_points, segments, 2] tensor on map-heavy scenes.
+    min_d2 = np.full(len(xy), np.inf, dtype=np.float64)
+    chunk = max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128)
+    for lo in range(0, len(seg_a), chunk):
+        a = seg_a[lo : lo + chunk]
+        v = seg_v[lo : lo + chunk]
+        l2 = seg_l2[lo : lo + chunk]
+        rel = xy[:, None, :] - a[None, :, :]
+        u = np.sum(rel * v[None, :, :], axis=-1) / np.maximum(l2[None, :], 1.0e-8)
+        u = np.clip(u, 0.0, 1.0)
+        proj = a[None, :, :] + u[..., None] * v[None, :, :]
+        d2 = np.sum((xy[:, None, :] - proj) ** 2, axis=-1)
+        min_d2 = np.minimum(min_d2, np.min(d2, axis=1))
+    d = np.sqrt(np.maximum(min_d2, 0.0))
     if int(object_type) == int(ObjectType.VEHICLE):
         threshold = float(nat_cfg.get("map_max_distance_vehicle_m", 5.0))
     else:
@@ -531,7 +634,6 @@ def _trajectory_map_compliance(
     hard_max = float(nat_cfg.get("map_hard_max_distance_m", 12.0))
     ok = float(np.mean(d <= threshold)) >= min_fraction and float(np.max(d)) <= hard_max
     return bool(ok), float(np.max(d)), True
-
 
 def _observed_yield_contamination(
     scene: ScenarioData, agent_index: int, logged: np.ndarray, ego_neutral_traj: np.ndarray,
@@ -608,7 +710,7 @@ def generate_natural_alternatives(
     map_compliant = np.zeros((A, M), dtype=bool)
     map_distance_max = np.full((A, M), -1.0, dtype=np.float32)
     map_verified = np.zeros((A, M), dtype=bool)
-    lane_points = _lane_point_cloud(scene)
+    lane_segments = _lane_segment_cloud(scene)
     diagnostics: list[dict[str, object]] = []
 
     neutral_bank = np.asarray(ego_neutral_traj, dtype=np.float32)
@@ -625,7 +727,6 @@ def generate_natural_alternatives(
     dedup_dist = max(float(nat_cfg.get("root_dedup_mean_distance_m", 0.10)), 0.0)
     obs_min_steps = max(int(nat_cfg.get("obs_min_future_valid_steps", 60)), 0)
     obs_min_frac = float(np.clip(nat_cfg.get("obs_min_future_valid_fraction", 0.70), 0.0, 1.0))
-    ref_min_frac = float(np.clip(nat_cfg.get("logged_reference_min_future_valid_fraction", 0.50), 0.0, 1.0))
 
     for a in range(A):
         if not bool(critical["valid"][a]):
@@ -646,20 +747,39 @@ def generate_natural_alternatives(
 
         pair_neutral = neutral_for_slot(a)
         rho = PriorityRelation(int(critical.get("base_priority", np.zeros(A, dtype=np.int32))[a]))
-        # Build an observed-timing-independent map reference for partial tracks.
-        map_refs = _map_route_trajectory_variants(scene, current, H, dt, nat_cfg, accel=0.0)
-        if has_future and valid_frac >= ref_min_frac:
-            natural_ref = logged
-            reference_kind = "logged"
-        elif map_refs:
-            natural_ref = min(map_refs, key=lambda tr: _traj_distance(tr, logged)) if has_future else map_refs[0]
-            reference_kind = "map_route"
+
+        # Build a timing-neutral route reference even when the full logged future
+        # exists.  Raw logged timing remains OBS supervision, but it is not a
+        # normative progress/burden baseline for NEU/PRIO roots because it may
+        # already contain ego-induced yielding or unrelated interaction effects.
+        neutral_accs = [float(x) for x in nat_cfg.get("neutral_acc_values_mps2", [-1.0, -0.5, 0.0, 0.5, 1.0])]
+        neutral_voffs = [float(x) for x in nat_cfg.get("neutral_target_speed_offsets_mps", [-2.0, 0.0, 2.0])]
+        prio_accs = [float(x) for x in nat_cfg.get("prio_acc_values_mps2", [-0.5, 0.0, 0.5])]
+        map_fb_accs = [float(x) for x in nat_cfg.get("map_route_neutral_acc_values_mps2", [0.0, -0.5, 0.5, -1.0, 1.0])]
+        all_accs = neutral_accs + prio_accs + map_fb_accs
+        max_acc = max(all_accs + [0.0])
+        max_voff = max(neutral_voffs + [0.0])
+        required = _required_route_length(current, H, dt, nat_cfg, accel=max_acc, speed_offset=max_voff)
+        route_polylines = _map_route_polylines(scene, current, required, nat_cfg)
+
+        def route_variants(acc: float = 0.0, speed_offset: float = 0.0) -> list[np.ndarray]:
+            return _retime_route_polylines(
+                route_polylines, current, H, dt, nat_cfg, accel=float(acc), speed_offset=float(speed_offset)
+            )
+
+        map_refs = route_variants(0.0, 0.0)
+        if map_refs:
+            if has_future:
+                natural_ref = min(map_refs, key=lambda tr: _traj_distance_to_valid_future(tr, fut_states, fut_mask))
+            else:
+                natural_ref = map_refs[0]
+            reference_kind = "map_route_neutral_timing"
         elif has_future:
             natural_ref = _route_geometry_timed_trajectory(logged, current, H, dt, accel=0.0, nat_cfg=nat_cfg)
-            reference_kind = "logged_geometry"
+            reference_kind = "logged_geometry_neutral_timing"
         else:
             natural_ref = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=0.0)
-            reference_kind = "straight"
+            reference_kind = "straight_neutral_timing"
 
         if rho == PriorityRelation.UNKNOWN:
             rho = determine_priority(scene, idx, pair_neutral, natural_ref, cfg)
@@ -683,24 +803,47 @@ def generate_natural_alternatives(
                 )
                 candidates.append((tr, NaturalSource.OBS, float(nat_cfg.get("source_weight_obs", 1.0)), obs_contam, "primary_obs"))
         if use_neu:
+            max_neu = int(nat_cfg.get("max_neutral_samples", 8))
             count = 0
-            for acc in nat_cfg.get("neutral_acc_values_mps2", [-1.0, -0.5, 0.0, 0.5, 1.0]):
-                for voff in nat_cfg.get("neutral_target_speed_offsets_mps", [-2.0, 0.0, 2.0]):
-                    if count >= int(nat_cfg.get("max_neutral_samples", 8)):
-                        break
+            for acc, voff in _ordered_neutral_specs(nat_cfg):
+                if count >= max_neu:
+                    break
+                variants = route_variants(acc, voff)
+                if variants:
+                    for tr in variants:
+                        candidates.append((tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "primary_neu_map_route"))
+                        count += 1
+                        if count >= max_neu:
+                            break
+                elif has_future:
+                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), speed_offset=float(voff), nat_cfg=nat_cfg)
+                    candidates.append((tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "primary_neu_logged_geometry"))
+                    count += 1
+                else:
                     tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc), speed_offset=float(voff))
                     candidates.append((tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "primary_neu_straight"))
                     count += 1
-                if count >= int(nat_cfg.get("max_neutral_samples", 8)):
-                    break
         if use_prio:
+            max_prio = int(nat_cfg.get("prio_max_samples", 8))
             count = 0
-            for acc in nat_cfg.get("prio_acc_values_mps2", [-0.5, 0.0, 0.5]):
-                if count >= int(nat_cfg.get("prio_max_samples", 8)):
+            for acc in prio_accs:
+                if count >= max_prio:
                     break
-                tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc))
-                candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_straight"))
-                count += 1
+                variants = route_variants(acc, 0.0)
+                if variants:
+                    for tr in variants:
+                        candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_map_route"))
+                        count += 1
+                        if count >= max_prio:
+                            break
+                elif has_future:
+                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), nat_cfg=nat_cfg)
+                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_logged_geometry"))
+                    count += 1
+                else:
+                    tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc))
+                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_straight"))
+                    count += 1
         if not candidates:
             # Preserve legacy ablation behavior: a completely empty branch union
             # gets one observational anchor rather than producing malformed labels.
@@ -710,6 +853,10 @@ def generate_natural_alternatives(
         low_kept = 0
         raw_w = np.zeros(M, dtype=np.float32)
         reject_counts = {k: 0 for k in ("nonfinite", "map", "burden", "contamination", "priority", "duplicate", "capacity")}
+        priority_rejection_reasons: dict[str, int] = {}
+        map_rejected_min_max_distance = float("inf")
+        map_rejected_max_max_distance = 0.0
+        best_rejected_burden = float("inf")
         accepted_by_phase: dict[str, int] = {}
         attempted_by_phase: dict[str, int] = {}
 
@@ -720,7 +867,7 @@ def generate_natural_alternatives(
             contamination: float,
             phase: str,
         ) -> bool:
-            nonlocal kept, low_kept
+            nonlocal kept, low_kept, map_rejected_min_max_distance, map_rejected_max_max_distance, best_rejected_burden
             attempted_by_phase[phase] = attempted_by_phase.get(phase, 0) + 1
             if kept >= M:
                 reject_counts["capacity"] += 1
@@ -741,8 +888,8 @@ def generate_natural_alternatives(
                 natural_ref=natural_ref,
                 rho=rho,
             )
-            pr_ok = priority_preserved(tr, natural_ref, rho, cfg)
-            map_ok, map_dist, map_was_verified = _trajectory_map_compliance(tr, lane_points, object_type, nat_cfg)
+            pr_ok, pr_reason = priority_preservation_check(tr, natural_ref, rho, cfg)
+            map_ok, map_dist, map_was_verified = _trajectory_map_compliance(tr, lane_segments, object_type, nat_cfg)
             plausible = bool(float(b_total) <= float(beta[a]) + plaus_margin)
             contamination_ok = not (
                 src == NaturalSource.OBS
@@ -751,12 +898,17 @@ def generate_natural_alternatives(
             priority_keep = bool(pr_ok or rho != PriorityRelation.AGENT_PRIORITY)
             if not map_ok:
                 reject_counts["map"] += 1
+                if np.isfinite(map_dist):
+                    map_rejected_min_max_distance = min(map_rejected_min_max_distance, float(map_dist))
+                    map_rejected_max_max_distance = max(map_rejected_max_max_distance, float(map_dist))
             if not plausible:
                 reject_counts["burden"] += 1
+                best_rejected_burden = min(best_rejected_burden, float(b_total))
             if not contamination_ok:
                 reject_counts["contamination"] += 1
             if not priority_keep:
                 reject_counts["priority"] += 1
+                priority_rejection_reasons[pr_reason] = priority_rejection_reasons.get(pr_reason, 0) + 1
             if not (map_ok and plausible and contamination_ok and priority_keep):
                 return False
             traj[a, kept] = tr
@@ -799,7 +951,7 @@ def generate_natural_alternatives(
         if not support_satisfied():
             if use_neu or (not use_obs and not use_prio):
                 for acc in nat_cfg.get("map_route_neutral_acc_values_mps2", [0.0, -0.5, 0.5, -1.0, 1.0]):
-                    for tr in _map_route_trajectory_variants(scene, current, H, dt, nat_cfg, accel=float(acc)):
+                    for tr in route_variants(float(acc), 0.0):
                         try_keep(tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "fallback_map_neu")
                         if support_satisfied() or kept >= M:
                             break
@@ -807,7 +959,7 @@ def generate_natural_alternatives(
                         break
             if not support_satisfied() and use_prio:
                 for acc in nat_cfg.get("map_route_prio_acc_values_mps2", [0.0, 0.5, -0.5]):
-                    for tr in _map_route_trajectory_variants(scene, current, H, dt, nat_cfg, accel=float(acc)):
+                    for tr in route_variants(float(acc), 0.0):
                         try_keep(tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "fallback_map_prio")
                         if support_satisfied() or kept >= M:
                             break
@@ -854,6 +1006,10 @@ def generate_natural_alternatives(
             "attempted_by_phase": attempted_by_phase,
             "accepted_by_phase": accepted_by_phase,
             "rejection_counts": reject_counts,
+            "priority_rejection_reasons": priority_rejection_reasons,
+            "map_rejected_min_max_distance_m": None if not np.isfinite(map_rejected_min_max_distance) else float(map_rejected_min_max_distance),
+            "map_rejected_max_max_distance_m": float(map_rejected_max_max_distance),
+            "best_rejected_burden": None if not np.isfinite(best_rejected_burden) else float(best_rejected_burden),
         })
 
     return {

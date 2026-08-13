@@ -95,25 +95,58 @@ def determine_priority(scene: ScenarioData, agent_index: int, ego_traj: np.ndarr
     return PriorityRelation.EQUAL_OR_NEGOTIATED
 
 
-def priority_preserved(agent_traj: np.ndarray, natural_ref: np.ndarray | None, rho: PriorityRelation, cfg: dict, gap_loss_m: float = 0.0) -> bool:
+def _projected_priority_progress(traj: np.ndarray, natural_ref: np.ndarray | None = None) -> float:
+    """Forward progress measured in the natural-reference direction.
+
+    Keep the hard priority filter on the same progress geometry as the burden
+    functional.  The previous endpoint-distance comparison mixed two different
+    notions of progress and could reject every comfort-bounded root on curved or
+    branch-changing lanes even when burden itself judged the root low-cost.
+    """
+    if traj is None or len(traj) < 2:
+        return 0.0
+    if natural_ref is not None and len(natural_ref) >= 2:
+        direction = np.asarray(natural_ref[-1, :2] - natural_ref[0, :2], dtype=np.float32)
+    else:
+        direction = np.asarray(traj[-1, :2] - traj[0, :2], dtype=np.float32)
+    norm = float(np.linalg.norm(direction))
+    if norm < 1.0e-3:
+        diffs = np.diff(np.asarray(traj[:, :2], dtype=np.float32), axis=0)
+        return float(np.sum(np.linalg.norm(diffs, axis=-1))) if len(diffs) else 0.0
+    direction = direction / norm
+    return float(np.dot(np.asarray(traj[-1, :2] - traj[0, :2], dtype=np.float32), direction))
+
+
+def priority_preservation_check(
+    agent_traj: np.ndarray,
+    natural_ref: np.ndarray | None,
+    rho: PriorityRelation,
+    cfg: dict,
+    gap_loss_m: float = 0.0,
+) -> tuple[bool, str]:
+    """Return the hard priority decision plus an auditable rejection reason."""
     pr_cfg = cfg.get("priority", {})
     dt = float(cfg.get("time", {}).get("dt", 0.1))
     if len(agent_traj) < 2:
-        return True
+        return True, "ok"
     speed = np.linalg.norm(agent_traj[:, 3:5], axis=-1)
     acc = np.diff(speed, prepend=speed[0]) / max(dt, 1e-3)
     jerk = np.diff(acc, prepend=acc[0]) / max(dt, 1e-3)
     if np.min(acc) < float(pr_cfg.get("max_comfort_decel_vehicle", -3.0)) - 0.25:
-        return False
+        return False, "max_decel"
     if np.max(acc) > float(pr_cfg.get("max_comfort_accel_vehicle", 2.5)) + 0.25:
-        return False
+        return False, "max_accel"
     if np.max(np.abs(jerk)) > float(pr_cfg.get("max_comfort_jerk_vehicle", 3.0)) + 1.0:
-        return False
+        return False, "max_jerk"
     if rho == PriorityRelation.AGENT_PRIORITY and natural_ref is not None and len(natural_ref):
-        progress_agent = float(np.linalg.norm(agent_traj[-1, :2] - agent_traj[0, :2]))
-        progress_nat = float(np.linalg.norm(natural_ref[-1, :2] - natural_ref[0, :2]))
+        progress_agent = _projected_priority_progress(agent_traj, natural_ref)
+        progress_nat = _projected_priority_progress(natural_ref, natural_ref)
         if progress_nat - progress_agent > float(pr_cfg.get("priority_progress_loss_tolerance_m", 5.0)):
-            return False
+            return False, "progress_loss"
     if gap_loss_m > float(pr_cfg.get("gap_loss_threshold_m", 6.0)):
-        return False
-    return True
+        return False, "gap_loss"
+    return True, "ok"
+
+
+def priority_preserved(agent_traj: np.ndarray, natural_ref: np.ndarray | None, rho: PriorityRelation, cfg: dict, gap_loss_m: float = 0.0) -> bool:
+    return priority_preservation_check(agent_traj, natural_ref, rho, cfg, gap_loss_m=gap_loss_m)[0]
