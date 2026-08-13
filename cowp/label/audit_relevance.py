@@ -97,12 +97,13 @@ def compute_candidate_agent_audit(
     ))
     direct_margin = float(cfg.get("ncf", {}).get("audit_direct_burden_margin", 0.0))
 
+    mechanism_mask = np.asarray(critical.get("mechanism_valid", critical["valid"]), dtype=bool)
     for k in range(K):
         if not bool(candidates["valid"][k]):
             continue
         ego = np.asarray(candidates["trajectory"][k], dtype=np.float32)
         for a in range(A):
-            if not bool(critical["valid"][a]):
+            if not bool(critical["valid"][a]) or a >= len(mechanism_mask) or not bool(mechanism_mask[a]):
                 continue
             idx = int(critical["track_index"][a])
             object_type = int(scene.object_type[idx])

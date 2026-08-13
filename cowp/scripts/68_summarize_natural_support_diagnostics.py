@@ -22,7 +22,7 @@ def _bucket_future(valid_steps: int) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Summarize v16.8.12 pair-neutral/natural-root construction diagnostics.")
+    ap = argparse.ArgumentParser(description="Summarize v16.8.13 pair-neutral/natural-root construction diagnostics with auditability coverage.")
     ap.add_argument("--input", required=True, help="01_build_labels_from_proto --profile-jsonl output")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
@@ -30,7 +30,12 @@ def main() -> None:
     profile = Path(args.input)
     rows = 0
     written = 0
-    critical = 0
+    critical_selected = 0
+    critical = 0  # mechanism-auditable selected critical agents
+    unauditable = 0
+    protected = 0
+    protected_without_prio = 0
+    empirical_roots = 0
     rootless = 0
     lt2_low = 0
     neutral_unsafe = 0
@@ -80,13 +85,38 @@ def main() -> None:
             for d in naturals:
                 if not isinstance(d, dict) or not bool(d.get("valid", False)):
                     continue
-                critical += 1
+                critical_selected += 1
                 slot = int(d.get("slot", -1))
                 steps = int(d.get("future_valid_steps", 0))
                 bucket = _bucket_future(steps)
+                mechanism_valid = bool(d.get("mechanism_valid", True))
+                if not mechanism_valid:
+                    unauditable += 1
+                    if len(examples["unauditable"]) < 50:
+                        examples["unauditable"].append({
+                            "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
+                            "rho": d.get("rho"), "future_valid_steps": steps,
+                            "future_valid_fraction": d.get("future_valid_fraction"),
+                            "reference_kind": d.get("reference_kind", "unauditable"),
+                        })
+                    continue
+                critical += 1
                 future_total[bucket] += 1
                 roots = int(d.get("root_count", 0))
                 low = int(d.get("low_burden_root_count", 0))
+                rho_int = int(d.get("rho", -1))
+                prio_roots = int(d.get("prio_root_count", 0))
+                empirical_roots += int(d.get("empirical_corridor_root_count", 0))
+                if rho_int in (2, 3):
+                    protected += 1
+                    if prio_roots <= 0:
+                        protected_without_prio += 1
+                        if len(examples["protected_without_prio"]) < 50:
+                            examples["protected_without_prio"].append({
+                                "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
+                                "rho": rho_int, "root_count": roots, "low_burden_root_count": low,
+                                "reference_kind": d.get("reference_kind"), "accepted_by_phase": d.get("accepted_by_phase", {}),
+                            })
                 is_rootless = roots <= 0
                 is_lt2 = low < 2
                 reject_row = {str(k): int(v) for k, v in (d.get("rejection_counts", {}) or {}).items()}
@@ -175,11 +205,18 @@ def main() -> None:
         return {"min": float(vals[0]), "p50": q(0.50), "p90": q(0.90), "max": float(vals[-1])}
 
     report = {
-        "schema_version": "cowp_v16_8_12_natural_support_diagnostic_v2",
+        "schema_version": "cowp_v16_8_13_natural_support_diagnostic_v3",
         "profile_jsonl": str(profile.resolve()),
         "rows": rows,
         "written_scenes": written,
+        "critical_agents_selected": critical_selected,
         "critical_agents": critical,
+        "mechanism_auditable_critical_agents": critical,
+        "mechanism_unauditable_critical_agents": unauditable,
+        "mechanism_unauditable_rate": rate(unauditable, critical_selected),
+        "protected_auditable_critical_agents": protected,
+        "protected_without_prio_root": protected_without_prio,
+        "empirical_corridor_roots": empirical_roots,
         "rootless_critical_agents": rootless,
         "rootless_rate": rate(rootless, critical),
         "critical_agents_with_lt2_low_burden_roots": lt2_low,
@@ -221,7 +258,7 @@ def main() -> None:
     }
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(json.dumps({k: report[k] for k in ("critical_agents", "rootless_critical_agents", "rootless_rate", "critical_agents_with_lt2_low_burden_roots", "lt2_low_burden_rate", "pair_neutral_unsafe_rate", "obs_ineligible_rate")}, indent=2, ensure_ascii=False))
+    print(json.dumps({k: report[k] for k in ("critical_agents_selected", "mechanism_auditable_critical_agents", "mechanism_unauditable_critical_agents", "mechanism_unauditable_rate", "rootless_critical_agents", "rootless_rate", "critical_agents_with_lt2_low_burden_roots", "lt2_low_burden_rate", "protected_without_prio_root", "empirical_corridor_roots")}, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

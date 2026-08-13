@@ -74,14 +74,17 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
         data = {k: data_npz[k] for k in data_npz.files}
     sid = str(data["scenario/id"].item()) if "scenario/id" in data else Path(path).stem
     cand_valid = np.asarray(data["cowp/candidates/valid"], dtype=bool)
-    crit_valid = np.asarray(data["cowp/critical/valid"], dtype=bool)
+    cert_valid = np.asarray(data.get("cowp/candidates/certificate_valid", cand_valid), dtype=bool) & cand_valid
+    crit_selected = np.asarray(data["cowp/critical/valid"], dtype=bool)
+    mechanism_valid = np.asarray(data.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool) & crit_selected
+    crit_valid = mechanism_valid
     witness = np.asarray(data["cowp/witness/exists"], dtype=bool)
     pair_mask = cand_valid[:, None] & crit_valid[None, :]
     valid_pair_count = int(np.sum(pair_mask))
 
     conventional = np.asarray(data["cowp/candidates/conventional_safe"], dtype=bool) & cand_valid
-    false_safe = np.asarray(data["cowp/candidates/false_safe"], dtype=bool) & cand_valid
-    ncf = np.asarray(data["cowp/candidates/noncoercive_feasible"], dtype=bool) & cand_valid
+    false_safe = np.asarray(data["cowp/candidates/false_safe"], dtype=bool) & cert_valid
+    ncf = np.asarray(data["cowp/candidates/noncoercive_feasible"], dtype=bool) & cert_valid
     positive_mask = witness & pair_mask
 
     response_valid = np.asarray(data.get("cowp/response/valid", np.zeros((*pair_mask.shape, 0))), dtype=bool)
@@ -171,7 +174,11 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
         "scene_types": scene_types,
         "min_future_dist": min_future_dist,
         "candidate_valid": int(cand_valid.sum()),
-        "critical_valid": int(crit_valid.sum()),
+        "critical_valid": int(crit_selected.sum()),
+        "critical_mechanism_valid": int(crit_valid.sum()),
+        "critical_mechanism_unauditable": int((crit_selected & ~crit_valid).sum()),
+        "certificate_valid_candidates": int(cert_valid.sum()),
+        "certificate_complete": bool(np.all((~cand_valid) | cert_valid)),
         "valid_pairs": valid_pair_count,
         "positive_pairs": int(np.sum(positive_mask)),
         "positive_pair_ratio": _safe_ratio(np.sum(positive_mask), valid_pair_count),
@@ -179,9 +186,9 @@ def summarize_label_file(path: str | Path) -> dict[str, float | int | str | bool
         "false_safe_candidates": int(np.sum(false_safe)),
         "ncf_candidates": int(np.sum(ncf)),
         "conventional_safe_candidate_ratio": _safe_ratio(np.sum(conventional), np.sum(cand_valid)),
-        "false_safe_candidate_ratio": _safe_ratio(np.sum(false_safe), np.sum(cand_valid)),
-        "false_safe_among_conventional_safe": _safe_ratio(np.sum(false_safe), np.sum(conventional)),
-        "ncf_candidate_ratio": _safe_ratio(np.sum(ncf), np.sum(cand_valid)),
+        "false_safe_candidate_ratio": _safe_ratio(np.sum(false_safe), np.sum(cert_valid)),
+        "false_safe_among_conventional_safe": _safe_ratio(np.sum(false_safe), np.sum(conventional & cert_valid)),
+        "ncf_candidate_ratio": _safe_ratio(np.sum(ncf), np.sum(cert_valid)),
         "stress_eligible": bool(np.any(false_safe) and np.any(ncf)),
         "response_has_safe_pairs": int(np.sum(has_safe_response & pair_mask)),
         "response_has_low_burden_pairs": int(np.sum(has_low_response & pair_mask)),

@@ -15,12 +15,13 @@ from cowp.utils.progress import tqdm_iter
 
 def _selected_candidates(label: dict[str, np.ndarray], cfg: dict, selection: str) -> np.ndarray:
     valid = label["cowp/candidates/valid"].astype(bool)
+    cert_valid = np.asarray(label.get("cowp/candidates/certificate_valid", valid), dtype=bool) & valid
     if selection == "all":
         return valid
     if selection == "noncoercive":
-        return valid & label["cowp/candidates/noncoercive_feasible"].astype(bool)
+        return cert_valid & label["cowp/candidates/noncoercive_feasible"].astype(bool)
     if selection == "false_safe":
-        return valid & label["cowp/candidates/false_safe"].astype(bool)
+        return cert_valid & label["cowp/candidates/false_safe"].astype(bool)
     planner = COWPPlanner(cfg)
     dec = planner.select_from_labels(label)
     out = np.zeros_like(valid)

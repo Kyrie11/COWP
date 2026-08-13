@@ -192,10 +192,10 @@ run natural_support_labels_val "$PYTHON_BIN" -m cowp.scripts.68_summarize_natura
 # Audit active learned-label support before spending additional I/O on WOMD
 # tensor merges. This is stricter than the original seven-head class check.
 run model_support_labels_train "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
-  --cache-dir "$LABELS_TRAIN" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --strict \
+  --cache-dir "$LABELS_TRAIN" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --max-unauditable-critical-rate 0.01 --min-certificate-complete-scene-rate 0.98 --strict \
   --output "$COWP_ROOT/model_support_audit_labels_train.json"
 run model_support_labels_val "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
-  --cache-dir "$LABELS_VAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --strict \
+  --cache-dir "$LABELS_VAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --max-unauditable-critical-rate 0.01 --min-certificate-complete-scene-rate 0.98 --strict \
   --output "$COWP_ROOT/model_support_audit_labels_val.json"
 
 if [[ "$RUN_LABEL_DIAGNOSTICS" == "1" ]]; then
@@ -280,10 +280,10 @@ run supervision_val "$PYTHON_BIN" -m cowp.scripts.62_audit_training_supervision 
   --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --strict \
   --output "$COWP_ROOT/training_supervision_audit_val.json"
 run model_support_cache_train "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
-  --cache-dir "$TRAIN_CACHE_FINAL" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --strict \
+  --cache-dir "$TRAIN_CACHE_FINAL" --sample-scenes 0 --min-class-examples 128 --min-source-examples 128 --max-unauditable-critical-rate 0.01 --min-certificate-complete-scene-rate 0.98 --strict \
   --output "$COWP_ROOT/model_support_audit_cache_train.json"
 run model_support_cache_val "$PYTHON_BIN" -m cowp.scripts.65_audit_model_support \
-  --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --strict \
+  --cache-dir "$VAL_CACHE_FINAL" --sample-scenes 0 --min-class-examples 32 --min-source-examples 32 --max-unauditable-critical-rate 0.01 --min-certificate-complete-scene-rate 0.98 --strict \
   --output "$COWP_ROOT/model_support_audit_cache_val.json"
 
 # Recompute the full validation proposal ceiling from the actual post-merge cache.

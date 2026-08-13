@@ -142,6 +142,7 @@ STAGE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "planner_core": (
         "cowp/candidates/trajectory",
         "cowp/candidates/valid",
+        "cowp/candidates/certificate_valid",
         "cowp/candidates/conventional_safe",
         "cowp/candidates/false_safe",
         "cowp/candidates/noncoercive_feasible",
@@ -181,6 +182,7 @@ def _scan_one(path: str, logdiv_unsafe_threshold: float) -> dict[str, Any]:
     sid = _scenario_id(arrays, path)
     valid = _bool_1d(arrays.get("cowp/candidates/valid"))
     K = int(valid.size)
+    certificate_valid = _bool_1d(arrays.get("cowp/candidates/certificate_valid", valid), K) & valid if K else valid
     result.update({
         "scenario_id": sid,
         "K": K,
@@ -199,7 +201,11 @@ def _scan_one(path: str, logdiv_unsafe_threshold: float) -> dict[str, Any]:
     class_masks: dict[str, np.ndarray] = {}
     for name, key in CLASS_KEYS.items():
         default = valid if name == "valid" else np.zeros(K, dtype=bool)
-        class_masks[name] = _bool_1d(arrays.get(key, default), K) & valid
+        base_mask = _bool_1d(arrays.get(key, default), K) & valid
+        if name in {"false_safe", "noncoercive_feasible"}:
+            base_mask &= certificate_valid
+        class_masks[name] = base_mask
+    class_masks["certificate_valid"] = certificate_valid
 
     selected = _bool_1d(arrays.get("waymax/candidate_selected_for_rollout"), K)
     rollout_valid = _bool_1d(arrays.get("waymax/candidate_rollout_valid"), K)
@@ -263,6 +269,7 @@ def _scan_one(path: str, logdiv_unsafe_threshold: float) -> dict[str, Any]:
         "candidate_summary": {
             "total_slots": K,
             "valid": int(valid.sum()),
+            "certificate_valid": int(certificate_valid.sum()),
             "selected": int(selected.sum()),
             "rollout_valid": int(rv.sum()),
             "selected_and_rollout_valid": int((selected & rv).sum()),

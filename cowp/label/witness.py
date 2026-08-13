@@ -167,9 +167,10 @@ def certify_witnesses(
     # the ego candidate. Reuse the exact deterministic tube while keeping every
     # safety/burden evaluation candidate-conditioned.
     recovery_banks: dict[tuple[int, int], list[np.ndarray]] = {}
+    mechanism_mask = np.asarray(critical.get("mechanism_valid", critical["valid"]), dtype=bool)
     if bool(cfg.get("response", {}).get("root_conditioned_transport", {}).get("enabled", True)):
         for a in range(A):
-            if not bool(critical["valid"][a]):
+            if not bool(critical["valid"][a]) or a >= len(mechanism_mask) or not bool(mechanism_mask[a]):
                 continue
             for root in np.where(np.asarray(natural["valid"][a], dtype=bool))[0]:
                 recovery_banks[(a, int(root))] = build_root_recovery_trajectory_bank(
@@ -183,7 +184,7 @@ def certify_witnesses(
         conventional_safe[k] = conventional_candidate_safe(ego, other_logged, cfg)
         all_ncf = conventional_safe[k]
         for a in range(A):
-            if not critical["valid"][a]:
+            if not critical["valid"][a] or a >= len(mechanism_mask) or not mechanism_mask[a]:
                 continue
             idx = int(critical["track_index"][a])
             object_type = int(scene.object_type[idx])
@@ -456,7 +457,7 @@ def certify_witnesses(
             candidate_min_audited_opr[k] = min(candidate_min_audited_opr[k], float(opr[k, a]))
             candidate_max_audited_tail[k] = max(candidate_max_audited_tail[k], float(tail_burden_excess[k, a]))
             all_ncf = all_ncf and pair_ncf
-        false_safe[k] = conventional_safe[k] and bool(np.any(exists[k] & critical["valid"]))
+        false_safe[k] = conventional_safe[k] and bool(np.any(exists[k] & critical["valid"] & mechanism_mask))
         ncf[k] = bool(all_ncf)
     return {
         "exists": exists,

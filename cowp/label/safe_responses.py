@@ -372,8 +372,9 @@ def generate_safe_responses(
     budget_bank: dict[int, list] = {}
     budget_enabled = bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True))
     dt = float(cfg.get("time", {}).get("dt", 0.1))
+    mechanism_mask = np.asarray(critical.get("mechanism_valid", critical["valid"]), dtype=bool)
     for a in range(A):
-        if critical["valid"][a]:
+        if critical["valid"][a] and a < len(mechanism_mask) and mechanism_mask[a]:
             primitive_bank[a] = _response_primitives_for_agent(scene, a, critical, natural, cfg)
             if budget_enabled:
                 curr_idx = int(critical["track_index"][a])

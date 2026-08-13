@@ -1122,6 +1122,7 @@ def offline_candidate_eval(labels_dir: str | Path, cfg: dict, method: str = "cow
 _EVAL_LABEL_KEYS = {
     "cowp/candidates/trajectory",
     "cowp/candidates/valid",
+    "cowp/candidates/certificate_valid",
     "cowp/candidates/macro_type",
     "cowp/candidates/ego_utility_prior",
     "cowp/candidates/is_neutral",
@@ -1130,6 +1131,7 @@ _EVAL_LABEL_KEYS = {
     "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/natural/beta",
     "cowp/witness/exists",
     "cowp/witness/token",
@@ -1180,6 +1182,7 @@ class _LabelMetricAccumulator:
         self.hbcr = 0
         self.collision_or_offroad = 0
         self.fallback_count = 0
+        self.certificate_eval_count = 0
         self.progress_m_sum = 0.0
         self.progress_norm_sum = 0.0
 
@@ -1205,7 +1208,13 @@ class _LabelMetricAccumulator:
         self.progress_m_sum += float(p_m)
         self.progress_norm_sum += float(np.clip(p_m / ref_progress, 0.0, 1.0))
 
-        crit = np.asarray(label.get("cowp/critical/valid", []), dtype=bool)
+        cert_valid = np.asarray(label.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[:len(valid)] & valid
+        if k >= len(cert_valid) or not bool(cert_valid[k]):
+            return
+        self.certificate_eval_count += 1
+        crit_selected = np.asarray(label.get("cowp/critical/valid", []), dtype=bool)
+        mech = np.asarray(label.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool).reshape(-1)[:len(crit_selected)]
+        crit = crit_selected & mech
         if crit.size == 0:
             return
         wit = np.asarray(label.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)[k] & crit
@@ -1233,7 +1242,8 @@ class _LabelMetricAccumulator:
             "FSR": float(self.false_safe / max(self.cf_count, 1)),
             "CBS": float(self.cbs_sum / max(self.cbs_count, 1)),
             "OPR": float(self.opr_sum / max(self.opr_count, 1)),
-            "HBCR": float(self.hbcr / max(self.n, 1)),
+            "HBCR": float(self.hbcr / max(self.certificate_eval_count, 1)),
+            "CertificateLabelCoverage/SelectedRate": float(self.certificate_eval_count / max(self.n, 1)),
         }
 
 
@@ -1265,13 +1275,17 @@ class _LearnedMetricsAccumulator:
         self.witness_sums: dict[str, float] = {}
         self.witness_count = 0
         self.selected_total = 0
+        self.selected_certificate_count = 0
+        self.certificate_scene_count = 0
         self.selected_ncf = 0
         self.selected_false_safe = 0
         self.selected_conventional = 0
         self.selected_priority_eligible = 0
         self.selected_priority_false_safe = 0
         self.accepted_total = 0
+        self.accepted_certificate_total = 0
         self.valid_total = 0
+        self.valid_certificate_total = 0
         self.accepted_ncf = 0
         self.total_ncf = 0
         self.accepted_false_safe = 0
@@ -1338,17 +1352,22 @@ class _LearnedMetricsAccumulator:
         valid = np.asarray(label.get("cowp/candidates/valid", []), dtype=bool)
         if valid.size == 0:
             return
-        ncf = np.asarray(label.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool) & valid
-        fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & valid
+        cert_valid = np.asarray(label.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[:len(valid)] & valid
+        ncf = np.asarray(label.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool) & cert_valid
+        fs = np.asarray(label.get("cowp/candidates/false_safe", np.zeros_like(valid)), dtype=bool) & cert_valid
         conv = np.asarray(label.get("cowp/candidates/conventional_safe", valid), dtype=bool) & valid
-        crit = np.asarray(label.get("cowp/critical/valid", []), dtype=bool)
+        crit_selected = np.asarray(label.get("cowp/critical/valid", []), dtype=bool)
+        mech = np.asarray(label.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool).reshape(-1)[:len(crit_selected)]
+        crit = crit_selected & mech
+        scene_cert = bool(np.all((~valid) | cert_valid))
+        self.certificate_scene_count += int(scene_cert)
         witness = np.asarray(label.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
         rho = np.asarray(label.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
         if witness.ndim == 2 and crit.size and witness.shape[1] == crit.size:
             protected = ((rho == 2) | (rho == 3)) & crit[None, :]
             priority_available = protected.any(axis=1)
-            priority_fs = valid & conv & (witness & protected).any(axis=1)
-            priority_ncf = valid & conv & priority_available & ~priority_fs
+            priority_fs = cert_valid & conv & (witness & protected).any(axis=1)
+            priority_ncf = cert_valid & conv & priority_available & ~priority_fs
         else:
             protected = np.zeros((len(valid), len(crit)), dtype=bool)
             priority_available = np.zeros_like(valid)
@@ -1365,15 +1384,17 @@ class _LearnedMetricsAccumulator:
         self.scene_any_shortlist_ncf += int(bool((shortlist & ncf).any()))
         self.scene_any_valid += int(bool(valid.any()))
         self.scene_any_conventional_safe += int(bool(conv.any()))
-        self.scene_any_ncf += int(bool(ncf.any()))
-        self.scene_conventional_without_ncf += int(bool(conv.any() and not ncf.any()))
+        if scene_cert:
+            self.scene_any_ncf += int(bool(ncf.any()))
+            self.scene_conventional_without_ncf += int(bool(conv.any() and not ncf.any()))
         self.scene_any_accepted += int(bool(accepted.any()))
         self.scene_any_accepted_ncf += int(bool((accepted & ncf).any()))
-        self.scene_any_priority_ncf += int(bool(priority_ncf.any()))
-        priority_eligible = valid & conv & priority_available
-        self.scene_any_priority_eligible += int(bool(priority_eligible.any()))
-        self.scene_priority_eligible_without_ncf += int(bool(priority_eligible.any() and not priority_ncf.any()))
-        self.scene_any_accepted_priority_ncf += int(bool((accepted & priority_ncf).any()))
+        priority_eligible = cert_valid & conv & priority_available
+        if scene_cert:
+            self.scene_any_priority_ncf += int(bool(priority_ncf.any()))
+            self.scene_any_priority_eligible += int(bool(priority_eligible.any()))
+            self.scene_priority_eligible_without_ncf += int(bool(priority_eligible.any() and not priority_ncf.any()))
+            self.scene_any_accepted_priority_ncf += int(bool((accepted & priority_ncf).any()))
 
         # Non-coercive progress regret is conditional on the proposal bank
         # containing a protected-priority feasible candidate.  A fallback in such
@@ -1389,12 +1410,15 @@ class _LearnedMetricsAccumulator:
             self.priority_progress_regret_count += 1
 
         if selected_idx >= 0 and selected_idx < len(valid):
-            self.selected_ncf += int(bool(ncf[selected_idx]))
-            self.scene_ncf_available_selected_ncf += int(bool(ncf.any() and ncf[selected_idx]))
-            self.selected_false_safe += int(bool(fs[selected_idx]))
+            selected_cert = bool(cert_valid[selected_idx])
+            self.selected_certificate_count += int(selected_cert)
+            if selected_cert:
+                self.selected_ncf += int(bool(ncf[selected_idx]))
+                self.scene_ncf_available_selected_ncf += int(bool(ncf.any() and ncf[selected_idx]))
+                self.selected_false_safe += int(bool(fs[selected_idx]))
             self.selected_conventional += int(bool(conv[selected_idx]))
-            selected_priority_eligible = bool(priority_available[selected_idx] and conv[selected_idx])
-            selected_priority_false_safe = bool(priority_fs[selected_idx])
+            selected_priority_eligible = bool(selected_cert and priority_available[selected_idx] and conv[selected_idx])
+            selected_priority_false_safe = bool(selected_cert and priority_fs[selected_idx])
             self.selected_priority_eligible += int(selected_priority_eligible)
             self.selected_priority_false_safe += int(selected_priority_false_safe)
             if fallback_used:
@@ -1403,7 +1427,7 @@ class _LearnedMetricsAccumulator:
                 self.fallback_selected_priority_eligible += int(selected_priority_eligible)
                 self.fallback_selected_priority_false_safe += int(selected_priority_false_safe)
             tail = label.get("cowp/witness/tail_burden_excess")
-            if tail is not None and witness.ndim == 2:
+            if selected_cert and tail is not None and witness.ndim == 2:
                 tail_arr = np.asarray(tail, dtype=np.float32)
                 if tail_arr.ndim == 2 and selected_idx < tail_arr.shape[0]:
                     protected_agent = protected[selected_idx] if protected.ndim == 2 else np.zeros_like(crit)
@@ -1440,7 +1464,9 @@ class _LearnedMetricsAccumulator:
             except Exception:
                 pass
         self.accepted_total += int(accepted.sum())
+        self.accepted_certificate_total += int((accepted & cert_valid).sum())
         self.valid_total += int(valid.sum())
+        self.valid_certificate_total += int(cert_valid.sum())
         self.accepted_ncf += int((accepted & ncf).sum())
         self.total_ncf += int(ncf.sum())
         self.accepted_false_safe += int((accepted & fs).sum())
@@ -1479,8 +1505,11 @@ class _LearnedMetricsAccumulator:
         if self.witness_count:
             for k, v in self.witness_sums.items():
                 metrics[f"WitnessQuality/{k}"] = float(v / max(self.witness_count, 1))
-        metrics["SelectedNCFRate"] = float(self.selected_ncf / max(self.selected_total, 1))
-        metrics["SelectedFalseSafeRate"] = float(self.selected_false_safe / max(self.selected_total, 1))
+        metrics["CertificateLabelCoverage/SceneRate"] = float(self.certificate_scene_count / max(self.selected_total, 1))
+        metrics["CertificateLabelCoverage/SelectedCandidateRate"] = float(self.selected_certificate_count / max(self.selected_total, 1))
+        metrics["CertificateLabelCoverage/ValidCandidateRate"] = float(self.valid_certificate_total / max(self.valid_total, 1))
+        metrics["SelectedNCFRate"] = float(self.selected_ncf / max(self.selected_certificate_count, 1))
+        metrics["SelectedFalseSafeRate"] = float(self.selected_false_safe / max(self.selected_certificate_count, 1))
         metrics["SelectedConventionalSafeRate"] = float(self.selected_conventional / max(self.selected_total, 1))
         metrics["PriorityBurdenTransferRate"] = float(
             self.selected_priority_false_safe / max(self.selected_priority_eligible, 1)
@@ -1495,7 +1524,7 @@ class _LearnedMetricsAccumulator:
             self.fallback_selected_priority_false_safe / max(self.fallback_selected_priority_eligible, 1)
         )
         metrics["LearnedAcceptNCFRecall"] = float(self.accepted_ncf / max(self.total_ncf, 1))
-        metrics["LearnedAcceptNCFPrecision"] = float(self.accepted_ncf / max(self.accepted_total, 1))
+        metrics["LearnedAcceptNCFPrecision"] = float(self.accepted_ncf / max(self.accepted_certificate_total, 1))
         metrics["LearnedAcceptFalseSafeRate"] = float(self.accepted_false_safe / max(self.total_false_safe, 1))
         metrics["PriorityCertificate/AcceptNCFRecall"] = float(
             self.accepted_priority_ncf / max(self.total_priority_ncf, 1)
@@ -1508,12 +1537,12 @@ class _LearnedMetricsAccumulator:
         )
         metrics["ProposalCoverage/AnyValidSceneRate"] = float(self.scene_any_valid / max(self.selected_total, 1))
         metrics["ProposalCoverage/AnyConventionalSafeSceneRate"] = float(self.scene_any_conventional_safe / max(self.selected_total, 1))
-        metrics["ProposalCoverage/AnyNCFSceneRate"] = float(self.scene_any_ncf / max(self.selected_total, 1))
-        proposal_fs_floor = float(self.scene_conventional_without_ncf / max(self.selected_total, 1))
+        metrics["ProposalCoverage/AnyNCFSceneRate"] = float(self.scene_any_ncf / max(self.certificate_scene_count, 1))
+        proposal_fs_floor = float(self.scene_conventional_without_ncf / max(self.certificate_scene_count, 1))
         metrics["ProposalCoverage/ConventionalWithoutNCFSceneRate"] = proposal_fs_floor
         metrics["ProposalCoverage/BestCaseSelectedFalseSafeLowerBound"] = proposal_fs_floor
         metrics["ProposalCoverage/AnyPriorityEligibleSceneRate"] = float(
-            self.scene_any_priority_eligible / max(self.selected_total, 1)
+            self.scene_any_priority_eligible / max(self.certificate_scene_count, 1)
         )
         metrics["ProposalCoverage/AnyPriorityNCFSceneRate"] = float(
             self.scene_any_priority_ncf / max(self.selected_total, 1)

@@ -11,9 +11,11 @@ from cowp.data.dataset import COWPNpzDataset
 
 WANTED = {
     "cowp/candidates/valid",
+    "cowp/candidates/certificate_valid",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/noncoercive_feasible",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/audit/pair_relevant",
     "cowp/witness/exists",
     "cowp/witness/pair_noncoercive_feasible",
@@ -64,14 +66,16 @@ def main() -> None:
                 read_errors.append({"file": ds.paths[i].name, "error": repr(exc)})
             continue
         cand = np.asarray(row.get("cowp/candidates/valid", []), dtype=bool).reshape(-1)
-        crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+        cert_cand = np.asarray(row.get("cowp/candidates/certificate_valid", cand), dtype=bool).reshape(-1)[: len(cand)] & cand
+        crit_selected = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+        crit = crit_selected & np.asarray(row.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool).reshape(-1)[: len(crit_selected)]
         if not len(cand) or not len(crit):
             continue
         c["scenes"] += 1
         conv = np.asarray(row.get("cowp/candidates/conventional_safe", np.zeros_like(cand)), dtype=bool)[: len(cand)]
         ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(cand)), dtype=bool)[: len(cand)]
         _binary(c, "candidate_conventional_safe", conv, cand)
-        _binary(c, "candidate_ncf", ncf, cand)
+        _binary(c, "candidate_ncf", ncf, cert_cand)
 
         base_pair = cand[:, None] & crit[None, :]
         rel = np.asarray(row.get("cowp/audit/pair_relevant", np.zeros_like(base_pair)), dtype=bool)[: len(cand), : len(crit)]
@@ -134,7 +138,7 @@ def main() -> None:
     # training-readiness hard gate.
     passed = (not read_errors) and (all(checks.values()) if args.strict else True)
     result = {
-        "schema_version": "cowp_v16_8_9_training_supervision_audit_v1",
+        "schema_version": "cowp_v16_8_13_training_supervision_audit_v1",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "inspected_scenes": int(c["scenes"]),
         "read_errors": read_errors,

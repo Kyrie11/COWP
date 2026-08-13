@@ -156,6 +156,13 @@ critical:
   min_score: 1.5
   tta_delta_threshold: 3.0
   vehicle_only_main: true
+  # v16.8.13: COWP mechanism supervision requires an auditable 8 s natural basis.
+  # Critical selection itself is NOT changed by future availability. Selected actors
+  # without lane-route or substantial factual-route evidence remain in critical/valid,
+  # but receive mechanism_valid=0; their coverage loss is a hard promotion gate.
+  require_natural_auditability: true
+  auditability_map_search_radius_m: 8.0
+  max_auditability_exclusion_rate: 0.01
 natural:
   obs_speed_scale:
   - 0.85
@@ -183,12 +190,14 @@ natural:
   - 0.0
   - 2.0
   max_neutral_samples: 8
-  prio_acc_values_mps2:
-  - -0.5
-  - 0.0
-  - 0.5
+  # v16.8.13: PRIO is a typed source, not a duplicate copy of NEU.  The
+  # canonical progress-preserving root is attempted before NEU on protected
+  # relations, then mild positive commitment variants fill the branch.
+  prio_acc_values_mps2: [0.0, 0.25, 0.75]
+  prio_speed_offsets_mps: [0.0, 0.75, 1.5]
   prio_speed_min_mps: 0.0
   prio_max_samples: 8
+  min_prio_roots_protected: 1
   min_natural_alternatives: 6
   # v16.8.11 model-support contract.  Every audited critical vehicle must carry
   # more than a singleton natural basis, and at least two roots must remain
@@ -230,6 +239,17 @@ natural:
   map_max_distance_vehicle_m: 5.0
   map_max_distance_vru_m: 8.0
   map_hard_max_distance_m: 12.0
+  # HD lane centreline is not a complete drivable-area representation in WOMD.
+  # Only when lane routing fails and factual future support is substantial may a
+  # narrow empirical route corridor validate OBS/NEU/PRIO geometry.  This does
+  # not set cowp/natural/map_verified=true; provenance is recorded separately.
+  empirical_corridor_enabled: true
+  empirical_corridor_min_future_valid_steps: 60
+  empirical_corridor_min_future_valid_fraction: 0.70
+  empirical_corridor_max_distance_vehicle_m: 1.5
+  empirical_corridor_max_distance_vru_m: 2.5
+  empirical_corridor_min_compliant_fraction: 0.90
+  empirical_corridor_hard_max_distance_m: 3.0
   obs_decontamination_enabled: true
   obs_pressure_radius_m: 12.0
   obs_neutral_relief_scale_m: 6.0

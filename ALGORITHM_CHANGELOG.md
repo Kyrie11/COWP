@@ -2614,3 +2614,46 @@ No algorithm/data-threshold/output-path change. Restored the missing v16.8.9 dia
 ## v16.8.9 data-contract repair — exact audit/transport semantics and supervision sufficiency (2026-08-08)
 
 The completed 96-scene v16.8.9 smoke passed the proposal point-estimate gates (`AnyNCF=0.4167`, false-safe `0.5000`, PBTR `0.4419`, hard recovery `0.2083`) but exposed 1,258 exact audit/transport affected-root mismatches and an overly strong hard requirement on the prevalence of burden-only affected roots. The repair makes root affectedness/conflict/retention and canonical root weights exact across audit and transport, keeps burden-only prevalence advisory rather than threshold-forcing, adds an in-place smoke NPZ repair path, and adds training-supervision sufficiency audits before strict/full training. No NCF/PBTR/proposal threshold or candidate geometry was relaxed. Full regression: **178 passed**.
+
+## v16.8.13 — mechanism-auditability separation, empirical route evidence, typed PRIO recovery, and certificate visibility contract (2026-08-13)
+
+### Triggering evidence from the v16.8.12 96-scene smoke
+
+The v16.8.12 validation smoke completed successfully as a data/engineering run and passed the proposal/causal screen and the training-supervision audit, but its composite verdict correctly blocked the strict probe because model-support failed. Among 530 selected critical vehicles, 12 (2.264%) had zero natural roots and the same 12 had fewer than two low-burden roots. Every one of those failures was map-filter dominated, every one had priority relation `EQUAL_OR_NEGOTIATED`, and every one used the `logged_geometry_neutral_timing` reference because a lane-route could not be resolved. Ten had all 80 WOMD future states valid, one had 68, and one had only 19; therefore the remaining rootlessness was not primarily missing-future data.
+
+A second independent contract failure was structural: natural-source support was OBS=1554, NEU=3324, PRIO=0. The PRIO generator reused the same route/timing family already occupied by OBS/NEU while cross-source de-duplication happened before typed-source retention. Consequently the data could not supervise the configured typed PRIO natural modes even when the total natural-root count was nonzero.
+
+### Semantic corrections
+
+1. **Critical selection is no longer conflated with offline mechanism-label auditability.** `cowp/critical/valid` retains the inference-time critical-selection semantics. A new `cowp/critical/mechanism_valid` indicates whether the offline WOMD record has enough lane or factual-route evidence to build an eight-second natural/transport/witness target without fabricating unsupported geometry.
+2. **Evidence-gated empirical route corridor.** If a lane route is unavailable, a vehicle may use a narrow factual-geometry corridor only when at least 60 future steps and at least 70% of the 80-step horizon are valid. The corridor is constructed from contiguous valid WOMD future segments only, uses stricter geometric tolerances than the ordinary lane check, and is explicitly recorded with `natural/map_evidence_mode=2`; it is never marked as HD-map verified. This is geometry evidence only: timing remains neutralized rather than copied as a normative behavior target.
+3. **Insufficient evidence is masked, not fabricated or silently deleted.** A selected critical with neither usable lane support nor sufficient factual-route evidence remains selected but has `mechanism_valid=0`. It does not contribute natural/transport/witness supervision. Its frequency is reported and hard-gated (`<=1%` criticals by default) so the pipeline cannot pass by hiding difficult actors.
+4. **Protected PRIO root identity is explicit.** For protected `AGENT_PRIORITY` / `EQUAL_OR_NEGOTIATED` relations, the canonical progress-preserving root is assigned to PRIO before OBS/NEU candidates enter cross-source de-duplication. PRIO has its own ordered acceleration/speed family and every auditable protected critical is required to retain at least one priority-preserved PRIO root. No factual corridor is extrapolated beyond the observed geometric support merely to manufacture a PRIO sample.
+5. **Auditability is finalized against the actual route builder.** The cheap critical-stage lane projection is only a precheck; natural generation downgrades `mechanism_valid` when a projected lane has no usable forward continuation and there is not enough factual-route evidence. This closes endpoint/degenerate-lane cases without changing `critical/valid`.
+6. **Candidate certificate validity is separate from pair-label validity.** `cowp/candidates/certificate_valid` is true only when the complete selected-critical certificate universe is auditable. Raw NCF/false-safe labels are masked by this flag for candidate-level training, while pair-level mechanism losses use `mechanism_valid`.
+7. **Model-input visibility is part of certificate validity.** If a Scenario-proto selected critical track cannot be represented in the tf.Example/model agent rows, the cache loader invalidates the corresponding mechanism supervision and all candidate-level certificate targets for that scene. A post-tensor-cache model-support audit is mandatory, preventing labels from certifying against agents the model cannot observe.
+8. **Fingerprint coverage expanded.** `cowp/data/dataset.py` and `cowp/scripts/03_train.py` are now part of the fresh-cache code fingerprint because visibility masking and certificate-aware planner ranking change training semantics.
+
+### Promotion gates
+
+- On `mechanism_valid=1` criticals: zero rootless criticals, zero criticals with fewer than two low-burden roots, and every auditable protected critical has at least one priority-preserved PRIO root.
+- Global auditability: `mechanism_unauditable_rate <= 1%` by default.
+- Candidate certificate completeness: at least 98% of scenes remain certificate-complete after the cache/model-visibility merge.
+- Proposal/causal, training-supervision, and existing response/witness/transport non-degeneracy gates remain unchanged.
+- The smoke must explicitly authorize strict; validation strict and train-pilot must both authorize full rebuild under the identical current fingerprint.
+
+### Performance policy
+
+The v16.8.12 smoke spent about 101.23 s/scene in safe responses and 45.39 s/scene in witness construction versus 3.12 s/scene in natural generation. Therefore v16.8.13 does not reduce candidate, natural-root, response-slot, or witness semantics to gain speed. Empirical-corridor work is only enabled for lane-unresolved auditable actors and reuses contiguous factual geometry; the existing exact audit/result reuse remains the primary semantics-preserving optimization.
+
+### Local validation
+
+- Repository regression split: **201 passed, 5 skipped** with no failures.
+- `python -m compileall -q cowp tests`: passed.
+- `bash -n` on the v16.8.13 smoke/strict/train-pilot/master launchers and full-core preparation script: passed.
+
+### Evidence limitation retained
+
+Passing these data-support gates establishes that WOMD-derived labels can support the implemented natural-basis, same-root transport, witness, NCF selector, and logged-Waymax mechanism experiments. It does not make logged WOMD/Waymax replay counterfactual causal ground truth for burden transfer. Publication-level causal burden claims still require the separately specified reactive-agent protocol and held-out human-audited false-safe stress set.
+
+v16.8.13 also propagates the certificate/auditability mask into label-space validation, causal-audit diagnostics, Waymax replay class balancing, and learned-offline label metrics. Certificate-unknown candidates may still be replayed for physical collision/off-road/progress outcomes, but they are never counted as NCF/false-safe negatives or positives. Label-space NCF/false-safe precision/recall and proposal-floor metrics expose certificate-label coverage explicitly, preventing missing counterfactual supervision from being reported as a successful negative class.

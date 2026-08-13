@@ -5,6 +5,7 @@ import numpy as np
 from cowp.core.constants import ObjectType, PriorityRelation
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
+from cowp.geometry.map_projection import project_state_to_lane
 from cowp.label.priority import determine_priority
 from cowp.label.trajectory_primitives import constant_accel_trajectory, smooth_stop_trajectory
 
@@ -142,10 +143,58 @@ def select_critical_agents(
     valid = np.zeros(max_a, dtype=bool)
     score_arr = np.zeros(max_a, dtype=np.float32)
     base_priority = np.zeros(max_a, dtype=np.int32)
+    mechanism_valid = np.zeros(max_a, dtype=bool)
+    audit_reason = np.full(max_a, 3, dtype=np.int32)  # 0 lane, 1 empirical future, 2 both, 3 unavailable
+    audit_future_steps = np.zeros(max_a, dtype=np.int32)
+    audit_future_fraction = np.zeros(max_a, dtype=np.float32)
+    nat_cfg = cfg.get("natural", {})
+    require_auditability = bool(crit_cfg.get("require_natural_auditability", True))
+    audit_search_radius = float(crit_cfg.get("auditability_map_search_radius_m", nat_cfg.get("map_route_search_radius_m", 8.0)))
+    audit_min_steps = max(int(nat_cfg.get("empirical_corridor_min_future_valid_steps", nat_cfg.get("obs_min_future_valid_steps", 60))), 0)
+    audit_min_frac = float(np.clip(nat_cfg.get("empirical_corridor_min_future_valid_fraction", nat_cfg.get("obs_min_future_valid_fraction", 0.70)), 0.0, 1.0))
+    unauditable: list[dict[str, object]] = []
     for rank, item in enumerate(scores[:max_a]):
-        score, i, _, _, rho = item
+        score, i, cur_dist, min_future_dist, rho = item
         idx[rank] = i
         valid[rank] = True
         score_arr[rank] = float(score)
         base_priority[rank] = int(rho)
-    return {"track_index": idx, "valid": valid, "score": score_arr, "base_priority": base_priority}
+
+        # v16.8.13 keeps the *critical-selection universe* identical to v16.8.12.
+        # Auditability is a separate offline-supervision mask: it must never use
+        # logged future to decide who the planner considers critical at inference.
+        proj = project_state_to_lane(scene.states[i, cur], scene.map_data, search_radius=audit_search_radius)
+        lane_supported = bool(int(proj.lane_id) >= 0 and int(proj.lane_id) in scene.map_data.lanes)
+        fut = scene.states[i, cur + 1 : cur + 1 + len(ego), :]
+        fut_valid = fut[:, 10] > 0.5 if len(fut) else np.zeros(0, dtype=bool)
+        future_steps = int(np.sum(fut_valid))
+        future_frac = float(np.mean(fut_valid)) if len(fut_valid) else 0.0
+        empirical_supported = bool(future_steps >= audit_min_steps and future_frac >= audit_min_frac)
+        mechanism_valid[rank] = bool((not require_auditability) or lane_supported or empirical_supported)
+        audit_reason[rank] = 2 if lane_supported and empirical_supported else (0 if lane_supported else (1 if empirical_supported else 3))
+        audit_future_steps[rank] = int(future_steps)
+        audit_future_fraction[rank] = float(future_frac)
+        if not mechanism_valid[rank]:
+            unauditable.append({
+                "slot": int(rank), "track_index": int(i), "rho": int(rho),
+                "score": float(score), "current_distance_m": float(cur_dist),
+                "min_future_distance_m": None if not np.isfinite(min_future_dist) else float(min_future_dist),
+                "future_valid_steps": int(future_steps), "future_valid_fraction": float(future_frac),
+                "lane_supported": bool(lane_supported), "empirical_supported": bool(empirical_supported),
+            })
+    return {
+        "track_index": idx,
+        "valid": valid,
+        "mechanism_valid": mechanism_valid,
+        "score": score_arr,
+        "base_priority": base_priority,
+        "auditability_reason": audit_reason,
+        "audit_future_valid_steps": audit_future_steps,
+        "audit_future_valid_fraction": audit_future_fraction,
+        "_selection_diagnostics": {
+            "selected_count": int(valid.sum()),
+            "mechanism_auditable_count": int((valid & mechanism_valid).sum()),
+            "mechanism_unauditable_count": int((valid & ~mechanism_valid).sum()),
+            "mechanism_unauditable": unauditable[:32],
+        },
+    }

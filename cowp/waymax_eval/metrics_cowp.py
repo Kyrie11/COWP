@@ -38,6 +38,7 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
     hbcr = 0
     collision_or_offroad = 0
     fallback_count = 0
+    certificate_eval_count = 0
     progress_m = []
     progress_norm = []
     for k, label in zip(selected_indices, label_dicts):
@@ -51,7 +52,11 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
             progress_m.append(0.0)
             progress_norm.append(0.0)
             continue
-        crit = label["cowp/critical/valid"].astype(bool)
+        crit_selected = label["cowp/critical/valid"].astype(bool)
+        mech = np.asarray(label.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool)
+        crit = crit_selected & mech
+        cand_valid = np.asarray(label["cowp/candidates/valid"], dtype=bool)
+        cert_valid = np.asarray(label.get("cowp/candidates/certificate_valid", cand_valid), dtype=bool) & cand_valid
         conv = bool(label["cowp/candidates/conventional_safe"][k])
         collision_or_offroad += int(not conv)
         traj = label["cowp/candidates/trajectory"][k]
@@ -61,6 +66,9 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
         # not have the route integral, so normalize by the best valid/conventional
         # lattice progress and keep EP_m for debugging.
         progress_norm.append(float(np.clip(p_m / ref_progress, 0.0, 1.0)))
+        if k >= len(cert_valid) or not bool(cert_valid[k]):
+            continue
+        certificate_eval_count += 1
         wit = label["cowp/witness/exists"][k].astype(bool) & crit
         cf_count += int(conv)
         false_safe += int(conv and np.any(wit))
@@ -102,7 +110,8 @@ def metrics_from_labels(selected_indices: list[int], label_dicts: list[dict[str,
         "FSR": float(false_safe / max(cf_count, 1)),
         "CBS": float(np.mean(cbs)) if cbs else 0.0,
         "OPR": float(np.mean(oprs)) if oprs else 0.0,
-        "HBCR": float(hbcr / max(n, 1)),
+        "HBCR": float(hbcr / max(certificate_eval_count, 1)),
+        "CertificateLabelCoverage/SelectedRate": float(certificate_eval_count / max(n, 1)),
     }
 
 
@@ -117,8 +126,9 @@ def stress_acceptance_metrics(decisions: list[tuple[int, np.ndarray]], label_dic
     true_pos = 0
     for (selected_idx, accepted_mask), label in zip(decisions, label_dicts):
         cand_valid = label["cowp/candidates/valid"].astype(bool)
-        ncf = label["cowp/candidates/noncoercive_feasible"].astype(bool) & cand_valid
-        false_safe = label["cowp/candidates/false_safe"].astype(bool) & cand_valid
+        cert_valid = np.asarray(label.get("cowp/candidates/certificate_valid", cand_valid), dtype=bool) & cand_valid
+        ncf = label["cowp/candidates/noncoercive_feasible"].astype(bool) & cert_valid
+        false_safe = label["cowp/candidates/false_safe"].astype(bool) & cert_valid
         accepted = accepted_mask.astype(bool) if accepted_mask is not None else np.zeros_like(cand_valid)
         noncoercive_total += int(ncf.sum())
         noncoercive_accepted += int((accepted & ncf).sum())
@@ -126,7 +136,9 @@ def stress_acceptance_metrics(decisions: list[tuple[int, np.ndarray]], label_dic
         false_safe_accepted += int((accepted & false_safe).sum())
         gt = label["cowp/witness/exists"].astype(bool)
         pred = gt.copy()  # rule certificate mode uses deterministic labels as predictions.
-        mask = cand_valid[:, None] & label["cowp/critical/valid"].astype(bool)[None, :]
+        crit = label["cowp/critical/valid"].astype(bool)
+        mech = np.asarray(label.get("cowp/critical/mechanism_valid", crit), dtype=bool) & crit
+        mask = cand_valid[:, None] & mech[None, :]
         gt_pos += int((gt & mask).sum())
         pred_pos += int((pred & mask).sum())
         true_pos += int((pred & gt & mask).sum())
@@ -143,6 +155,9 @@ def witness_table_from_labels(label_dicts: list[dict[str, np.ndarray]]) -> dict[
     total_pos = 0
     for label in label_dicts:
         exists = label["cowp/witness/exists"].astype(bool)
+        crit = np.asarray(label.get("cowp/critical/valid", np.ones(exists.shape[1], dtype=bool)), dtype=bool)
+        mech = np.asarray(label.get("cowp/critical/mechanism_valid", crit), dtype=bool) & crit
+        exists = exists & mech[None, :]
         total_pos += int(exists.sum())
         toks = label["cowp/witness/token"]
         for name, token_id in [("HB", 1), ("AY", 2), ("PA", 3), ("GS", 4)]:

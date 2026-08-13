@@ -408,6 +408,21 @@ def _ordered_neutral_specs(nat_cfg: dict) -> list[tuple[float, float]]:
     specs.sort(key=lambda z: (abs(z[0]) / a_scale + abs(z[1]) / v_scale, max(abs(z[0]) / a_scale, abs(z[1]) / v_scale), abs(z[0]), abs(z[1]), z[0], z[1]))
     return specs
 
+def _ordered_priority_specs(nat_cfg: dict) -> list[tuple[float, float]]:
+    """Priority-preserving timing family, ordered from canonical commitment outward.
+
+    PRIO used to reuse the exact NEU acceleration set and was then removed by the
+    cross-source geometric deduplicator.  Keep a source-stable canonical root and
+    mild positive commitment variants so protected agents have an identifiable
+    rule-preserving target without double-counting identical option mass.
+    """
+    accs = [float(x) for x in nat_cfg.get("prio_acc_values_mps2", [0.0, 0.25, 0.75])]
+    voffs = [float(x) for x in nat_cfg.get("prio_speed_offsets_mps", [0.0, 0.75, 1.5])]
+    specs = [(a, v) for a in accs for v in voffs]
+    specs.sort(key=lambda z: (abs(z[0]) + 0.5 * abs(z[1]), abs(z[0]), abs(z[1]), z[0], z[1]))
+    return specs
+
+
 def _map_route_trajectory_variants(
     scene: ScenarioData,
     current: np.ndarray,
@@ -476,9 +491,14 @@ def build_pair_specific_ego_neutrals(
         dedup.append(row)
     ego_bank = dedup or [(np.asarray(fallback_neutral, dtype=np.float32), 0.0, "fallback")]
 
+    mechanism_mask = np.asarray(critical.get("mechanism_valid", critical.get("valid", np.zeros(A, dtype=bool))), dtype=bool)
     for a in range(A):
-        row: dict[str, object] = {"slot": int(a), "valid": bool(a < len(critical.get("valid", [])) and critical["valid"][a])}
-        if not row["valid"]:
+        row: dict[str, object] = {
+            "slot": int(a),
+            "valid": bool(a < len(critical.get("valid", [])) and critical["valid"][a]),
+            "mechanism_valid": bool(a < len(mechanism_mask) and mechanism_mask[a]),
+        }
+        if not row["valid"] or not row["mechanism_valid"]:
             diag.append(row)
             continue
         idx = int(critical["track_index"][a])
@@ -594,27 +614,21 @@ def _lane_segment_cloud(scene: ScenarioData) -> tuple[np.ndarray, np.ndarray, np
     )
 
 
-def _trajectory_map_compliance(
+def _segment_distance_profile(
     tr: np.ndarray,
-    lane_segments: tuple[np.ndarray, np.ndarray, np.ndarray],
-    object_type: int,
-    nat_cfg: dict,
-) -> tuple[bool, float, bool]:
-    """Continuous lane-centre corridor check used during label construction."""
-    if not bool(nat_cfg.get("map_filter_enabled", True)):
-        return True, -1.0, False
-    seg_a, seg_v, seg_l2 = lane_segments
-    if seg_a.size == 0:
-        return (not bool(nat_cfg.get("map_filter_require_available", False))), -1.0, False
-    stride = max(1, int(nat_cfg.get("map_filter_stride", 4)))
-    xy = np.asarray(tr, dtype=np.float32)[::stride, :2]
+    segments: tuple[np.ndarray, np.ndarray, np.ndarray],
+    *,
+    stride: int,
+    chunk_size: int,
+) -> np.ndarray:
+    seg_a, seg_v, seg_l2 = segments
+    xy = np.asarray(tr, dtype=np.float32)[:: max(1, int(stride)), :2]
     if xy.size == 0 or not np.all(np.isfinite(xy)):
-        return False, float("inf"), True
-
-    # Compute exact point-to-polyline-segment distances.  Chunking bounds the
-    # temporary [trajectory_points, segments, 2] tensor on map-heavy scenes.
+        return np.full(max(len(xy), 1), np.inf, dtype=np.float64)
+    if seg_a.size == 0:
+        return np.full(len(xy), np.inf, dtype=np.float64)
     min_d2 = np.full(len(xy), np.inf, dtype=np.float64)
-    chunk = max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128)
+    chunk = max(int(chunk_size), 128)
     for lo in range(0, len(seg_a), chunk):
         a = seg_a[lo : lo + chunk]
         v = seg_v[lo : lo + chunk]
@@ -625,15 +639,95 @@ def _trajectory_map_compliance(
         proj = a[None, :, :] + u[..., None] * v[None, :, :]
         d2 = np.sum((xy[:, None, :] - proj) ** 2, axis=-1)
         min_d2 = np.minimum(min_d2, np.min(d2, axis=1))
-    d = np.sqrt(np.maximum(min_d2, 0.0))
+    return np.sqrt(np.maximum(min_d2, 0.0))
+
+
+def _empirical_segment_cloud(current: np.ndarray, future_states: np.ndarray, valid_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Observed route segments without bridging WOMD validity gaps."""
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    fut = np.asarray(future_states, dtype=np.float32)
+    mask = np.asarray(valid_mask, dtype=bool).reshape(-1)
+    starts: list[np.ndarray] = []
+    vecs: list[np.ndarray] = []
+    lens2: list[float] = []
+    prev_xy = np.asarray(cur[:2], dtype=np.float32)
+    prev_valid = True
+    for t in range(min(len(fut), len(mask))):
+        now_valid = bool(mask[t]) and bool(np.all(np.isfinite(fut[t, :2])))
+        if now_valid and prev_valid:
+            now_xy = np.asarray(fut[t, :2], dtype=np.float32)
+            v = now_xy - prev_xy
+            l2 = float(np.dot(v, v))
+            if np.isfinite(l2) and l2 > 1.0e-8:
+                starts.append(prev_xy.copy())
+                vecs.append(v.astype(np.float32))
+                lens2.append(l2)
+            prev_xy = now_xy
+        elif now_valid:
+            prev_xy = np.asarray(fut[t, :2], dtype=np.float32)
+        prev_valid = now_valid
+    if not starts:
+        return (np.zeros((0, 2), np.float32), np.zeros((0, 2), np.float32), np.zeros((0,), np.float32))
+    return np.stack(starts).astype(np.float32), np.stack(vecs).astype(np.float32), np.asarray(lens2, dtype=np.float32)
+
+
+def _trajectory_map_compliance(
+    tr: np.ndarray,
+    lane_segments: tuple[np.ndarray, np.ndarray, np.ndarray],
+    object_type: int,
+    nat_cfg: dict,
+) -> tuple[bool, float, bool]:
+    """Continuous lane-centre corridor check used during label construction."""
+    if not bool(nat_cfg.get("map_filter_enabled", True)):
+        return True, -1.0, False
+    seg_a, _, _ = lane_segments
+    if seg_a.size == 0:
+        return (not bool(nat_cfg.get("map_filter_require_available", False))), -1.0, False
+    d = _segment_distance_profile(
+        tr, lane_segments,
+        stride=max(1, int(nat_cfg.get("map_filter_stride", 4))),
+        chunk_size=max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128),
+    )
     if int(object_type) == int(ObjectType.VEHICLE):
         threshold = float(nat_cfg.get("map_max_distance_vehicle_m", 5.0))
     else:
         threshold = float(nat_cfg.get("map_max_distance_vru_m", 8.0))
     min_fraction = float(nat_cfg.get("map_min_compliant_fraction", 0.80))
     hard_max = float(nat_cfg.get("map_hard_max_distance_m", 12.0))
-    ok = float(np.mean(d <= threshold)) >= min_fraction and float(np.max(d)) <= hard_max
-    return bool(ok), float(np.max(d)), True
+    ok = bool(np.all(np.isfinite(d)) and float(np.mean(d <= threshold)) >= min_fraction and float(np.max(d)) <= hard_max)
+    return ok, float(np.max(d)), True
+
+
+def _trajectory_empirical_corridor_compliance(
+    tr: np.ndarray,
+    empirical_segments: tuple[np.ndarray, np.ndarray, np.ndarray],
+    object_type: int,
+    nat_cfg: dict,
+) -> tuple[bool, float]:
+    """Narrow factual-route geometry check for lane-unresolved WOMD actors.
+
+    This is deliberately stricter than the lane-centre corridor and is enabled
+    only when the actor has substantial factual future support.  It validates
+    route geometry, not HD-map membership, so callers must keep map_verified=False.
+    """
+    if not bool(nat_cfg.get("empirical_corridor_enabled", True)):
+        return False, float("inf")
+    if empirical_segments[0].size == 0:
+        return False, float("inf")
+    d = _segment_distance_profile(
+        tr, empirical_segments,
+        stride=max(1, int(nat_cfg.get("map_filter_stride", 4))),
+        chunk_size=max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128),
+    )
+    if int(object_type) == int(ObjectType.VEHICLE):
+        threshold = float(nat_cfg.get("empirical_corridor_max_distance_vehicle_m", 1.5))
+    else:
+        threshold = float(nat_cfg.get("empirical_corridor_max_distance_vru_m", 2.5))
+    min_fraction = float(nat_cfg.get("empirical_corridor_min_compliant_fraction", 0.90))
+    hard_max = float(nat_cfg.get("empirical_corridor_hard_max_distance_m", 3.0))
+    ok = bool(np.all(np.isfinite(d)) and float(np.mean(d <= threshold)) >= min_fraction and float(np.max(d)) <= hard_max)
+    return ok, float(np.max(d))
+
 
 def _observed_yield_contamination(
     scene: ScenarioData, agent_index: int, logged: np.ndarray, ego_neutral_traj: np.ndarray,
@@ -710,6 +804,7 @@ def generate_natural_alternatives(
     map_compliant = np.zeros((A, M), dtype=bool)
     map_distance_max = np.full((A, M), -1.0, dtype=np.float32)
     map_verified = np.zeros((A, M), dtype=bool)
+    map_evidence_mode = np.zeros((A, M), dtype=np.int8)  # 0 none, 1 HD-lane, 2 empirical factual corridor
     lane_segments = _lane_segment_cloud(scene)
     diagnostics: list[dict[str, object]] = []
 
@@ -728,9 +823,27 @@ def generate_natural_alternatives(
     obs_min_steps = max(int(nat_cfg.get("obs_min_future_valid_steps", 60)), 0)
     obs_min_frac = float(np.clip(nat_cfg.get("obs_min_future_valid_fraction", 0.70), 0.0, 1.0))
 
+    mechanism_mask = np.asarray(critical.get("mechanism_valid", critical["valid"]), dtype=bool)
     for a in range(A):
         if not bool(critical["valid"][a]):
-            diagnostics.append({"slot": int(a), "valid": False})
+            diagnostics.append({"slot": int(a), "valid": False, "mechanism_valid": False})
+            continue
+        if a >= len(mechanism_mask) or not bool(mechanism_mask[a]):
+            idx = int(critical["track_index"][a])
+            fut_states = np.asarray(scene.states[idx, cur + 1 : cur + 1 + H, :], dtype=np.float32)
+            fut_mask = fut_states[:, 10] > 0.5 if len(fut_states) else np.zeros(0, dtype=bool)
+            diagnostics.append({
+                "slot": int(a), "valid": True, "mechanism_valid": False,
+                "track_index": int(idx), "object_type": int(scene.object_type[idx]),
+                "rho": int(critical.get("base_priority", np.zeros(A, dtype=np.int32))[a]),
+                "future_valid_steps": int(np.sum(fut_mask)),
+                "future_valid_fraction": float(np.mean(fut_mask)) if len(fut_mask) else 0.0,
+                "reference_kind": "unauditable",
+                "root_count": 0, "low_burden_root_count": 0, "prio_root_count": 0,
+                "map_verified_root_count": 0, "empirical_corridor_root_count": 0,
+                "rejection_counts": {}, "priority_rejection_reasons": {},
+                "attempted_by_phase": {}, "accepted_by_phase": {},
+            })
             continue
         idx = int(critical["track_index"][a])
         object_type = int(scene.object_type[idx])
@@ -786,23 +899,91 @@ def generate_natural_alternatives(
         scene_current = scene.states[:, cur, :] if scene.states.ndim == 3 else None
         beta[a] = adaptive_beta(scene_current, object_type, rho, cfg, use_adaptive=True, ego_index=scene.sdc_track_index)
         obs_eligible = bool(has_future and valid_steps >= obs_min_steps and valid_frac >= obs_min_frac)
+        emp_min_steps = max(int(nat_cfg.get("empirical_corridor_min_future_valid_steps", obs_min_steps)), 0)
+        emp_min_frac = float(np.clip(nat_cfg.get("empirical_corridor_min_future_valid_fraction", obs_min_frac), 0.0, 1.0))
+        empirical_supported = bool(has_future and valid_steps >= emp_min_steps and valid_frac >= emp_min_frac)
+        empirical_eligible = bool(empirical_supported and not route_polylines)
+
+        # v16.8.13 late auditability finalization.  The cheap critical-selection
+        # precheck only knows whether the current state projects near a lane.  A
+        # projection is not the same thing as an 8 s routable lane continuation:
+        # the actor can sit at an exhausted/degenerate lane endpoint.  Finalize the
+        # offline supervision mask using the *same route builder* that constructs
+        # natural roots.  If neither a real lane continuation nor sufficiently
+        # long factual geometry exists, keep the actor in critical/valid but mark
+        # its mechanism target unknown.
+        require_auditability = bool(cfg.get("critical", {}).get("require_natural_auditability", True))
+        route_supported = bool(route_polylines)
+        final_auditable = bool(route_supported or empirical_supported)
+        if require_auditability:
+            mechanism_mask[a] = bool(final_auditable)
+            if isinstance(critical.get("mechanism_valid"), np.ndarray) and a < len(critical["mechanism_valid"]):
+                critical["mechanism_valid"][a] = bool(final_auditable)
+            if isinstance(critical.get("auditability_reason"), np.ndarray) and a < len(critical["auditability_reason"]):
+                critical["auditability_reason"][a] = int(
+                    2 if route_supported and empirical_supported else (0 if route_supported else (1 if empirical_supported else 3))
+                )
+            if not final_auditable:
+                diagnostics.append({
+                    "slot": int(a), "valid": True, "mechanism_valid": False,
+                    "track_index": int(idx), "object_type": int(object_type), "rho": int(rho),
+                    "future_valid_steps": int(valid_steps), "future_valid_fraction": float(valid_frac),
+                    "reference_kind": str(reference_kind),
+                    "auditability_finalizer": "no_routable_lane_or_substantial_factual_geometry",
+                    "root_count": 0, "low_burden_root_count": 0, "prio_root_count": 0,
+                    "map_verified_root_count": 0, "empirical_corridor_root_count": 0,
+                    "rejection_counts": {}, "priority_rejection_reasons": {},
+                    "attempted_by_phase": {}, "accepted_by_phase": {},
+                })
+                continue
+
+        empirical_segments = _empirical_segment_cloud(current, fut_states, fut_mask) if empirical_eligible else (
+            np.zeros((0, 2), dtype=np.float32), np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        )
         obs_contam = _observed_yield_contamination(scene, idx, logged, pair_neutral, H, dt, nat_cfg) if has_future else 0.0
 
         candidates: list[tuple[np.ndarray, NaturalSource, float, float, str]] = []
-        if use_obs and obs_eligible:
+        protected_relation = rho in (PriorityRelation.AGENT_PRIORITY, PriorityRelation.EQUAL_OR_NEGOTIATED)
+
+        def append_obs_candidates() -> None:
+            if not (use_obs and obs_eligible):
+                return
             max_obs = int(nat_cfg.get("max_obs_samples", 8))
             for ss, shift_s, lat in _ordered_observational_specs(nat_cfg)[:max_obs]:
                 tr = resample_logged(
-                    logged,
-                    H,
+                    logged, H,
                     time_shift_steps=int(round(float(shift_s) / dt)),
-                    speed_scale=float(ss),
-                    lateral_offset=float(lat),
-                    current=current,
-                    dt=dt,
+                    speed_scale=float(ss), lateral_offset=float(lat), current=current, dt=dt,
                 )
                 candidates.append((tr, NaturalSource.OBS, float(nat_cfg.get("source_weight_obs", 1.0)), obs_contam, "primary_obs"))
-        if use_neu:
+
+        def append_prio_candidates() -> None:
+            if not use_prio:
+                return
+            max_prio = int(nat_cfg.get("prio_max_samples", 8))
+            count = 0
+            for acc, voff in _ordered_priority_specs(nat_cfg):
+                if count >= max_prio:
+                    break
+                variants = route_variants(acc, voff)
+                if variants:
+                    for tr in variants:
+                        candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_map_route"))
+                        count += 1
+                        if count >= max_prio:
+                            break
+                elif has_future:
+                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), speed_offset=float(voff), nat_cfg=nat_cfg)
+                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_logged_geometry"))
+                    count += 1
+                else:
+                    tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc), speed_offset=float(voff))
+                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_straight"))
+                    count += 1
+
+        def append_neu_candidates() -> None:
+            if not use_neu:
+                return
             max_neu = int(nat_cfg.get("max_neutral_samples", 8))
             count = 0
             for acc, voff in _ordered_neutral_specs(nat_cfg):
@@ -823,27 +1004,20 @@ def generate_natural_alternatives(
                     tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc), speed_offset=float(voff))
                     candidates.append((tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "primary_neu_straight"))
                     count += 1
-        if use_prio:
-            max_prio = int(nat_cfg.get("prio_max_samples", 8))
-            count = 0
-            for acc in prio_accs:
-                if count >= max_prio:
-                    break
-                variants = route_variants(acc, 0.0)
-                if variants:
-                    for tr in variants:
-                        candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_map_route"))
-                        count += 1
-                        if count >= max_prio:
-                            break
-                elif has_future:
-                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), nat_cfg=nat_cfg)
-                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_logged_geometry"))
-                    count += 1
-                else:
-                    tr = _jerk_bounded_straight_trajectory(current, H, dt, nat_cfg, accel=float(acc))
-                    candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_straight"))
-                    count += 1
+
+        # Stable typed-root ownership: on protected relations the canonical
+        # progress-preserving geometry belongs to PRIO before OBS/NEU can consume
+        # it through cross-source de-duplication.  This is especially important
+        # for empirical corridors where extrapolating a faster PRIO root beyond
+        # the factual route endpoint would invent unsupported map evidence.
+        if protected_relation:
+            append_prio_candidates()
+            append_obs_candidates()
+            append_neu_candidates()
+        else:
+            append_obs_candidates()
+            append_neu_candidates()
+            append_prio_candidates()
         if not candidates:
             # Preserve legacy ablation behavior: a completely empty branch union
             # gets one observational anchor rather than producing malformed labels.
@@ -851,6 +1025,7 @@ def generate_natural_alternatives(
 
         kept = 0
         low_kept = 0
+        prio_kept = 0
         raw_w = np.zeros(M, dtype=np.float32)
         reject_counts = {k: 0 for k in ("nonfinite", "map", "burden", "contamination", "priority", "duplicate", "capacity")}
         priority_rejection_reasons: dict[str, int] = {}
@@ -867,7 +1042,7 @@ def generate_natural_alternatives(
             contamination: float,
             phase: str,
         ) -> bool:
-            nonlocal kept, low_kept, map_rejected_min_max_distance, map_rejected_max_max_distance, best_rejected_burden
+            nonlocal kept, low_kept, prio_kept, map_rejected_min_max_distance, map_rejected_max_max_distance, best_rejected_burden
             attempted_by_phase[phase] = attempted_by_phase.get(phase, 0) + 1
             if kept >= M:
                 reject_counts["capacity"] += 1
@@ -889,13 +1064,29 @@ def generate_natural_alternatives(
                 rho=rho,
             )
             pr_ok, pr_reason = priority_preservation_check(tr, natural_ref, rho, cfg)
-            map_ok, map_dist, map_was_verified = _trajectory_map_compliance(tr, lane_segments, object_type, nat_cfg)
+            lane_ok, lane_dist, lane_was_verified = _trajectory_map_compliance(tr, lane_segments, object_type, nat_cfg)
+            empirical_ok = False
+            empirical_dist = float("inf")
+            if (not lane_ok) and empirical_eligible:
+                empirical_ok, empirical_dist = _trajectory_empirical_corridor_compliance(
+                    tr, empirical_segments, object_type, nat_cfg
+                )
+            map_ok = bool(lane_ok or empirical_ok)
+            if lane_ok:
+                map_dist, map_was_verified, evidence_mode = float(lane_dist), bool(lane_was_verified), 1
+            elif empirical_ok:
+                map_dist, map_was_verified, evidence_mode = float(empirical_dist), False, 2
+            else:
+                map_dist, map_was_verified, evidence_mode = float(lane_dist), bool(lane_was_verified), 0
             plausible = bool(float(b_total) <= float(beta[a]) + plaus_margin)
             contamination_ok = not (
                 src == NaturalSource.OBS
                 and float(contamination) >= float(nat_cfg.get("obs_drop_contamination_above", 0.90))
             )
-            priority_keep = bool(pr_ok or rho != PriorityRelation.AGENT_PRIORITY)
+            # Source semantics: a PRIO-labelled root must itself pass the
+            # priority/comfort validator.  Other natural sources keep the historical
+            # rule that only AGENT_PRIORITY imposes a hard priority-preservation veto.
+            priority_keep = bool(pr_ok) if src == NaturalSource.PRIO else bool(pr_ok or rho != PriorityRelation.AGENT_PRIORITY)
             if not map_ok:
                 reject_counts["map"] += 1
                 if np.isfinite(map_dist):
@@ -920,6 +1111,7 @@ def generate_natural_alternatives(
             map_compliant[a, kept] = bool(map_ok)
             map_distance_max[a, kept] = float(map_dist)
             map_verified[a, kept] = bool(map_was_verified)
+            map_evidence_mode[a, kept] = int(evidence_mode)
             dist = _traj_distance(tr, natural_ref)
             decontam_factor = (
                 max(
@@ -936,6 +1128,8 @@ def generate_natural_alternatives(
             )
             if float(b_total) <= float(beta[a]) + 1.0e-8:
                 low_kept += 1
+            if src == NaturalSource.PRIO:
+                prio_kept += 1
             accepted_by_phase[phase] = accepted_by_phase.get(phase, 0) + 1
             kept += 1
             return True
@@ -943,24 +1137,26 @@ def generate_natural_alternatives(
         for tr, src, src_weight, contamination, phase in candidates:
             try_keep(tr, src, src_weight, contamination, phase)
 
+        min_prio = max(int(nat_cfg.get("min_prio_roots_protected", 1)), 0) if protected_relation and use_prio else 0
+
         def support_satisfied() -> bool:
-            return kept >= min_total and low_kept >= min_low
+            return kept >= min_total and low_kept >= min_low and prio_kept >= min_prio
 
         # First fallback: lane-graph centreline roots. This is the main v16.8.11
         # repair for curved lanes and short/invalid future tracks.
         if not support_satisfied():
-            if use_neu or (not use_obs and not use_prio):
+            if use_prio and prio_kept < min_prio:
+                for acc, voff in _ordered_priority_specs(nat_cfg):
+                    for tr in route_variants(float(acc), float(voff)):
+                        try_keep(tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "fallback_map_prio")
+                        if prio_kept >= min_prio or kept >= M:
+                            break
+                    if prio_kept >= min_prio or kept >= M:
+                        break
+            if not support_satisfied() and (use_neu or (not use_obs and not use_prio)):
                 for acc in nat_cfg.get("map_route_neutral_acc_values_mps2", [0.0, -0.5, 0.5, -1.0, 1.0]):
                     for tr in route_variants(float(acc), 0.0):
                         try_keep(tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "fallback_map_neu")
-                        if support_satisfied() or kept >= M:
-                            break
-                    if support_satisfied() or kept >= M:
-                        break
-            if not support_satisfied() and use_prio:
-                for acc in nat_cfg.get("map_route_prio_acc_values_mps2", [0.0, 0.5, -0.5]):
-                    for tr in route_variants(float(acc), 0.0):
-                        try_keep(tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "fallback_map_prio")
                         if support_satisfied() or kept >= M:
                             break
                     if support_satisfied() or kept >= M:
@@ -990,17 +1186,21 @@ def generate_natural_alternatives(
         diagnostics.append({
             "slot": int(a),
             "valid": True,
+            "mechanism_valid": True,
             "track_index": int(idx),
             "object_type": int(object_type),
             "future_valid_steps": int(valid_steps),
             "future_valid_fraction": float(valid_frac),
             "obs_eligible": bool(obs_eligible),
+            "empirical_corridor_eligible": bool(empirical_eligible),
             "reference_kind": reference_kind,
             "rho": int(rho),
             "beta": float(beta[a]),
             "root_count": int(np.sum(valid[a])),
             "low_burden_root_count": int(np.sum(low_mask)),
+            "prio_root_count": int(np.sum(valid[a] & (source[a] == int(NaturalSource.PRIO)))),
             "map_verified_root_count": int(np.sum(map_verified[a] & valid[a])),
+            "empirical_corridor_root_count": int(np.sum(valid[a] & (map_evidence_mode[a] == 2))),
             "min_burden": float(np.min(burden_neutral[a, valid[a]])) if np.any(valid[a]) else None,
             "obs_contamination": float(obs_contam),
             "attempted_by_phase": attempted_by_phase,
@@ -1024,5 +1224,6 @@ def generate_natural_alternatives(
         "map_compliant": map_compliant,
         "map_distance_max": map_distance_max,
         "map_verified": map_verified,
+        "map_evidence_mode": map_evidence_mode,
         "_diagnostics": diagnostics,
     }

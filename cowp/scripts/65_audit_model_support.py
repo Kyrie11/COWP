@@ -12,10 +12,10 @@ from cowp.data.dataset import COWPNpzDataset
 
 WANTED = {
     "cowp/candidates/valid", "cowp/candidates/conventional_safe", "cowp/candidates/false_safe",
-    "cowp/candidates/noncoercive_feasible", "cowp/candidates/proposal_source",
-    "cowp/critical/valid", "cowp/critical/agent_type", "cowp/critical/base_priority",
+    "cowp/candidates/noncoercive_feasible", "cowp/candidates/proposal_source", "cowp/candidates/certificate_valid",
+    "cowp/critical/valid", "cowp/critical/mechanism_valid", "cowp/critical/agent_type", "cowp/critical/base_priority",
     "cowp/natural/valid", "cowp/natural/source", "cowp/natural/weight", "cowp/natural/traj",
-    "cowp/natural/priority_preserved", "cowp/natural/burden_neutral", "cowp/natural/beta",
+    "cowp/natural/priority_preserved", "cowp/natural/burden_neutral", "cowp/natural/beta", "cowp/natural/map_evidence_mode",
     "cowp/response/valid", "cowp/response/source", "cowp/response/is_safe", "cowp/response/is_low_burden",
     "cowp/response/burden_total", "cowp/response/root_index",
     "cowp/transport/response_is_min_burden",
@@ -29,6 +29,16 @@ WANTED = {
     "cowp/transport/root_low_safe_score", "cowp/transport/root_target_confidence",
     "cowp/transport/root_min_safe_burden", "cowp/transport/canonical_root_weight",
 }
+
+VISIBILITY_CONTEXT = {
+    # Optional context.  Label-only caches need not contain these fields, while
+    # tensor caches do; loading them lets COWPNpzDataset perform exact
+    # Scenario-track -> model-row alignment before the post-cache support audit.
+    "cowp/critical/track_index", "cowp/critical/track_id",
+    "state/id", "womd/state/id", "state/current/valid", "womd/state/current/valid",
+    "state/is_sdc", "womd/state/is_sdc",
+}
+
 
 
 def _binary(c: Counter, name: str, target: np.ndarray, mask: np.ndarray) -> None:
@@ -65,6 +75,8 @@ def main() -> None:
     ap.add_argument("--min-class-examples", type=int, default=32)
     ap.add_argument("--min-source-examples", type=int, default=32)
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--max-unauditable-critical-rate", type=float, default=0.01)
+    ap.add_argument("--min-certificate-complete-scene-rate", type=float, default=0.98)
     args = ap.parse_args()
 
     ds = COWPNpzDataset(args.cache_dir)
@@ -82,7 +94,7 @@ def main() -> None:
     integrity_errors: list[dict[str, str]] = []
     for i in indices:
         try:
-            row = ds.load(i, WANTED)
+            row = ds.load(i, WANTED | VISIBILITY_CONTEXT)
         except Exception as exc:
             if len(read_errors) < 20:
                 read_errors.append({"file": ds.paths[i].name, "error": repr(exc)})
@@ -93,15 +105,29 @@ def main() -> None:
                 integrity_errors.append({"file": ds.paths[i].name, "error": f"missing keys: {missing[:8]}"})
             continue
         cand = np.asarray(row["cowp/candidates/valid"], dtype=bool).reshape(-1)
-        crit = np.asarray(row["cowp/critical/valid"], dtype=bool).reshape(-1)
-        if not cand.size or not crit.size:
+        cert_cand = np.asarray(row["cowp/candidates/certificate_valid"], dtype=bool).reshape(-1)[:cand.size] & cand
+        crit_model = np.asarray(row["cowp/critical/valid"], dtype=bool).reshape(-1)
+        crit_selected = np.asarray(row.get("cowp/critical/selected_before_input_mask", crit_model), dtype=bool).reshape(-1)[:crit_model.size]
+        mech_model = np.asarray(row["cowp/critical/mechanism_valid"], dtype=bool).reshape(-1)[:crit_model.size]
+        mech_label = np.asarray(row.get("cowp/critical/mechanism_valid_before_input_mask", mech_model), dtype=bool).reshape(-1)[:crit_model.size]
+        crit = crit_model & mech_model
+        if not cand.size or not crit_model.size:
             continue
         c["scenes"] += 1
+        c["critical_selected"] += int(crit_selected.sum())
+        c["critical_mechanism_valid"] += int((crit_selected & mech_label).sum())
+        c["critical_unauditable"] += int((crit_selected & ~mech_label).sum())
+        c["critical_input_invisible"] += int((crit_selected & ~crit_model).sum())
+        c["scenes_with_input_invisible_critical"] += int(np.any(crit_selected & ~crit_model))
+        # Candidate-level certificate validity is the authoritative coverage
+        # indicator.  Tensor-cache construction can invalidate a scene if a
+        # Scenario-selected critical actor is absent from the model input.
+        c["certificate_complete_scenes"] += int(np.all((~cand) | cert_cand))
         conv = np.asarray(row["cowp/candidates/conventional_safe"], dtype=bool)[:cand.size]
         ncf = np.asarray(row["cowp/candidates/noncoercive_feasible"], dtype=bool)[:cand.size]
         fs = np.asarray(row["cowp/candidates/false_safe"], dtype=bool)[:cand.size]
-        _binary(c, "candidate_ncf", ncf, cand)
-        _binary(c, "candidate_false_safe", fs, cand & conv)
+        _binary(c, "candidate_ncf", ncf, cert_cand)
+        _binary(c, "candidate_false_safe", fs, cert_cand & conv)
         for x in np.asarray(row["cowp/candidates/proposal_source"], dtype=np.int64)[:cand.size][cand]:
             source["proposal"][int(x)] += 1
 
@@ -117,7 +143,7 @@ def main() -> None:
         if np.any(protected):
             protected_bad = np.any(protected & ~pair_ncf, axis=1)
             protected_audited = np.any(protected, axis=1)
-            _binary(c, "protected_candidate_feasible", ~protected_bad, cand & conv & protected_audited)
+            _binary(c, "protected_candidate_feasible", ~protected_bad, cert_cand & conv & protected_audited)
 
         token = np.asarray(row["cowp/witness/token"], dtype=np.int64)[:cand.size, :crit.size]
         for x in token[base_pair & rel & wit]:
@@ -140,6 +166,17 @@ def main() -> None:
         for x in ns[nv & crit[:, None]]:
             source["natural"][int(x)] += 1
         _binary(c, "natural_priority_preserved", pp, nv & crit[:, None] & (ns == int(NaturalSource.PRIO)))
+        base_rho = np.asarray(row["cowp/critical/base_priority"], dtype=np.int64).reshape(-1)[:crit.size]
+        protected_crit = crit & ((base_rho == int(PriorityRelation.AGENT_PRIORITY)) | (base_rho == int(PriorityRelation.EQUAL_OR_NEGOTIATED)))
+        for a in np.where(protected_crit)[0]:
+            c["protected_critical_agents"] += 1
+            prio_mask = nv[a] & (ns[a] == int(NaturalSource.PRIO))
+            if not np.any(prio_mask):
+                c["protected_without_prio_root"] += 1
+            elif not np.any(pp[a] & prio_mask):
+                c["protected_without_priority_preserved_prio_root"] += 1
+        evidence = np.asarray(row["cowp/natural/map_evidence_mode"], dtype=np.int64)[:crit.size]
+        c["empirical_corridor_roots"] += int((nv & crit[:, None] & (evidence == 2)).sum())
         natural_active = nv & crit[:, None]
         if np.any(natural_active) and not np.all(np.isfinite(nt[natural_active])):
             if len(integrity_errors) < 20:
@@ -249,10 +286,14 @@ def main() -> None:
     checks: dict[str, bool] = {
         "no_read_errors": not read_errors,
         "no_integrity_errors": not integrity_errors,
-        "every_critical_has_natural_root": int(c["critical_without_natural_roots"]) == 0,
-        "every_critical_has_multi_root_support": int(c["critical_with_lt2_natural_roots"]) == 0,
-        "every_critical_has_low_burden_natural_root": int(c["critical_without_low_burden_natural_roots"]) == 0,
-        "every_critical_has_multi_low_burden_root_support": int(c["critical_with_lt2_low_burden_natural_roots"]) == 0,
+        "auditability_coverage": (float(c["critical_unauditable"]) / max(int(c["critical_selected"]), 1)) <= float(args.max_unauditable_critical_rate),
+        "certificate_complete_scene_coverage": (float(c["certificate_complete_scenes"]) / max(int(c["scenes"]), 1)) >= float(args.min_certificate_complete_scene_rate),
+        "every_auditable_critical_has_natural_root": int(c["critical_without_natural_roots"]) == 0,
+        "every_auditable_critical_has_multi_root_support": int(c["critical_with_lt2_natural_roots"]) == 0,
+        "every_auditable_critical_has_low_burden_natural_root": int(c["critical_without_low_burden_natural_roots"]) == 0,
+        "every_auditable_critical_has_multi_low_burden_root_support": int(c["critical_with_lt2_low_burden_natural_roots"]) == 0,
+        "every_protected_auditable_critical_has_prio_root": int(c["protected_without_prio_root"]) == 0,
+        "every_protected_prio_root_is_priority_preserved": int(c["protected_without_priority_preserved_prio_root"]) == 0,
         "natural_weights_valid": int(c["invalid_natural_weight_agents"]) == 0,
         "conflict_subset_affected": int(c["conflict_not_affected_violations"]) == 0,
         "unsafe_event_intervals_complete": int(c["unsafe_missing_event_interval"]) == 0,
@@ -295,12 +336,14 @@ def main() -> None:
 
     passed = all(checks.values()) and not read_errors and not integrity_errors
     report = {
-        "schema_version": "cowp_v16_8_10_model_support_audit_v1",
+        "schema_version": "cowp_v16_8_13_model_support_audit_v1",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "inspected_scenes": int(c["scenes"]),
         "min_class_examples": minc,
         "min_source_examples": mins,
         "strict": bool(args.strict),
+        "max_unauditable_critical_rate": float(args.max_unauditable_critical_rate),
+        "min_certificate_complete_scene_rate": float(args.min_certificate_complete_scene_rate),
         "pass": bool(passed),
         "checks": checks,
         "binary_support": binary_support,
@@ -314,6 +357,19 @@ def main() -> None:
         },
         "continuous_support": continuous,
         "auxiliary_counts": {
+            "critical_selected": int(c["critical_selected"]),
+            "critical_mechanism_valid": int(c["critical_mechanism_valid"]),
+            "critical_unauditable": int(c["critical_unauditable"]),
+            "critical_unauditable_rate": float(c["critical_unauditable"] / max(int(c["critical_selected"]), 1)),
+            "critical_input_invisible": int(c["critical_input_invisible"]),
+            "critical_input_invisible_rate": float(c["critical_input_invisible"] / max(int(c["critical_selected"]), 1)),
+            "scenes_with_input_invisible_critical": int(c["scenes_with_input_invisible_critical"]),
+            "certificate_complete_scenes": int(c["certificate_complete_scenes"]),
+            "certificate_complete_scene_rate": float(c["certificate_complete_scenes"] / max(int(c["scenes"]), 1)),
+            "protected_critical_agents": int(c["protected_critical_agents"]),
+            "protected_without_prio_root": int(c["protected_without_prio_root"]),
+            "protected_without_priority_preserved_prio_root": int(c["protected_without_priority_preserved_prio_root"]),
+            "empirical_corridor_roots": int(c["empirical_corridor_roots"]),
             "root_indexed_responses": int(c["root_indexed_responses"]),
             "confident_affected_roots": int(c["confident_affected_roots"]),
             "critical_without_natural_roots": int(c["critical_without_natural_roots"]),
@@ -329,7 +385,7 @@ def main() -> None:
         },
         "read_errors": read_errors,
         "integrity_errors": integrity_errors,
-        "interpretation": "Pass means the fresh distribution contains non-degenerate support for the active natural/response/witness/affected-root/candidate supervision families; it does not replace held-out evaluation or multi-seed training validation.",
+        "interpretation": "Pass means all *auditable* selected critical relations have complete low-burden typed natural support, protected relations carry a true PRIO root, and the explicitly reported unauditable fraction stays below the preregistered coverage cap. Candidate-level certificate labels are evaluated only where certificate_valid=true. This does not replace held-out evaluation or multi-seed training validation.",
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)

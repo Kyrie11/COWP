@@ -13,12 +13,14 @@ from cowp.data.dataset import COWPNpzDataset
 WANTED = {
     "scenario/id",
     "cowp/candidates/valid",
+    "cowp/candidates/certificate_valid",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/noncoercive_feasible",
     "cowp/candidates/proposal_source",
     "cowp/candidates/audited_pair_count",
     "cowp/candidates/ncf_blocker_count",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/audit/pair_relevant",
     "cowp/audit/relevance_mass",
     "cowp/audit/root_affected",
@@ -89,10 +91,17 @@ def main() -> None:
             continue
         scenes["rows"] += 1
         valid = np.asarray(row.get("cowp/candidates/valid", []), dtype=bool).reshape(-1)
-        crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
-        if not len(valid) or not len(crit):
+        cert_valid = np.asarray(row.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[:len(valid)] & valid
+        crit_selected = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+        mech = np.asarray(row.get("cowp/critical/mechanism_valid", crit_selected), dtype=bool).reshape(-1)[:len(crit_selected)]
+        crit = crit_selected & mech
+        if not len(valid) or not len(crit_selected):
             continue
         base = valid[:, None] & crit[None, :]
+        scenes["certificate_complete"] += int(np.all((~valid) | cert_valid))
+        pair["critical_selected"] += int(crit_selected.sum())
+        pair["critical_mechanism_valid"] += int(crit.sum())
+        pair["critical_unauditable"] += int((crit_selected & ~mech).sum())
         rel = np.asarray(row.get("cowp/audit/pair_relevant", np.ones_like(base)), dtype=bool)[:len(valid), :len(crit)] & base
         exists = np.asarray(row.get("cowp/witness/exists", np.zeros_like(base)), dtype=bool)[:len(valid), :len(crit)]
         pncf = np.asarray(row.get("cowp/witness/pair_noncoercive_feasible", (~exists)), dtype=bool)[:len(valid), :len(crit)]
@@ -171,11 +180,14 @@ def main() -> None:
             pair["relevant_with_response"] += int((rel & resp_pair).sum())
             pair["irrelevant_with_response"] += int((base & ~rel & resp_pair).sum())
 
-        ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool)[:len(valid)] & valid
+        ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool)[:len(valid)] & cert_valid
         conv = np.asarray(row.get("cowp/candidates/conventional_safe", np.zeros_like(valid)), dtype=bool)[:len(valid)] & valid
-        scenes["any_ncf"] += int(ncf.any())
+        scene_cert = bool(np.all((~valid) | cert_valid))
         scenes["any_conv"] += int(conv.any())
-        scenes["false_safe_floor"] += int(conv.any() and not ncf.any())
+        if scene_cert:
+            scenes["certificate_labeled_rows"] += 1
+            scenes["any_ncf"] += int(ncf.any())
+            scenes["false_safe_floor"] += int(conv.any() and not ncf.any())
         aud = np.asarray(row.get("cowp/candidates/audited_pair_count", rel.sum(axis=1)), dtype=np.int64)[:len(valid)]
         blk = np.asarray(row.get("cowp/candidates/ncf_blocker_count", blocker.sum(axis=1)), dtype=np.int64)[:len(valid)]
         audited_counts.extend(aud[valid].tolist())
@@ -196,9 +208,14 @@ def main() -> None:
         "num_scenes": rows,
         "read_errors": read_errors,
         "scene_rates": {
-            "any_ncf": _rate(scenes["any_ncf"], rows),
+            "certificate_complete": _rate(scenes["certificate_complete"], rows),
+            "any_ncf_on_certificate_complete": _rate(scenes["any_ncf"], scenes["certificate_labeled_rows"]),
+            "false_safe_lower_bound_on_certificate_complete": _rate(scenes["false_safe_floor"], scenes["certificate_labeled_rows"]),
+            # Backward-compatible aliases now explicitly use only scenes whose
+            # candidate certificate target is known.
+            "any_ncf": _rate(scenes["any_ncf"], scenes["certificate_labeled_rows"]),
             "any_conventional_safe": _rate(scenes["any_conv"], rows),
-            "false_safe_lower_bound": _rate(scenes["false_safe_floor"], rows),
+            "false_safe_lower_bound": _rate(scenes["false_safe_floor"], scenes["certificate_labeled_rows"]),
         },
         "pair_counts": dict(pair),
         "pair_rates": {

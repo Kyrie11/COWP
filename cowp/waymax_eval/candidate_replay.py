@@ -52,6 +52,7 @@ _REPLAY_CANDIDATE_KEYS = {
 # path as before.
 _REPLAY_SELECTION_KEYS = {
     "cowp/candidates/valid",
+    "cowp/candidates/certificate_valid",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible",
@@ -172,14 +173,15 @@ def select_candidate_indices(
     if valid.ndim != 1 or valid.size == 0:
         return []
     K = int(valid.shape[0])
+    cert_valid = np.asarray(arrays.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[:K] & valid
     cap = K if max_candidates is None or int(max_candidates) <= 0 else min(K, int(max_candidates))
     if selection == "all":
         return np.where(valid)[0].astype(int).tolist()[:cap]
     if selection == "noncoercive":
-        m = valid & _safe_bool(arrays, "cowp/candidates/noncoercive_feasible", valid)
+        m = cert_valid & _safe_bool(arrays, "cowp/candidates/noncoercive_feasible", valid)
         return np.where(m)[0].astype(int).tolist()[:cap]
     if selection == "false_safe":
-        m = valid & _safe_bool(arrays, "cowp/candidates/false_safe", valid)
+        m = cert_valid & _safe_bool(arrays, "cowp/candidates/false_safe", valid)
         return np.where(m)[0].astype(int).tolist()[:cap]
     if selection == "conventional":
         m = valid & np.asarray(arrays.get("cowp/candidates/conventional_safe", valid), dtype=bool)
@@ -201,10 +203,20 @@ def select_candidate_indices(
             buckets.append(np.asarray([int(dec.candidate_index)], dtype=np.int64))
     except Exception:
         pass
-    ncf = valid & _safe_bool(arrays, "cowp/candidates/noncoercive_feasible", valid)
-    fs = valid & _safe_bool(arrays, "cowp/candidates/false_safe", valid)
+    ncf = cert_valid & _safe_bool(arrays, "cowp/candidates/noncoercive_feasible", valid)
+    fs = cert_valid & _safe_bool(arrays, "cowp/candidates/false_safe", valid)
     conv = valid & np.asarray(arrays.get("cowp/candidates/conventional_safe", valid), dtype=bool)
-    buckets.extend([np.where(ncf)[0], np.where(fs)[0], np.where(conv & ~ncf & ~fs)[0], np.where(valid & ~conv)[0], np.where(valid)[0]])
+    # Certificate-unknown candidates remain eligible for physical Waymax replay,
+    # but they are kept in an explicit unknown bucket rather than mislabeled as
+    # ordinary conventional-safe negatives for NCF/false-safe balancing.
+    buckets.extend([
+        np.where(ncf)[0],
+        np.where(fs)[0],
+        np.where(cert_valid & conv & ~ncf & ~fs)[0],
+        np.where(valid & ~cert_valid)[0],
+        np.where(valid & ~conv)[0],
+        np.where(valid)[0],
+    ])
 
     rng = np.random.default_rng(int(seed))
     selected: list[int] = []

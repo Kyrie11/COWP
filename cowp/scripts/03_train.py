@@ -618,7 +618,8 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
             pred["planner_score"],
             batch["cowp/candidates/noncoercive_feasible"].bool(),
             batch["cowp/candidates/false_safe"].bool(),
-            batch["cowp/candidates/valid"].bool(),
+            batch.get("cowp/candidates/certificate_valid", batch["cowp/candidates/valid"]).bool()
+            & batch["cowp/candidates/valid"].bool(),
         )
         imitation = planner_imitation_loss(pred["planner_score"], batch)
         outcome_legacy = planner_outcome_loss(pred["planner_score"], batch)

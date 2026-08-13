@@ -66,6 +66,7 @@ def build_labels_for_scene(
             "selection_reference_mode": str(cfg.get("critical", {}).get("selection_reference_mode", "fixed_anchor_v1")),
             "count": int(np.asarray(critical.get("valid", []), dtype=bool).sum()),
             "track_indices": [int(x) for x in np.asarray(critical.get("track_index", []), dtype=np.int32)[np.asarray(critical.get("valid", []), dtype=bool)].tolist()],
+            **dict(critical.get("_selection_diagnostics", {})),
         }
     # A single global stopping trajectory is not a valid neutral intervention for
     # every actor (e.g. it can itself pressure a rear follower).  Build one fixed,
@@ -79,9 +80,21 @@ def build_labels_for_scene(
     natural = _timeit("engine_natural_s", lambda: generate_natural_alternatives(scene, critical, ego_neutral, cfg, ablation=ablation))
     if profile_diagnostics is not None:
         profile_diagnostics["natural"] = list(natural.get("_diagnostics", []))
+        # Natural generation performs the final routability audit using the exact
+        # route builder.  Refresh critical coverage diagnostics so the profile does
+        # not report the cheaper current-lane precheck as the final certificate
+        # support state.
+        selected_now = np.asarray(critical.get("valid", []), dtype=bool)
+        mechanism_now = np.asarray(critical.get("mechanism_valid", selected_now), dtype=bool) & selected_now
+        profile_diagnostics.setdefault("critical", {})["mechanism_auditable_count_final"] = int(mechanism_now.sum())
+        profile_diagnostics.setdefault("critical", {})["mechanism_unauditable_count_final"] = int((selected_now & ~mechanism_now).sum())
     audit = _timeit("engine_audit_relevance_s", lambda: compute_candidate_agent_audit(scene, candidates, critical, natural, cfg))
+    selected_critical_mask = np.asarray(critical["valid"], dtype=bool)
+    mechanism_critical_mask = np.asarray(critical.get("mechanism_valid", selected_critical_mask), dtype=bool) & selected_critical_mask
+    certificate_complete = bool(np.all((~selected_critical_mask) | mechanism_critical_mask))
+    certificate_valid = np.asarray(candidates["valid"], dtype=bool) & certificate_complete
     if profile_diagnostics is not None:
-        valid_pair = np.asarray(candidates["valid"], dtype=bool)[:, None] & np.asarray(critical["valid"], dtype=bool)[None, :]
+        valid_pair = np.asarray(candidates["valid"], dtype=bool)[:, None] & mechanism_critical_mask[None, :]
         rel = np.asarray(audit["pair_relevant"], dtype=bool) & valid_pair
         profile_diagnostics["audit"] = {
             "valid_pair_count": int(valid_pair.sum()),
@@ -104,12 +117,17 @@ def build_labels_for_scene(
         "dataset/interaction_heavy": np.asarray(bool((scene_meta or {}).get("interaction_heavy", True)), dtype=bool),
         "dataset/scene_types": np.asarray(",".join(str(x) for x in (scene_meta or {}).get("scene_types", []))),
         "dataset/min_future_dist": np.asarray(float((scene_meta or {}).get("min_future_dist", np.inf)), dtype=np.float32),
+        "dataset/mechanism_certificate_complete": np.asarray(certificate_complete, dtype=bool),
         "cowp/candidates/trajectory": candidates["trajectory"],
         "cowp/candidates/macro_type": candidates["macro_type"],
         "cowp/candidates/valid": candidates["valid"],
+        "cowp/candidates/certificate_valid": certificate_valid,
         "cowp/candidates/conventional_safe": witness["candidate_conventional_safe"],
-        "cowp/candidates/false_safe": witness["candidate_false_safe"],
-        "cowp/candidates/noncoercive_feasible": witness["candidate_noncoercive_feasible"],
+        # Candidate-level NCF/false-safe is unknown when any selected critical
+        # relation lacks an auditable natural basis.  Store a conservative false
+        # value and expose certificate_valid as the explicit supervision/eval mask.
+        "cowp/candidates/false_safe": np.asarray(witness["candidate_false_safe"], dtype=bool) & certificate_valid,
+        "cowp/candidates/noncoercive_feasible": np.asarray(witness["candidate_noncoercive_feasible"], dtype=bool) & certificate_valid,
         "cowp/candidates/ego_utility_prior": candidates["ego_utility_prior"],
         "cowp/candidates/is_logged": candidates["is_logged"],
         "cowp/candidates/is_neutral": candidates["is_neutral"],
@@ -126,6 +144,8 @@ def build_labels_for_scene(
         "cowp/critical/track_index": critical["track_index"],
         "cowp/critical/track_id": np.asarray([scene.track_id[i] if 0 <= i < len(scene.track_id) else -1 for i in critical["track_index"]], dtype=np.int64),
         "cowp/critical/valid": critical["valid"],
+        "cowp/critical/mechanism_valid": mechanism_critical_mask,
+        "cowp/critical/auditability_reason": critical.get("auditability_reason", np.full_like(critical["track_index"], 3, dtype=np.int32)),
         "cowp/critical/agent_type": np.asarray([scene.object_type[i] if 0 <= i < len(scene.object_type) else 0 for i in critical["track_index"]], dtype=np.int32),
         "cowp/critical/base_priority": critical["base_priority"],
         "cowp/critical/score": critical["score"],
@@ -140,6 +160,7 @@ def build_labels_for_scene(
         "cowp/natural/map_compliant": natural["map_compliant"],
         "cowp/natural/map_distance_max": natural["map_distance_max"],
         "cowp/natural/map_verified": natural["map_verified"],
+        "cowp/natural/map_evidence_mode": natural.get("map_evidence_mode", np.zeros_like(natural["valid"], dtype=np.int8)),
         "cowp/audit/pair_relevant": audit["pair_relevant"],
         "cowp/audit/relevance_mass": audit["relevance_mass"],
         "cowp/audit/root_affected": audit["root_affected"],

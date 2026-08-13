@@ -47,6 +47,25 @@ def _safe_float(x: torch.Tensor) -> torch.Tensor:
     return torch.nan_to_num(x.float(), nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _critical_mechanism_mask(batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Critical targets with a constructible natural-basis certificate.
+
+    ``cowp/critical/valid`` remains the candidate-independent critical-selection
+    universe.  ``mechanism_valid`` is an *offline supervision* mask and must not
+    redefine who is critical at inference.  Legacy caches fall back to ``valid``.
+    """
+    selected = batch["cowp/critical/valid"].bool()
+    mechanism = batch.get("cowp/critical/mechanism_valid")
+    return selected & (mechanism.bool() if mechanism is not None else selected)
+
+
+def _candidate_certificate_mask(batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Candidates whose NCF/false-safe label is complete for all selected criticals."""
+    valid = batch["cowp/candidates/valid"].bool()
+    cert = batch.get("cowp/candidates/certificate_valid")
+    return valid & (cert.bool() if cert is not None else valid)
+
+
 def _primitive_burden_targets(
     batch: dict[str, torch.Tensor],
     weights: dict[str, float],
@@ -157,7 +176,7 @@ def paper_aligned_supervision_batch(
         return batch
 
     cand = batch["cowp/candidates/valid"].bool()
-    crit = batch["cowp/critical/valid"].bool()
+    crit = _critical_mechanism_mask(batch)
     base_pair = cand[:, :, None] & crit[:, None, :]
     audit_target = batch.get("cowp/audit/pair_relevant")
     has_audit = audit_target is not None
@@ -557,8 +576,8 @@ def witness_candidate_consistency_loss(
     weights: dict[str, float],
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Link pair witnesses and option preservation to candidate-level labels."""
-    cand_mask = batch["cowp/candidates/valid"].bool()
-    crit_mask = batch["cowp/critical/valid"].bool()
+    cand_mask = _candidate_certificate_mask(batch)
+    crit_mask = _critical_mechanism_mask(batch)
     pair_prob = torch.sigmoid(_safe_float(logits))
     pair_prob = torch.where(pair_mask, pair_prob.clamp(1e-5, 1.0 - 1e-5), torch.zeros_like(pair_prob))
     # Smooth noisy-OR is less brittle than max and gives every critical pair a gradient.
@@ -1095,7 +1114,7 @@ def _diversity_loss(
 def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     """Typed, source-restricted supervision for the natural option basis."""
     valid = batch["cowp/natural/valid"].bool()
-    crit = batch["cowp/critical/valid"].bool()
+    crit = _critical_mechanism_mask(batch)
     mask = valid & crit[:, :, None]
     pred_mode_source = pred.get("mode_source")
 
@@ -1327,7 +1346,7 @@ def natural_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 
 def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     cand_mask = batch["cowp/candidates/valid"].bool()
-    crit_mask = batch["cowp/critical/valid"].bool()
+    crit_mask = _critical_mechanism_mask(batch)
     base_pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
     audit_target = batch.get("cowp/audit/pair_relevant")
     use_audit_relevance = float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5
@@ -1457,7 +1476,7 @@ def witness_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], 
 def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     mask = batch["cowp/response/valid"].bool()
     if "cowp/critical/valid" in batch:
-        mask = mask & batch["cowp/critical/valid"].bool()[:, None, :, None]
+        mask = mask & _critical_mechanism_mask(batch)[:, None, :, None]
     safe = F.binary_cross_entropy_with_logits(_safe_float(pred["safe_logits"]), _binary_target(batch["cowp/response/is_safe"]), reduction="none")
     low = F.binary_cross_entropy_with_logits(_safe_float(pred["low_logits"]), _binary_target(batch["cowp/response/is_low_burden"]), reduction="none")
     b = torch.abs(_safe_float(pred["burden_total"]) - _safe_float(batch["cowp/response/burden_total"]))
@@ -1468,7 +1487,7 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
     if valid_logits is not None:
         valid_loss = F.binary_cross_entropy_with_logits(_safe_float(valid_logits), mask.float(), reduction="none")
         # valid supervision includes padded response slots for otherwise valid pairs.
-        pair_mask = batch["cowp/candidates/valid"].bool()[:, :, None] & batch["cowp/critical/valid"].bool()[:, None, :]
+        pair_mask = batch["cowp/candidates/valid"].bool()[:, :, None] & _critical_mechanism_mask(batch)[:, None, :]
         if "cowp/audit/pair_relevant" in batch and float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5:
             pair_mask = pair_mask & batch["cowp/audit/pair_relevant"].bool()
         loss_valid = masked_mean(valid_loss, pair_mask[..., None])
@@ -1549,7 +1568,7 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
 
 def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
     """Candidate-level auxiliary supervision for learned planner quality."""
-    mask = batch["cowp/candidates/valid"].bool()
+    mask = _candidate_certificate_mask(batch)
     ncf = _binary_target(batch["cowp/candidates/noncoercive_feasible"])
     false_safe = _binary_target(batch["cowp/candidates/false_safe"])
     # A collision-free but coercive/false-safe candidate is not a positive NCF
@@ -1593,7 +1612,7 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     used only by the physical feasibility shield at inference.  Ambiguous candidates
     are excluded rather than silently treated as negatives for both concepts.
     """
-    mask = batch["cowp/candidates/valid"].bool()
+    mask = _candidate_certificate_mask(batch)
     if not mask.any() or "candidate_ncf_logit" not in pred or "candidate_false_safe_logit" not in pred:
         z = _zero_like_loss(batch["cowp/candidates/valid"])
         return {
@@ -1765,7 +1784,7 @@ def priority_claim_loss(logits: torch.Tensor, batch: dict[str, torch.Tensor], we
     costs.
     """
     cand_mask = batch["cowp/candidates/valid"].bool()
-    crit_mask = batch["cowp/critical/valid"].bool()
+    crit_mask = _critical_mechanism_mask(batch)
     pair_mask = cand_mask[:, :, None] & crit_mask[:, None, :]
     if "cowp/audit/pair_relevant" in batch and float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5:
         pair_mask = pair_mask & batch["cowp/audit/pair_relevant"].bool()
@@ -1916,7 +1935,7 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
     certificate from degenerating into a candidate classifier.
     """
     cand = batch["cowp/candidates/valid"].bool()
-    crit = batch["cowp/critical/valid"].bool()
+    crit = _critical_mechanism_mask(batch)
     base_pair = cand[:, :, None] & crit[:, None, :]
     audit_target = batch.get("cowp/audit/pair_relevant")
     use_audit_relevance = float(weights.get("use_causal_audit_relevance", 1.0)) > 0.5
@@ -2268,8 +2287,9 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         if exists_target is not None and rho is not None:
             protected = ((rho.long() == 2) | (rho.long() == 3)) & crit[:, None, :]
             protected_available = protected.any(dim=-1)
-            priority_fs = cand & conventional & (exists_target.bool() & protected).any(dim=-1)
-            priority_good = cand & conventional & protected_available & ~priority_fs
+            cert_cand = _candidate_certificate_mask(batch)
+            priority_fs = cert_cand & conventional & (exists_target.bool() & protected).any(dim=-1)
+            priority_good = cert_cand & conventional & protected_available & ~priority_fs
             priority_disc = priority_good | priority_fs
             candidate_priority_coverage = priority_disc.float().sum() / cand.float().sum().clamp_min(1.0)
             candidate_priority_false_safe_rate = priority_fs.float().sum() / priority_disc.float().sum().clamp_min(1.0)
@@ -2299,10 +2319,11 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         ncf_target = batch.get("cowp/candidates/noncoercive_feasible")
         fs_target = batch.get("cowp/candidates/false_safe")
         if ncf_target is not None and fs_target is not None:
+            cert_cand = _candidate_certificate_mask(batch)
             raw_ncf = _binary_target(ncf_target) > 0.5
             raw_fs = _binary_target(fs_target) > 0.5
-            ncf_pos = cand & raw_ncf & ~raw_fs
-            fs_pos = cand & raw_fs
+            ncf_pos = cert_cand & raw_ncf & ~raw_fs
+            fs_pos = cert_cand & raw_fs
             disc = ncf_pos | fs_pos
             candidate_budget_coverage = disc.float().sum() / cand.float().sum().clamp_min(1.0)
             candidate_budget_ncf_rate = ncf_pos.float().sum() / disc.float().sum().clamp_min(1.0)

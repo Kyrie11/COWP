@@ -278,13 +278,37 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
         safe_idx = np.clip(idx, 0, len(agent_visible) - 1)
         visible = visible & agent_visible[safe_idx]
     old_valid = np.asarray(data.get("cowp/critical/valid", np.ones_like(visible, dtype=bool))).astype(bool, copy=False)
+    old_mechanism_valid = np.asarray(data.get("cowp/critical/mechanism_valid", old_valid), dtype=bool).reshape(-1)
     new_valid = old_valid & visible
+    # Preserve label-space selection/auditability before model-input masking so
+    # post-cache audits can distinguish missing offline mechanism evidence from
+    # an actor that is simply absent from the tf.Example/model rows.
+    data["cowp/critical/selected_before_input_mask"] = np.array(old_valid, dtype=bool, copy=True)
+    if old_mechanism_valid.shape == old_valid.shape:
+        data["cowp/critical/mechanism_valid_before_input_mask"] = np.array(old_mechanism_valid, dtype=bool, copy=True)
     data["cowp/critical/input_visible"] = visible.astype(bool)
     if np.array_equal(new_valid, old_valid):
         return data
 
     data["cowp/critical/valid"] = new_valid.astype(bool)
     bad = ~new_valid
+    bad_selected = old_valid & ~visible
+    if np.any(bad_selected):
+        # A Scenario-proto certificate that depends on a critical actor absent from
+        # the tf.Example/model input is not a valid candidate-level training target.
+        # Keep the original labels for provenance, but mask certificate losses rather
+        # than pretending the model could have inferred the hidden relation.
+        mech = np.asarray(data.get("cowp/critical/mechanism_valid", old_valid), dtype=bool).reshape(-1)
+        if mech.shape == old_valid.shape:
+            mech = np.array(mech, copy=True)
+            mech[bad_selected] = False
+            data["cowp/critical/mechanism_valid"] = mech
+        cand_valid = np.asarray(data.get("cowp/candidates/valid", []), dtype=bool).reshape(-1)
+        if cand_valid.size:
+            cert = np.asarray(data.get("cowp/candidates/certificate_valid", cand_valid), dtype=bool).reshape(-1)[: cand_valid.size]
+            data["cowp/candidates/certificate_valid"] = np.zeros_like(cert, dtype=bool)
+        if "dataset/mechanism_certificate_complete" in data:
+            data["dataset/mechanism_certificate_complete"] = np.asarray(False)
     if not bad.any():
         return data
 
@@ -387,6 +411,7 @@ def _wanted_keys_for_stage(
             "cowp/candidates/trajectory",
             "cowp/candidates/macro_type",
             "cowp/candidates/valid",
+            "cowp/candidates/certificate_valid",
             "cowp/witness/",
             "cowp/audit/",
         })
@@ -406,6 +431,7 @@ def _wanted_keys_for_stage(
                 "waymax/candidate_log_divergence",
             })
         wanted.update({
+            "cowp/candidates/certificate_valid",
             "cowp/candidates/conventional_safe",
             "cowp/candidates/false_safe",
             "cowp/candidates/noncoercive_feasible",
