@@ -147,6 +147,11 @@ def parse_map_features(scenario) -> MapData:
             map_data.crosswalks[fid] = _polyline(feature.crosswalk.polygon)
         elif feature.HasField("speed_bump"):
             map_data.speed_bumps[fid] = _polyline(feature.speed_bump.polygon)
+        elif feature.HasField("driveway"):
+            # WOMD MapFeature.driveway is a closed polygon describing a driveway
+            # entrance / parking-lot connector.  It is HD-map evidence and must
+            # not be discarded merely because no lane centreline runs through it.
+            map_data.driveways[fid] = _polyline(feature.driveway.polygon)
     for t, dyn in enumerate(scenario.dynamic_map_states):
         state = {"t": t, "lane_states": []}
         for lane_state in getattr(dyn, "lane_states", []):

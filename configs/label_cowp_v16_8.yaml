@@ -239,6 +239,11 @@ natural:
   map_max_distance_vehicle_m: 5.0
   map_max_distance_vru_m: 8.0
   map_hard_max_distance_m: 12.0
+  # Explicit WOMD driveway polygons are HD-map evidence for parking-lot / exit
+  # connectors.  The margin only tolerates polygon discretization; it is not a
+  # generic road-width relaxation.
+  driveway_margin_vehicle_m: 1.0
+  driveway_margin_vru_m: 1.5
   # HD lane centreline is not a complete drivable-area representation in WOMD.
   # Only when lane routing fails and factual future support is substantial may a
   # narrow empirical route corridor validate OBS/NEU/PRIO geometry.  This does

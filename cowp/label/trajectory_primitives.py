@@ -328,6 +328,20 @@ def resample_logged(
     idx = np.clip(idx, 0, len(logged) - 1)
     sampled = logged[idx].copy()
 
+    # v16.8.16: the canonical observational root is factual *geometry*
+    # supervision.  Do not reconstruct its positions by integrating stored
+    # velocity: WOMD box positions are the authoritative logged geometry and
+    # tiny velocity/heading inconsistencies can accumulate metres over 8 s.
+    # Kinematic repair below recomputes yaw/vx/vy while preserving positions.
+    if int(time_shift_steps) == 0 and abs(float(speed_scale) - 1.0) <= 1.0e-8 and abs(float(lateral_offset)) <= 1.0e-8:
+        if current is None:
+            pseudo_current = np.zeros(11, dtype=np.float32)
+            pseudo_current[:2] = sampled[0, :2] - sampled[0, 3:5] * dt
+            pseudo_current[6] = sampled[0, 2]
+            pseudo_current[7:9] = sampled[0, 5:7]
+            current = pseudo_current
+        return repair_planar_kinematics(sampled, current=current, dt=dt)
+
     # Determine the state immediately before the first generated point.
     if current is not None:
         current_arr = np.asarray(current, dtype=np.float32)

@@ -578,6 +578,66 @@ def _ordered_observational_specs(nat_cfg: dict) -> list[tuple[float, float, floa
 
 
 
+def _driveway_polygons(scene: ScenarioData) -> list[np.ndarray]:
+    """Return finite WOMD driveway polygons as HD-map drivable connectors.
+
+    WOMD publishes driveway polygons separately from lane centre lines.  They are
+    not a license to infer arbitrary road area: only the supplied polygons (plus
+    a small configurable boundary tolerance) are accepted.
+    """
+    out: list[np.ndarray] = []
+    for poly in getattr(scene.map_data, "driveways", {}).values():
+        xy = np.asarray(poly, dtype=np.float32)
+        if xy.ndim != 2 or len(xy) < 3:
+            continue
+        xy = xy[:, :2]
+        if np.all(np.isfinite(xy)):
+            out.append(xy)
+    return out
+
+
+def _points_inside_polygon(points: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    """Vectorized even-odd point-in-polygon test (boundary handled by margin)."""
+    pts = np.asarray(points, dtype=np.float64)
+    poly = np.asarray(polygon, dtype=np.float64)[:, :2]
+    if len(poly) < 3 or len(pts) == 0:
+        return np.zeros(len(pts), dtype=bool)
+    x, y = pts[:, 0], pts[:, 1]
+    x1, y1 = poly[:, 0], poly[:, 1]
+    x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
+    inside = np.zeros(len(pts), dtype=bool)
+    for i in range(len(poly)):
+        crosses = ((y1[i] > y) != (y2[i] > y))
+        xinters = (x2[i] - x1[i]) * (y - y1[i]) / (y2[i] - y1[i] + 1.0e-12) + x1[i]
+        inside ^= crosses & (x < xinters)
+    return inside
+
+
+def _driveway_distance_profile(points: np.ndarray, polygons: list[np.ndarray], *, chunk_size: int) -> np.ndarray:
+    """Distance to the union of driveway polygons; points inside have distance 0."""
+    pts = np.asarray(points, dtype=np.float32)
+    if len(pts) == 0 or not polygons:
+        return np.full(len(pts), np.inf, dtype=np.float64)
+    best = np.full(len(pts), np.inf, dtype=np.float64)
+    for poly in polygons:
+        xy = np.asarray(poly, dtype=np.float32)[:, :2]
+        nxt = np.roll(xy, -1, axis=0)
+        v = nxt - xy
+        l2 = np.sum(v * v, axis=-1)
+        keep = np.isfinite(l2) & (l2 > 1.0e-8)
+        if not np.any(keep):
+            continue
+        segs = (xy[keep], v[keep], l2[keep])
+        # _segment_distance_profile subsamples trajectories; here points are
+        # already sampled, so use stride=1.
+        fake = np.zeros((len(pts), 7), dtype=np.float32)
+        fake[:, :2] = pts
+        d = _segment_distance_profile(fake, segs, stride=1, chunk_size=chunk_size)
+        d[_points_inside_polygon(pts, xy)] = 0.0
+        best = np.minimum(best, d)
+    return best
+
+
 def _lane_segment_cloud(scene: ScenarioData) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Continuous lane-centre geometry for map compliance.
 
@@ -676,26 +736,50 @@ def _trajectory_map_compliance(
     lane_segments: tuple[np.ndarray, np.ndarray, np.ndarray],
     object_type: int,
     nat_cfg: dict,
+    driveway_polygons: list[np.ndarray] | None = None,
 ) -> tuple[bool, float, bool]:
-    """Continuous lane-centre corridor check used during label construction."""
+    """HD-map compliance against lane corridors *or* published driveways.
+
+    Lane centre lines are not the only WOMD drivable connector geometry.  A
+    trajectory point is accepted when it is within the existing lane threshold
+    or inside/near an explicit MapFeature.driveway polygon.  No road-edge based
+    polygon inference is performed.
+    """
     if not bool(nat_cfg.get("map_filter_enabled", True)):
         return True, -1.0, False
+    stride = max(1, int(nat_cfg.get("map_filter_stride", 4)))
+    chunk = max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128)
+    xy = np.asarray(tr, dtype=np.float32)[::stride, :2]
     seg_a, _, _ = lane_segments
-    if seg_a.size == 0:
+    driveways = list(driveway_polygons or [])
+    map_available = bool(seg_a.size or driveways)
+    if not map_available:
         return (not bool(nat_cfg.get("map_filter_require_available", False))), -1.0, False
-    d = _segment_distance_profile(
-        tr, lane_segments,
-        stride=max(1, int(nat_cfg.get("map_filter_stride", 4))),
-        chunk_size=max(int(nat_cfg.get("map_segment_chunk_size", 2048)), 128),
-    )
+
     if int(object_type) == int(ObjectType.VEHICLE):
-        threshold = float(nat_cfg.get("map_max_distance_vehicle_m", 5.0))
+        lane_threshold = float(nat_cfg.get("map_max_distance_vehicle_m", 5.0))
+        driveway_margin = float(nat_cfg.get("driveway_margin_vehicle_m", 1.0))
     else:
-        threshold = float(nat_cfg.get("map_max_distance_vru_m", 8.0))
+        lane_threshold = float(nat_cfg.get("map_max_distance_vru_m", 8.0))
+        driveway_margin = float(nat_cfg.get("driveway_margin_vru_m", 1.5))
+
+    lane_d = np.full(len(xy), np.inf, dtype=np.float64)
+    if seg_a.size:
+        lane_d = _segment_distance_profile(
+            tr, lane_segments, stride=stride, chunk_size=chunk
+        )
+    driveway_d = _driveway_distance_profile(xy, driveways, chunk_size=chunk)
+    per_point_ok = (lane_d <= lane_threshold) | (driveway_d <= driveway_margin)
+    effective_d = np.minimum(lane_d, driveway_d)
     min_fraction = float(nat_cfg.get("map_min_compliant_fraction", 0.80))
     hard_max = float(nat_cfg.get("map_hard_max_distance_m", 12.0))
-    ok = bool(np.all(np.isfinite(d)) and float(np.mean(d <= threshold)) >= min_fraction and float(np.max(d)) <= hard_max)
-    return ok, float(np.max(d)), True
+    ok = bool(
+        len(effective_d) > 0
+        and np.all(np.isfinite(effective_d))
+        and float(np.mean(per_point_ok)) >= min_fraction
+        and float(np.max(effective_d)) <= hard_max
+    )
+    return ok, float(np.max(effective_d)) if len(effective_d) else float("inf"), True
 
 
 def _trajectory_empirical_corridor_compliance(
@@ -806,6 +890,7 @@ def generate_natural_alternatives(
     map_verified = np.zeros((A, M), dtype=bool)
     map_evidence_mode = np.zeros((A, M), dtype=np.int8)  # 0 none, 1 HD-lane, 2 empirical factual corridor
     lane_segments = _lane_segment_cloud(scene)
+    driveway_polygons = _driveway_polygons(scene)
     diagnostics: list[dict[str, object]] = []
 
     neutral_bank = np.asarray(ego_neutral_traj, dtype=np.float32)
@@ -901,8 +986,16 @@ def generate_natural_alternatives(
         obs_eligible = bool(has_future and valid_steps >= obs_min_steps and valid_frac >= obs_min_frac)
         emp_min_steps = max(int(nat_cfg.get("empirical_corridor_min_future_valid_steps", obs_min_steps)), 0)
         emp_min_frac = float(np.clip(nat_cfg.get("empirical_corridor_min_future_valid_fraction", obs_min_frac), 0.0, 1.0))
-        empirical_supported = bool(has_future and valid_steps >= emp_min_steps and valid_frac >= emp_min_frac)
-        empirical_eligible = bool(empirical_supported and not route_polylines)
+        empirical_threshold_ok = bool(has_future and valid_steps >= emp_min_steps and valid_frac >= emp_min_frac)
+        empirical_segments_candidate = _empirical_segment_cloud(current, fut_states, fut_mask) if empirical_threshold_ok else (
+            np.zeros((0, 2), dtype=np.float32), np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        )
+        empirical_supported = bool(empirical_threshold_ok and empirical_segments_candidate[0].size > 0)
+        # A non-empty route polyline is only a *candidate* lane continuation.  It
+        # may be too short to retime for the full 8 s horizon.  Empirical fallback
+        # must be blocked only by an actually retimable full-horizon map route.
+        route_supported = bool(map_refs)
+        empirical_eligible = bool(empirical_supported and not route_supported)
 
         # v16.8.13 late auditability finalization.  The cheap critical-selection
         # precheck only knows whether the current state projects near a lane.  A
@@ -913,7 +1006,6 @@ def generate_natural_alternatives(
         # long factual geometry exists, keep the actor in critical/valid but mark
         # its mechanism target unknown.
         require_auditability = bool(cfg.get("critical", {}).get("require_natural_auditability", True))
-        route_supported = bool(route_polylines)
         final_auditable = bool(route_supported or empirical_supported)
         if require_auditability:
             mechanism_mask[a] = bool(final_auditable)
@@ -937,7 +1029,7 @@ def generate_natural_alternatives(
                 })
                 continue
 
-        empirical_segments = _empirical_segment_cloud(current, fut_states, fut_mask) if empirical_eligible else (
+        empirical_segments = empirical_segments_candidate if empirical_eligible else (
             np.zeros((0, 2), dtype=np.float32), np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
         )
         obs_contam = _observed_yield_contamination(scene, idx, logged, pair_neutral, H, dt, nat_cfg) if has_future else 0.0
@@ -1064,7 +1156,9 @@ def generate_natural_alternatives(
                 rho=rho,
             )
             pr_ok, pr_reason = priority_preservation_check(tr, natural_ref, rho, cfg)
-            lane_ok, lane_dist, lane_was_verified = _trajectory_map_compliance(tr, lane_segments, object_type, nat_cfg)
+            lane_ok, lane_dist, lane_was_verified = _trajectory_map_compliance(
+                tr, lane_segments, object_type, nat_cfg, driveway_polygons=driveway_polygons
+            )
             empirical_ok = False
             empirical_dist = float("inf")
             if (not lane_ok) and empirical_eligible:
@@ -1077,7 +1171,9 @@ def generate_natural_alternatives(
             elif empirical_ok:
                 map_dist, map_was_verified, evidence_mode = float(empirical_dist), False, 2
             else:
-                map_dist, map_was_verified, evidence_mode = float(lane_dist), bool(lane_was_verified), 0
+                finite_dist = [float(x) for x in (lane_dist, empirical_dist) if np.isfinite(x) and float(x) >= 0.0]
+                map_dist = min(finite_dist) if finite_dist else float("inf")
+                map_was_verified, evidence_mode = bool(lane_was_verified), 0
             plausible = bool(float(b_total) <= float(beta[a]) + plaus_margin)
             contamination_ok = not (
                 src == NaturalSource.OBS
@@ -1194,6 +1290,9 @@ def generate_natural_alternatives(
             "obs_eligible": bool(obs_eligible),
             "empirical_corridor_eligible": bool(empirical_eligible),
             "reference_kind": reference_kind,
+            "route_polyline_count": int(len(route_polylines)),
+            "full_horizon_map_route_count": int(len(map_refs)),
+            "driveway_polygon_count": int(len(driveway_polygons)),
             "rho": int(rho),
             "beta": float(beta[a]),
             "root_count": int(np.sum(valid[a])),

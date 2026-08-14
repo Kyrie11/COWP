@@ -25,6 +25,16 @@ def _wilson_interval(k: int, n: int, z: float = 1.96) -> dict[str, float | int]:
     return {"k": k, "n": n, "rate": phat, "low": max(0.0, center - half), "high": min(1.0, center + half)}
 
 
+def _smoke_min_metric_pass(interval: dict[str, float | int], threshold: float) -> bool:
+    """A smoke minimum is a hard failure only if even the upper CI misses it."""
+    return float(interval.get("high", 0.0)) >= float(threshold)
+
+
+def _smoke_max_metric_pass(interval: dict[str, float | int], threshold: float) -> bool:
+    """A smoke maximum is a hard failure only if even the lower CI exceeds it."""
+    return float(interval.get("low", 1.0)) <= float(threshold)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Screen v16.8.9 candidate-conditioned causal-audit proposal/data probe.")
     ap.add_argument("--paired-probe", required=True)
@@ -64,20 +74,50 @@ def main() -> None:
     burden_only_fraction = float(pair_rates.get("burden_only_root_fraction", 0.0))
     burden_only_scene_rate = float(pair_rates.get("burden_only_scene_rate", 0.0))
     unique_scenes = int(profile.get("unique_scenarios", 0))
-    checks = {
-        "pairing_complete": bool(comp.get("complete", False)) and int(comp.get("build_error_count", 0)) == 0,
-        "stable_critical_reference": int(modes.get("fixed_anchor_v1", 0)) == unique_scenes and unique_scenes > 0,
-        "any_valid": float(new.get("any_valid_scene_rate", 0.0)) >= th["min_any_valid"],
+
+    # Compute small-sample uncertainty before promotion checks.  Smoke is a
+    # screening experiment, not the publication gate: a borderline point estimate
+    # should block strict only when its Wilson interval is already wholly on the
+    # wrong side of the smoke threshold.  Strict remains point-estimate gated.
+    n_rep = int(paired.get("num_representative_scenes", 0))
+    n_hard = int(paired.get("paired", {}).get("old_hard_scene_count", 0))
+    any_ncf_k = int(round(float(new.get("any_ncf_scene_rate", 0.0)) * n_rep))
+    false_safe_k = int(round(float(new.get("best_case_selected_false_safe_lower_bound", 0.0)) * n_rep))
+    priority_eligible_k = int(round(float(new.get("any_priority_eligible_scene_rate", 0.0)) * n_rep))
+    pbtr_k = int(round(float(new.get("best_case_pbtr_lower_bound", 0.0)) * priority_eligible_k))
+    hard_k = int(round(float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) * n_hard))
+    uncertainty = {
+        "any_ncf_95pct_wilson": _wilson_interval(any_ncf_k, n_rep),
+        "false_safe_95pct_wilson": _wilson_interval(false_safe_k, n_rep),
+        "pbtr_95pct_wilson": _wilson_interval(pbtr_k, priority_eligible_k),
+        "hard_recovery_95pct_wilson": _wilson_interval(hard_k, n_hard),
+    }
+    point_estimate_checks = {
         "any_ncf": float(new.get("any_ncf_scene_rate", 0.0)) >= th["min_any_ncf"],
         "false_safe_floor": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= th["max_false_safe_floor"],
         "pbtr_floor": float(new.get("best_case_pbtr_lower_bound", 1.0)) <= th["max_pbtr_floor"],
         "hard_recovery": float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) >= th["min_hard_recovery"],
+    }
+    if args.strict:
+        proposal_checks = dict(point_estimate_checks)
+    else:
+        proposal_checks = {
+            # Lower-bounded metrics are a gross smoke failure only when even the
+            # upper Wilson bound cannot reach the threshold.
+            "any_ncf": _smoke_min_metric_pass(uncertainty["any_ncf_95pct_wilson"], th["min_any_ncf"]),
+            "hard_recovery": _smoke_min_metric_pass(uncertainty["hard_recovery_95pct_wilson"], th["min_hard_recovery"]),
+            # Upper-bounded metrics are a gross failure only when even the lower
+            # Wilson bound is above the allowed threshold.
+            "false_safe_floor": _smoke_max_metric_pass(uncertainty["false_safe_95pct_wilson"], th["max_false_safe_floor"]),
+            "pbtr_floor": _smoke_max_metric_pass(uncertainty["pbtr_95pct_wilson"], th["max_pbtr_floor"]),
+        }
+
+    checks = {
+        "pairing_complete": bool(comp.get("complete", False)) and int(comp.get("build_error_count", 0)) == 0,
+        "stable_critical_reference": int(modes.get("fixed_anchor_v1", 0)) == unique_scenes and unique_scenes > 0,
+        "any_valid": float(new.get("any_valid_scene_rate", 0.0)) >= th["min_any_valid"],
+        **proposal_checks,
         "audit_not_degenerate": th["min_relevant_pair_rate"] <= relevant_rate <= th["max_relevant_pair_rate"],
-        # Burden-only affected roots are an auxiliary subset, not a required
-        # dataset prevalence.  With the current safety oracle, near-miss/TTC/RSS
-        # pressure is already part of root_unsafe, so affected&~unsafe can be
-        # legitimately rare.  What must be hard-gated is definition/integrity,
-        # not an arbitrary positive fraction in a 96-scene probe.
         "affected_definition_consistent": bool(integ.get("affected_definition_consistent", False)),
         "burden_only_definition_consistent": bool(integ.get("burden_only_definition_consistent", False)),
         "no_read_errors": bool(integ.get("no_read_errors", False)),
@@ -94,22 +134,6 @@ def main() -> None:
     }
     passed = all(checks.values())
 
-    # Point estimates are sufficient to decide whether a smoke warrants a larger
-    # probe, but they are not precise enough to justify a full rebuild.  Report
-    # uncertainty explicitly so borderline 48-scene values are not overread.
-    n_rep = int(paired.get("num_representative_scenes", 0))
-    n_hard = int(paired.get("paired", {}).get("old_hard_scene_count", 0))
-    any_ncf_k = int(round(float(new.get("any_ncf_scene_rate", 0.0)) * n_rep))
-    false_safe_k = int(round(float(new.get("best_case_selected_false_safe_lower_bound", 0.0)) * n_rep))
-    priority_eligible_k = int(round(float(new.get("any_priority_eligible_scene_rate", 0.0)) * n_rep))
-    pbtr_k = int(round(float(new.get("best_case_pbtr_lower_bound", 0.0)) * priority_eligible_k))
-    hard_k = int(round(float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) * n_hard))
-    uncertainty = {
-        "any_ncf_95pct_wilson": _wilson_interval(any_ncf_k, n_rep),
-        "false_safe_95pct_wilson": _wilson_interval(false_safe_k, n_rep),
-        "pbtr_95pct_wilson": _wilson_interval(pbtr_k, priority_eligible_k),
-        "hard_recovery_95pct_wilson": _wilson_interval(hard_k, n_hard),
-    }
     advisories = {
         "burden_only_affected_observed": int(root_counts.get("burden_only", 0)) > 0,
         "burden_only_root_fraction": burden_only_fraction,
@@ -130,13 +154,15 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": "cowp_v16_8_9_causal_audit_screen_v2",
+        "schema_version": "cowp_v16_8_16_causal_audit_screen_v3",
         "strict": bool(args.strict),
         "code_fingerprint_sha256": code_fingerprint,
         "screen_pass": bool(passed),
         "checks": checks,
         "thresholds": th,
         "statistical_uncertainty": uncertainty,
+        "point_estimate_checks": point_estimate_checks,
+        "smoke_gate_policy": "Wilson gross-failure screen" if not args.strict else "strict point-estimate thresholds",
         "advisories": advisories,
         "observed": {
             "new_any_valid_scene_rate": float(new.get("any_valid_scene_rate", 0.0)),

@@ -32,6 +32,7 @@ class MapData:
     road_edges: dict[int, np.ndarray] = field(default_factory=dict)
     crosswalks: dict[int, np.ndarray] = field(default_factory=dict)
     speed_bumps: dict[int, np.ndarray] = field(default_factory=dict)
+    driveways: dict[int, np.ndarray] = field(default_factory=dict)
     stop_signs: dict[int, dict[str, Any]] = field(default_factory=dict)
     dynamic_signals: list[dict[str, Any]] = field(default_factory=list)
 

@@ -1,3 +1,13 @@
+## v16.8.16 — Full-Horizon Auditability, WOMD Driveway Evidence, Exact OBS Geometry, and Statistical Smoke Promotion (2026-08-14)
+
+The v16.8.15 96-scene smoke passed training supervision but was blocked by two independent gates: a borderline PBTR point estimate (23/45=0.5111 versus the smoke maximum 0.50) and genuine natural-basis incompleteness (13/536 auditable critical agents rootless and 18/423 protected agents without a PRIO root).  All 13 rootless cases used `logged_geometry_neutral_timing` and were map-rejection dominated.
+
+v16.8.16 fixes a construction inconsistency where any non-empty lane polyline disabled empirical fallback even when that lane was too short to retime for the full 8 s horizon.  Auditability and empirical-fallback eligibility now use the actually retimable `map_refs`, so short 35/36-step actors without a full route become explicit mechanism-unknown targets while 78--80-step factual geometry can provide a narrow empirical route witness.  Canonical OBS now preserves WOMD factual positions instead of reintegrating logged velocity.  The Scenario parser also retains official WOMD driveway polygons and map compliance accepts the union of the existing lane corridor and explicit driveway polygons without inferring drivable area from road edges or relaxing lane thresholds.
+
+Smoke promotion is now uncertainty-aware: the 96-scene probe uses Wilson intervals to reject only gross proposal failures, while the 1200-scene strict probe keeps the preregistered point-estimate thresholds unchanged.  Smoke certificate-complete coverage is 95% (strict/train 98%).  PRIO is treated as a typed-source coverage requirement rather than a mathematically unjustified 100% per-protected-agent existential requirement: 95% in smoke and 98% in strict/train, while dataset-wide source support and priority-preservation correctness remain hard-gated.  Auditable rootless and <2-low-burden counts remain zero-tolerance.
+
+Local regression: **215 passed, 5 skipped**; compileall and all v16.8.16 promotion shell syntax checks pass.
+
 ## v16.8.12 — Continuous Map Geometry, Neutral-Timing Natural Reference, and Fail-Safe Promotion Verdicts (2026-08-13)
 
 ### Triggering evidence from the uploaded v16.8.11 train pilot

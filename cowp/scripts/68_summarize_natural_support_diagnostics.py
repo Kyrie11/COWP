@@ -36,6 +36,10 @@ def main() -> None:
     protected = 0
     protected_without_prio = 0
     empirical_roots = 0
+    empirical_eligible_agents = 0
+    short_route_candidate_agents = 0
+    rootless_short_route_candidate_agents = 0
+    driveway_context_agents = 0
     rootless = 0
     lt2_low = 0
     neutral_unsafe = 0
@@ -107,6 +111,12 @@ def main() -> None:
                 rho_int = int(d.get("rho", -1))
                 prio_roots = int(d.get("prio_root_count", 0))
                 empirical_roots += int(d.get("empirical_corridor_root_count", 0))
+                empirical_eligible_agents += int(bool(d.get("empirical_corridor_eligible", False)))
+                route_poly_count = int(d.get("route_polyline_count", 0))
+                full_route_count = int(d.get("full_horizon_map_route_count", 0))
+                short_route_candidate = route_poly_count > 0 and full_route_count == 0
+                short_route_candidate_agents += int(short_route_candidate)
+                driveway_context_agents += int(int(d.get("driveway_polygon_count", 0)) > 0)
                 if rho_int in (2, 3):
                     protected += 1
                     if prio_roots <= 0:
@@ -140,6 +150,7 @@ def main() -> None:
                     except Exception: pass
                 if is_rootless:
                     rootless += 1
+                    rootless_short_route_candidate_agents += int(short_route_candidate)
                     future_rootless[bucket] += 1
                     rootless_priority[rho] += 1
                     rootless_reference[ref] += 1
@@ -150,6 +161,9 @@ def main() -> None:
                         examples["rootless"].append({
                             "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
                             "rho": d.get("rho"), "future_valid_steps": steps, "reference_kind": ref,
+                            "route_polyline_count": route_poly_count, "full_horizon_map_route_count": full_route_count,
+                            "empirical_corridor_eligible": d.get("empirical_corridor_eligible"),
+                            "driveway_polygon_count": d.get("driveway_polygon_count"),
                             "rejection_counts": reject_row, "dominant_rejection": dominant,
                             "priority_rejection_reasons": pr_reasons,
                             "map_rejected_min_max_distance_m": min_map_rej,
@@ -205,7 +219,7 @@ def main() -> None:
         return {"min": float(vals[0]), "p50": q(0.50), "p90": q(0.90), "max": float(vals[-1])}
 
     report = {
-        "schema_version": "cowp_v16_8_13_natural_support_diagnostic_v3",
+        "schema_version": "cowp_v16_8_16_natural_support_diagnostic_v4",
         "profile_jsonl": str(profile.resolve()),
         "rows": rows,
         "written_scenes": written,
@@ -216,7 +230,12 @@ def main() -> None:
         "mechanism_unauditable_rate": rate(unauditable, critical_selected),
         "protected_auditable_critical_agents": protected,
         "protected_without_prio_root": protected_without_prio,
+        "protected_prio_root_coverage": float((protected - protected_without_prio) / max(protected, 1)) if protected else 1.0,
         "empirical_corridor_roots": empirical_roots,
+        "empirical_corridor_eligible_agents": empirical_eligible_agents,
+        "short_route_candidate_agents": short_route_candidate_agents,
+        "rootless_short_route_candidate_agents": rootless_short_route_candidate_agents,
+        "driveway_context_agents": driveway_context_agents,
         "rootless_critical_agents": rootless,
         "rootless_rate": rate(rootless, critical),
         "critical_agents_with_lt2_low_burden_roots": lt2_low,

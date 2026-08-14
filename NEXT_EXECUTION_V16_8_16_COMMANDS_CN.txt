@@ -1,0 +1,177 @@
+COWP v16.8.16 — WOMD v1.3.1 正确 split/repr 执行指令
+====================================================
+
+0. 进入新代码目录
+-----------------
+cd /path/to/COWP_v16_8_16_optimized
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export OLD_VAL_CACHE="$SOURCE_DATA_ROOT/tensor_cache_val"
+
+
+1. Representation-aware split audit
+-----------------------------------
+# 该步骤知道：
+# scenario 有 training_20s / visualization；tf_example 没有。
+# 不会再检查不存在的 tf_example/training_20s。
+set +e
+bash NEXT_EXECUTION_V16_8_16_CN.sh split-audit
+SPLIT_AUDIT_RC=$?
+set -e
+
+echo "SPLIT_AUDIT_RC=$SPLIT_AUDIT_RC"
+cat /data0/senzeyu2/dataset/COWP/formal_v16_8_16_support_smoke/womd_v1_3_1_split_layout.json
+
+# 若 RC != 0，只看 JSON -> primary_checks：
+# scenario_training_complete
+# tf_example_training_complete
+# scenario_validation_complete
+# tf_example_validation_complete
+# Optional splits 不会导致 primary gate 失败。
+
+
+2. 可选：validation_interactive 与 standard validation overlap
+-------------------------------------------------------------
+export FULL_INTERACTIVE_OVERLAP=1
+set +e
+bash NEXT_EXECUTION_V16_8_16_CN.sh split-audit
+SPLIT_AUDIT_RC=$?
+set -e
+unset FULL_INTERACTIVE_OVERLAP
+
+# 查看 JSON -> validation_interactive_overlap。
+# 在 overlap 关系明确前，不把 validation_interactive 当独立 validation 样本加总。
+
+
+3. Primary WOMD preflight
+-------------------------
+bash NEXT_EXECUTION_V16_8_16_CN.sh preflight
+
+# 当前 full rebuild 只使用：
+# scenario/training
+# scenario/validation
+# tf_example/training
+# tf_example/validation
+#
+# scenario/training_20s 不进入当前 91-step pipeline。
+# scenario/visualization 不进入 benchmark。
+# testing/testing_interactive future GT 隐藏，不构造 COWP mechanism labels。
+
+
+4. Fresh smoke
+--------------
+export FORCE_REBUILD_SMOKE=1
+export HARD_COUNT=48
+export RANDOM_COUNT=48
+export MIN_HARD_COUNT=24
+export LABEL_WORKERS=24
+
+bash NEXT_EXECUTION_V16_8_16_CN.sh smoke
+bash NEXT_EXECUTION_V16_8_16_CN.sh check
+
+# 只有 v16_8_16_smoke_verdict.json 中：
+# "recommend_strict_probe": true
+# 才继续。
+
+
+5. Fast-path semantic A/B
+-------------------------
+export FASTPATH_AB_SCENES=12
+export FASTPATH_AB_WORKERS=4
+bash NEXT_EXECUTION_V16_8_16_CN.sh fastpath-ab
+
+
+6. Validation strict probe
+--------------------------
+export FORCE_REBUILD_PROBE=1
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=24
+bash NEXT_EXECUTION_V16_8_16_CN.sh strict
+
+
+7. Training pilot
+-----------------
+export FORCE_REBUILD_TRAIN_PILOT=1
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=32
+bash NEXT_EXECUTION_V16_8_16_CN.sh train-pilot
+bash NEXT_EXECUTION_V16_8_16_CN.sh check
+
+
+8. Full core（strict + train-pilot 同 fingerprint PASS 后）
+--------------------------------------------------------
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=24
+export CACHE_WORKERS=8
+export REUSE_OLD_SCENE_SET=1
+bash NEXT_EXECUTION_V16_8_16_CN.sh full-core
+
+
+9. Waymax outcomes
+------------------
+export WAYMAX_GPUS=1
+bash NEXT_EXECUTION_V16_8_16_CN.sh outcomes
+bash NEXT_EXECUTION_V16_8_16_CN.sh check
+
+
+Benchmark contract summary
+--------------------------
+PRIMARY TRAIN:
+  scenario/training -> COWP authoritative labels
+  tf_example/training -> matched tensors / Waymax
+
+PRIMARY VALIDATION:
+  scenario/validation -> smoke/strict/held-out labels
+  tf_example/validation -> matched tensors / Waymax
+
+SECONDARY STRESS:
+  scenario/validation_interactive + tf_example/validation_interactive
+  -> separate interaction stress report after overlap audit
+
+BLIND ONLY:
+  testing + testing_interactive
+  -> no future-dependent COWP label construction
+
+SCENARIO-ONLY AUXILIARY, EXCLUDED FROM CURRENT PIPELINE:
+  scenario/training_20s
+  scenario/visualization
+
+DO NOT EXPECT / DO NOT CREATE:
+  tf_example/training_20s
+  tf_example/visualization
+
+v16.8.16 gate interpretation
+----------------------------
+SMOKE (96 scenes):
+  - proposal metrics use Wilson gross-failure screening;
+  - certificate_complete_scene_rate >= 0.95;
+  - protected_prio_root_coverage >= 0.95;
+  - auditable rootless = 0;
+  - auditable <2 low-burden roots = 0;
+  - unauditable critical rate <= 0.01.
+
+STRICT / TRAIN-PILOT (1200 scenes each):
+  - proposal strict point estimates remain:
+      AnyNCF >= 0.40
+      false-safe <= 0.55
+      PBTR <= 0.45
+      hard NCF recovery >= 0.20
+  - certificate_complete_scene_rate >= 0.98;
+  - protected_prio_root_coverage >= 0.98;
+  - auditable rootless = 0;
+  - auditable <2 low-burden roots = 0;
+  - unauditable critical rate <= 0.01.
+
+If fresh v16.8.16 smoke fails, upload (NPZ not needed):
+  v16_8_16_smoke_verdict.json
+  base_screen_verdict.json
+  natural_support_diagnostic.json
+  model_support_audit.json
+  training_supervision_audit.json
+  fresh_profile_summary.json
+  fresh_profile.jsonl

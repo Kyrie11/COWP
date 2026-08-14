@@ -12,6 +12,8 @@ from cowp.core.constants import ProposalSource
 from cowp.data.dataset import COWPNpzDataset
 
 FINGERPRINT_FILES = (
+    "cowp/core/types.py",
+    "cowp/data/parse_scenario_proto.py",
     "cowp/geometry/lane_graph.py",
     "cowp/label/trajectory_primitives.py",
     "cowp/label/ego_candidates.py",
