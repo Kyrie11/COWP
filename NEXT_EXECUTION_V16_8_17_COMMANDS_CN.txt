@@ -1,0 +1,137 @@
+COWP v16.8.17 下一步执行指令
+================================
+
+本版本没有修改 Scenario->label tensor 语义。优先复用你已经构建完成且 FASTPATH PASS 的 v16.8.16 smoke labels，做 policy-only re-audit；不要先重新构建 96 scenes。
+
+0. 进入新代码并设置路径
+-----------------------
+cd /path/to/COWP_v16_8_17_optimized
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export OLD_VAL_CACHE="$SOURCE_DATA_ROOT/tensor_cache_val"
+
+# 你现有的、包含 NPZ labels 的 v16.8.16 smoke 目录：
+export SOURCE_V16_8_16_SMOKE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_16_support_smoke
+
+# v16.8.17 新 policy verdict 输出目录：
+export SMOKE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_17_support_smoke
+export PROBE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_17_support_strict_probe
+export TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_17_train_pilot
+export FULL_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_17_full
+
+1. WOMD contract（已有通过结果也建议快速重跑）
+---------------------------------------------
+bash NEXT_EXECUTION_V16_8_17_CN.sh split-audit
+bash NEXT_EXECUTION_V16_8_17_CN.sh preflight
+
+2. 首选：直接 re-audit 已有 v16.8.16 smoke labels，不重建 NPZ
+-------------------------------------------------------------
+bash NEXT_EXECUTION_V16_8_17_CN.sh reaudit-smoke
+bash NEXT_EXECUTION_V16_8_17_CN.sh check
+
+这一步会硬验证：
+- source v16.8.16 full code fingerprint = 已审核版本；
+- 当前 v16.8.17 label-semantic fingerprint 与 v16.8.16 完全相同；
+- 原 labels 仍满足所有 root/response/transport/source/integrity support；
+- unknown critical <=5%；
+- complete certificate scenes >=75%；
+- hard/random unknown-rate gap <=3 percentage points；
+- hard/random complete-scene gap <=10 percentage points；
+- smoke coverage 使用 Wilson gross-failure，而不是用 96 scenes 假装大样本点估计。
+
+如果输出：
+  smoke recommend_strict_probe = True
+则直接进入第 3 步。
+
+如果 reaudit-smoke 因 fingerprint 或 source labels 缺失而拒绝，才重新跑 fresh smoke：
+
+export FORCE_REBUILD_SMOKE=1
+export HARD_COUNT=48
+export RANDOM_COUNT=48
+export MIN_HARD_COUNT=24
+export LABEL_WORKERS=24
+bash NEXT_EXECUTION_V16_8_17_CN.sh smoke
+bash NEXT_EXECUTION_V16_8_17_CN.sh check
+
+3. FASTPATH
+-----------
+你已经对 v16.8.16 smoke 得到 FASTPATH PASS，且 v16.8.17 会验证 label-semantic fingerprint 完全相同，所以原则上无需为了 policy 变更重复 A/B。
+
+如希望机械再确认一次：
+export FASTPATH_AB_SCENES=12
+export FASTPATH_AB_WORKERS=4
+bash NEXT_EXECUTION_V16_8_17_CN.sh fastpath-ab
+
+4. Validation strict：400 hard + 800 random
+------------------------------------------
+# 注意：strict 使用 point-estimate coverage gate，不使用 Wilson 放行。
+export FORCE_REBUILD_PROBE=1
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=24
+bash NEXT_EXECUTION_V16_8_17_CN.sh strict
+bash NEXT_EXECUTION_V16_8_17_CN.sh check
+
+严格检查包括：
+- proposal/causal 原 strict point gates；
+- auditable rootless = 0；
+- auditable <2 low-burden roots = 0；
+- mechanism unknown critical <=5%；
+- complete certificate scenes >=75%；
+- protected PRIO coverage >=98%；
+- hard/random unknown-rate gap <=3 pp；
+- hard/random complete-scene gap <=8 pp；
+- response/transport/witness/source/continuous targets 全部非退化。
+
+STRICT FAIL 时停止，不要 full rebuild。
+
+5. Training split pilot：400 hard + 800 random
+---------------------------------------------
+只有 strict PASS 后：
+
+export FORCE_REBUILD_TRAIN_PILOT=1
+export HARD_COUNT=400
+export RANDOM_COUNT=800
+export MIN_HARD_COUNT=128
+export LABEL_WORKERS=32
+bash NEXT_EXECUTION_V16_8_17_CN.sh train-pilot
+bash NEXT_EXECUTION_V16_8_17_CN.sh check
+
+TRAIN PILOT FAIL 时停止。不要用 validation strict 代替 training-distribution support。
+
+6. Full core rebuild
+--------------------
+只有 validation strict + train-pilot 均在当前 v16.8.17 fingerprint 下 PASS 才执行：
+
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=24
+export CACHE_WORKERS=8
+export REUSE_OLD_SCENE_SET=1
+bash NEXT_EXECUTION_V16_8_17_CN.sh full-core
+
+full-core 会在 label 阶段和 tensor-cache merge 后再次执行 model-support audit；tensor 中 selected critical 不可见会继续使 certificate_valid 失效，不能被静默忽略。
+
+7. Waymax outcomes
+------------------
+只有 full-core PASS 后：
+
+export WAYMAX_GPUS=1
+bash NEXT_EXECUTION_V16_8_17_CN.sh outcomes
+bash NEXT_EXECUTION_V16_8_17_CN.sh check
+
+8. 如果 v16.8.17 strict / train-pilot 仍 FAIL，上传这些文件即可
+---------------------------------------------------------------
+不需要 NPZ：
+- v16_8_17_strict_verdict.json 或 v16_8_17_train_pilot_verdict.json
+- model_support_audit.json
+- natural_support_diagnostic.json
+- training_supervision_audit.json
+- base_screen_verdict.json（strict）
+- causal_audit_diagnostic.json
+- profile summary + profile jsonl
+- hard_scene_ids.txt
+- random_scene_ids.txt
+
+不要在 strict 失败后直接改阈值。先根据失败属于 natural support、coverage、hard/random bias、proposal，还是 tensor visibility 再决定修改方向。

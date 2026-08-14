@@ -55,6 +55,25 @@ FINGERPRINT_FILES = (
     "configs/eval_cowp_v16_8.yaml",
 )
 
+# Label-producing semantics are intentionally fingerprinted separately from the
+# promotion/audit policy.  v16.8.16 used one monolithic fingerprint that also
+# included scripts such as 65_audit_model_support.py; changing a statistical
+# promotion threshold therefore forced an expensive label rebuild even when not
+# one label tensor could change.  The semantic fingerprint below covers the
+# actual Scenario->label transformation (including geometry and its configs) and
+# permits a policy-only re-audit without weakening provenance.
+LABEL_SEMANTIC_GLOBS = (
+    "cowp/label/*.py",
+    "cowp/geometry/*.py",
+)
+LABEL_SEMANTIC_FILES = (
+    "cowp/core/constants.py",
+    "cowp/core/types.py",
+    "cowp/data/parse_scenario_proto.py",
+    "configs/data.yaml",
+    "configs/label_cowp_v16_8.yaml",
+)
+
 FRESH_PROVENANCE_KEYS = (
     "cowp/candidates/proposal_source",
     "cowp/candidates/proposal_region_id",
@@ -105,6 +124,26 @@ def current_fingerprint(code_root: Path) -> str:
     for name in FINGERPRINT_FILES:
         path = code_root / name
         h.update(name.encode("utf-8"))
+        h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def current_label_semantic_fingerprint(code_root: Path) -> str:
+    """Hash only files that can change Scenario-proto label tensors.
+
+    This is deliberately narrower than :func:`current_fingerprint`.  It is used
+    only to authorize reuse of an already-built label cache across a *policy*
+    revision.  Training/model/tensor-cache code retains the broader fingerprint
+    and full rebuild promotion still requires the current full fingerprint.
+    """
+    root = Path(code_root)
+    paths = {root / name for name in LABEL_SEMANTIC_FILES}
+    for pattern in LABEL_SEMANTIC_GLOBS:
+        paths.update(root.glob(pattern))
+    h = hashlib.sha256()
+    for path in sorted(paths, key=lambda p: p.relative_to(root).as_posix()):
+        rel = path.relative_to(root).as_posix()
+        h.update(rel.encode("utf-8"))
         h.update(path.read_bytes())
     return h.hexdigest()
 

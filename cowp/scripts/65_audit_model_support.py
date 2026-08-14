@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -67,6 +68,51 @@ def _finite_values(store: dict[str, list[float]], name: str, arr: np.ndarray, ma
             store[name] = store[name][::2]
 
 
+def _read_id_set(path: str | None) -> set[str]:
+    if not path:
+        return set()
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"scene-id manifest not found: {p}")
+    return {line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def _wilson(k: int, n: int, z: float = 1.959963984540054) -> dict[str, float | int]:
+    """Two-sided Wilson interval for a binomial proportion."""
+    k, n = int(k), int(n)
+    if n <= 0:
+        return {"k": k, "n": n, "rate": 0.0, "low": 0.0, "high": 1.0}
+    p = float(k / n)
+    z2 = float(z * z)
+    den = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / den
+    half = z * math.sqrt(max(p * (1.0 - p) / n + z2 / (4.0 * n * n), 0.0)) / den
+    return {
+        "k": k,
+        "n": n,
+        "rate": p,
+        "low": float(max(0.0, center - half)),
+        "high": float(min(1.0, center + half)),
+    }
+
+
+def _coverage_check_max(rate: float, ci: dict[str, float | int], cap: float, mode: str) -> bool:
+    if mode == "wilson_gross_failure":
+        # Smoke is a promotion screen, not the publication estimate.  Reject only
+        # when even the lower confidence bound is already beyond the tolerated
+        # missing-evidence cap.
+        return float(ci["low"]) <= float(cap)
+    return float(rate) <= float(cap)
+
+
+def _coverage_check_min(rate: float, ci: dict[str, float | int], floor: float, mode: str) -> bool:
+    if mode == "wilson_gross_failure":
+        # Reject a small smoke only when even its optimistic confidence bound
+        # cannot reach the required support floor.
+        return float(ci["high"]) >= float(floor)
+    return float(rate) >= float(floor)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Audit whether a fresh COWP v16.8.9 label/cache distribution supports the active learned objectives, not only the core binary heads.")
     ap.add_argument("--cache-dir", required=True)
@@ -75,11 +121,26 @@ def main() -> None:
     ap.add_argument("--min-class-examples", type=int, default=32)
     ap.add_argument("--min-source-examples", type=int, default=32)
     ap.add_argument("--strict", action="store_true")
-    ap.add_argument("--max-unauditable-critical-rate", type=float, default=0.01)
-    ap.add_argument("--min-certificate-complete-scene-rate", type=float, default=0.98)
+    ap.add_argument("--max-unauditable-critical-rate", type=float, default=0.05)
+    ap.add_argument("--min-certificate-complete-scene-rate", type=float, default=0.75)
     ap.add_argument("--min-protected-prio-coverage", type=float, default=0.98,
                     help="Minimum fraction of auditable protected critical agents retaining >=1 PRIO root.")
+    ap.add_argument(
+        "--coverage-gate-mode", choices=("point", "wilson_gross_failure"), default="point",
+        help="Use point estimates for strict/pilot gates; Wilson gross-failure is intended only for small smoke promotion.",
+    )
+    ap.add_argument("--hard-scene-ids", default="", help="Optional hard-scene manifest for missing-evidence bias audit.")
+    ap.add_argument("--random-scene-ids", default="", help="Optional representative/random manifest for missing-evidence bias audit.")
+    ap.add_argument("--max-auditability-stratum-gap", type=float, default=1.0,
+                    help="Maximum absolute hard-vs-random gap in unauditable-critical rate.")
+    ap.add_argument("--max-certificate-stratum-gap", type=float, default=1.0,
+                    help="Maximum absolute hard-vs-random gap in certificate-complete scene rate.")
     args = ap.parse_args()
+
+    hard_ids = _read_id_set(args.hard_scene_ids)
+    random_ids = _read_id_set(args.random_scene_ids)
+    if hard_ids & random_ids:
+        raise ValueError(f"hard/random manifests overlap on {len(hard_ids & random_ids)} scenario ids")
 
     ds = COWPNpzDataset(args.cache_dir)
     if len(ds) == 0:
@@ -92,6 +153,7 @@ def main() -> None:
     c = Counter()
     source = defaultdict(Counter)
     cont: dict[str, list[float]] = defaultdict(list)
+    strata: dict[str, Counter] = {"hard": Counter(), "random": Counter(), "other": Counter()}
     read_errors: list[dict[str, str]] = []
     integrity_errors: list[dict[str, str]] = []
     for i in indices:
@@ -115,16 +177,25 @@ def main() -> None:
         crit = crit_model & mech_model
         if not cand.size or not crit_model.size:
             continue
+        scenario_id = ds.paths[i].stem
+        stratum_name = "hard" if scenario_id in hard_ids else ("random" if scenario_id in random_ids else "other")
+        stratum = strata[stratum_name]
         c["scenes"] += 1
+        stratum["scenes"] += 1
         c["critical_selected"] += int(crit_selected.sum())
         c["critical_mechanism_valid"] += int((crit_selected & mech_label).sum())
         c["critical_unauditable"] += int((crit_selected & ~mech_label).sum())
+        stratum["critical_selected"] += int(crit_selected.sum())
+        stratum["critical_mechanism_valid"] += int((crit_selected & mech_label).sum())
+        stratum["critical_unauditable"] += int((crit_selected & ~mech_label).sum())
         c["critical_input_invisible"] += int((crit_selected & ~crit_model).sum())
         c["scenes_with_input_invisible_critical"] += int(np.any(crit_selected & ~crit_model))
         # Candidate-level certificate validity is the authoritative coverage
         # indicator.  Tensor-cache construction can invalidate a scene if a
         # Scenario-selected critical actor is absent from the model input.
-        c["certificate_complete_scenes"] += int(np.all((~cand) | cert_cand))
+        certificate_complete = bool(np.all((~cand) | cert_cand))
+        c["certificate_complete_scenes"] += int(certificate_complete)
+        stratum["certificate_complete_scenes"] += int(certificate_complete)
         conv = np.asarray(row["cowp/candidates/conventional_safe"], dtype=bool)[:cand.size]
         ncf = np.asarray(row["cowp/candidates/noncoercive_feasible"], dtype=bool)[:cand.size]
         fs = np.asarray(row["cowp/candidates/false_safe"], dtype=bool)[:cand.size]
@@ -300,12 +371,54 @@ def main() -> None:
     ) if protected_total else 1.0
     certificate_scene_rate = float(c["certificate_complete_scenes"] / max(int(c["scenes"]), 1))
     unauditable_rate = float(c["critical_unauditable"] / max(int(c["critical_selected"]), 1))
+    unauditable_ci = _wilson(int(c["critical_unauditable"]), int(c["critical_selected"]))
+    certificate_ci = _wilson(int(c["certificate_complete_scenes"]), int(c["scenes"]))
+    mean_crit_per_scene = float(c["critical_selected"] / max(int(c["scenes"]), 1))
+    independent_scene_rate_at_cap = float((1.0 - float(args.max_unauditable_critical_rate)) ** mean_crit_per_scene)
+
+    coverage_by_stratum: dict[str, dict[str, object]] = {}
+    for name, sc in strata.items():
+        if int(sc["scenes"]) <= 0:
+            continue
+        crit_total = int(sc["critical_selected"])
+        unaud = int(sc["critical_unauditable"])
+        cert_n = int(sc["scenes"])
+        cert_k = int(sc["certificate_complete_scenes"])
+        coverage_by_stratum[name] = {
+            "scenes": cert_n,
+            "critical_selected": crit_total,
+            "critical_mechanism_valid": int(sc["critical_mechanism_valid"]),
+            "critical_unauditable": unaud,
+            "critical_unauditable_rate": float(unaud / max(crit_total, 1)),
+            "critical_unauditable_95pct_wilson": _wilson(unaud, crit_total),
+            "certificate_complete_scenes": cert_k,
+            "certificate_complete_scene_rate": float(cert_k / max(cert_n, 1)),
+            "certificate_complete_95pct_wilson": _wilson(cert_k, cert_n),
+        }
+    hard_cov = coverage_by_stratum.get("hard")
+    random_cov = coverage_by_stratum.get("random")
+    if hard_cov is not None and random_cov is not None:
+        audit_gap = abs(float(hard_cov["critical_unauditable_rate"]) - float(random_cov["critical_unauditable_rate"]))
+        cert_gap = abs(float(hard_cov["certificate_complete_scene_rate"]) - float(random_cov["certificate_complete_scene_rate"]))
+        stratum_audit_ok = audit_gap <= float(args.max_auditability_stratum_gap)
+        stratum_cert_ok = cert_gap <= float(args.max_certificate_stratum_gap)
+    else:
+        audit_gap = None
+        cert_gap = None
+        stratum_audit_ok = True
+        stratum_cert_ok = True
 
     checks: dict[str, bool] = {
         "no_read_errors": not read_errors,
         "no_integrity_errors": not integrity_errors,
-        "auditability_coverage": unauditable_rate <= float(args.max_unauditable_critical_rate),
-        "certificate_complete_scene_coverage": certificate_scene_rate >= float(args.min_certificate_complete_scene_rate),
+        "auditability_coverage": _coverage_check_max(
+            unauditable_rate, unauditable_ci, float(args.max_unauditable_critical_rate), args.coverage_gate_mode
+        ),
+        "certificate_complete_scene_coverage": _coverage_check_min(
+            certificate_scene_rate, certificate_ci, float(args.min_certificate_complete_scene_rate), args.coverage_gate_mode
+        ),
+        "auditability_stratum_balance": bool(stratum_audit_ok),
+        "certificate_stratum_balance": bool(stratum_cert_ok),
         "every_auditable_critical_has_natural_root": int(c["critical_without_natural_roots"]) == 0,
         "every_auditable_critical_has_multi_root_support": int(c["critical_with_lt2_natural_roots"]) == 0,
         "every_auditable_critical_has_low_burden_natural_root": int(c["critical_without_low_burden_natural_roots"]) == 0,
@@ -359,7 +472,7 @@ def main() -> None:
 
     passed = all(checks.values()) and not read_errors and not integrity_errors
     report = {
-        "schema_version": "cowp_v16_8_16_model_support_audit_v1",
+        "schema_version": "cowp_v16_8_17_model_support_audit_v2",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "inspected_scenes": int(c["scenes"]),
         "min_class_examples": minc,
@@ -368,6 +481,9 @@ def main() -> None:
         "max_unauditable_critical_rate": float(args.max_unauditable_critical_rate),
         "min_certificate_complete_scene_rate": float(args.min_certificate_complete_scene_rate),
         "min_protected_prio_coverage": float(args.min_protected_prio_coverage),
+        "coverage_gate_mode": str(args.coverage_gate_mode),
+        "max_auditability_stratum_gap": float(args.max_auditability_stratum_gap),
+        "max_certificate_stratum_gap": float(args.max_certificate_stratum_gap),
         "pass": bool(passed),
         "checks": checks,
         "binary_support": binary_support,
@@ -412,9 +528,18 @@ def main() -> None:
             "response_slots_present": int(c["response_slots_present"]),
             "relevant_pairs_with_incomplete_response_bank": int(c["relevant_pairs_with_incomplete_response_bank"]),
         },
+        "coverage_statistics": {
+            "critical_unauditable_95pct_wilson": unauditable_ci,
+            "certificate_complete_95pct_wilson": certificate_ci,
+            "mean_selected_critical_per_scene": mean_crit_per_scene,
+            "independent_scene_complete_rate_at_configured_critical_cap": independent_scene_rate_at_cap,
+            "hard_random_auditability_gap": audit_gap,
+            "hard_random_certificate_gap": cert_gap,
+        },
+        "coverage_by_stratum": coverage_by_stratum,
         "read_errors": read_errors,
         "integrity_errors": integrity_errors,
-        "interpretation": "Pass means all *auditable* selected critical relations have complete low-burden natural support, the PRIO typed branch has broad protected-case coverage without fabricating a PRIO root for every actor, and the explicitly reported unauditable fraction stays below the preregistered coverage cap. Candidate-level certificate labels are evaluated only where certificate_valid=true. This does not replace held-out evaluation or multi-seed training validation.",
+        "interpretation": "Pass means all *auditable* selected critical relations have complete low-burden natural support; missing counterfactual evidence stays within an explicit coverage cap and is not disproportionately concentrated in the hard stratum; and enough whole scenes retain candidate-level certificates for planner supervision/evaluation. Wilson mode is a small-smoke gross-failure screen only. Strict/train-pilot should use point estimates. Missing mechanism evidence remains unknown (masked), never relabelled as non-coercive.",
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)

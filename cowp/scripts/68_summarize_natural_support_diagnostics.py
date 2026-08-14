@@ -33,6 +33,12 @@ def main() -> None:
     critical_selected = 0
     critical = 0  # mechanism-auditable selected critical agents
     unauditable = 0
+    unauditable_future_support: Counter[str] = Counter()
+    unauditable_finalizer: Counter[str] = Counter()
+    unauditable_priority: Counter[str] = Counter()
+    unauditable_reference: Counter[str] = Counter()
+    unauditable_sufficient_future = 0
+    unauditable_insufficient_future = 0
     protected = 0
     protected_without_prio = 0
     empirical_roots = 0
@@ -96,12 +102,28 @@ def main() -> None:
                 mechanism_valid = bool(d.get("mechanism_valid", True))
                 if not mechanism_valid:
                     unauditable += 1
+                    unauditable_future_support[bucket] += 1
+                    finalizer = str(d.get("auditability_finalizer", "precheck_insufficient_evidence"))
+                    unauditable_finalizer[finalizer] += 1
+                    unauditable_priority[str(d.get("rho", "unknown"))] += 1
+                    unauditable_reference[str(d.get("reference_kind", "unauditable"))] += 1
+                    frac = float(d.get("future_valid_fraction", 0.0) or 0.0)
+                    if steps >= 60 and frac >= 0.70:
+                        # With the current natural builder this means the actor
+                        # had enough valid factual timestamps but neither a full
+                        # routable lane continuation nor non-degenerate factual
+                        # path segments.  Treat this as an explicit unknown
+                        # mechanism target rather than manufacturing option roots.
+                        unauditable_sufficient_future += 1
+                    else:
+                        unauditable_insufficient_future += 1
                     if len(examples["unauditable"]) < 50:
                         examples["unauditable"].append({
                             "scenario_id": sid, "slot": slot, "track_index": d.get("track_index"),
                             "rho": d.get("rho"), "future_valid_steps": steps,
                             "future_valid_fraction": d.get("future_valid_fraction"),
                             "reference_kind": d.get("reference_kind", "unauditable"),
+                            "auditability_finalizer": d.get("auditability_finalizer", "precheck_insufficient_evidence"),
                         })
                     continue
                 critical += 1
@@ -219,7 +241,7 @@ def main() -> None:
         return {"min": float(vals[0]), "p50": q(0.50), "p90": q(0.90), "max": float(vals[-1])}
 
     report = {
-        "schema_version": "cowp_v16_8_16_natural_support_diagnostic_v4",
+        "schema_version": "cowp_v16_8_17_natural_support_diagnostic_v5",
         "profile_jsonl": str(profile.resolve()),
         "rows": rows,
         "written_scenes": written,
@@ -228,6 +250,12 @@ def main() -> None:
         "mechanism_auditable_critical_agents": critical,
         "mechanism_unauditable_critical_agents": unauditable,
         "mechanism_unauditable_rate": rate(unauditable, critical_selected),
+        "mechanism_unauditable_future_support": dict(unauditable_future_support),
+        "mechanism_unauditable_finalizer_counts": dict(unauditable_finalizer),
+        "mechanism_unauditable_by_priority_relation": dict(unauditable_priority),
+        "mechanism_unauditable_by_reference_kind": dict(unauditable_reference),
+        "mechanism_unauditable_with_sufficient_future_but_no_substantial_route_geometry": unauditable_sufficient_future,
+        "mechanism_unauditable_with_insufficient_future": unauditable_insufficient_future,
         "protected_auditable_critical_agents": protected,
         "protected_without_prio_root": protected_without_prio,
         "protected_prio_root_coverage": float((protected - protected_without_prio) / max(protected, 1)) if protected else 1.0,
