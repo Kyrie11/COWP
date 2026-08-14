@@ -2668,3 +2668,17 @@ This revision does **not** change the COWP planning/certification algorithm. It 
 - Primary COWP data contract is Scenario training/validation for authoritative labels plus scenario-ID-matched tf.Example training/validation for model/Waymax tensors.
 - Tensor-cache construction can require every proto-derived label scenario to have a matching tf.Example; partial training tensors are a hard error.
 - Added a split-layout auditor for training/validation/testing and local challenge/auxiliary directories. `validation_interactive` is secondary stress data until scenario-ID overlap with standard validation is explicitly audited; blind testing splits are not used to fabricate future-dependent COWP mechanism labels.
+
+## v16.8.15 — representation-aware WOMD v1.3.1 split contract (2026-08-13)
+
+This revision does **not** change the COWP planner, natural-basis mathematics, response/witness labels, or promotion thresholds. It corrects the local WOMD release-layout model used by dataset engineering.
+
+- Replaced the previous split × representation Cartesian-product audit with an explicit representation-aware matrix.
+- Scenario splits inventoried by the current local/release contract: `training`, `validation`, `testing`, `validation_interactive`, `testing_interactive`, `training_20s`, `visualization`.
+- tf.Example splits inventoried: `training`, `validation`, `testing`, `validation_interactive`, `testing_interactive`.
+- `scenario/training_20s` and `scenario/visualization` are Scenario-only auxiliary directories. The auditor never constructs, globs, counts, or requires nonexistent `tf_example/training_20s` or `tf_example/visualization` peers.
+- The current COWP primary benchmark remains the official 9-second train/validation pair: Scenario proto is authoritative for labels/map/traffic control; scenario-ID-matched tf.Example is the tensor/Waymax source.
+- `validation_interactive` remains an optional secondary interaction-stress evaluation split and is not merged into standard validation; scenario-ID overlap can be audited before reporting it.
+- `testing` and `testing_interactive` remain blind-evaluation-only because future GT is hidden; they are never used to construct COWP natural/transport/witness/NCF supervision.
+- `scenario/training_20s` is excluded from the present 91-step pipeline. Using it would require a separate windowing and group-split design and cannot be achieved by swapping a glob.
+- Added regression tests proving Scenario-only splits have no tf.Example glob or completeness requirement.

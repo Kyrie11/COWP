@@ -7,20 +7,46 @@ from typing import Iterable
 
 import numpy as np
 
-from cowp.data.parse_scenario_proto import _import_scenario_proto, _import_tensorflow, resolve_glob_patterns as resolve_scenario_files
+from cowp.data.parse_scenario_proto import (
+    _import_scenario_proto,
+    _import_tensorflow,
+    resolve_glob_patterns as resolve_scenario_files,
+)
 from cowp.data.parse_tfexample import resolve_glob_patterns as resolve_tfexample_files
 from importlib import import_module
 
 _shard_manifest = import_module("cowp.scripts.64_validate_womd_v131_contract")._shard_manifest
 
-STANDARD_EXPECTED = {"training": 1000, "validation": 150, "testing": 150}
-KNOWN_SPLITS = (
-    "training",
-    "validation",
-    "testing",
-    "validation_interactive",
-    "testing_interactive",
-    "training_20s",
+# WOMD v1.3.1 release layout is representation-specific.  Do NOT form a
+# Cartesian product between split names and representations: in particular,
+# scenario/training_20s and scenario/visualization have no tf.Example peers in
+# the public layout used by COWP.
+#
+# Primary 9-second model-development contract (Waymo Motion docs / Waymax):
+#   scenario/{training,validation} + tf_example/{training,validation}
+# Testing is inventory/blind-evaluation only because future ground truth is
+# hidden. Interactive splits are optional challenge/stress data and must be
+# reported separately from the primary validation benchmark.
+SCENARIO_SPLITS: dict[str, dict[str, object]] = {
+    "training": {"expected_shards": 1000, "required_primary": True},
+    "validation": {"expected_shards": 150, "required_primary": True},
+    "testing": {"expected_shards": 150, "required_primary": False},
+    "validation_interactive": {"expected_shards": None, "required_primary": False},
+    "testing_interactive": {"expected_shards": None, "required_primary": False},
+    "training_20s": {"expected_shards": None, "required_primary": False},
+    "visualization": {"expected_shards": None, "required_primary": False},
+}
+
+TFEXAMPLE_SPLITS: dict[str, dict[str, object]] = {
+    "training": {"expected_shards": 1000, "required_primary": True},
+    "validation": {"expected_shards": 150, "required_primary": True},
+    "testing": {"expected_shards": 150, "required_primary": False},
+    "validation_interactive": {"expected_shards": None, "required_primary": False},
+    "testing_interactive": {"expected_shards": None, "required_primary": False},
+}
+
+ALL_SPLITS = tuple(
+    dict.fromkeys([*SCENARIO_SPLITS.keys(), *TFEXAMPLE_SPLITS.keys()])
 )
 
 
@@ -31,7 +57,11 @@ def _split_role(split: str) -> dict[str, object]:
             "use_for_cowp": True,
             "future_labels_expected": True,
             "independent_benchmark": False,
-            "note": "Primary COWP training source. Scenario proto is authoritative for labels; tf.Example is the matched model/Waymax tensor source.",
+            "note": (
+                "Primary COWP training source. Use scenario/training as the "
+                "authoritative label/map/traffic-control source and matched "
+                "tf_example/training for model tensors and Waymax."
+            ),
         }
     if split == "validation":
         return {
@@ -39,15 +69,21 @@ def _split_role(split: str) -> dict[str, object]:
             "use_for_cowp": True,
             "future_labels_expected": True,
             "independent_benchmark": True,
-            "note": "Primary held-out COWP validation/probe source. Keep disjoint from training by scenario_id.",
+            "note": (
+                "Primary held-out COWP validation/smoke/strict source. Use "
+                "scenario/validation plus matched tf_example/validation."
+            ),
         }
     if split == "testing":
         return {
             "role": "official_blind_test",
-            "use_for_cowp": False,
+            "use_for_cowp": "blind_physical_evaluation_only",
             "future_labels_expected": False,
             "independent_benchmark": True,
-            "note": "WOMD test future ground truth is hidden; do not build natural/transport/witness labels or log-playback Waymax counterfactual supervision from it.",
+            "note": (
+                "Official blind test. Future ground truth is hidden, so do not "
+                "construct natural/transport/witness/NCF labels from testing."
+            ),
         }
     if split == "validation_interactive":
         return {
@@ -55,23 +91,48 @@ def _split_role(split: str) -> dict[str, object]:
             "use_for_cowp": "secondary_only",
             "future_labels_expected": True,
             "independent_benchmark": False,
-            "note": "Challenge-curated interaction stress split. Use as a secondary stress/stratified benchmark, not as a replacement for standard validation and not as independent evidence until scenario-id overlap with validation is audited.",
+            "note": (
+                "Optional interaction-focused validation/stress split. Keep it "
+                "separate from standard validation and audit scenario-id overlap "
+                "before making independence claims."
+            ),
         }
     if split == "testing_interactive":
         return {
             "role": "interaction_challenge_blind_test",
-            "use_for_cowp": False,
+            "use_for_cowp": "blind_interaction_evaluation_only",
             "future_labels_expected": False,
             "independent_benchmark": False,
-            "note": "Challenge-specific blind split; no offline COWP mechanism labels from hidden future.",
+            "note": (
+                "Optional interaction challenge blind split. Do not construct "
+                "future-dependent COWP mechanism labels from it."
+            ),
         }
-    return {
-        "role": "auxiliary_release_split",
-        "use_for_cowp": False,
-        "future_labels_expected": None,
-        "independent_benchmark": False,
-        "note": "Auxiliary WOMD release directory; not part of the primary COWP train/validation benchmark contract unless explicitly justified.",
-    }
+    if split == "training_20s":
+        return {
+            "role": "scenario_only_20s_auxiliary_source",
+            "use_for_cowp": False,
+            "future_labels_expected": None,
+            "independent_benchmark": False,
+            "note": (
+                "Scenario-only auxiliary 20-second source. There is no "
+                "tf_example/training_20s peer in the release layout used here. "
+                "The current COWP 91-step pipeline must not mix it into primary "
+                "training without a separate windowing/group-split design."
+            ),
+        }
+    if split == "visualization":
+        return {
+            "role": "scenario_only_visualization_auxiliary",
+            "use_for_cowp": False,
+            "future_labels_expected": None,
+            "independent_benchmark": False,
+            "note": (
+                "Scenario-only visualization auxiliary directory. Inventory only; "
+                "never use it as a training/validation/test benchmark split."
+            ),
+        }
+    raise KeyError(split)
 
 
 def _scenario_sample_stats(files: list[str], sample_shards: int) -> dict[str, object]:
@@ -135,8 +196,60 @@ def _all_scenario_ids(files: Iterable[str]) -> set[str]:
     return ids
 
 
+def _representation_row(
+    *,
+    root: Path,
+    representation: str,
+    split: str,
+    sample_scenario_shards: int,
+) -> dict[str, object]:
+    if representation == "scenario":
+        spec = SCENARIO_SPLITS.get(split)
+        if spec is None:
+            return {
+                "applicable": False,
+                "released_for_this_representation": False,
+                "reason": f"WOMD v1.3.1 layout used by COWP has no scenario/{split} contract",
+            }
+        glob = str(root / "uncompressed" / "scenario" / split / "*.tfrecord*")
+        files = resolve_scenario_files(glob)
+        return {
+            "applicable": True,
+            "released_for_this_representation": True,
+            "glob": glob,
+            "shards": _shard_manifest(files, expected=spec["expected_shards"]),
+            "sample": _scenario_sample_stats(files, sample_scenario_shards) if files else {"sampled_records": 0},
+        }
+    if representation == "tf_example":
+        spec = TFEXAMPLE_SPLITS.get(split)
+        if spec is None:
+            return {
+                "applicable": False,
+                "released_for_this_representation": False,
+                "reason": (
+                    f"WOMD v1.3.1 layout used by COWP has no tf_example/{split}; "
+                    "do not synthesize or require this path"
+                ),
+            }
+        glob = str(root / "uncompressed" / "tf_example" / split / "*.tfrecord*")
+        files = resolve_tfexample_files(glob)
+        return {
+            "applicable": True,
+            "released_for_this_representation": True,
+            "glob": glob,
+            "shards": _shard_manifest(files, expected=spec["expected_shards"]),
+        }
+    raise ValueError(representation)
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Audit local WOMD 1.3.1 split layout and challenge-specialized split relationships before COWP dataset construction.")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Audit the representation-aware WOMD 1.3.1 split layout before COWP "
+            "dataset construction. Scenario-only auxiliary splits are never "
+            "mistaken for tf.Example splits."
+        )
+    )
     ap.add_argument("--womd-root", required=True)
     ap.add_argument("--sample-scenario-shards", type=int, default=16)
     ap.add_argument("--full-validation-interactive-overlap", action="store_true")
@@ -145,37 +258,48 @@ def main() -> None:
 
     root = Path(args.womd_root)
     result: dict[str, object] = {
-        "schema_version": "cowp_womd_v1_3_1_split_layout_v1",
+        "schema_version": "cowp_womd_v1_3_1_split_layout_v2",
         "womd_root": str(root.resolve()),
+        "release_representation_contract": {
+            "scenario_splits": list(SCENARIO_SPLITS),
+            "tf_example_splits": list(TFEXAMPLE_SPLITS),
+            "scenario_only_splits": sorted(set(SCENARIO_SPLITS) - set(TFEXAMPLE_SPLITS)),
+            "tf_example_only_splits": sorted(set(TFEXAMPLE_SPLITS) - set(SCENARIO_SPLITS)),
+            "explicitly_not_expected": [
+                "uncompressed/tf_example/training_20s",
+                "uncompressed/tf_example/visualization",
+            ],
+        },
         "splits": {},
         "benchmark_recommendation": {
             "primary_train": "scenario/training + matched tf_example/training",
             "primary_validation": "scenario/validation + matched tf_example/validation",
-            "secondary_interaction_stress": "validation_interactive only after overlap audit; report separately from standard validation",
-            "do_not_use_for_offline_mechanism_labels": ["testing", "testing_interactive"],
+            "secondary_interaction_stress": (
+                "scenario/validation_interactive + matched tf_example/validation_interactive, "
+                "reported separately after overlap audit"
+            ),
+            "blind_physical_test": "testing / testing_interactive only through official/blind evaluation; no future-dependent mechanism GT",
+            "excluded_from_current_pipeline": ["scenario/training_20s", "scenario/visualization"],
         },
     }
 
     split_rows: dict[str, object] = {}
-    for split in KNOWN_SPLITS:
-        scenario_glob = str(root / "uncompressed" / "scenario" / split / "*.tfrecord*")
-        tf_glob = str(root / "uncompressed" / "tf_example" / split / "*.tfrecord*")
-        scenario_files = resolve_scenario_files(scenario_glob)
-        tf_files = resolve_tfexample_files(tf_glob)
-        expected = STANDARD_EXPECTED.get(split)
-        row: dict[str, object] = {
+    for split in ALL_SPLITS:
+        split_rows[split] = {
             **_split_role(split),
-            "scenario": {
-                "glob": scenario_glob,
-                "shards": _shard_manifest(scenario_files, expected=expected),
-                "sample": _scenario_sample_stats(scenario_files, args.sample_scenario_shards) if scenario_files else {"sampled_records": 0},
-            },
-            "tf_example": {
-                "glob": tf_glob,
-                "shards": _shard_manifest(tf_files, expected=expected),
-            },
+            "scenario": _representation_row(
+                root=root,
+                representation="scenario",
+                split=split,
+                sample_scenario_shards=args.sample_scenario_shards,
+            ),
+            "tf_example": _representation_row(
+                root=root,
+                representation="tf_example",
+                split=split,
+                sample_scenario_shards=args.sample_scenario_shards,
+            ),
         }
-        split_rows[split] = row
     result["splits"] = split_rows
 
     if args.full_validation_interactive_overlap:
@@ -195,17 +319,29 @@ def main() -> None:
                 "overlap_examples": sorted(overlap)[:20],
             }
         else:
-            result["validation_interactive_overlap"] = {"available": False}
+            result["validation_interactive_overlap"] = {
+                "available": False,
+                "reason": "standard validation and/or scenario/validation_interactive is absent locally",
+            }
 
-    # Primary local completeness is a hard requirement for COWP. Auxiliary
-    # interactive/test folders are reported but do not make this audit fail.
+    # Only the 9-second primary train/validation pairs are hard requirements for
+    # the current COWP rebuild. Optional challenge, blind-test, 20-second and
+    # visualization directories are inventory only and cannot fail this gate.
     primary_checks: dict[str, bool] = {}
     for split in ("training", "validation"):
-        row = split_rows[split]
-        primary_checks[f"scenario_{split}_complete"] = bool(row["scenario"]["shards"]["complete"])
-        primary_checks[f"tf_example_{split}_complete"] = bool(row["tf_example"]["shards"]["complete"])
+        scenario_row = split_rows[split]["scenario"]
+        tf_row = split_rows[split]["tf_example"]
+        primary_checks[f"scenario_{split}_complete"] = bool(scenario_row["shards"]["complete"])
+        primary_checks[f"tf_example_{split}_complete"] = bool(tf_row["shards"]["complete"])
     result["primary_checks"] = primary_checks
     result["pass_primary_layout"] = all(primary_checks.values())
+    result["interpretation"] = (
+        "Primary 9-second training/validation Scenario+tf.Example layout is complete. "
+        "Scenario-only training_20s/visualization are not expected to have tf.Example peers."
+        if result["pass_primary_layout"]
+        else
+        "Primary 9-second training/validation layout is incomplete. Optional missing auxiliary splits are not part of this failure."
+    )
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
