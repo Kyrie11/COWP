@@ -288,6 +288,80 @@ def _count_jsonl_rows(path: str | Path | None) -> int | None:
         return sum(1 for line in f if line.strip())
 
 
+
+
+def _scenario_records_for_allowlist_from_index(
+    index_jsonl: str | Path,
+    allow_ids: set[str],
+) -> tuple[dict[str, dict[int, str]], dict[str, object]]:
+    """Resolve sparse Scenario targets to exact TFRecord shard/record locations.
+
+    Location-aware indexes are produced by ``72_build_scenario_location_index``.
+    Legacy Scenario indexes that contain only metadata are detected and ignored
+    by the caller, preserving backwards compatibility.
+    """
+    by_file: dict[str, dict[int, str]] = {}
+    matched: set[str] = set()
+    total_rows = 0
+    location_rows = 0
+    p = Path(index_jsonl)
+    if not p.is_file():
+        return {}, {"index_exists": False, "location_capable": False, "matched_ids": 0, "missing_ids": sorted(allow_ids)}
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            total_rows += 1
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            fpath = row.get("file")
+            ridx = row.get("record_index")
+            if fpath is None or ridx is None:
+                continue
+            location_rows += 1
+            sid = str(row.get("scenario_id", ""))
+            if sid not in allow_ids:
+                continue
+            try:
+                idx = int(ridx)
+            except Exception:
+                continue
+            if idx < 0:
+                continue
+            by_file.setdefault(str(fpath), {})[idx] = sid
+            matched.add(sid)
+    return by_file, {
+        "index_exists": True,
+        "location_capable": bool(location_rows),
+        "index_rows": total_rows,
+        "location_rows": location_rows,
+        "matched_ids": len(matched),
+        "missing_ids": sorted(allow_ids - matched),
+        "target_files": len(by_file),
+        "target_records": sum(len(v) for v in by_file.values()),
+    }
+
+
+def _iter_scenario_records_at_locations(by_file: dict[str, dict[int, str]]):
+    """Yield only indexed Scenario records, scanning each selected shard up to its last target record."""
+    tf = __import__("tensorflow")
+    for filename in sorted(by_file):
+        targets = by_file[filename]
+        if not Path(filename).is_file():
+            raise FileNotFoundError(f"Scenario location index points to a missing shard: {filename}")
+        wanted = set(int(x) for x in targets)
+        if not wanted:
+            continue
+        last = max(wanted)
+        dataset = tf.data.TFRecordDataset([filename])
+        for record_index, rec in enumerate(dataset):
+            if record_index in wanted:
+                yield bytes(rec.numpy())
+            if record_index >= last:
+                break
+
 def _advance_progress(iterator) -> None:
     """Advance either a tqdm object or a plain iterator by one processed item."""
     if hasattr(iterator, "update"):
@@ -320,6 +394,7 @@ def build_labels_from_proto(
     fail_on_error: bool = True,
     allow_scenario_ids: set[str] | None = None,
     exclude_scenario_ids: set[str] | None = None,
+    require_all_allowed_resolved: bool = False,
 ) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +421,27 @@ def build_labels_from_proto(
     if total is None:
         total = _count_jsonl_rows(index_jsonl)
     desc = "Build COWP labels from Scenario protos"
+
+    # Sparse proposal probes should not depend on where their ids happen to fall
+    # in an interleaved full-split scan.  If a location-aware Scenario index is
+    # supplied, read only the shards/records containing the requested ids.
+    targeted_by_file: dict[str, dict[int, str]] = {}
+    targeted_index_stats: dict[str, object] = {}
+    if allow_scenario_ids is not None and index_jsonl:
+        targeted_by_file, targeted_index_stats = _scenario_records_for_allowlist_from_index(index_jsonl, allow_scenario_ids)
+        if targeted_index_stats.get("location_capable"):
+            missing_index_ids = list(targeted_index_stats.get("missing_ids", []))
+            if require_all_allowed_resolved and missing_index_ids:
+                raise RuntimeError(
+                    "Scenario location index does not contain every requested allow-list id: "
+                    + ",".join(missing_index_ids[:20])
+                )
+            total = int(targeted_index_stats.get("target_records", len(allow_scenario_ids)))
+    raw_source = (
+        _iter_scenario_records_at_locations(targeted_by_file)
+        if targeted_by_file
+        else iter_scenario_records(proto_glob)
+    )
 
     def handle_result(res: Mapping[str, object], iterator) -> None:
         nonlocal count, skipped_filter, skipped_existing, errors, processed
@@ -375,7 +471,8 @@ def build_labels_from_proto(
             )
 
     if int(num_workers) <= 1:
-        iterator = tqdm_iter(iter_scenario_records(proto_glob), enabled=progress, total=total, desc=desc, unit="scenario")
+        remaining_single = set(allow_scenario_ids) if allow_scenario_ids is not None else None
+        iterator = tqdm_iter(raw_source, enabled=progress, total=total, desc=desc, unit="scenario")
         for raw in iterator:
             scanned += 1
             if hasattr(iterator, "set_postfix"):
@@ -394,16 +491,24 @@ def build_labels_from_proto(
                 profile_label_engine,
             )
             handle_result(res, iterator)
+            if remaining_single is not None:
+                remaining_single.discard(str(res.get("scenario_id", "")))
             completed_outputs = count + (skipped_existing if skip_existing else 0)
             if limit is not None and completed_outputs >= limit:
                 break
             if max_scenarios_scanned is not None and scanned >= max_scenarios_scanned:
                 break
+        if require_all_allowed_resolved and remaining_single:
+            missing = sorted(remaining_single)
+            raise RuntimeError(
+                f"Sparse Scenario build ended before resolving {len(missing)} requested scene ids: "
+                + ",".join(missing[:20])
+            )
         return count
 
     workers = max(1, int(num_workers))
     max_pending = max(workers * max(1, int(max_pending_multiplier)), workers)
-    raw_iter = iter(iter_scenario_records(proto_glob))
+    raw_iter = iter(raw_source)
     futures = set()
     future_sids: dict[object, str | None] = {}
     stop_submit = False
@@ -531,6 +636,12 @@ def build_labels_from_proto(
                         future_sids.pop(pending, None)
             while len(futures) < max_pending and not stop_submit and submit_one(pool):
                 pass
+    if require_all_allowed_resolved and remaining_allow:
+        missing = sorted(remaining_allow)
+        raise RuntimeError(
+            f"Sparse Scenario build ended before resolving {len(missing)} requested scene ids: "
+            + ",".join(missing[:20])
+        )
     return count
 
 

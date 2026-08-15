@@ -96,10 +96,37 @@ def main() -> None:
                                 pass
                         mismatches.append(rec)
 
-    passed = bool(compared) and not missing_reference and not missing_candidate and not mismatches and not unexpected_extra
+    semantic_change_detected = bool(mismatches or unexpected_extra)
+    precondition_failure = bool(missing_reference or missing_candidate or not compared)
+    passed = bool(compared) and not precondition_failure and not semantic_change_detected
+    if missing_reference:
+        failure_class = "reference_build_incomplete"
+        interpretation = (
+            "FAIL: requested reference scenes are missing, so semantic equivalence was not actually tested. "
+            "Treat this as an incomplete/wrong reference build, NOT as evidence that label tensors changed."
+        )
+    elif missing_candidate:
+        failure_class = "candidate_build_incomplete"
+        interpretation = (
+            "FAIL: requested candidate scenes are missing. The comparison build is incomplete; this is not yet evidence of a tensor semantic change."
+        )
+    elif mismatches or unexpected_extra:
+        failure_class = "semantic_mismatch"
+        interpretation = (
+            "FAIL: both sides were present and at least one tensor/key changed. This is a genuine semantic-equivalence failure and must be investigated before promotion."
+        )
+    elif not compared:
+        failure_class = "no_comparable_scenes"
+        interpretation = "FAIL: no requested scene had both reference and candidate NPZs; semantic equivalence is undetermined."
+    else:
+        failure_class = "none"
+        interpretation = "PASS: optimization preserved every reference label tensor exactly; only explicitly allowed new audit keys were added."
     report = {
-        "schema_version": "cowp_label_semantic_equivalence_v1",
+        "schema_version": "cowp_label_semantic_equivalence_v2",
         "pass": passed,
+        "semantic_change_detected": semantic_change_detected,
+        "precondition_failure": precondition_failure,
+        "failure_class": failure_class,
         "reference_dir": str(ref_dir.resolve()),
         "candidate_dir": str(cand_dir.resolve()),
         "requested_scenes": len(wanted),
@@ -109,11 +136,7 @@ def main() -> None:
         "missing_candidate_scenes": missing_candidate[:50],
         "mismatches": mismatches,
         "unexpected_extra_keys": unexpected_extra,
-        "interpretation": (
-            "PASS: optimization preserved every reference label tensor exactly; only explicitly allowed new audit keys were added."
-            if passed else
-            "FAIL: at least one pre-existing label tensor changed or a requested scene/key is missing. Treat this as a semantic change and investigate before full rebuild."
-        ),
+        "interpretation": interpretation,
     }
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)

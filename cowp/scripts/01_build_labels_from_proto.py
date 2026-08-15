@@ -43,8 +43,9 @@ def main() -> None:
     ap.add_argument("--num-workers", type=int, default=1, help="Parallel CPU workers for label generation. Use 4-16 depending on CPU/RAM.")
     ap.add_argument("--no-compress", action="store_true", help="Use np.savez instead of np.savez_compressed for faster label writes.")
     ap.add_argument("--profile-jsonl", default=None, help="Optional per-scenario build timing JSONL.")
-    ap.add_argument("--index-jsonl", default=None, help="Optional Scenario index JSONL used only to display a truthful progress total.")
+    ap.add_argument("--index-jsonl", default=None, help="Optional Scenario index JSONL. Location-aware rows (scenario_id/file/record_index) accelerate sparse allow-list builds; legacy indexes still provide progress totals.")
     ap.add_argument("--allow-scenario-ids", default=None, help="Optional txt/jsonl scenario-id allowlist; other scenarios are filtered before label construction.")
+    ap.add_argument("--require-all-allowed-resolved", action="store_true", help="Fail if a sparse allow-list build cannot locate every requested scenario id in the Scenario source/index.")
     ap.add_argument("--exclude-scenario-ids", default=None, help="Optional txt/jsonl scenario-id blocklist, used to prevent train/val leakage.")
     ap.add_argument("--start-method", default=None, choices=["fork", "forkserver", "spawn"], help="Multiprocessing start method. Use spawn or forkserver to avoid forking after TensorFlow init.")
     ap.add_argument("--max-pending-multiplier", type=int, default=4, help="Queue this many tasks per worker to hide slow-scenario stragglers.")
@@ -97,6 +98,7 @@ def main() -> None:
         fail_on_error=not args.continue_on_error,
         allow_scenario_ids=_read_id_file(args.allow_scenario_ids),
         exclude_scenario_ids=_read_id_file(args.exclude_scenario_ids),
+        require_all_allowed_resolved=bool(args.require_all_allowed_resolved),
     )
     print(f"Built {n} label files in {output_dir}")
     if args.skip_diagnostics:

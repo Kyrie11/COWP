@@ -16,14 +16,14 @@ def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _run(cmd: list[str]) -> None:
+def _run(cmd: list[str]) -> int:
     print("[reaudit]", " ".join(cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    return int(subprocess.run(cmd, check=False).returncode)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Re-audit a v16.8.16 smoke label cache under the v16.8.17 support/promotion policy without rebuilding labels."
+        description="Re-audit a v16.8.16 smoke label cache under the v16.8.18 support/promotion policy without rebuilding labels."
     )
     ap.add_argument("--source-smoke-root", required=True)
     ap.add_argument("--output-root", required=True)
@@ -69,9 +69,9 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     model_support = out / "model_support_audit.json"
     natural_diag = out / "natural_support_diagnostic.json"
-    verdict = out / "v16_8_17_smoke_verdict.json"
+    verdict = out / "v16_8_18_smoke_verdict.json"
 
-    _run([
+    model_support_rc = _run([
         sys.executable, "-m", "cowp.scripts.65_audit_model_support",
         "--cache-dir", str(labels), "--sample-scenes", "0",
         "--min-class-examples", "8", "--min-source-examples", "8",
@@ -84,7 +84,7 @@ def main() -> None:
         "--max-certificate-stratum-gap", str(args.max_certificate_stratum_gap),
         "--output", str(model_support), "--strict",
     ])
-    _run([
+    natural_diag_rc = _run([
         sys.executable, "-m", "cowp.scripts.68_summarize_natural_support_diagnostics",
         "--input", str(profile), "--output", str(natural_diag),
     ])
@@ -101,11 +101,13 @@ def main() -> None:
 
     base = _load(base_screen)
     sup = _load(supervision)
-    ms = _load(model_support)
-    nat = _load(natural_diag)
+    ms = _load(model_support) if model_support.is_file() else {}
+    nat = _load(natural_diag) if natural_diag.is_file() else {}
     msc = ms.get("checks", {}) or {}
     checks = {
         "source_v16_8_16_label_semantics_verified": True,
+        "model_support_audit_completed": bool(model_support.is_file()),
+        "natural_support_diagnostic_completed": bool(natural_diag.is_file()) and natural_diag_rc == 0,
         "proposal_causal_screen_pass": bool(base.get("screen_pass", False)),
         "training_supervision_pass": bool(sup.get("pass", False)),
         "model_support_pass": bool(ms.get("pass", False)),
@@ -119,7 +121,7 @@ def main() -> None:
     }
     passed = all(checks.values())
     payload = {
-        "schema_version": "cowp_v16_8_17_smoke_policy_reaudit_v1",
+        "schema_version": "cowp_v16_8_18_smoke_policy_reaudit_v2",
         "code_fingerprint_sha256": current_fp,
         "label_semantic_fingerprint_sha256": label_fp,
         "source_v16_8_16_code_fingerprint_sha256": stored_fp,
@@ -128,6 +130,7 @@ def main() -> None:
         "recommend_strict_probe": passed,
         "recommend_full_rebuild": False,
         "checks": checks,
+        "semantic_returncodes": {"model_support": model_support_rc, "natural_diagnostic": natural_diag_rc},
         "base_screen": base,
         "model_support_coverage": {
             "thresholds": {k: ms.get(k) for k in (
@@ -148,14 +151,23 @@ def main() -> None:
             "protected_without_prio_root", "protected_prio_root_coverage",
         )},
         "next_action": (
-            "Policy re-audit PASS: run a fresh 400-hard + 800-random v16.8.17 strict probe; do not full-rebuild yet."
+            "Policy re-audit PASS: run a fresh 400-hard + 800-random v16.8.18 strict probe; do not full-rebuild yet."
             if passed else
             "Policy re-audit FAIL: do not run strict/full rebuild; inspect coverage-by-stratum and natural-support diagnostics."
         ),
     }
     verdict.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    (out / "v16_8_17_code_fingerprint.sha256").write_text(current_fp + "\n", encoding="utf-8")
-    (out / "v16_8_17_label_semantic_fingerprint.sha256").write_text(label_fp + "\n", encoding="utf-8")
+    (out / "v16_8_18_code_fingerprint.sha256").write_text(current_fp + "\n", encoding="utf-8")
+    (out / "v16_8_18_label_semantic_fingerprint.sha256").write_text(label_fp + "\n", encoding="utf-8")
+    (out / "smoke_pipeline_status.json").write_text(json.dumps({
+        "schema_version": "cowp_v16_8_18_smoke_pipeline_status_v1",
+        "pipeline_complete": True,
+        "mode": "policy_reaudit_v16_8_16_labels",
+        "composite_verdict_written": True,
+        "recommend_strict_probe": bool(payload.get("recommend_strict_probe", False)),
+        "semantic_returncodes": payload.get("semantic_returncodes", {}),
+        "next_action": payload.get("next_action"),
+    }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     if not passed:
         raise SystemExit(2)
