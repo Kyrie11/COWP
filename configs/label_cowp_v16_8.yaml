@@ -109,6 +109,17 @@ candidate:
   priority_smooth_yield_gap_s: [0.8, 1.4, 2.0]
   priority_smooth_yield_commitment_check_s: 1.0
   priority_smooth_yield_min_speed_drop_mps: 0.75
+  # v16.8.19 causal route-topology proposal repair.  These candidates use only
+  # the current SDC state and WOMD vector-map lane connectivity.
+  route_topology_ncf_enabled: true
+  route_topology_max_routes: 2
+  route_topology_max_candidates: 10
+  route_topology_attach_max_m: 8.0
+  route_topology_base_accel_mps2: [0.0, -1.0]
+  route_group_yield_max_candidates: 8
+  route_group_yield_gap_s: [0.8, 1.4, 2.0]
+  route_group_yield_terminal_speed_mps: [1.0, 2.0]
+  route_group_yield_initial_decel_mps2: [-0.8, -1.4]
   lane_change_duration_s:
   - 2.5
   - 3.5
@@ -203,6 +214,10 @@ natural:
   # more than a singleton natural basis, and at least two roots must remain
   # low-burden under its *pair-specific* pressure-removing ego intervention.
   min_low_burden_alternatives: 2
+  # Post-filter certificate closure: route/factual evidence alone does not authorize
+  # mechanism supervision unless a transportable same-root basis really exists.
+  certificate_min_constructive_roots: 2
+  certificate_min_low_burden_roots: 2
   plausibility_beta_margin: 0.10
   root_dedup_mean_distance_m: 0.10
   # Do not treat padding/held invalid future states as an 8 s measured future.

@@ -99,6 +99,7 @@ def _route_geometry_timed_trajectory(
     accel: float = 0.0,
     speed_offset: float = 0.0,
     nat_cfg: dict | None = None,
+    extrapolate_after_path: bool = True,
 ) -> np.ndarray:
     """Retiming proxy that preserves route geometry while removing logged timing.
 
@@ -170,8 +171,17 @@ def _route_geometry_timed_trajectory(
             norm = max(float(np.linalg.norm(direction)), 1.0e-6)
             direction = direction / norm
         else:
-            pos = path[-1] + last_dir * float(sq - float(arc[-1]))
-            direction = last_dir
+            if extrapolate_after_path:
+                pos = path[-1] + last_dir * float(sq - float(arc[-1]))
+                direction = last_dir
+            else:
+                # Factual-geometry fallback is evidence-bounded: never invent a
+                # continuation past the last measured route segment.  Holding the
+                # endpoint can be rejected later by comfort/priority gates; that is
+                # preferable to manufacturing map support outside the evidence.
+                pos = path[-1]
+                direction = last_dir
+                speed[k] = 0.0
         yaw = float(np.arctan2(direction[1], direction[0]))
         out[k] = [
             float(pos[0]), float(pos[1]), yaw,
@@ -1065,7 +1075,10 @@ def generate_natural_alternatives(
                         if count >= max_prio:
                             break
                 elif has_future:
-                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), speed_offset=float(voff), nat_cfg=nat_cfg)
+                    tr = _route_geometry_timed_trajectory(
+                        logged, current, H, dt, accel=float(acc), speed_offset=float(voff),
+                        nat_cfg=nat_cfg, extrapolate_after_path=not empirical_eligible,
+                    )
                     candidates.append((tr, NaturalSource.PRIO, float(nat_cfg.get("source_weight_prio", 1.2)), 0.0, "primary_prio_logged_geometry"))
                     count += 1
                 else:
@@ -1089,7 +1102,10 @@ def generate_natural_alternatives(
                         if count >= max_neu:
                             break
                 elif has_future:
-                    tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), speed_offset=float(voff), nat_cfg=nat_cfg)
+                    tr = _route_geometry_timed_trajectory(
+                        logged, current, H, dt, accel=float(acc), speed_offset=float(voff),
+                        nat_cfg=nat_cfg, extrapolate_after_path=not empirical_eligible,
+                    )
                     candidates.append((tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "primary_neu_logged_geometry"))
                     count += 1
                 else:
@@ -1262,7 +1278,10 @@ def generate_natural_alternatives(
         # is reused, so logged yielding timing is not copied into the neutral root.
         if not support_satisfied() and has_future:
             for acc in nat_cfg.get("geometry_neutral_acc_values_mps2", [0.0, -0.5, 0.5, -1.0, 1.0]):
-                tr = _route_geometry_timed_trajectory(logged, current, H, dt, accel=float(acc), nat_cfg=nat_cfg)
+                tr = _route_geometry_timed_trajectory(
+                    logged, current, H, dt, accel=float(acc), nat_cfg=nat_cfg,
+                    extrapolate_after_path=not empirical_eligible,
+                )
                 try_keep(tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "fallback_logged_geometry")
                 if support_satisfied() or kept >= M:
                     break
@@ -1276,6 +1295,65 @@ def generate_natural_alternatives(
                 try_keep(tr, NaturalSource.NEU, float(nat_cfg.get("source_weight_neu", 0.8)), 0.0, "fallback_straight")
                 if support_satisfied() or kept >= M:
                     break
+
+        # v16.8.19 constructive-auditability closure.  Evidence availability
+        # (a lane route or substantial factual geometry) is necessary but not
+        # sufficient for certificate supervision.  The model consumes a root-indexed
+        # transport target, so an audited actor must actually retain the minimum
+        # same-root low-burden basis after *all* geometry/burden/priority filters.
+        cert_min_roots = max(int(nat_cfg.get("certificate_min_constructive_roots", 2)), 1)
+        cert_min_low = max(int(nat_cfg.get("certificate_min_low_burden_roots", 2)), 1)
+        constructive_roots = int(np.sum(valid[a]))
+        constructive_low = int(np.sum(valid[a] & (burden_neutral[a] <= float(beta[a]) + 1.0e-8)))
+        constructive_ok = bool(constructive_roots >= cert_min_roots and constructive_low >= cert_min_low)
+        if require_auditability and not constructive_ok:
+            if isinstance(critical.get("mechanism_valid"), np.ndarray) and a < len(critical["mechanism_valid"]):
+                critical["mechanism_valid"][a] = False
+            if isinstance(critical.get("auditability_reason"), np.ndarray) and a < len(critical["auditability_reason"]):
+                # Reason 3 is the existing generic unauditable/insufficient-evidence
+                # code.  Keep the scalar schema stable and put the precise reason in
+                # diagnostics below.
+                critical["auditability_reason"][a] = 3
+            mechanism_mask[a] = False
+            # Partial roots must not leak into natural losses once the mechanism
+            # target is declared unknown.  Critical/valid remains selected, so the
+            # inference-time critical universe is unchanged.
+            traj[a].fill(0.0)
+            valid[a].fill(False)
+            source[a].fill(int(NaturalSource.PAD))
+            burden_neutral[a].fill(0.0)
+            priority_ok[a].fill(False)
+            weights[a].fill(0.0)
+            obs_contamination[a].fill(0.0)
+            map_compliant[a].fill(False)
+            map_distance_max[a].fill(-1.0)
+            map_verified[a].fill(False)
+            map_evidence_mode[a].fill(0)
+            diagnostics.append({
+                "slot": int(a), "valid": True, "mechanism_valid": False,
+                "track_index": int(idx), "object_type": int(object_type), "rho": int(rho),
+                "future_valid_steps": int(valid_steps), "future_valid_fraction": float(valid_frac),
+                "obs_eligible": bool(obs_eligible),
+                "empirical_corridor_eligible": bool(empirical_eligible),
+                "reference_kind": reference_kind,
+                "route_polyline_count": int(len(route_polylines)),
+                "full_horizon_map_route_count": int(len(map_refs)),
+                "driveway_polygon_count": int(len(driveway_polygons)),
+                "auditability_finalizer": "insufficient_constructive_natural_basis",
+                "attempted_root_count_before_mask": int(constructive_roots),
+                "attempted_low_burden_root_count_before_mask": int(constructive_low),
+                "certificate_min_constructive_roots": int(cert_min_roots),
+                "certificate_min_low_burden_roots": int(cert_min_low),
+                "root_count": 0, "low_burden_root_count": 0, "prio_root_count": 0,
+                "map_verified_root_count": 0, "empirical_corridor_root_count": 0,
+                "attempted_by_phase": attempted_by_phase, "accepted_by_phase": accepted_by_phase,
+                "rejection_counts": reject_counts,
+                "priority_rejection_reasons": priority_rejection_reasons,
+                "map_rejected_min_max_distance_m": None if not np.isfinite(map_rejected_min_max_distance) else float(map_rejected_min_max_distance),
+                "map_rejected_max_max_distance_m": float(map_rejected_max_max_distance),
+                "best_rejected_burden": None if not np.isfinite(best_rejected_burden) else float(best_rejected_burden),
+            })
+            continue
 
         weights[a] = _normalize_weights(raw_w, valid[a])
         low_mask = valid[a] & (burden_neutral[a] <= float(beta[a]) + 1.0e-8)

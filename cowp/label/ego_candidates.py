@@ -7,7 +7,8 @@ import numpy as np
 from cowp.core.constants import MacroType, PriorityRelation, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, trajectory_entry_to_region, tta_to_region
-from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
+from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, repair_planar_kinematics, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
+from cowp.label.natural_alternatives import _map_route_polylines, _required_route_length, _timed_polyline_trajectory
 from cowp.label.priority import determine_priority
 
 
@@ -97,6 +98,57 @@ def _candidate_valid(traj: np.ndarray, cfg: dict, lane_points: np.ndarray | None
     return _candidate_invalid_reason(traj, cfg, lane_points) is None
 
 
+
+
+def _project_progress_profile_to_route(
+    base_traj: np.ndarray, route_xy: np.ndarray, current: np.ndarray, dt: float, *, attach_max_m: float = 8.0
+) -> np.ndarray | None:
+    """Transfer a longitudinal timing profile onto a causal lane-topology route.
+
+    Only the base profile's cumulative progress is used; no logged future geometry
+    enters this transform.  This lets interaction-timing primitives follow curved
+    WOMD lane topology while preserving the advertised arrival timing.
+    """
+    base = np.asarray(base_traj, dtype=np.float32)
+    route = np.asarray(route_xy, dtype=np.float32)
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    if base.ndim != 2 or base.shape[1] < 7 or route.ndim != 2 or len(route) < 2 or cur.size < 7:
+        return None
+    route = route[:, :2]
+    if not np.all(np.isfinite(route)) or not np.all(np.isfinite(base)):
+        return None
+    attach = float(np.linalg.norm(route[0] - cur[:2]))
+    if attach > float(attach_max_m):
+        return None
+    if attach > 1.0e-3:
+        route = np.concatenate([cur[None, :2], route], axis=0)
+    seg = np.linalg.norm(np.diff(route, axis=0), axis=1)
+    keep = np.ones(len(route), dtype=bool)
+    keep[1:] = seg > 1.0e-3
+    route = route[keep]
+    if len(route) < 2:
+        return None
+    arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(route, axis=0), axis=1))]).astype(np.float64)
+    base_path = np.concatenate([cur[None, :2], base[:, :2]], axis=0)
+    progress = np.cumsum(np.linalg.norm(np.diff(base_path, axis=0), axis=1)).astype(np.float64)
+    if len(progress) != len(base) or float(np.max(progress, initial=0.0)) > float(arc[-1]) + 0.25:
+        return None
+    x = np.interp(progress, arc, route[:, 0])
+    y = np.interp(progress, arc, route[:, 1])
+    route_seg = np.diff(route, axis=0)
+    route_h = np.unwrap(np.arctan2(route_seg[:, 1], route_seg[:, 0]).astype(np.float64))
+    mid_arc = 0.5 * (arc[:-1] + arc[1:])
+    yaw = np.interp(progress, mid_arc, route_h, left=route_h[0], right=route_h[-1])
+    speed = np.linalg.norm(base[:, 3:5], axis=-1).astype(np.float64)
+    out = np.zeros_like(base, dtype=np.float32)
+    out[:, 0] = x.astype(np.float32)
+    out[:, 1] = y.astype(np.float32)
+    out[:, 2] = ((yaw + np.pi) % (2.0 * np.pi) - np.pi).astype(np.float32)
+    out[:, 3] = (np.cos(yaw) * speed).astype(np.float32)
+    out[:, 4] = (np.sin(yaw) * speed).astype(np.float32)
+    out[:, 5] = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    out[:, 6] = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+    return repair_planar_kinematics(out, current=cur, dt=float(dt))
 
 
 def _constant_accel_for_arrival(distance_m: float, speed_mps: float, target_time_s: float, cfg: dict) -> float | None:
@@ -499,7 +551,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
             accel_dedup = max(float(cand_cfg.get("timing_envelope_accel_dedup_mps2", 0.10)), 1.0e-3)
             gap_values = [float(x) for x in cand_cfg.get("timing_envelope_gap_s", [0.8, 1.4, 2.0])]
             max_tta_error = float(cand_cfg.get("timing_envelope_max_target_tta_error_s", max(0.20, 2.0 * dt)))
-            timing_profile_bins: set[tuple[int, int, int]] = set()
+            timing_profile_bins: set[tuple[int, int, int, int]] = set()
             bcte_added = 0
             for _, dist_to_conflict, region in reachable[:max_regions]:
                 if bcte_added >= max_bcte or len(candidates) >= K:
@@ -523,7 +575,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                                 continue
                             initial_accel, _profile_jerk, _terminal_speed = profile
                             accel_bin = int(round(float(initial_accel) / accel_dedup))
-                            profile_key = (int(region.conflict_id), int(side), accel_bin)
+                            profile_key = (int(region.conflict_id), int(agent_index), int(side), accel_bin)
                             if profile_key in timing_profile_bins:
                                 continue
                             timed_traj = smooth_arrival_trajectory(
@@ -714,6 +766,126 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                                     if accepted:
                                         psy_keys.add(key)
                                         psy_added += 1
+    # v16.8.19 Route-Topology NCF Coverage (RT-NCF).  The legacy interaction
+    # timing bank is longitudinal in the current yaw; on curved approaches this
+    # can be map-valid only by accident and can miss a protected pass-after plan.
+    # Add a small *causal map-topology* bank before terminal fillers.  It uses only
+    # current state + vector-map connectivity, never logged future timing/geometry.
+    if bool(cand_cfg.get("route_topology_ncf_enabled", True)) and len(candidates) < K:
+        nat_cfg = cfg.get("natural", {})
+        route_max = max(1, int(cand_cfg.get("route_topology_max_routes", 2)))
+        route_max_candidates = max(0, int(cand_cfg.get("route_topology_max_candidates", 10)))
+        route_added = 0
+        route_accels = [float(x) for x in cand_cfg.get("route_topology_base_accel_mps2", [0.0, -1.0])]
+        max_pos_acc = max([0.0] + [a for a in route_accels if a > 0.0])
+        required = _required_route_length(ego_cur, horizon, dt, nat_cfg, accel=max_pos_acc)
+        route_paths = _map_route_polylines(scene, ego_cur, required, nat_cfg)[:route_max]
+        route_attach_max = float(cand_cfg.get("route_topology_attach_max_m", nat_cfg.get("map_route_search_radius_m", 8.0)))
+
+        # First add a minimal route-following base pair.  This repairs curved-road
+        # candidate support without changing the fixed candidate cardinality.
+        for ridx, route_path in enumerate(route_paths):
+            for acc in route_accels:
+                if route_added >= route_max_candidates or len(candidates) >= K:
+                    break
+                tr = _timed_polyline_trajectory(
+                    route_path, ego_cur, horizon, dt, accel=acc, nat_cfg=nat_cfg
+                )
+                if tr is None:
+                    continue
+                accepted = add(
+                    tr, MacroType.KEEP_LANE if acc >= -0.25 else MacroType.YIELD,
+                    util=0.02 + 0.03 * max(0.0, -acc), neutral=bool(acc < -0.25),
+                    source=ProposalSource.KEEP if acc >= -0.25 else ProposalSource.YIELD,
+                    accel_mps2=acc,
+                )
+                route_added += int(bool(accepted))
+
+        # Group protected pass-after: one ego timing must be compatible with all
+        # protected agents sharing the same conflict region, not just a pairwise
+        # target.  This directly addresses scenes where every pairwise candidate
+        # leaves another protected root in the burden tail.
+        route_group_gaps = [float(x) for x in cand_cfg.get("route_group_yield_gap_s", [0.8, 1.4, 2.0])]
+        route_group_vt = [float(x) for x in cand_cfg.get("route_group_yield_terminal_speed_mps", [1.0, 2.0])]
+        route_group_a0 = [float(x) for x in cand_cfg.get("route_group_yield_initial_decel_mps2", [-0.8, -1.4])]
+        group_max = max(0, int(cand_cfg.get("route_group_yield_max_candidates", 8)))
+        group_added = 0
+        protected_rel = {int(PriorityRelation.AGENT_PRIORITY), int(PriorityRelation.EQUAL_OR_NEGOTIATED)}
+        if regions and route_paths and group_max > 0:
+            route_reachable: list[tuple[float, float, int, ConflictRegion, np.ndarray, np.ndarray]] = []
+            for ridx, route_path in enumerate(route_paths):
+                route_keep = _timed_polyline_trajectory(route_path, ego_cur, horizon, dt, accel=0.0, nat_cfg=nat_cfg)
+                if route_keep is None:
+                    continue
+                for region in regions:
+                    tta, dist = trajectory_entry_to_region(route_keep, region, current_state=ego_cur, dt=dt)
+                    if np.isfinite(tta) and np.isfinite(dist) and dist > 0.5:
+                        route_reachable.append((float(tta), float(dist), int(ridx), region, route_path, route_keep))
+            route_reachable.sort(key=lambda row: (row[0], row[1], row[2], int(row[3].conflict_id)))
+            seen_group: set[tuple[int, int, int, int]] = set()
+            max_regions = max(1, int(cand_cfg.get("timing_envelope_max_regions", 3)))
+            seen_regions: set[tuple[int, int]] = set()
+            for _tta, dist_to_conflict, ridx, region, route_path, route_keep in route_reachable:
+                if group_added >= group_max or route_added >= route_max_candidates or len(candidates) >= K:
+                    break
+                region_route_key = (int(region.conflict_id), int(ridx))
+                if region_route_key in seen_regions:
+                    continue
+                if len(seen_regions) >= max_regions * max(1, len(route_paths)):
+                    break
+                seen_regions.add(region_route_key)
+                protected_rows: list[tuple[int, float]] = []
+                for agent_index, _early, _nominal, late in _agent_tta_envelopes_to_region(scene, region, cfg):
+                    rho = _causal_priority_relation(scene, int(agent_index), route_keep, cfg)
+                    if int(rho) in protected_rel:
+                        protected_rows.append((int(agent_index), float(late)))
+                if not protected_rows:
+                    continue
+                binding_agent, binding_late = max(protected_rows, key=lambda z: (z[1], z[0]))
+                for gap in route_group_gaps:
+                    target_time = float(binding_late + gap)
+                    if target_time <= 0.35 or target_time > horizon_s:
+                        continue
+                    for initial_accel in route_group_a0:
+                        for terminal_speed in route_group_vt:
+                            if group_added >= group_max or route_added >= route_max_candidates or len(candidates) >= K:
+                                break
+                            key = (int(region.conflict_id), int(ridx), int(round(target_time * 10.0)), int(round(terminal_speed * 10.0)))
+                            if key in seen_group:
+                                continue
+                            base = smooth_terminal_speed_arrival_trajectory(
+                                ego_cur, horizon, dt, distance_m=dist_to_conflict,
+                                target_time_s=target_time, terminal_speed_mps=max(terminal_speed, 0.0),
+                                initial_accel_mps2=initial_accel,
+                            )
+                            if base is None:
+                                continue
+                            tr = _project_progress_profile_to_route(
+                                base, route_path, ego_cur, dt, attach_max_m=route_attach_max
+                            )
+                            if tr is None:
+                                continue
+                            actual_tta, actual_entry_dist = trajectory_entry_to_region(
+                                tr, region, current_state=ego_cur, dt=dt
+                            )
+                            if not np.isfinite(actual_tta):
+                                continue
+                            tta_error = abs(float(actual_tta) - target_time)
+                            max_tta_error = float(cand_cfg.get("timing_envelope_max_target_tta_error_s", max(0.20, 2.0 * dt)))
+                            if tta_error > max_tta_error + 1.0e-6:
+                                continue
+                            accepted = add(
+                                tr, MacroType.MERGE_BEHIND, util=0.12 + 0.05 * gap, neutral=True,
+                                source=ProposalSource.PRIORITY_SMOOTH_YIELD,
+                                region_id=int(region.conflict_id), target_time_s=target_time, timing_side=1,
+                                target_agent_index=int(binding_agent), gap_s=gap, accel_mps2=initial_accel,
+                                entry_distance_m=float(actual_entry_dist), target_tta_error_s=tta_error,
+                            )
+                            if accepted:
+                                seen_group.add(key)
+                                group_added += 1
+                                route_added += 1
+
     # Fill remaining slots with terminal speed/position lattice variants.  Both
     # terminal speed and progress offsets affect the primitive geometry; otherwise
     # s_off only changes utility and the lattice collapses to duplicate paths.

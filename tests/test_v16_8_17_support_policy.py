@@ -32,10 +32,10 @@ def test_v16_8_17_hard_random_missingness_gaps_are_small_on_uploaded_smoke_count
     assert abs(hard_cert - random_cert) < 0.10
 
 
-def test_v16_8_17_label_semantic_fingerprint_matches_reviewed_v16_8_16():
+def test_v16_8_19_label_semantic_fingerprint_matches_constructive_support_patch():
     gate = importlib.import_module("cowp.scripts.59_gate_fresh_v16_8_9_cache_protocol")
     got = gate.current_label_semantic_fingerprint(Path(__file__).resolve().parents[1])
-    assert got == "adcea5cb927d4c06c7f667725ce1c5b7b62808d6bd2e84244149d01ab25a1fa0"
+    assert got == "51844462540c083592280a7a8c24da962aba9d743a92b41d1a7f27095f0c2452"
 
 
 def test_v16_8_17_wrappers_use_policy_checks_not_hardcoded_one_percent():
