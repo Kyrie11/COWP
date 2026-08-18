@@ -72,17 +72,37 @@ def test_smoke_does_not_hard_gate_arbitrary_burden_only_prevalence(tmp_path):
             "any_ncf_scene_rate": 0.42,
             "best_case_selected_false_safe_lower_bound": 0.50,
             "any_priority_eligible_scene_rate": 0.90,
+            "any_priority_ncf_scene_rate": 0.50,
             "best_case_pbtr_lower_bound": 0.44,
         },
         "paired": {"old_hard_scene_count": 48, "hard_scene_ncf_recovery_rate": 0.21},
     }
     bank = {
         "any_ncf_scene_rate": 0.42,
+        "any_priority_ncf_scene_rate": 0.50,
         "best_case_selected_false_safe_lower_bound": 0.50,
         "best_case_pbtr_lower_bound": 0.44,
     }
-    ablation = {"ablations": {"all": bank, "without_priority_smooth_yield": dict(bank)}}
-    profile = {"unique_scenarios": 96, "critical_selection_reference_modes": {"fixed_anchor_v1": 96}}
+    ablation = {
+        "ablations": {
+            "all": bank,
+            "without_priority_smooth_yield": dict(bank),
+            "without_joint_route_ncf": dict(bank),
+        },
+        "joint_route_ncf_increment": {
+            "delta_any_priority_ncf_scene_rate": 0.0,
+            "delta_any_ncf_scene_rate": 0.0,
+        },
+    }
+    profile = {
+        "unique_scenarios": 96,
+        "critical_selection_reference_modes": {"causal_anchor_v2": 96},
+        "conflict_region_selection": {
+            "profiled_scenes": 96,
+            "ego_reference_used_rate": 1.0,
+            "candidate_pool_saturation_rate": 0.0,
+        },
+    }
     audit = {
         "pair_rates": {"relevant": 0.4, "burden_only_root_fraction": 0.0, "burden_only_scene_rate": 0.0},
         "root_counts": {"burden_only": 0},

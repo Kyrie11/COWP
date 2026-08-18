@@ -14,7 +14,7 @@ import numpy as np
 
 from cowp.data.parse_scenario_proto import iter_scenario_records, iter_scenarios, scenario_to_scene
 from cowp.data.parse_tfexample import decode_parsed_tfexample, iter_tfexample_records, iter_tfexample_records_by_file, parse_tfexample, resolve_glob_patterns, scenario_id_from_parsed_tfexample
-from cowp.geometry.lane_graph import build_conflict_regions
+from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions
 from cowp.label.label_engine import NoValidEgoCandidatesError, build_labels_for_scene
 from cowp.label.scene_filter import is_interaction_heavy, valid_scene_basic
 from cowp.utils.progress import tqdm_iter
@@ -209,7 +209,8 @@ def _build_one_label_from_raw(
                 }
 
         t = time.perf_counter()
-        regions = build_conflict_regions(scene.map_data, cfg)
+        conflict_diagnostics: dict[str, object] = {}
+        regions = build_scene_conflict_regions(scene, cfg, diagnostics=conflict_diagnostics)
         timings["conflict_regions_s"] = time.perf_counter() - t
 
         t = time.perf_counter()
@@ -231,6 +232,8 @@ def _build_one_label_from_raw(
     t = time.perf_counter()
     engine_timings: dict[str, float] | None = {} if profile_label_engine else None
     engine_diagnostics: dict[str, object] | None = {} if profile_label_engine else None
+    if engine_diagnostics is not None and 'conflict_diagnostics' in locals():
+        engine_diagnostics["conflict_regions"] = dict(conflict_diagnostics)
     try:
         label = build_labels_for_scene(
             scene, cfg, ablation=ablation, scene_meta=heavy_meta,

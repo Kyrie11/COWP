@@ -16,11 +16,17 @@ WANTED = {
     "cowp/candidates/valid",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/noncoercive_feasible",
+    "cowp/candidates/certificate_valid",
+    "cowp/candidates/priority_eligible",
+    "cowp/candidates/priority_false_safe",
+    "cowp/candidates/priority_noncoercive_feasible",
     "cowp/candidates/proposal_source",
     "cowp/candidates/proposal_target_tta_error_s",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/witness/exists",
     "cowp/witness/rho",
+    "cowp/witness/pair_noncoercive_feasible",
 }
 
 
@@ -60,6 +66,7 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     rmr = valid & (source == int(ProposalSource.ROBUST_BCTE))
     phr = valid & (source == int(ProposalSource.PRIORITY_HOLD_RELEASE))
     psy = valid & (source == int(ProposalSource.PRIORITY_SMOOTH_YIELD))
+    joint = valid & (source == int(ProposalSource.JOINT_ROUTE_NCF))
     timing_err = np.asarray(
         row.get("cowp/candidates/proposal_target_tta_error_s", np.full(len(valid), np.nan, dtype=np.float32)),
         dtype=np.float32,
@@ -67,18 +74,34 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     rmr_err = np.abs(timing_err[rmr]) if len(timing_err) else np.asarray([], dtype=np.float32)
     rmr_err = rmr_err[np.isfinite(rmr_err)]
 
-    crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
-    witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
-    rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
-    if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit) and rho.shape == witness.shape:
-        protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & crit[None, :]
-        priority_available = protected.any(axis=1)
-        priority_fs = conv & (witness[: len(valid)] & protected).any(axis=1)
-        priority_ncf = conv & priority_available & ~priority_fs
-        priority_eligible = conv & priority_available
+    cert = np.asarray(row.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[: len(valid)] & valid
+    if "cowp/candidates/priority_noncoercive_feasible" in row:
+        priority_eligible = np.asarray(row.get("cowp/candidates/priority_eligible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+        priority_fs = np.asarray(row.get("cowp/candidates/priority_false_safe", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+        priority_ncf = np.asarray(row.get("cowp/candidates/priority_noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
     else:
-        priority_ncf = np.zeros_like(valid)
-        priority_eligible = np.zeros_like(valid)
+        # Backward-compatible reconstruction for old caches.  Prefer the exact
+        # pair NCF label; witness absence alone is not a general feasibility
+        # definition because OPR/tail constraints are part of the certificate.
+        crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+        mech = np.asarray(row.get("cowp/critical/mechanism_valid", crit), dtype=bool).reshape(-1)[: len(crit)] & crit
+        witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
+        rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
+        pair_ncf_raw = row.get("cowp/witness/pair_noncoercive_feasible")
+        if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit) and rho.shape == witness.shape:
+            protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & mech[None, :]
+            priority_available = protected.any(axis=1)
+            priority_fs = conv & cert & (witness[: len(valid)] & protected).any(axis=1)
+            priority_eligible = conv & cert & priority_available
+            if pair_ncf_raw is not None:
+                pair_ncf = np.asarray(pair_ncf_raw, dtype=bool)[: len(valid), : len(crit)]
+                priority_ncf = priority_eligible & np.all((~protected) | pair_ncf, axis=1) & ~priority_fs
+            else:
+                priority_ncf = priority_eligible & ~priority_fs
+        else:
+            priority_fs = np.zeros_like(valid)
+            priority_ncf = np.zeros_like(valid)
+            priority_eligible = np.zeros_like(valid)
 
     return {
         "valid_count": int(valid.sum()),
@@ -97,6 +120,9 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
         "psy_count": int(psy.sum()),
         "psy_ncf_count": int((psy & ncf).sum()),
         "psy_priority_ncf_count": int((psy & priority_ncf).sum()),
+        "joint_count": int(joint.sum()),
+        "joint_ncf_count": int((joint & ncf).sum()),
+        "joint_priority_ncf_count": int((joint & priority_ncf).sum()),
         "rmr_timing_error_count": int(rmr_err.size),
         "rmr_timing_error_sum_s": float(rmr_err.sum()) if rmr_err.size else 0.0,
         "rmr_timing_error_max_s": float(rmr_err.max()) if rmr_err.size else 0.0,
@@ -204,6 +230,12 @@ def _aggregate(ids: list[str], old: dict, new: dict) -> tuple[Counter, list[int]
             new_scene_with_psy=int(int(b.get("psy_count", 0)) > 0),
             new_scene_with_psy_ncf=int(int(b.get("psy_ncf_count", 0)) > 0),
             new_scene_with_psy_priority_ncf=int(int(b.get("psy_priority_ncf_count", 0)) > 0),
+            new_joint_candidates=int(b.get("joint_count", 0)),
+            new_joint_ncf_candidates=int(b.get("joint_ncf_count", 0)),
+            new_joint_priority_ncf_candidates=int(b.get("joint_priority_ncf_count", 0)),
+            new_scene_with_joint=int(int(b.get("joint_count", 0)) > 0),
+            new_scene_with_joint_ncf=int(int(b.get("joint_ncf_count", 0)) > 0),
+            new_scene_with_joint_priority_ncf=int(int(b.get("joint_priority_ncf_count", 0)) > 0),
             new_rmr_timing_error_count=int(b["rmr_timing_error_count"]),
             new_rmr_timing_error_sum_s=float(b["rmr_timing_error_sum_s"]),
         )
@@ -293,7 +325,7 @@ def main() -> None:
         "no_unexpected_build_errors": not build_errors and not unexpected_missing_new,
     }
     result = {
-        "schema_version": "cowp_v16_8_8_stable_critical_refinement_paired_probe_v4",
+        "schema_version": "cowp_v16_8_20_causal_priority_joint_probe_v5",
         "old_cache": str(Path(args.old_cache).resolve()),
         "new_cache": str(Path(args.new_cache).resolve()),
         "new_build_profile": str(Path(args.new_build_profile).resolve()) if args.new_build_profile else None,
@@ -346,6 +378,12 @@ def main() -> None:
             "priority_smooth_yield_candidate_count": int(c["new_psy_candidates"]),
             "priority_smooth_yield_ncf_candidate_count": int(c["new_psy_ncf_candidates"]),
             "priority_smooth_yield_priority_ncf_candidate_count": int(c["new_psy_priority_ncf_candidates"]),
+            "scene_with_joint_route_ncf_rate": _rate(c["new_scene_with_joint"], n),
+            "scene_with_joint_route_ncf_global_ncf_rate": _rate(c["new_scene_with_joint_ncf"], n),
+            "scene_with_joint_route_ncf_priority_ncf_rate": _rate(c["new_scene_with_joint_priority_ncf"], n),
+            "joint_route_ncf_candidate_count": int(c["new_joint_candidates"]),
+            "joint_route_ncf_global_ncf_candidate_count": int(c["new_joint_ncf_candidates"]),
+            "joint_route_ncf_priority_ncf_candidate_count": int(c["new_joint_priority_ncf_candidates"]),
         },
         "paired": {
             "old_hard_scene_count": int(hard_c["old_hard"]),

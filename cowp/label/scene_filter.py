@@ -4,7 +4,7 @@ import numpy as np
 
 from cowp.core.constants import ObjectType
 from cowp.core.types import ScenarioData, future_states_to_traj7
-from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
+from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions, closest_conflict_for_pair
 
 
 def valid_scene_basic(scene: ScenarioData, cfg: dict) -> tuple[bool, list[str]]:
@@ -44,7 +44,7 @@ def scene_types(scene: ScenarioData, cfg: dict, conflict_regions: list | None = 
     heading_change = abs(float(((ego[-1, 2] - ego[0, 2] + np.pi) % (2 * np.pi)) - np.pi))
     if abs(dy) > 2.5 and heading_change < np.deg2rad(30):
         out.add("LANE_CHANGE")
-    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_scene_conflict_regions(scene, cfg)
     other_idxs = [i for i in range(scene.num_agents) if i != scene.sdc_track_index and scene.states[i, cur, 10] > 0.5]
     for i in other_idxs:
         a_future = scene.states[i, cur + 1 :, :]

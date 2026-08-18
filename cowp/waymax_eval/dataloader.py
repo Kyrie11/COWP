@@ -369,7 +369,16 @@ def make_default_config(config_name: str = "WOD_1_1_0_TRAINING", path: str | Non
     if not hasattr(_config, config_name):
         raise ValueError(f"Unknown Waymax config {config_name}. Available configs are defined in waymax.config.")
     cfg = getattr(_config, config_name)
-    cfg = _maybe_copy_and_update(cfg, max_num_objects=max_num_objects, include_sdc_paths=include_sdc_paths)
+    # Make the Waymax/WOMD shape contract explicit instead of relying on named-
+    # config defaults that may change across Waymax releases.  SimulatorState
+    # construction requires a scenario-level, time-aggregated example.
+    cfg = _maybe_copy_and_update(
+        cfg,
+        max_num_objects=max_num_objects,
+        include_sdc_paths=include_sdc_paths,
+        aggregate_timesteps=True,
+        batch_by_scenario=True,
+    )
     if path is not None:
         cfg = _maybe_copy_and_update(cfg, path=path)
     return cfg

@@ -18,11 +18,17 @@ WANTED = {
     "cowp/candidates/conventional_safe",
     "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible",
+    "cowp/candidates/certificate_valid",
+    "cowp/candidates/priority_eligible",
+    "cowp/candidates/priority_false_safe",
+    "cowp/candidates/priority_noncoercive_feasible",
     "cowp/candidates/macro_type",
     "cowp/candidates/proposal_source",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/witness/exists",
     "cowp/witness/rho",
+    "cowp/witness/pair_noncoercive_feasible",
 }
 
 
@@ -110,18 +116,31 @@ def main() -> None:
         macro = np.asarray(row.get("cowp/candidates/macro_type", np.full_like(valid, int(MacroType.PAD))), dtype=np.int64).reshape(-1)[: len(valid)]
         source = np.asarray(row.get("cowp/candidates/proposal_source", np.full_like(valid, int(ProposalSource.PAD))), dtype=np.int64).reshape(-1)[: len(valid)]
 
-        crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
-        witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
-        rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
-        if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit):
-            protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & crit[None, :]
-            priority_available = protected.any(axis=1)
-            priority_fs = conv & (witness[: len(valid)] & protected).any(axis=1)
-            priority_ncf = conv & priority_available & ~priority_fs
-            priority_eligible = conv & priority_available
+        cert = np.asarray(row.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[: len(valid)] & valid
+        if "cowp/candidates/priority_noncoercive_feasible" in row:
+            priority_eligible = np.asarray(row.get("cowp/candidates/priority_eligible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+            priority_fs = np.asarray(row.get("cowp/candidates/priority_false_safe", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+            priority_ncf = np.asarray(row.get("cowp/candidates/priority_noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
         else:
-            priority_ncf = np.zeros_like(valid)
-            priority_eligible = np.zeros_like(valid)
+            crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+            mech = np.asarray(row.get("cowp/critical/mechanism_valid", crit), dtype=bool).reshape(-1)[: len(crit)] & crit
+            witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
+            rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
+            pair_ncf_raw = row.get("cowp/witness/pair_noncoercive_feasible")
+            if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit) and rho.shape == witness.shape:
+                protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & mech[None, :]
+                priority_available = protected.any(axis=1)
+                priority_fs = conv & cert & (witness[: len(valid)] & protected).any(axis=1)
+                priority_eligible = conv & cert & priority_available
+                if pair_ncf_raw is not None:
+                    pair_ncf = np.asarray(pair_ncf_raw, dtype=bool)[: len(valid), : len(crit)]
+                    priority_ncf = priority_eligible & np.all((~protected) | pair_ncf, axis=1) & ~priority_fs
+                else:
+                    priority_ncf = priority_eligible & ~priority_fs
+            else:
+                priority_fs = np.zeros_like(valid)
+                priority_ncf = np.zeros_like(valid)
+                priority_eligible = np.zeros_like(valid)
 
         any_valid = bool(valid.any())
         any_conv = bool(conv.any())

@@ -75,60 +75,160 @@ def lane_heading_at(lane: Lane, s_query: float | None = None) -> float:
     return float(np.arctan2(d[1], d[0]))
 
 
-def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]:
+def _lane_min_distance_to_point(lane: Lane, point_xy: np.ndarray) -> float:
+    xy = np.asarray(lane.xy, dtype=np.float32)
+    if xy.ndim != 2 or len(xy) == 0:
+        return float("inf")
+    p = np.asarray(point_xy, dtype=np.float32).reshape(-1)[:2]
+    return float(np.min(np.linalg.norm(xy[:, :2] - p[None, :], axis=-1)))
+
+
+def _region_reference_rank(
+    region: ConflictRegion,
+    reference_xy: np.ndarray | None,
+    reference_heading: float | None,
+    *,
+    behind_tolerance_m: float,
+) -> tuple[float, ...]:
+    """Causal ego-centric rank for a map conflict region.
+
+    The old implementation returned as soon as the raw map-feature traversal hit
+    ``max_conflict_regions``.  WOMD does not promise that map-feature insertion
+    order is a meaningful planning order, so that behavior can make a fixed 64
+    slot bank mostly unrelated to the SDC's reachable conflicts.  Ranking uses
+    only the current SDC pose (no logged future / sdc_paths), and is therefore
+    valid both for offline construction and online planning.
+    """
+    if reference_xy is None:
+        return (0.0, float(region.conflict_id))
+    ref = np.asarray(reference_xy, dtype=np.float32).reshape(-1)[:2]
+    d = np.asarray(region.center_xy, dtype=np.float32)[:2] - ref
+    dist = float(np.linalg.norm(d))
+    behind = 0.0
+    forward = 0.0
+    lateral = dist
+    if reference_heading is not None and np.isfinite(reference_heading):
+        h = float(reference_heading)
+        fwd = np.asarray([np.cos(h), np.sin(h)], dtype=np.float32)
+        left = np.asarray([-np.sin(h), np.cos(h)], dtype=np.float32)
+        forward = float(np.dot(d, fwd))
+        lateral = abs(float(np.dot(d, left)))
+        behind = 1.0 if forward < -float(behind_tolerance_m) else 0.0
+    type_rank = {"MERGE": 0.0, "LANE_INTERSECTION": 1.0, "SWEPT_OVERLAP": 2.0}.get(
+        str(region.conflict_type), 3.0
+    )
+    # Euclidean distance is the dominant causal relevance signal.  Forward/lateral
+    # terms make ties stable without assuming a logged route.
+    return (behind, dist, max(-forward, 0.0), lateral, type_rank, float(region.conflict_id))
+
+
+def _dedupe_conflict_regions(regions: list[ConflictRegion], tol_m: float) -> list[ConflictRegion]:
+    if tol_m <= 0.0:
+        return list(regions)
+    kept: list[ConflictRegion] = []
+    by_key: dict[tuple[str, tuple[int, int]], list[np.ndarray]] = {}
+    for r in regions:
+        lanes = tuple(sorted((int(r.involved_lane_ids[0]), int(r.involved_lane_ids[1]))))
+        key = (str(r.conflict_type), lanes)
+        centers = by_key.setdefault(key, [])
+        c = np.asarray(r.center_xy, dtype=np.float32)[:2]
+        if any(float(np.linalg.norm(c - old)) <= tol_m for old in centers):
+            continue
+        centers.append(c)
+        kept.append(r)
+    return kept
+
+
+def build_conflict_regions(
+    map_data: MapData,
+    cfg: dict,
+    *,
+    reference_xy: np.ndarray | None = None,
+    reference_heading: float | None = None,
+    diagnostics: dict[str, object] | None = None,
+) -> list[ConflictRegion]:
+    """Build a bounded, ego-relevant conflict-region bank.
+
+    ``reference_xy/reference_heading`` should be the *current* SDC pose.  When
+    present, lanes are considered in ego-centric order and the final fixed-size
+    bank is ranked by current-pose relevance.  This eliminates dependence on raw
+    WOMD map-feature ordering while preserving causality.  Callers that omit a
+    reference keep deterministic legacy ordering, but no longer early-return at
+    the first ``max_conflict_regions`` entries.
+    """
     conflict_cfg = cfg.get("conflict", cfg)
     heading_thresh = np.deg2rad(float(conflict_cfg.get("lane_intersection_heading_threshold_deg", 30.0)))
     intersection_radius = float(conflict_cfg.get("intersection_radius_m", 5.0))
     merge_radius = float(conflict_cfg.get("merge_radius_m", 8.0))
-    regions: list[ConflictRegion] = []
-    lanes = list(map_data.lanes.values())
-    lane_bboxes = {lane.lane_id: _bbox_xy(lane.xy) for lane in lanes if len(lane.xy) >= 2}
-    lane_segment_bboxes = {lane.lane_id: _segment_bboxes(lane.xy) for lane in lanes if len(lane.xy) >= 2}
-    seen: set[tuple[int, int, int, int]] = set()
     max_regions = int(cfg.get("limits", {}).get("max_conflict_regions", 64))
+    pool_limit = max(
+        max_regions,
+        int(conflict_cfg.get("candidate_pool_max_regions", max(384, 6 * max_regions))),
+    )
+    dedup_m = float(conflict_cfg.get("dedup_center_distance_m", 1.5))
+    behind_tol = float(conflict_cfg.get("reference_behind_tolerance_m", 12.0))
+    max_pair_intersections = max(1, int(conflict_cfg.get("max_intersections_per_lane_pair", 4)))
+
+    lanes = [lane for lane in map_data.lanes.values() if len(np.asarray(lane.xy)) >= 2]
+    total_lane_count = len(lanes)
+    if reference_xy is not None and lanes:
+        lane_dist = {int(lane.lane_id): _lane_min_distance_to_point(lane, reference_xy) for lane in lanes}
+        lanes.sort(key=lambda lane: (lane_dist[int(lane.lane_id)], int(lane.lane_id)))
+        radius = float(conflict_cfg.get("reference_lane_radius_m", 180.0))
+        min_lanes = max(2, int(conflict_cfg.get("reference_min_lanes_considered", 48)))
+        max_lanes = max(min_lanes, int(conflict_cfg.get("reference_max_lanes_considered", 192)))
+        near = [lane for lane in lanes if lane_dist[int(lane.lane_id)] <= radius]
+        keep_n = min(len(lanes), max(min_lanes, min(max_lanes, len(near))))
+        lanes = lanes[:keep_n]
+    else:
+        lane_dist = {}
+
+    regions: list[ConflictRegion] = []
+    lane_bboxes = {lane.lane_id: _bbox_xy(lane.xy) for lane in lanes}
+    lane_segment_bboxes = {lane.lane_id: _segment_bboxes(lane.xy) for lane in lanes}
     bbox_margin = max(intersection_radius, merge_radius) + 2.0
+    raw_intersections = 0
+    pool_saturated = False
+
     for i, lane_a in enumerate(lanes):
-        xy_a = lane_a.xy
-        if len(xy_a) < 2:
-            continue
+        if len(regions) >= pool_limit:
+            pool_saturated = True
+            break
+        xy_a = np.asarray(lane_a.xy, dtype=np.float32)
         for lane_b in lanes[i + 1 :]:
-            xy_b = lane_b.xy
-            if len(xy_b) < 2:
-                continue
-            # Topological merges: two lanes exit into the same successor or endpoints are close.
+            if len(regions) >= pool_limit:
+                pool_saturated = True
+                break
+            xy_b = np.asarray(lane_b.xy, dtype=np.float32)
             common_exit = set(lane_a.exit_lanes).intersection(lane_b.exit_lanes)
             endpoint_dist = float(np.linalg.norm(xy_a[-1] - xy_b[-1]))
             if not common_exit and endpoint_dist >= 4.0:
-                if not _bbox_might_overlap(lane_bboxes[lane_a.lane_id], lane_bboxes[lane_b.lane_id], bbox_margin):
+                if not _bbox_might_overlap(
+                    lane_bboxes[lane_a.lane_id], lane_bboxes[lane_b.lane_id], bbox_margin
+                ):
                     continue
             if common_exit or endpoint_dist < 4.0:
-                hdiff = abs(float(normalize_angle(lane_heading_at(lane_a, None) - lane_heading_at(lane_b, None))))
                 center = 0.5 * (xy_a[-1] + xy_b[-1])
                 regions.append(
                     ConflictRegion(
-                        len(regions),
-                        "MERGE",
-                        center.astype(np.float32),
-                        merge_radius,
-                        (lane_a.lane_id, lane_b.lane_id),
-                        "MAINLINE_OR_ARRIVAL",
+                        len(regions), "MERGE", center.astype(np.float32), merge_radius,
+                        (lane_a.lane_id, lane_b.lane_id), "MAINLINE_OR_ARRIVAL",
                     )
                 )
-                if len(regions) >= max_regions:
-                    return regions[:max_regions]
                 continue
+
             seg_boxes_a = lane_segment_bboxes.get(lane_a.lane_id, [])
             seg_boxes_b = lane_segment_bboxes.get(lane_b.lane_id, [])
+            pair_hits = 0
             for ia in range(len(xy_a) - 1):
+                if pair_hits >= max_pair_intersections or len(regions) >= pool_limit:
+                    break
                 for ib in range(len(xy_b) - 1):
-                    # Exact negative test: if segment bounding boxes do not
-                    # overlap, two straight segments cannot intersect. This
-                    # preserves the original conflict-region set while avoiding
-                    # most segment_intersection calls on dense HD maps.
-                    if seg_boxes_a and seg_boxes_b and not _bbox_might_overlap(seg_boxes_a[ia], seg_boxes_b[ib], 0.0):
-                        continue
-                    key = (lane_a.lane_id, lane_b.lane_id, ia, ib)
-                    if key in seen:
+                    if pair_hits >= max_pair_intersections or len(regions) >= pool_limit:
+                        break
+                    if seg_boxes_a and seg_boxes_b and not _bbox_might_overlap(
+                        seg_boxes_a[ia], seg_boxes_b[ib], 0.0
+                    ):
                         continue
                     p = segment_intersection(xy_a[ia], xy_a[ia + 1], xy_b[ib], xy_b[ib + 1])
                     if p is None:
@@ -139,19 +239,52 @@ def build_conflict_regions(map_data: MapData, cfg: dict) -> list[ConflictRegion]
                     ctype = "LANE_INTERSECTION" if hdiff > heading_thresh else "SWEPT_OVERLAP"
                     regions.append(
                         ConflictRegion(
-                            len(regions),
-                            ctype,
-                            p.astype(np.float32),
+                            len(regions), ctype, p.astype(np.float32),
                             intersection_radius if ctype == "LANE_INTERSECTION" else merge_radius,
-                            (lane_a.lane_id, lane_b.lane_id),
-                            "TOPOLOGY_OR_ARRIVAL",
+                            (lane_a.lane_id, lane_b.lane_id), "TOPOLOGY_OR_ARRIVAL",
                         )
                     )
-                    seen.add(key)
-                    if len(regions) >= max_regions:
-                        return regions[:max_regions]
-    return regions[:max_regions]
+                    pair_hits += 1
+                    raw_intersections += 1
 
+    raw_count = len(regions)
+    regions = _dedupe_conflict_regions(regions, dedup_m)
+    dedup_count = len(regions)
+    if reference_xy is not None:
+        regions.sort(
+            key=lambda r: _region_reference_rank(
+                r, reference_xy, reference_heading, behind_tolerance_m=behind_tol
+            )
+        )
+    selected = regions[:max_regions]
+    # Conflict ids are cache-local array indices.  Reassign after ranking so every
+    # downstream proposal/label refers to the exact selected bank.
+    for new_id, region in enumerate(selected):
+        region.conflict_id = int(new_id)
+
+    if diagnostics is not None:
+        diagnostics.update({
+            "total_map_lanes": int(total_lane_count),
+            "lanes_considered": int(len(lanes)),
+            "raw_region_count": int(raw_count),
+            "deduplicated_region_count": int(dedup_count),
+            "selected_region_count": int(len(selected)),
+            "selected_cap_saturated": bool(len(selected) >= max_regions),
+            "candidate_pool_saturated": bool(pool_saturated),
+            "raw_segment_intersections": int(raw_intersections),
+            "ego_reference_used": bool(reference_xy is not None),
+        })
+    return selected
+
+
+def build_scene_conflict_regions(scene, cfg: dict, *, diagnostics: dict[str, object] | None = None) -> list[ConflictRegion]:
+    """Scene wrapper that always uses the inference-visible current SDC pose."""
+    cur = int(scene.current_time_index)
+    ego = np.asarray(scene.states[int(scene.sdc_track_index), cur], dtype=np.float32)
+    heading = float(ego[6]) if ego.size > 6 and np.isfinite(ego[6]) else None
+    return build_conflict_regions(
+        scene.map_data, cfg, reference_xy=ego[:2], reference_heading=heading, diagnostics=diagnostics
+    )
 
 def trajectory_entry_to_region(
     traj: np.ndarray,

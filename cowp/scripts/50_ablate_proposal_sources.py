@@ -16,10 +16,16 @@ WANTED = {
     "cowp/candidates/valid",
     "cowp/candidates/conventional_safe",
     "cowp/candidates/noncoercive_feasible",
+    "cowp/candidates/certificate_valid",
+    "cowp/candidates/priority_eligible",
+    "cowp/candidates/priority_false_safe",
+    "cowp/candidates/priority_noncoercive_feasible",
     "cowp/candidates/proposal_source",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/witness/exists",
     "cowp/witness/rho",
+    "cowp/witness/pair_noncoercive_feasible",
 }
 
 
@@ -40,18 +46,34 @@ def _scenario_summary(row: dict[str, np.ndarray], keep_sources: set[int] | None)
     conv = np.asarray(row.get("cowp/candidates/conventional_safe", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid
     ncf = np.asarray(row.get("cowp/candidates/noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid
 
-    crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
-    witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
-    rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
-    if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit) and rho.shape == witness.shape:
-        protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & crit[None, :]
-        priority_available = protected.any(axis=1)
-        priority_fs = conv & (witness[: len(valid)] & protected).any(axis=1)
-        priority_ncf = conv & priority_available & ~priority_fs
-        priority_eligible = conv & priority_available
+    cert = np.asarray(row.get("cowp/candidates/certificate_valid", valid), dtype=bool).reshape(-1)[: len(valid)] & valid
+    if "cowp/candidates/priority_noncoercive_feasible" in row:
+        priority_eligible = np.asarray(row.get("cowp/candidates/priority_eligible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+        priority_fs = np.asarray(row.get("cowp/candidates/priority_false_safe", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
+        priority_ncf = np.asarray(row.get("cowp/candidates/priority_noncoercive_feasible", np.zeros_like(valid)), dtype=bool).reshape(-1)[: len(valid)] & valid & cert
     else:
-        priority_ncf = np.zeros_like(valid)
-        priority_eligible = np.zeros_like(valid)
+        # Backward-compatible reconstruction for old caches.  Prefer the exact
+        # pair NCF label; witness absence alone is not a general feasibility
+        # definition because OPR/tail constraints are part of the certificate.
+        crit = np.asarray(row.get("cowp/critical/valid", []), dtype=bool).reshape(-1)
+        mech = np.asarray(row.get("cowp/critical/mechanism_valid", crit), dtype=bool).reshape(-1)[: len(crit)] & crit
+        witness = np.asarray(row.get("cowp/witness/exists", np.zeros((len(valid), len(crit)), dtype=bool)), dtype=bool)
+        rho = np.asarray(row.get("cowp/witness/rho", np.zeros_like(witness, dtype=np.int64)), dtype=np.int64)
+        pair_ncf_raw = row.get("cowp/witness/pair_noncoercive_feasible")
+        if witness.ndim == 2 and witness.shape[0] >= len(valid) and witness.shape[1] == len(crit) and rho.shape == witness.shape:
+            protected = ((rho[: len(valid)] == 2) | (rho[: len(valid)] == 3)) & mech[None, :]
+            priority_available = protected.any(axis=1)
+            priority_fs = conv & cert & (witness[: len(valid)] & protected).any(axis=1)
+            priority_eligible = conv & cert & priority_available
+            if pair_ncf_raw is not None:
+                pair_ncf = np.asarray(pair_ncf_raw, dtype=bool)[: len(valid), : len(crit)]
+                priority_ncf = priority_eligible & np.all((~protected) | pair_ncf, axis=1) & ~priority_fs
+            else:
+                priority_ncf = priority_eligible & ~priority_fs
+        else:
+            priority_fs = np.zeros_like(valid)
+            priority_ncf = np.zeros_like(valid)
+            priority_eligible = np.zeros_like(valid)
 
     any_valid = bool(valid.any())
     any_conv = bool(conv.any())
@@ -82,17 +104,20 @@ def main() -> None:
     timing = {
         int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE),
         int(ProposalSource.PRIORITY_HOLD_RELEASE), int(ProposalSource.PRIORITY_SMOOTH_YIELD),
+        int(ProposalSource.JOINT_ROUTE_NCF),
     }
     schemes: dict[str, set[int] | None] = {
         "all": None,
         "without_priority_hold_release": all_nonpad - {int(ProposalSource.PRIORITY_HOLD_RELEASE)},
         "without_priority_smooth_yield": all_nonpad - {int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
+        "without_joint_route_ncf": all_nonpad - {int(ProposalSource.JOINT_ROUTE_NCF)},
         "without_rmr_bcte": all_nonpad - {int(ProposalSource.ROBUST_BCTE)},
         "without_legacy_timing": all_nonpad - {int(ProposalSource.LEGACY_TIMING)},
         "without_any_interaction_timing": all_nonpad - timing,
         "base_plus_rmr_only": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE)},
         "base_plus_rmr_plus_priority_commitment": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)},
         "base_plus_rmr_plus_priority_smooth_yield": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
+        "base_plus_joint_route_ncf": (all_nonpad - timing) | {int(ProposalSource.JOINT_ROUTE_NCF)},
     }
 
     ds = COWPNpzDataset(args.cache_dir)
@@ -147,7 +172,7 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": "cowp_v16_8_8_proposal_source_ablation_v3",
+        "schema_version": "cowp_v16_8_20_proposal_source_ablation_v4",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "evaluation_subset": {"modulo": modulo, "remainder": remainder, "num_scenes": len(indices)},
         "proposal_source_candidate_counts": dict(source_candidate_counts),
@@ -171,6 +196,7 @@ def main() -> None:
     full = result["ablations"]["all"]
     no_commit = result["ablations"]["without_priority_hold_release"]
     no_psy = result["ablations"]["without_priority_smooth_yield"]
+    no_joint = result["ablations"]["without_joint_route_ncf"]
     result["priority_hold_release_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_commit["any_ncf_scene_rate"],
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_commit["best_case_selected_false_safe_lower_bound"],
@@ -182,6 +208,13 @@ def main() -> None:
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_psy["best_case_selected_false_safe_lower_bound"],
         "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_psy["best_case_pbtr_lower_bound"],
         "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_psy["mean_valid_candidates"],
+    }
+    result["joint_route_ncf_increment"] = {
+        "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_joint["any_ncf_scene_rate"],
+        "delta_priority_ncf_scene_rate": full["any_priority_ncf_scene_rate"] - no_joint["any_priority_ncf_scene_rate"],
+        "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_joint["best_case_selected_false_safe_lower_bound"],
+        "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_joint["best_case_pbtr_lower_bound"],
+        "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_joint["mean_valid_candidates"],
     }
     result["rmr_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - base["any_ncf_scene_rate"],

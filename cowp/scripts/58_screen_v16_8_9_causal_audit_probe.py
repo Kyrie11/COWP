@@ -55,20 +55,28 @@ def main() -> None:
     new = paired.get("new", {})
     comp = paired.get("pairing_completeness", {})
     modes = profile.get("critical_selection_reference_modes", {}) or {}
+    conflict_sel = profile.get("conflict_region_selection", {}) or {}
     pair_rates = audit.get("pair_rates", {}) or {}
     integ = audit.get("integrity", {}) or {}
     root_counts = audit.get("root_counts", {}) or {}
     all_bank = ablation.get("ablations", {}).get("all", {})
     no_psy = ablation.get("ablations", {}).get("without_priority_smooth_yield", {})
+    no_joint = ablation.get("ablations", {}).get("without_joint_route_ncf", {})
+    joint_increment = ablation.get("joint_route_ncf_increment", {}) or {}
+    source_counts = ablation.get("proposal_source_candidate_counts", {}) or {}
 
+    # v16.8.20 aligns promotion semantics with the model/manuscript: the protected-
+    # priority certificate is the primary hard feasibility object; all-critical NCF
+    # remains a stricter global burden-transfer diagnostic.  We still require the
+    # global branch to be non-degenerate because it has its own BCOT head/loss.
     if args.strict:
-        th = dict(min_any_valid=0.99, min_any_ncf=0.40, max_false_safe_floor=0.55,
-                  max_pbtr_floor=0.45, min_hard_recovery=0.20,
-                  min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
+        th = dict(min_any_valid=0.99, min_priority_eligible=0.90, min_priority_ncf=0.50,
+                  max_pbtr_floor=0.45, min_global_any_ncf=0.30, max_global_false_safe_floor=0.65,
+                  min_hard_recovery=0.20, min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
     else:
-        th = dict(min_any_valid=0.99, min_any_ncf=0.30, max_false_safe_floor=0.65,
-                  max_pbtr_floor=0.50, min_hard_recovery=0.12,
-                  min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
+        th = dict(min_any_valid=0.99, min_priority_eligible=0.80, min_priority_ncf=0.40,
+                  max_pbtr_floor=0.50, min_global_any_ncf=0.25, max_global_false_safe_floor=0.70,
+                  min_hard_recovery=0.12, min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
 
     relevant_rate = float(pair_rates.get("relevant", 0.0))
     burden_only_fraction = float(pair_rates.get("burden_only_root_fraction", 0.0))
@@ -81,40 +89,45 @@ def main() -> None:
     # wrong side of the smoke threshold.  Strict remains point-estimate gated.
     n_rep = int(paired.get("num_representative_scenes", 0))
     n_hard = int(paired.get("paired", {}).get("old_hard_scene_count", 0))
-    any_ncf_k = int(round(float(new.get("any_ncf_scene_rate", 0.0)) * n_rep))
-    false_safe_k = int(round(float(new.get("best_case_selected_false_safe_lower_bound", 0.0)) * n_rep))
+    global_ncf_k = int(round(float(new.get("any_ncf_scene_rate", 0.0)) * n_rep))
+    global_floor_k = int(round(float(new.get("best_case_selected_false_safe_lower_bound", 0.0)) * n_rep))
     priority_eligible_k = int(round(float(new.get("any_priority_eligible_scene_rate", 0.0)) * n_rep))
+    priority_ncf_k = int(round(float(new.get("any_priority_ncf_scene_rate", 0.0)) * n_rep))
     pbtr_k = int(round(float(new.get("best_case_pbtr_lower_bound", 0.0)) * priority_eligible_k))
     hard_k = int(round(float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) * n_hard))
     uncertainty = {
-        "any_ncf_95pct_wilson": _wilson_interval(any_ncf_k, n_rep),
-        "false_safe_95pct_wilson": _wilson_interval(false_safe_k, n_rep),
+        "global_any_ncf_95pct_wilson": _wilson_interval(global_ncf_k, n_rep),
+        "global_false_safe_floor_95pct_wilson": _wilson_interval(global_floor_k, n_rep),
+        "priority_eligible_95pct_wilson": _wilson_interval(priority_eligible_k, n_rep),
+        "priority_ncf_95pct_wilson": _wilson_interval(priority_ncf_k, n_rep),
         "pbtr_95pct_wilson": _wilson_interval(pbtr_k, priority_eligible_k),
         "hard_recovery_95pct_wilson": _wilson_interval(hard_k, n_hard),
     }
     point_estimate_checks = {
-        "any_ncf": float(new.get("any_ncf_scene_rate", 0.0)) >= th["min_any_ncf"],
-        "false_safe_floor": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= th["max_false_safe_floor"],
+        "priority_eligible": float(new.get("any_priority_eligible_scene_rate", 0.0)) >= th["min_priority_eligible"],
+        "priority_ncf": float(new.get("any_priority_ncf_scene_rate", 0.0)) >= th["min_priority_ncf"],
         "pbtr_floor": float(new.get("best_case_pbtr_lower_bound", 1.0)) <= th["max_pbtr_floor"],
+        "global_any_ncf_support": float(new.get("any_ncf_scene_rate", 0.0)) >= th["min_global_any_ncf"],
+        "global_false_safe_floor_support": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= th["max_global_false_safe_floor"],
         "hard_recovery": float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) >= th["min_hard_recovery"],
     }
     if args.strict:
         proposal_checks = dict(point_estimate_checks)
     else:
         proposal_checks = {
-            # Lower-bounded metrics are a gross smoke failure only when even the
-            # upper Wilson bound cannot reach the threshold.
-            "any_ncf": _smoke_min_metric_pass(uncertainty["any_ncf_95pct_wilson"], th["min_any_ncf"]),
+            "priority_eligible": _smoke_min_metric_pass(uncertainty["priority_eligible_95pct_wilson"], th["min_priority_eligible"]),
+            "priority_ncf": _smoke_min_metric_pass(uncertainty["priority_ncf_95pct_wilson"], th["min_priority_ncf"]),
+            "global_any_ncf_support": _smoke_min_metric_pass(uncertainty["global_any_ncf_95pct_wilson"], th["min_global_any_ncf"]),
             "hard_recovery": _smoke_min_metric_pass(uncertainty["hard_recovery_95pct_wilson"], th["min_hard_recovery"]),
-            # Upper-bounded metrics are a gross failure only when even the lower
-            # Wilson bound is above the allowed threshold.
-            "false_safe_floor": _smoke_max_metric_pass(uncertainty["false_safe_95pct_wilson"], th["max_false_safe_floor"]),
+            "global_false_safe_floor_support": _smoke_max_metric_pass(uncertainty["global_false_safe_floor_95pct_wilson"], th["max_global_false_safe_floor"]),
             "pbtr_floor": _smoke_max_metric_pass(uncertainty["pbtr_95pct_wilson"], th["max_pbtr_floor"]),
         }
 
     checks = {
         "pairing_complete": bool(comp.get("complete", False)) and int(comp.get("build_error_count", 0)) == 0,
-        "stable_critical_reference": int(modes.get("fixed_anchor_v1", 0)) == unique_scenes and unique_scenes > 0,
+        "stable_critical_reference": int(modes.get("causal_anchor_v2", 0)) == unique_scenes and unique_scenes > 0,
+        "ego_relevant_conflict_ranking": int(conflict_sel.get("profiled_scenes", 0)) > 0 and float(conflict_sel.get("ego_reference_used_rate", 0.0)) >= 0.999999,
+        "conflict_candidate_pool_not_truncated": float(conflict_sel.get("candidate_pool_saturation_rate", 1.0)) <= (0.05 if args.strict else 0.25),
         "any_valid": float(new.get("any_valid_scene_rate", 0.0)) >= th["min_any_valid"],
         **proposal_checks,
         "audit_not_degenerate": th["min_relevant_pair_rate"] <= relevant_rate <= th["max_relevant_pair_rate"],
@@ -131,6 +144,14 @@ def main() -> None:
         "proposal_union_monotone_any_ncf": float(all_bank.get("any_ncf_scene_rate", 0.0)) + 1e-12 >= float(no_psy.get("any_ncf_scene_rate", 0.0)),
         "proposal_union_monotone_false_safe": float(all_bank.get("best_case_selected_false_safe_lower_bound", 1.0)) <= float(no_psy.get("best_case_selected_false_safe_lower_bound", 1.0)) + 1e-12,
         "proposal_union_monotone_pbtr": float(all_bank.get("best_case_pbtr_lower_bound", 1.0)) <= float(no_psy.get("best_case_pbtr_lower_bound", 1.0)) + 1e-12,
+        # The strict probe must demonstrate that the joint-route constructor is
+        # actually reachable.  Its *incremental* scene-level gain is reported as
+        # an attribution diagnostic, not a promotion requirement: if the causal
+        # conflict-bank/selector fixes already make another source cover the same
+        # feasible scenes, a zero marginal JR-NCF gain is not a dataset defect.
+        "joint_route_ncf_source_active": (
+            int(source_counts.get("JOINT_ROUTE_NCF", 0)) > 0 if args.strict else True
+        ),
     }
     passed = all(checks.values())
 
@@ -139,22 +160,27 @@ def main() -> None:
         "burden_only_root_fraction": burden_only_fraction,
         "burden_only_scene_rate": burden_only_scene_rate,
         "smoke_is_not_full_rebuild_evidence": not args.strict,
+        "all_critical_is_global_diagnostic_not_primary_hard_veto": True,
+        "legacy_global_gate_any_ncf_ge_0p40": float(new.get("any_ncf_scene_rate", 0.0)) >= 0.40,
+        "legacy_global_gate_floor_le_0p55": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= 0.55,
+        "joint_route_ncf_increment": joint_increment,
+        "joint_route_ncf_scene_level_gain_observed": float(joint_increment.get("delta_priority_ncf_scene_rate", 0.0)) > 0.0,
     }
     if args.strict:
         next_action = (
-            "STRICT PASS: v16.8.9 data semantics and proposal ceiling justify a full fresh rebuild."
+            "STRICT PASS: protected-priority proposal coverage, global diagnostic support, and data semantics justify the next train-pilot gate."
             if passed else
-            "STRICT FAIL: do not full-rebuild; inspect audit/blocker/source diagnostics first."
+            "STRICT FAIL: do not full-rebuild; inspect failed protected/global proposal, causal-selector, conflict-ranking, and source-provenance checks."
         )
     else:
         next_action = (
-            "SMOKE PASS: run the 400-hard + 800-random v16.8.9 strict probe; do not full-rebuild yet."
+            "SMOKE PASS: run the 400-hard + 800-random v16.8.20 strict probe; do not full-rebuild yet."
             if passed else
             "SMOKE FAIL: do not full-rebuild; the causal-audit/data contract still needs repair."
         )
 
     result = {
-        "schema_version": "cowp_v16_8_16_causal_audit_screen_v3",
+        "schema_version": "cowp_v16_8_20_priority_primary_screen_v4",
         "strict": bool(args.strict),
         "code_fingerprint_sha256": code_fingerprint,
         "screen_pass": bool(passed),
@@ -166,16 +192,23 @@ def main() -> None:
         "advisories": advisories,
         "observed": {
             "new_any_valid_scene_rate": float(new.get("any_valid_scene_rate", 0.0)),
-            "new_any_ncf_scene_rate": float(new.get("any_ncf_scene_rate", 0.0)),
-            "new_false_safe_floor": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)),
+            "new_global_any_ncf_scene_rate": float(new.get("any_ncf_scene_rate", 0.0)),
+            "new_global_false_safe_floor": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)),
+            "new_priority_eligible_scene_rate": float(new.get("any_priority_eligible_scene_rate", 0.0)),
+            "new_priority_ncf_scene_rate": float(new.get("any_priority_ncf_scene_rate", 0.0)),
             "new_pbtr_floor": float(new.get("best_case_pbtr_lower_bound", 1.0)),
             "hard_scene_ncf_recovery_rate": float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)),
             "audit_pair_rates": pair_rates,
             "audit_root_counts": root_counts,
             "audit_integrity": integ,
             "critical_selection_reference_modes": modes,
+            "conflict_region_selection": conflict_sel,
             "all_bank": all_bank,
             "without_psy": no_psy,
+            "without_joint_route_ncf": no_joint,
+            "proposal_source_candidate_counts": source_counts,
+            "joint_route_ncf_increment": joint_increment,
+        "joint_route_ncf_scene_level_gain_observed": float(joint_increment.get("delta_priority_ncf_scene_rate", 0.0)) > 0.0,
         },
         "recommend_strict_probe": bool((not args.strict) and passed),
         "recommend_full_rebuild": bool(args.strict and passed),

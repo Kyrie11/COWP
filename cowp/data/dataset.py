@@ -307,6 +307,13 @@ def mask_out_of_range_critical_agents(data: dict[str, np.ndarray], num_agents: i
         if cand_valid.size:
             cert = np.asarray(data.get("cowp/candidates/certificate_valid", cand_valid), dtype=bool).reshape(-1)[: cand_valid.size]
             data["cowp/candidates/certificate_valid"] = np.zeros_like(cert, dtype=bool)
+            for pkey in (
+                "cowp/candidates/priority_eligible",
+                "cowp/candidates/priority_false_safe",
+                "cowp/candidates/priority_noncoercive_feasible",
+            ):
+                if pkey in data:
+                    data[pkey] = np.zeros_like(np.asarray(data[pkey], dtype=bool), dtype=bool)
         if "dataset/mechanism_certificate_complete" in data:
             data["dataset/mechanism_certificate_complete"] = np.asarray(False)
     if not bad.any():
@@ -435,6 +442,9 @@ def _wanted_keys_for_stage(
             "cowp/candidates/conventional_safe",
             "cowp/candidates/false_safe",
             "cowp/candidates/noncoercive_feasible",
+            "cowp/candidates/priority_eligible",
+            "cowp/candidates/priority_false_safe",
+            "cowp/candidates/priority_noncoercive_feasible",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/is_logged",
             "cowp/candidates/is_neutral",

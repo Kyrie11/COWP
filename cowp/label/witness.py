@@ -5,7 +5,7 @@ import numpy as np
 from cowp.core.constants import MechanismToken, NaturalSource, PriorityRelation
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
-from cowp.geometry.lane_graph import build_conflict_regions, closest_conflict_for_pair
+from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions, closest_conflict_for_pair
 from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
 from cowp.label.safe_responses import build_root_recovery_trajectory_bank, root_conditioned_recovery_search
@@ -129,6 +129,9 @@ def certify_witnesses(
     conventional_safe = np.zeros(K, dtype=bool)
     false_safe = np.zeros(K, dtype=bool)
     ncf = np.zeros(K, dtype=bool)
+    priority_eligible = np.zeros(K, dtype=bool)
+    priority_false_safe = np.zeros(K, dtype=bool)
+    priority_ncf = np.zeros(K, dtype=bool)
     mode_valid = np.zeros((K, A, M), dtype=bool)
     mode_conflict = np.zeros((K, A, M), dtype=bool)
     mode_affected = np.zeros((K, A, M), dtype=bool)
@@ -154,7 +157,7 @@ def certify_witnesses(
     candidate_max_audited_tail = np.zeros(K, dtype=np.float32)
 
     cur = scene.current_time_index
-    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_scene_conflict_regions(scene, cfg)
     other_logged = []
     for j in range(scene.num_agents):
         if j == scene.sdc_track_index:
@@ -459,6 +462,21 @@ def certify_witnesses(
             all_ncf = all_ncf and pair_ncf
         false_safe[k] = conventional_safe[k] and bool(np.any(exists[k] & critical["valid"] & mechanism_mask))
         ncf[k] = bool(all_ncf)
+        protected = (
+            np.asarray(critical["valid"], dtype=bool)
+            & mechanism_mask
+            & ((rho_arr[k] == int(PriorityRelation.AGENT_PRIORITY))
+               | (rho_arr[k] == int(PriorityRelation.EQUAL_OR_NEGOTIATED)))
+        )
+        priority_eligible[k] = bool(conventional_safe[k] and np.any(protected))
+        priority_false_safe[k] = bool(
+            priority_eligible[k] and np.any(exists[k] & protected)
+        )
+        priority_ncf[k] = bool(
+            priority_eligible[k]
+            and np.all(pair_noncoercive[k, protected])
+            and not priority_false_safe[k]
+        )
     return {
         "exists": exists,
         "token": token,
@@ -490,6 +508,9 @@ def certify_witnesses(
         "candidate_conventional_safe": conventional_safe,
         "candidate_false_safe": false_safe,
         "candidate_noncoercive_feasible": ncf,
+        "candidate_priority_eligible": priority_eligible,
+        "candidate_priority_false_safe": priority_false_safe,
+        "candidate_priority_noncoercive_feasible": priority_ncf,
         "transport_mode_valid": mode_valid,
         "transport_mode_conflict": mode_conflict,
         "transport_mode_affected": mode_affected,

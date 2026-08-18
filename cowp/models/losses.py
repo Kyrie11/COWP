@@ -2284,12 +2284,49 @@ def set_transport_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Ten
         conventional = batch.get("cowp/candidates/conventional_safe", cand).bool()
         exists_target = batch.get("cowp/witness/exists")
         rho = batch.get("cowp/witness/rho")
-        if exists_target is not None and rho is not None:
+        explicit_priority_ncf = batch.get("cowp/candidates/priority_noncoercive_feasible")
+        explicit_priority_fs = batch.get("cowp/candidates/priority_false_safe")
+        explicit_priority_eligible = batch.get("cowp/candidates/priority_eligible")
+        if (explicit_priority_ncf is not None and explicit_priority_fs is not None
+                and explicit_priority_eligible is not None):
+            cert_cand = _candidate_certificate_mask(batch)
+            priority_good = cert_cand & conventional & explicit_priority_eligible.bool() & explicit_priority_ncf.bool()
+            priority_fs = cert_cand & conventional & explicit_priority_eligible.bool() & explicit_priority_fs.bool()
+            priority_disc = priority_good | priority_fs
+            candidate_priority_coverage = priority_disc.float().sum() / cand.float().sum().clamp_min(1.0)
+            candidate_priority_false_safe_rate = priority_fs.float().sum() / priority_disc.float().sum().clamp_min(1.0)
+            if priority_disc.any():
+                plogit = (_safe_float(candidate_transport_logit) if candidate_transport_logit is not None
+                          else torch.logit(_safe_float(candidate_transport).clamp(1e-5, 1 - 1e-5)))
+                pbce = symmetric_class_balanced_bce_with_logits(
+                    plogit, priority_fs.float(), priority_disc,
+                    max_class_weight=float(weights.get("set_transport_candidate_max_class_weight", 6.0)),
+                )
+                prank_terms: list[torch.Tensor] = []
+                margin = float(weights.get("set_transport_candidate_margin", 0.10))
+                max_pairs = int(weights.get("set_transport_candidate_max_pairs", 256))
+                risk = torch.sigmoid(plogit)
+                for b in range(cand.shape[0]):
+                    good = torch.where(priority_good[b])[0]
+                    bad = torch.where(priority_fs[b])[0]
+                    if not (good.numel() and bad.numel()):
+                        continue
+                    if good.numel() * bad.numel() > max_pairs:
+                        g_keep = max(1, int(max_pairs ** 0.5)); b_keep = max(1, max_pairs // g_keep)
+                        good = good[:g_keep]; bad = bad[:b_keep]
+                    prank_terms.append(torch.relu(margin + risk[b, good[:, None]] - risk[b, bad[None, :]]).mean())
+                prank = torch.stack(prank_terms).mean() if prank_terms else _zero_like_loss(plogit)
+                candidate_priority_budget = 0.65 * pbce + 0.35 * prank
+        elif exists_target is not None and rho is not None:
             protected = ((rho.long() == 2) | (rho.long() == 3)) & crit[:, None, :]
             protected_available = protected.any(dim=-1)
             cert_cand = _candidate_certificate_mask(batch)
             priority_fs = cert_cand & conventional & (exists_target.bool() & protected).any(dim=-1)
-            priority_good = cert_cand & conventional & protected_available & ~priority_fs
+            pair_ncf = batch.get("cowp/witness/pair_noncoercive_feasible")
+            if pair_ncf is not None:
+                priority_good = cert_cand & conventional & protected_available & (((~protected) | pair_ncf.bool()).all(dim=-1)) & ~priority_fs
+            else:
+                priority_good = cert_cand & conventional & protected_available & ~priority_fs
             priority_disc = priority_good | priority_fs
             candidate_priority_coverage = priority_disc.float().sum() / cand.float().sum().clamp_min(1.0)
             candidate_priority_false_safe_rate = priority_fs.float().sum() / priority_disc.float().sum().clamp_min(1.0)

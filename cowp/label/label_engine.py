@@ -5,7 +5,7 @@ import time
 import numpy as np
 
 from cowp.core.types import ScenarioData
-from cowp.geometry.lane_graph import build_conflict_regions
+from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions
 from cowp.label.critical_agents import select_critical_agents
 from cowp.label.audit_relevance import compute_candidate_agent_audit
 from cowp.label.ego_candidates import generate_ego_candidates
@@ -52,7 +52,7 @@ def build_labels_for_scene(
             profile_timings[name] = time.perf_counter() - t
         return out
 
-    regions = conflict_regions if conflict_regions is not None else _timeit("engine_conflict_regions_s", lambda: build_conflict_regions(scene.map_data, cfg))
+    regions = conflict_regions if conflict_regions is not None else _timeit("engine_conflict_regions_s", lambda: build_scene_conflict_regions(scene, cfg))
     candidates = _timeit("engine_candidates_s", lambda: generate_ego_candidates(scene, cfg, conflict_regions=regions))
     if profile_diagnostics is not None:
         profile_diagnostics["candidate"] = dict(candidates.get("_proposal_debug", {}))
@@ -63,7 +63,7 @@ def build_labels_for_scene(
     critical = _timeit("engine_critical_agents_s", lambda: select_critical_agents(scene, cfg, candidates, conflict_regions=regions))
     if profile_diagnostics is not None:
         profile_diagnostics["critical"] = {
-            "selection_reference_mode": str(cfg.get("critical", {}).get("selection_reference_mode", "fixed_anchor_v1")),
+            "selection_reference_mode": str(cfg.get("critical", {}).get("selection_reference_mode", "causal_anchor_v2")),
             "count": int(np.asarray(critical.get("valid", []), dtype=bool).sum()),
             "track_indices": [int(x) for x in np.asarray(critical.get("track_index", []), dtype=np.int32)[np.asarray(critical.get("valid", []), dtype=bool)].tolist()],
             **dict(critical.get("_selection_diagnostics", {})),
@@ -128,6 +128,11 @@ def build_labels_for_scene(
         # value and expose certificate_valid as the explicit supervision/eval mask.
         "cowp/candidates/false_safe": np.asarray(witness["candidate_false_safe"], dtype=bool) & certificate_valid,
         "cowp/candidates/noncoercive_feasible": np.asarray(witness["candidate_noncoercive_feasible"], dtype=bool) & certificate_valid,
+        # Priority-aware labels are the manuscript/model primary hard certificate.
+        # All-critical labels above remain the stricter global transfer diagnostic.
+        "cowp/candidates/priority_eligible": np.asarray(witness["candidate_priority_eligible"], dtype=bool) & certificate_valid,
+        "cowp/candidates/priority_false_safe": np.asarray(witness["candidate_priority_false_safe"], dtype=bool) & certificate_valid,
+        "cowp/candidates/priority_noncoercive_feasible": np.asarray(witness["candidate_priority_noncoercive_feasible"], dtype=bool) & certificate_valid,
         "cowp/candidates/ego_utility_prior": candidates["ego_utility_prior"],
         "cowp/candidates/is_logged": candidates["is_logged"],
         "cowp/candidates/is_neutral": candidates["is_neutral"],

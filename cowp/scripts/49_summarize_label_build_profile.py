@@ -43,6 +43,14 @@ def main() -> None:
     accepted = Counter()
     critical_modes = Counter()
     critical_counts: list[int] = []
+    conflict_raw_counts: list[int] = []
+    conflict_dedup_counts: list[int] = []
+    conflict_selected_counts: list[int] = []
+    conflict_lane_counts: list[int] = []
+    conflict_ego_reference = 0
+    conflict_selected_saturated = 0
+    conflict_pool_saturated = 0
+    conflict_profiled_scenes = 0
     audit_valid_pairs = 0
     audit_relevant_pairs = 0
     audit_relevance_mass_sum = 0.0
@@ -84,6 +92,19 @@ def main() -> None:
                     accepted[str(k)] += int(v)
                 except Exception:
                     pass
+        if isinstance(engine_diag, dict) and isinstance(engine_diag.get("conflict_regions"), dict):
+            xdiag = engine_diag["conflict_regions"]
+            conflict_profiled_scenes += 1
+            try:
+                conflict_raw_counts.append(int(xdiag.get("raw_region_count", 0)))
+                conflict_dedup_counts.append(int(xdiag.get("deduplicated_region_count", 0)))
+                conflict_selected_counts.append(int(xdiag.get("selected_region_count", 0)))
+                conflict_lane_counts.append(int(xdiag.get("lanes_considered", 0)))
+                conflict_ego_reference += int(bool(xdiag.get("ego_reference_used", False)))
+                conflict_selected_saturated += int(bool(xdiag.get("selected_cap_saturated", False)))
+                conflict_pool_saturated += int(bool(xdiag.get("candidate_pool_saturated", False)))
+            except Exception:
+                pass
         if isinstance(engine_diag, dict) and isinstance(engine_diag.get("critical"), dict):
             cdiag = engine_diag["critical"]
             critical_modes[str(cdiag.get("selection_reference_mode", "unknown"))] += 1
@@ -121,7 +142,7 @@ def main() -> None:
     slow.sort(reverse=True)
 
     result = {
-        "schema_version": "cowp_v16_8_9_label_build_profile_summary_v3",
+        "schema_version": "cowp_v16_8_20_label_build_profile_summary_v4",
         "input": str(Path(args.input).resolve()),
         "unique_scenarios": len(latest),
         "malformed_rows": malformed,
@@ -134,6 +155,18 @@ def main() -> None:
             k: float(accepted.get(k, 0) / max(v, 1)) for k, v in attempted.items()
         },
         "critical_selection_reference_modes": dict(critical_modes),
+        "conflict_region_selection": {
+            "profiled_scenes": int(conflict_profiled_scenes),
+            "ego_reference_used_rate": float(conflict_ego_reference / max(conflict_profiled_scenes, 1)),
+            "selected_cap_saturation_rate": float(conflict_selected_saturated / max(conflict_profiled_scenes, 1)),
+            "candidate_pool_saturation_rate": float(conflict_pool_saturated / max(conflict_profiled_scenes, 1)),
+            "raw_region_count_mean": float(np.mean(conflict_raw_counts)) if conflict_raw_counts else 0.0,
+            "deduplicated_region_count_mean": float(np.mean(conflict_dedup_counts)) if conflict_dedup_counts else 0.0,
+            "selected_region_count_mean": float(np.mean(conflict_selected_counts)) if conflict_selected_counts else 0.0,
+            "lanes_considered_mean": float(np.mean(conflict_lane_counts)) if conflict_lane_counts else 0.0,
+            "raw_region_count_p90": _pct([float(x) for x in conflict_raw_counts], 90),
+            "deduplicated_region_count_p90": _pct([float(x) for x in conflict_dedup_counts], 90),
+        },
         "audit_relevance": {
             "profiled_scenes": audit_scenes,
             "valid_pair_count": audit_valid_pairs,

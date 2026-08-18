@@ -14,6 +14,8 @@ from cowp.data.dataset import COWPNpzDataset
 WANTED = {
     "cowp/candidates/valid", "cowp/candidates/conventional_safe", "cowp/candidates/false_safe",
     "cowp/candidates/noncoercive_feasible", "cowp/candidates/proposal_source", "cowp/candidates/certificate_valid",
+    "cowp/candidates/priority_eligible", "cowp/candidates/priority_false_safe",
+    "cowp/candidates/priority_noncoercive_feasible",
     "cowp/critical/valid", "cowp/critical/mechanism_valid", "cowp/critical/agent_type", "cowp/critical/base_priority",
     "cowp/natural/valid", "cowp/natural/source", "cowp/natural/weight", "cowp/natural/traj",
     "cowp/natural/priority_preserved", "cowp/natural/burden_neutral", "cowp/natural/beta", "cowp/natural/map_evidence_mode",
@@ -201,6 +203,13 @@ def main() -> None:
         fs = np.asarray(row["cowp/candidates/false_safe"], dtype=bool)[:cand.size]
         _binary(c, "candidate_ncf", ncf, cert_cand)
         _binary(c, "candidate_false_safe", fs, cert_cand & conv)
+        p_eligible = np.asarray(row["cowp/candidates/priority_eligible"], dtype=bool)[:cand.size]
+        p_ncf = np.asarray(row["cowp/candidates/priority_noncoercive_feasible"], dtype=bool)[:cand.size]
+        p_fs = np.asarray(row["cowp/candidates/priority_false_safe"], dtype=bool)[:cand.size]
+        p_mask = cert_cand & conv & p_eligible
+        _binary(c, "priority_candidate_ncf", p_ncf, p_mask)
+        _binary(c, "priority_candidate_false_safe", p_fs, p_mask)
+        c["priority_label_overlap"] += int((p_ncf & p_fs & p_mask).sum())
         for x in np.asarray(row["cowp/candidates/proposal_source"], dtype=np.int64)[:cand.size][cand]:
             source["proposal"][int(x)] += 1
 
@@ -212,11 +221,21 @@ def main() -> None:
         _binary(c, "witness_on_relevant", wit, base_pair & rel)
         _binary(c, "pair_ncf_on_relevant", pair_ncf, base_pair & rel)
         rho = np.asarray(row["cowp/witness/rho"], dtype=np.int64)[:cand.size, :crit.size]
-        protected = base_pair & rel & ((rho == int(PriorityRelation.AGENT_PRIORITY)) | (rho == int(PriorityRelation.EQUAL_OR_NEGOTIATED)))
+        protected_all = base_pair & ((rho == int(PriorityRelation.AGENT_PRIORITY)) | (rho == int(PriorityRelation.EQUAL_OR_NEGOTIATED)))
+        protected = protected_all & rel
         if np.any(protected):
             protected_bad = np.any(protected & ~pair_ncf, axis=1)
             protected_audited = np.any(protected, axis=1)
             _binary(c, "protected_candidate_feasible", ~protected_bad, cert_cand & conv & protected_audited)
+        protected_available_all = protected_all.any(axis=1)
+        reconstructed = (
+            cert_cand & conv & protected_available_all
+            & np.all((~protected_all) | pair_ncf, axis=1)
+            & ~(wit & protected_all).any(axis=1)
+        )
+        reconstructed_fs = cert_cand & conv & protected_available_all & (wit & protected_all).any(axis=1)
+        c["priority_ncf_consistency_error"] += int((p_ncf ^ reconstructed).sum())
+        c["priority_fs_consistency_error"] += int((p_fs ^ reconstructed_fs).sum())
 
         token = np.asarray(row["cowp/witness/token"], dtype=np.int64)[:cand.size, :crit.size]
         for x in token[base_pair & rel & wit]:
@@ -364,6 +383,7 @@ def main() -> None:
         "candidate_ncf", "candidate_false_safe", "pair_relevance", "witness_on_relevant",
         "pair_ncf_on_relevant", "response_safe", "response_low_burden", "response_min_burden",
         "mode_conflict", "mode_affected", "mode_retain", "root_recovery", "protected_candidate_feasible",
+        "priority_candidate_ncf", "priority_candidate_false_safe",
     )
     protected_total = int(c["protected_critical_agents"])
     protected_prio_coverage = float(
@@ -433,6 +453,9 @@ def main() -> None:
         "natural_weights_valid": int(c["invalid_natural_weight_agents"]) == 0,
         "conflict_subset_affected": int(c["conflict_not_affected_violations"]) == 0,
         "unsafe_event_intervals_complete": int(c["unsafe_missing_event_interval"]) == 0,
+        "priority_label_overlap_zero": int(c["priority_label_overlap"]) == 0,
+        "priority_ncf_label_consistency": int(c["priority_ncf_consistency_error"]) == 0,
+        "priority_false_safe_label_consistency": int(c["priority_fs_consistency_error"]) == 0,
         "root_indexed_response_support": int(c["root_indexed_responses"]) >= mins,
         "confident_affected_root_support": int(c["confident_affected_roots"]) >= mins,
         "response_slot_full_coverage": int(c["response_slots_present"]) == int(c["response_slots_expected"]),
@@ -472,7 +495,7 @@ def main() -> None:
 
     passed = all(checks.values()) and not read_errors and not integrity_errors
     report = {
-        "schema_version": "cowp_v16_8_17_model_support_audit_v2",
+        "schema_version": "cowp_v16_8_20_model_support_audit_v3",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "inspected_scenes": int(c["scenes"]),
         "min_class_examples": minc,

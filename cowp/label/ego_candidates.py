@@ -6,7 +6,7 @@ import numpy as np
 
 from cowp.core.constants import MacroType, PriorityRelation, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
-from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, trajectory_entry_to_region, tta_to_region
+from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, build_scene_conflict_regions, trajectory_entry_to_region, tta_to_region
 from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, repair_planar_kinematics, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
 from cowp.label.natural_alternatives import _map_route_polylines, _required_route_length, _timed_polyline_trajectory
 from cowp.label.priority import determine_priority
@@ -481,7 +481,7 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
         accel_mps2=-1.0,
     )
 
-    regions = conflict_regions if conflict_regions is not None else build_conflict_regions(scene.map_data, cfg)
+    regions = conflict_regions if conflict_regions is not None else build_scene_conflict_regions(scene, cfg)
     if regions:
         keep = constant_accel_trajectory(ego_cur, horizon, dt, accel=0.0)
         ego_speed = float(max(ego_cur[5], np.linalg.norm(ego_cur[3:5]), 0.0))
@@ -885,6 +885,125 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                                 seen_group.add(key)
                                 group_added += 1
                                 route_added += 1
+
+    # v16.8.20 Joint Route NCF (JR-NCF).  A scene-level protected certificate
+    # is universal over protected critical pairs, so a proposal that is timed
+    # behind one conflict region can still coerce an actor at the next region.
+    # Construct a causal longitudinal schedule on each map-topology route and
+    # validate it simultaneously against several current-state TTA envelopes.
+    if bool(cand_cfg.get("route_joint_yield_enabled", True)) and regions and len(candidates) < K:
+        nat_cfg = cfg.get("natural", {})
+        joint_route_max = max(1, int(cand_cfg.get("route_topology_max_routes", 2)))
+        max_pos_acc = max(0.0, float(cand_cfg.get("route_joint_yield_max_accel_mps2", 0.5)))
+        required = _required_route_length(ego_cur, horizon, dt, nat_cfg, accel=max_pos_acc)
+        joint_routes = _map_route_polylines(scene, ego_cur, required, nat_cfg)[:joint_route_max]
+        joint_max = max(0, int(cand_cfg.get("route_joint_yield_max_candidates", 8)))
+        joint_max_regions = max(1, int(cand_cfg.get("route_joint_yield_max_regions", 4)))
+        joint_gaps = [float(x) for x in cand_cfg.get("route_joint_yield_gap_s", [0.8, 1.4])]
+        joint_slack = [float(x) for x in cand_cfg.get("route_joint_yield_accel_slack_mps2", [0.0, -0.4, -0.8])]
+        joint_min_acc = float(cand_cfg.get("route_joint_yield_min_accel_mps2", -3.5))
+        joint_max_acc = float(cand_cfg.get("route_joint_yield_max_accel_mps2", 0.5))
+        joint_tol = max(float(cand_cfg.get("route_joint_yield_tta_tolerance_s", max(0.20, 2.0 * dt))), dt)
+        protected_rel = {int(PriorityRelation.AGENT_PRIORITY), int(PriorityRelation.EQUAL_OR_NEGOTIATED)}
+        joint_added = 0
+        joint_keys: set[tuple[int, int]] = set()
+        v0 = max(float(ego_cur[5] if len(ego_cur) > 5 else np.linalg.norm(ego_cur[3:5])), 0.0)
+
+        for ridx, route_path in enumerate(joint_routes):
+            if joint_added >= joint_max or len(candidates) >= K:
+                break
+            route_keep = _timed_polyline_trajectory(route_path, ego_cur, horizon, dt, accel=0.0, nat_cfg=nat_cfg)
+            if route_keep is None:
+                continue
+            constraints: list[tuple[float, float, ConflictRegion, int, float]] = []
+            for region in regions:
+                ego_tta, dist = trajectory_entry_to_region(route_keep, region, current_state=ego_cur, dt=dt)
+                if not (np.isfinite(ego_tta) and np.isfinite(dist) and dist > 0.5):
+                    continue
+                protected_rows: list[tuple[int, float]] = []
+                for agent_index, _early, _nominal, late in _agent_tta_envelopes_to_region(scene, region, cfg):
+                    rho = _causal_priority_relation(scene, int(agent_index), route_keep, cfg)
+                    if int(rho) in protected_rel:
+                        protected_rows.append((int(agent_index), float(late)))
+                if not protected_rows:
+                    continue
+                binding_agent, binding_late = max(protected_rows, key=lambda z: (z[1], z[0]))
+                constraints.append((float(ego_tta), float(dist), region, int(binding_agent), float(binding_late)))
+            constraints.sort(key=lambda row: (row[0], row[1], int(row[2].conflict_id)))
+            constraints = constraints[:joint_max_regions]
+            if not constraints:
+                continue
+
+            for gap in joint_gaps:
+                if joint_added >= joint_max or len(candidates) >= K:
+                    break
+                active: list[tuple[float, float, ConflictRegion, int, float]] = []
+                accel_bounds: list[tuple[float, ConflictRegion, int, float, float]] = []
+                for ego_tta, dist, region, agent_index, late in constraints:
+                    target = float(late + gap)
+                    if target <= 0.35:
+                        continue
+                    # target may be slightly beyond the rollout horizon: stopping
+                    # before that region is a valid low-pressure pass-after action.
+                    if target > horizon_s + 2.0:
+                        continue
+                    active.append((ego_tta, dist, region, agent_index, target))
+                    # Constant-acceleration analytic bound: arrival no earlier than
+                    # target requires a <= 2*(d-v0*t)/t^2.  The route retimer uses
+                    # a ramped acceleration schedule, so every proposal is checked
+                    # geometrically below rather than trusting this approximation.
+                    a_req = 2.0 * (float(dist) - v0 * target) / max(target * target, 1.0e-6)
+                    accel_bounds.append((float(a_req), region, int(agent_index), float(dist), target))
+                if not active:
+                    continue
+                binding = min(accel_bounds, key=lambda row: (row[0], int(row[1].conflict_id)))
+                base_acc = float(np.clip(binding[0], joint_min_acc, joint_max_acc))
+                for slack in joint_slack:
+                    if joint_added >= joint_max or len(candidates) >= K:
+                        break
+                    accel = float(np.clip(base_acc + min(float(slack), 0.0), joint_min_acc, joint_max_acc))
+                    key = (int(ridx), int(round(accel * 100.0)))
+                    if key in joint_keys:
+                        continue
+                    tr = _timed_polyline_trajectory(route_path, ego_cur, horizon, dt, accel=accel, nat_cfg=nat_cfg)
+                    if tr is None:
+                        continue
+                    # Hard joint validation.  Infinite TTA means ego stays before
+                    # the corresponding conflict region for this horizon, which is
+                    # conservatively compatible with a protected pass-after bound.
+                    violations: list[float] = []
+                    finite_errors: list[float] = []
+                    for _ego_tta, _dist, region, _agent_index, target in active:
+                        actual_tta, _actual_dist = trajectory_entry_to_region(tr, region, current_state=ego_cur, dt=dt)
+                        if np.isfinite(actual_tta):
+                            violations.append(max(0.0, float(target - actual_tta)))
+                            finite_errors.append(abs(float(actual_tta - target)))
+                        else:
+                            violations.append(0.0)
+                    if violations and max(violations) > joint_tol + 1.0e-6:
+                        continue
+                    binding_region = binding[1]
+                    binding_agent = int(binding[2])
+                    binding_target = float(binding[4])
+                    binding_entry = trajectory_entry_to_region(tr, binding_region, current_state=ego_cur, dt=dt)[1]
+                    accepted = add(
+                        tr,
+                        MacroType.MERGE_BEHIND,
+                        util=0.10 + 0.04 * gap + 0.02 * max(0.0, -accel),
+                        neutral=True,
+                        source=ProposalSource.JOINT_ROUTE_NCF,
+                        region_id=int(binding_region.conflict_id),
+                        target_time_s=binding_target,
+                        timing_side=1,
+                        target_agent_index=binding_agent,
+                        gap_s=gap,
+                        accel_mps2=accel,
+                        entry_distance_m=float(binding_entry) if np.isfinite(binding_entry) else float(binding[3]),
+                        target_tta_error_s=float(max(violations) if violations else 0.0),
+                    )
+                    if accepted:
+                        joint_keys.add(key)
+                        joint_added += 1
 
     # Fill remaining slots with terminal speed/position lattice variants.  Both
     # terminal speed and progress offsets affect the primitive geometry; otherwise

@@ -60,6 +60,9 @@ class ProposalSource(IntEnum):
     PRIORITY_HOLD_RELEASE = 12
     # v16.8.8: smooth low-entry-speed yield for protected-priority interactions.
     PRIORITY_SMOOTH_YIELD = 13
+    # v16.8.20: one causal route timing jointly satisfies protected constraints
+    # across multiple ego-reachable conflict regions.
+    JOINT_ROUTE_NCF = 14
 
 
 class NaturalSource(IntEnum):

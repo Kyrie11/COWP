@@ -120,6 +120,16 @@ candidate:
   route_group_yield_gap_s: [0.8, 1.4, 2.0]
   route_group_yield_terminal_speed_mps: [1.0, 2.0]
   route_group_yield_initial_decel_mps2: [-0.8, -1.4]
+  # v16.8.20: scene-level protected feasibility needs one trajectory that can
+  # satisfy several protected conflict regions, not one region at a time.
+  route_joint_yield_enabled: true
+  route_joint_yield_max_candidates: 8
+  route_joint_yield_max_regions: 4
+  route_joint_yield_gap_s: [0.8, 1.4]
+  route_joint_yield_accel_slack_mps2: [0.0, -0.4, -0.8, -1.2]
+  route_joint_yield_min_accel_mps2: -3.5
+  route_joint_yield_max_accel_mps2: 0.5
+  route_joint_yield_tta_tolerance_s: 0.20
   lane_change_duration_s:
   - 2.5
   - 3.5
@@ -145,6 +155,15 @@ conflict:
   merge_radius_m: 8.0
   lane_intersection_heading_threshold_deg: 30.0
   same_direction_heading_threshold_deg: 30.0
+  # v16.8.20: collect a larger map pool, then rank by current SDC pose instead
+  # of truncating the raw WOMD map-feature traversal at C=64.
+  candidate_pool_max_regions: 4096
+  dedup_center_distance_m: 1.5
+  reference_lane_radius_m: 180.0
+  reference_min_lanes_considered: 48
+  reference_max_lanes_considered: 192
+  reference_behind_tolerance_m: 12.0
+  max_intersections_per_lane_pair: 4
 priority:
   priority_delay_tolerance_s: 0.8
   priority_progress_loss_tolerance_m: 5.0
@@ -157,14 +176,18 @@ priority:
 critical:
   # v16.8.8: global critical-agent selection must not depend on the optional
   # proposal bank; otherwise adding proposals can relabel every old candidate.
-  selection_reference_mode: fixed_anchor_v1
+  selection_reference_mode: causal_anchor_v2
   anchor_lane_offset_m: 3.5
   anchor_lane_change_delay_s: 0.5
   max_current_distance_m: 40.0
-  max_future_distance_m: 15.0
+  max_future_distance_m: 15.0  # legacy key; causal selector uses max_projected_distance_m
+  max_projected_distance_m: 15.0
   always_keep_current_distance_m: 18.0
   current_distance_requires_future_or_conflict: true
   min_score: 1.5
+  # WOMD challenge annotations are offline metadata, not online planner inputs.
+  objects_of_interest_score_weight: 0.0
+  tracks_to_predict_score_weight: 0.0
   tta_delta_threshold: 3.0
   vehicle_only_main: true
   # v16.8.13: COWP mechanism supervision requires an auditable 8 s natural basis.
