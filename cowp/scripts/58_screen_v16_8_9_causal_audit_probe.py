@@ -36,7 +36,7 @@ def _smoke_max_metric_pass(interval: dict[str, float | int], threshold: float) -
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Screen v16.8.9 candidate-conditioned causal-audit proposal/data probe.")
+    ap = argparse.ArgumentParser(description="Screen candidate-conditioned COWP proposal/data support under the v16.8.21 evidence-aligned promotion policy.")
     ap.add_argument("--paired-probe", required=True)
     ap.add_argument("--source-ablation", required=True)
     ap.add_argument("--profile-summary", required=True)
@@ -65,17 +65,24 @@ def main() -> None:
     joint_increment = ablation.get("joint_route_ncf_increment", {}) or {}
     source_counts = ablation.get("proposal_source_candidate_counts", {}) or {}
 
-    # v16.8.20 aligns promotion semantics with the model/manuscript: the protected-
-    # priority certificate is the primary hard feasibility object; all-critical NCF
-    # remains a stricter global burden-transfer diagnostic.  We still require the
-    # global branch to be non-degenerate because it has its own BCOT head/loss.
+    # v16.8.21 evidence contract.  Protected-priority *eligibility prevalence* is
+    # a property of the sampled WOMD scene mixture, not a property that a proposal
+    # generator can improve.  Likewise, P(any protected NCF) over *all* scenes is
+    # exactly P(eligible) * P(NCF | eligible), so hard-gating both the marginal
+    # eligible rate and the marginal NCF rate double-counts scene prevalence and
+    # can reject a perfectly supported protected certificate.
+    #
+    # Promotion therefore gates (a) minimum evidence counts, (b) the paper-aligned
+    # PBTR floor / equivalently protected NCF conditional on eligibility, and
+    # (c) all-critical/global support for the auxiliary BCOT head.  The marginal
+    # protected rates remain reported as prevalence diagnostics only.
     if args.strict:
-        th = dict(min_any_valid=0.99, min_priority_eligible=0.90, min_priority_ncf=0.50,
-                  max_pbtr_floor=0.45, min_global_any_ncf=0.30, max_global_false_safe_floor=0.65,
+        th = dict(min_any_valid=0.99, min_priority_eligible_count=256, min_priority_ncf_count=128,
+                  max_pbtr_floor=0.45, max_pbtr_wilson_high=0.45, min_global_any_ncf=0.30, max_global_false_safe_floor=0.65,
                   min_hard_recovery=0.20, min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
     else:
-        th = dict(min_any_valid=0.99, min_priority_eligible=0.80, min_priority_ncf=0.40,
-                  max_pbtr_floor=0.50, min_global_any_ncf=0.25, max_global_false_safe_floor=0.70,
+        th = dict(min_any_valid=0.99, min_priority_eligible_count=8, min_priority_ncf_count=4,
+                  max_pbtr_floor=0.50, max_pbtr_wilson_high=0.50, min_global_any_ncf=0.25, max_global_false_safe_floor=0.70,
                   min_hard_recovery=0.12, min_relevant_pair_rate=0.01, max_relevant_pair_rate=0.95)
 
     relevant_rate = float(pair_rates.get("relevant", 0.0))
@@ -100,13 +107,23 @@ def main() -> None:
         "global_false_safe_floor_95pct_wilson": _wilson_interval(global_floor_k, n_rep),
         "priority_eligible_95pct_wilson": _wilson_interval(priority_eligible_k, n_rep),
         "priority_ncf_95pct_wilson": _wilson_interval(priority_ncf_k, n_rep),
+        "protected_ncf_given_eligible_95pct_wilson": _wilson_interval(priority_ncf_k, priority_eligible_k),
         "pbtr_95pct_wilson": _wilson_interval(pbtr_k, priority_eligible_k),
         "hard_recovery_95pct_wilson": _wilson_interval(hard_k, n_hard),
     }
+    protected_ncf_given_eligible = (
+        float(priority_ncf_k) / float(priority_eligible_k) if priority_eligible_k > 0 else 0.0
+    )
+    protected_partition_error = (
+        abs(protected_ncf_given_eligible + float(new.get("best_case_pbtr_lower_bound", 1.0)) - 1.0)
+        if priority_eligible_k > 0 else 1.0
+    )
     point_estimate_checks = {
-        "priority_eligible": float(new.get("any_priority_eligible_scene_rate", 0.0)) >= th["min_priority_eligible"],
-        "priority_ncf": float(new.get("any_priority_ncf_scene_rate", 0.0)) >= th["min_priority_ncf"],
+        "protected_eligible_support_count": priority_eligible_k >= int(th["min_priority_eligible_count"]),
+        "protected_ncf_support_count": priority_ncf_k >= int(th["min_priority_ncf_count"]),
+        "protected_partition_consistent": protected_partition_error <= (1.0 / max(priority_eligible_k, 1) + 1e-9),
         "pbtr_floor": float(new.get("best_case_pbtr_lower_bound", 1.0)) <= th["max_pbtr_floor"],
+        "pbtr_upper_confidence_support": float(uncertainty["pbtr_95pct_wilson"]["high"]) <= th["max_pbtr_wilson_high"],
         "global_any_ncf_support": float(new.get("any_ncf_scene_rate", 0.0)) >= th["min_global_any_ncf"],
         "global_false_safe_floor_support": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= th["max_global_false_safe_floor"],
         "hard_recovery": float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)) >= th["min_hard_recovery"],
@@ -114,9 +131,13 @@ def main() -> None:
     if args.strict:
         proposal_checks = dict(point_estimate_checks)
     else:
+        # Small smoke runs use exact evidence-count floors plus Wilson gross-failure
+        # screening for the conditional/global rates.  Counts prevent a tiny
+        # denominator from making a superficially excellent PBTR look sufficient.
         proposal_checks = {
-            "priority_eligible": _smoke_min_metric_pass(uncertainty["priority_eligible_95pct_wilson"], th["min_priority_eligible"]),
-            "priority_ncf": _smoke_min_metric_pass(uncertainty["priority_ncf_95pct_wilson"], th["min_priority_ncf"]),
+            "protected_eligible_support_count": point_estimate_checks["protected_eligible_support_count"],
+            "protected_ncf_support_count": point_estimate_checks["protected_ncf_support_count"],
+            "protected_partition_consistent": point_estimate_checks["protected_partition_consistent"],
             "global_any_ncf_support": _smoke_min_metric_pass(uncertainty["global_any_ncf_95pct_wilson"], th["min_global_any_ncf"]),
             "hard_recovery": _smoke_min_metric_pass(uncertainty["hard_recovery_95pct_wilson"], th["min_hard_recovery"]),
             "global_false_safe_floor_support": _smoke_max_metric_pass(uncertainty["global_false_safe_floor_95pct_wilson"], th["max_global_false_safe_floor"]),
@@ -165,22 +186,26 @@ def main() -> None:
         "legacy_global_gate_floor_le_0p55": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)) <= 0.55,
         "joint_route_ncf_increment": joint_increment,
         "joint_route_ncf_scene_level_gain_observed": float(joint_increment.get("delta_priority_ncf_scene_rate", 0.0)) > 0.0,
+        "protected_eligibility_is_scene_prevalence_not_proposal_quality": True,
+        "marginal_priority_ncf_is_not_a_primary_promotion_metric": True,
+        "protected_ncf_given_eligible": protected_ncf_given_eligible,
+        "protected_partition_error": protected_partition_error,
     }
     if args.strict:
         next_action = (
-            "STRICT PASS: protected-priority proposal coverage, global diagnostic support, and data semantics justify the next train-pilot gate."
+            "STRICT PASS: protected-priority conditional evidence support, global diagnostic support, and causal data semantics justify the next train-pilot gate."
             if passed else
-            "STRICT FAIL: do not full-rebuild; inspect failed protected/global proposal, causal-selector, conflict-ranking, and source-provenance checks."
+            "STRICT FAIL: do not full-rebuild; inspect failed protected evidence-count/PBTR, global-support, causal-selector, conflict-ranking, and provenance checks."
         )
     else:
         next_action = (
-            "SMOKE PASS: run the 400-hard + 800-random v16.8.20 strict probe; do not full-rebuild yet."
+            "SMOKE PASS: run the 400-hard + 800-random v16.8.21 strict probe; do not full-rebuild yet."
             if passed else
             "SMOKE FAIL: do not full-rebuild; the causal-audit/data contract still needs repair."
         )
 
     result = {
-        "schema_version": "cowp_v16_8_20_priority_primary_screen_v4",
+        "schema_version": "cowp_v16_8_21_evidence_aligned_screen_v5",
         "strict": bool(args.strict),
         "code_fingerprint_sha256": code_fingerprint,
         "screen_pass": bool(passed),
@@ -188,7 +213,7 @@ def main() -> None:
         "thresholds": th,
         "statistical_uncertainty": uncertainty,
         "point_estimate_checks": point_estimate_checks,
-        "smoke_gate_policy": "Wilson gross-failure screen" if not args.strict else "strict point-estimate thresholds",
+        "smoke_gate_policy": "evidence-count + Wilson gross-failure screen" if not args.strict else "evidence-count + protected-conditional/global point-estimate thresholds",
         "advisories": advisories,
         "observed": {
             "new_any_valid_scene_rate": float(new.get("any_valid_scene_rate", 0.0)),
@@ -196,6 +221,10 @@ def main() -> None:
             "new_global_false_safe_floor": float(new.get("best_case_selected_false_safe_lower_bound", 1.0)),
             "new_priority_eligible_scene_rate": float(new.get("any_priority_eligible_scene_rate", 0.0)),
             "new_priority_ncf_scene_rate": float(new.get("any_priority_ncf_scene_rate", 0.0)),
+            "priority_eligible_scene_count": priority_eligible_k,
+            "priority_ncf_scene_count": priority_ncf_k,
+            "protected_priority_ncf_given_eligible": protected_ncf_given_eligible,
+            "protected_partition_error": protected_partition_error,
             "new_pbtr_floor": float(new.get("best_case_pbtr_lower_bound", 1.0)),
             "hard_scene_ncf_recovery_rate": float(paired.get("paired", {}).get("hard_scene_ncf_recovery_rate", 0.0)),
             "audit_pair_rates": pair_rates,

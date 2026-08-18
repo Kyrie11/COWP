@@ -1,0 +1,115 @@
+COWP v16.8.21：WOMD evidence-aligned strict policy + 下一步执行指令
+================================================================
+
+结论先行
+--------
+本轮 v16.8.20 strict 的唯一 blocker 是旧 proposal promotion policy：
+  - protected eligibility prevalence = 639/800 = 0.79875，被错误要求 >=0.90；
+  - marginal protected NCF = 398/800 = 0.49750，被错误要求 >=0.50。
+
+但论文/模型真正需要的是 protected-eligible 子总体上的 certificate support：
+  - protected NCF | eligible = 398/639 = 0.6228482；
+  - PBTR floor = 241/639 = 0.3771518；
+  - 两者严格互补，0.6228482 + 0.3771518 = 1。
+
+因此 v16.8.21 不修改 Scenario->label semantics，不需要重建这 1200 个 strict NPZ；
+只对同一证据做 provenance-verified policy re-audit。随后必须跑 fresh train-pilot；
+train-pilot 通过后才允许 full rebuild。
+
+0. 进入代码根目录并运行单测
+---------------------------
+cd /path/to/COWP_v16_8_21_support_policy_patch
+python -m pytest -q tests/test_v16_8_21_support_policy.py
+
+建议再运行：
+python -m pytest -q
+
+1. 设置路径
+-----------
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export SOURCE_STRICT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_20_support_strict_probe
+export PROBE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_support_strict_reaudit
+export TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_train_pilot
+export FULL_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_full
+
+2. 对已完成的 v16.8.20 strict 做 policy re-audit（推荐）
+--------------------------------------------------
+bash NEXT_EXECUTION_V16_8_21_CN.sh reaudit-strict
+
+检查：
+cat "$PROBE_ROOT/strict_pipeline_status.json"
+python - <<'PY'
+import json, os
+p=os.path.join(os.environ['PROBE_ROOT'],'v16_8_21_strict_verdict.json')
+r=json.load(open(p,encoding='utf-8'))
+b=r['base_screen']
+o=b['observed']
+print('pass =', r['pass'])
+print('recommend_full_rebuild =', r['recommend_full_rebuild'])
+print('label_semantic_fp =', r['label_semantic_fingerprint_sha256'])
+print('eligible_count =', o['priority_eligible_scene_count'])
+print('ncf_count =', o['priority_ncf_scene_count'])
+print('NCF|eligible =', o['protected_priority_ncf_given_eligible'])
+print('PBTR floor =', o['new_pbtr_floor'])
+print('global NCF =', o['new_global_any_ncf_scene_rate'])
+print('global false-safe floor =', o['new_global_false_safe_floor'])
+print('failed_checks =', r['failed_checks'])
+PY
+
+预期本轮已上传 strict 证据应得到：
+  pass=True
+  eligible_count=639
+  ncf_count=398
+  NCF|eligible=0.6228482003
+  PBTR floor=0.3771517997
+  global NCF=0.315
+  global false-safe floor=0.63875
+  failed_checks=[]
+
+3. 必须跑 fresh train-pilot
+--------------------------
+bash NEXT_EXECUTION_V16_8_21_CN.sh train-pilot
+
+检查：
+cat "$TRAIN_PILOT_ROOT/v16_8_18_train_pilot_verdict.json"
+
+只有 train-pilot verdict 同时满足：
+  recommend_full_rebuild == true
+  code_fingerprint_sha256 == 当前代码 fingerprint
+才进入下一步。
+
+4. train-pilot PASS 后 full core rebuild
+----------------------------------------
+bash NEXT_EXECUTION_V16_8_21_CN.sh full-core
+
+5. core build PASS 后挂 Waymax outcomes
+---------------------------------------
+bash NEXT_EXECUTION_V16_8_21_CN.sh outcomes
+
+6. 查看状态
+-----------
+bash NEXT_EXECUTION_V16_8_21_CN.sh check
+
+7. 可选：完全 fresh 重跑 smoke + strict
+---------------------------------------
+如果希望独立验证 policy change 而不是复用 v16.8.20 strict evidence：
+
+export SMOKE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_support_smoke
+export PROBE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_support_strict_fresh
+bash NEXT_EXECUTION_V16_8_21_CN.sh fresh-smoke
+bash NEXT_EXECUTION_V16_8_21_CN.sh strict
+
+注意：fresh strict 之前必须 fresh smoke，因为 script 58 的 policy change 会改变 broad code fingerprint；
+但 Scenario->label semantic fingerprint 保持 v16.8.20 的
+c7f8a33f5e9fef04ac009d41806173369ddbfef6ac0b7e7c4ac0ca1edfc0af51。
+
+8. 论文证据边界（不要混用）
+---------------------------
+WOMD/WAYMAX logged replay：用于 factual realism、常规 closed-loop safety/progress 和
+constructed feasibility-label 的监督/审计；不要把它表述为多干预 human causal ground truth。
+
+最终“真实他车在不同 ego intervention 下是否被迫让行/急刹”的因果负担 claim，继续要求：
+  (a) 独立 reactive-agent protocol；
+  (b) held-out human-audited false-safe stress set；
+并与 logged replay 结果分表/分协议报告。
