@@ -13,7 +13,8 @@ preflight(){
     --repo-root . --output "$PREFLIGHT_ROOT/active_execution_chain.json"
   if [[ -n "${WOMD_ROOT:-}" ]]; then
     "$PYTHON_BIN" -m cowp.scripts.69_audit_womd_split_layout \
-      --womd-root "$WOMD_ROOT" --sample-scenario-shards "${WOMD_LAYOUT_SAMPLE_SHARDS:-8}" \
+      --womd-root "$WOMD_ROOT" --primary-only \
+      --sample-scenario-shards "${WOMD_LAYOUT_SAMPLE_SHARDS:-8}" \
       --output "$PREFLIGHT_ROOT/womd_v131_split_layout.json"
   else
     echo "WOMD_ROOT not set: skipped WOMD split-layout audit." >&2

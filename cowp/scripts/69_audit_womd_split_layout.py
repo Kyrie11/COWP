@@ -49,6 +49,12 @@ ALL_SPLITS = tuple(
     dict.fromkeys([*SCENARIO_SPLITS.keys(), *TFEXAMPLE_SPLITS.keys()])
 )
 
+# The active COWP v16.8.24 full-core build only consumes these two WOMD
+# splits, in both Scenario and tf.Example representations.  Keep ALL_SPLITS
+# for explicit inventory/debug audits, but allow the production preflight to
+# avoid touching unrelated optional/blind-test directories entirely.
+PRIMARY_SPLITS = ("training", "validation")
+
 
 def _split_role(split: str) -> dict[str, object]:
     if split == "training":
@@ -252,9 +258,20 @@ def main() -> None:
     )
     ap.add_argument("--womd-root", required=True)
     ap.add_argument("--sample-scenario-shards", type=int, default=16)
+    ap.add_argument(
+        "--primary-only",
+        action="store_true",
+        help=(
+            "Audit only scenario/{training,validation} and "
+            "tf_example/{training,validation}. Do not glob, read, or require "
+            "testing/interactive/training_20s/visualization directories."
+        ),
+    )
     ap.add_argument("--full-validation-interactive-overlap", action="store_true")
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
+    if args.primary_only and args.full_validation_interactive_overlap:
+        ap.error("--primary-only cannot be combined with --full-validation-interactive-overlap")
 
     root = Path(args.womd_root)
     result: dict[str, object] = {
@@ -270,6 +287,8 @@ def main() -> None:
                 "uncompressed/tf_example/visualization",
             ],
         },
+        "audit_scope": list(PRIMARY_SPLITS if args.primary_only else ALL_SPLITS),
+        "primary_only": bool(args.primary_only),
         "splits": {},
         "benchmark_recommendation": {
             "primary_train": "scenario/training + matched tf_example/training",
@@ -283,8 +302,12 @@ def main() -> None:
         },
     }
 
+    # IMPORTANT: in --primary-only mode, do not even resolve/glob paths for
+    # optional WOMD directories.  This is stronger than merely making those
+    # splits non-fatal: they are completely outside the filesystem check.
+    splits_to_audit = PRIMARY_SPLITS if args.primary_only else ALL_SPLITS
     split_rows: dict[str, object] = {}
-    for split in ALL_SPLITS:
+    for split in splits_to_audit:
         split_rows[split] = {
             **_split_role(split),
             "scenario": _representation_row(
