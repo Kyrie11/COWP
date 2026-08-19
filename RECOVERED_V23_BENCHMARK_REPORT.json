@@ -1,0 +1,24 @@
+{
+  "schema_version": "cowp_v16_8_24_fastpath_benchmark_v1",
+  "semantic_equivalence_pass": true,
+  "reference": {
+    "n": 64,
+    "sum_worker_s": 17986.461003572025,
+    "mean_scene_s": 281.0384531808129,
+    "p50_scene_s": 221.0789238740108,
+    "p90_scene_s": 599.3079828170012,
+    "max_scene_s": 1001.3733702960017
+  },
+  "fast": {
+    "n": 64,
+    "sum_worker_s": 8232.92496530604,
+    "mean_scene_s": 128.63945258290687,
+    "p50_scene_s": 109.820007332979,
+    "p90_scene_s": 265.02950539797894,
+    "max_scene_s": 391.00216687700595
+  },
+  "fast_wall_seconds": null,
+  "matched_worker_time_speedup": 2.184698764942943,
+  "recommended_full_build": true,
+  "interpretation": "Semantic parity is the hard correctness gate. Worker-time speedup is reported only when the historical per-scene profile is available; wall time is measured for newly-run benchmarks."
+}

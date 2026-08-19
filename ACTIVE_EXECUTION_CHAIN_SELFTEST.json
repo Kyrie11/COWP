@@ -1,0 +1,82 @@
+{
+  "schema_version": "cowp_v16_8_24_active_execution_chain_v1",
+  "repo_root": "/mnt/data/COWP_v16_8_24_rebuild_ready",
+  "checks": {
+    "active_shells_present": true,
+    "active_python_modules_present": true,
+    "active_configs_present": true,
+    "active_local_shell_refs_present": true,
+    "active_shell_syntax_valid": true,
+    "active_module_syntax_valid": true,
+    "no_v23_summary_module_regression": true
+  },
+  "pass": true,
+  "missing_shells": [],
+  "missing_modules": [],
+  "missing_configs": [],
+  "missing_local_shell_refs": [],
+  "shell_syntax_errors": [],
+  "module_syntax_errors": [],
+  "active_references": {
+    "NEXT_EXECUTION_V16_8_24_CN.sh": {
+      "modules": [
+        "69_audit_womd_split_layout",
+        "77_audit_active_execution_chain"
+      ],
+      "configs": [],
+      "shells": [
+        "ATTACH_WAYMAX_OUTCOMES_V16_8_24_CN.sh",
+        "BENCHMARK_V16_8_24_FASTPATHS_CN.sh",
+        "NEXT_EXECUTION_V16_8_24_CN.sh",
+        "PREPARE_COWP_V16_8_24_FAST_DATA_CN.sh"
+      ]
+    },
+    "BENCHMARK_V16_8_24_FASTPATHS_CN.sh": {
+      "modules": [
+        "01_build_labels_from_proto",
+        "49_summarize_label_build_profile",
+        "66_compare_label_semantic_equivalence",
+        "72_build_scenario_location_index"
+      ],
+      "configs": [
+        "configs/data.yaml",
+        "configs/label_cowp_v16_8.yaml"
+      ],
+      "shells": []
+    },
+    "PREPARE_COWP_V16_8_24_FAST_DATA_CN.sh": {
+      "modules": [
+        "01_build_labels_from_proto",
+        "02_build_tensor_cache",
+        "49_summarize_label_build_profile",
+        "57_diagnose_causal_audit",
+        "59_gate_fresh_v16_8_9_cache_protocol",
+        "60_verify_fresh_v16_8_9_cache",
+        "62_audit_training_supervision",
+        "65_audit_model_support",
+        "68_summarize_natural_support_diagnostics",
+        "72_build_scenario_location_index",
+        "74_audit_mechanism_contrast"
+      ],
+      "configs": [
+        "configs/data.yaml",
+        "configs/label_cowp_v16_8.yaml"
+      ],
+      "shells": []
+    },
+    "ATTACH_WAYMAX_OUTCOMES_V16_8_24_CN.sh": {
+      "modules": [
+        "12_attach_waymax_candidate_outcomes",
+        "13_replay_waymax_candidates",
+        "14_verify_waymax_cache"
+      ],
+      "configs": [
+        "configs/data.yaml",
+        "configs/eval_cowp_v16_8.yaml",
+        "configs/label_cowp_v16_8.yaml"
+      ],
+      "shells": []
+    }
+  },
+  "note": "This audits the supported v16.8.24 execution chain only. Historical/deprecated wrappers are not promotion entrypoints."
+}

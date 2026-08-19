@@ -39,7 +39,7 @@ $PYTHON_BIN -m cowp.scripts.01_build_labels_from_proto \
 $PYTHON_BIN -m cowp.scripts.66_compare_label_semantic_equivalence \
   --reference-dir "$REFERENCE_LABEL_CACHE" --candidate-dir "$FAST" --scene-ids "$IDS" \
   --output "$BENCH_ROOT/semantic_equivalence.json"
-$PYTHON_BIN -m cowp.scripts.44_summarize_label_build_profile --input "$PROFILE" --output "$BENCH_ROOT/profile_fast_summary.json"
+$PYTHON_BIN -m cowp.scripts.49_summarize_label_build_profile --input "$PROFILE" --output "$BENCH_ROOT/profile_fast_summary.json"
 
 $PYTHON_BIN - "$IDS" "$REFERENCE_PROFILE_JSONL" "$PROFILE" "$BENCH_ROOT/semantic_equivalence.json" "$BENCH_ROOT/benchmark_report.json" <<'PY'
 import json,statistics,sys

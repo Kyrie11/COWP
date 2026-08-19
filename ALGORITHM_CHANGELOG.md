@@ -2723,3 +2723,7 @@ This revision does **not** change the COWP planner, natural-basis mathematics, r
 - `testing` and `testing_interactive` remain blind-evaluation-only because future GT is hidden; they are never used to construct COWP natural/transport/witness/NCF supervision.
 - `scenario/training_20s` is excluded from the present 91-step pipeline. Using it would require a separate windowing and group-split design and cannot be achieved by swapping a glob.
 - Added regression tests proving Scenario-only splits have no tf.Example glob or completeness requirement.
+
+## v16.8.24 — rebuild readiness and execution-chain repair
+
+See `ALGORITHM_CHANGELOG_V16_8_24.md`. The release fixes the missing profile-summary module reference, adds report-only benchmark recovery and active-chain dependency preflight, persists WOMD Scenario indices across benchmark/full build, makes compact split selection self-contained, tunes CPU worker defaults, and attaches Waymax outcomes to train/val/heldout-test. Label semantics are unchanged from the semantically verified v16.8.23 fast path.

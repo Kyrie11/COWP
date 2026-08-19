@@ -1,0 +1,130 @@
+COWP v16.8.24 推荐执行顺序
+========================================
+
+0. 进入新代码目录
+----------------------------------------
+cd /path/to/COWP_v16_8_24_rebuild_ready
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+export SOURCE_TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_train_pilot
+export REFERENCE_LABEL_CACHE=$SOURCE_TRAIN_PILOT_ROOT/labels_train_v16_8_18
+export REFERENCE_PROFILE_JSONL=$SOURCE_TRAIN_PILOT_ROOT/profile_train_pilot.jsonl
+
+# 你的 CPU 0-47 是 48 个不同 physical cores 的第一 SMT thread，跨两个 socket。
+export COWP_CPUSET=0-47
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export MALLOC_ARENA_MAX=2
+
+
+1. 一次性把已经花 1.5h 构建的 V23 training Scenario index 变成共享 index
+----------------------------------------
+export OLD_V23_BENCH=/data0/senzeyu2/dataset/COWP/formal_v16_8_23_fast_benchmark_w16
+export INDEX_CACHE_ROOT=$WOMD_ROOT/.cowp_v131_indices
+mkdir -p "$INDEX_CACHE_ROOT"
+
+cp -f "$OLD_V23_BENCH/scenario_location_index_train.jsonl" \
+      "$INDEX_CACHE_ROOT/scenario_location_index_train.jsonl"
+cp -f "$OLD_V23_BENCH/index.meta.json" \
+      "$INDEX_CACHE_ROOT/scenario_location_index_train.meta.json"
+
+export SCENARIO_INDEX_TRAIN=$INDEX_CACHE_ROOT/scenario_location_index_train.jsonl
+export SCENARIO_INDEX_TRAIN_META=$INDEX_CACHE_ROOT/scenario_location_index_train.meta.json
+
+
+2. 先运行 active-chain + WOMD layout preflight
+----------------------------------------
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k
+bash NEXT_EXECUTION_V16_8_24_CN.sh preflight
+
+# 必须确认 active_execution_chain.json: pass=true
+# WOMD split audit 只要求 standard training/validation Scenario + tf_example 完整；
+# test/interactive/training_20s 均不是 primary hard requirement。
+
+
+3. 不重建 V23 的 64 labels，直接恢复它缺失的 benchmark_report.json
+----------------------------------------
+export BENCH_ROOT=$OLD_V23_BENCH
+bash NEXT_EXECUTION_V16_8_24_CN.sh recover-benchmark
+cat "$BENCH_ROOT/benchmark_report.json"
+
+# 对你上传的这次结果，应得到：
+# semantic_equivalence_pass=true
+# matched_worker_time_speedup≈2.1847
+# recommended_full_build=true
+
+
+4. 推荐做一个很短的 40-worker 实机吞吐确认（可选，但建议）
+----------------------------------------
+export BENCH_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_fast_benchmark_w40
+export BENCH_SCENES=32
+export LABEL_WORKERS=40
+export SCENARIO_INDEX_TRAIN=$INDEX_CACHE_ROOT/scenario_location_index_train.jsonl
+export SCENARIO_INDEX_TRAIN_META=$INDEX_CACHE_ROOT/scenario_location_index_train.meta.json
+bash NEXT_EXECUTION_V16_8_24_CN.sh benchmark
+cat "$BENCH_ROOT/benchmark_report.json"
+
+# 这里不会再重建完整 training index。
+# semantic_equivalence_pass 必须=true。
+# 如果机器出现 swap/OOM，把 LABEL_WORKERS 改 32；否则保留 40。
+
+
+5. 最推荐的 compact full rebuild：5000 / 1000 / 1200
+----------------------------------------
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k
+export TRAIN_LIMIT=5000
+export VAL_LIMIT=1000
+export TEST_LIMIT=1200
+export SPLIT_SEED=cowp-v16.8.24-compact-5k
+
+export LABEL_WORKERS_TRAIN=40
+export LABEL_WORKERS_VAL=40
+export LABEL_WORKERS_TEST=40
+export CACHE_WORKERS=12
+export COWP_CPUSET=0-47
+
+# SOURCE_DATA_ROOT 现在是可选的：
+# 有足够历史 promoted cache -> 优先复用其 scene-ID pool；
+# 没有/不够 -> 自动从 WOMD Scenario index 确定性抽样。
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+
+# full-core 会使用 BENCH_ROOT/benchmark_report.json 做 fast-path correctness gate。
+# 如果第4步跑了 w40 benchmark，就保留该 BENCH_ROOT；否则设置回 OLD_V23_BENCH。
+bash NEXT_EXECUTION_V16_8_24_CN.sh full-core
+cat "$COWP_ROOT/full_core_support_verdict_v16_8_24.json"
+
+# 只有 pass=true 且 failed_checks=[] 才进入 outcomes/training。
+
+
+6. Full-core PASS 后，双 A30 生成 Waymax candidate outcomes
+----------------------------------------
+export WAYMAX_GPUS=0,1
+export REPLAY_NUM_SHARDS=2
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export MAX_REPLAY_CANDIDATES=24
+export REPLAY_HORIZON=80
+bash NEXT_EXECUTION_V16_8_24_CN.sh outcomes
+cat "$COWP_ROOT/waymax_outcome_support_v16_8_24.json"
+
+# v24 会处理 train + val + heldout_test 三个 cache。
+
+
+7. 最终检查
+----------------------------------------
+bash NEXT_EXECUTION_V16_8_24_CN.sh check
+
+
+8. 若 RAM/NUMA 压力异常
+----------------------------------------
+# 构建过程中另开终端观察：
+free -h
+vmstat 2
+ps -o pid,psr,pcpu,pmem,rss,cmd -C python --sort=-rss | head -30
+
+# 只要 swap 明显增长或 40 workers 出现 OOM，改：
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=32
+export LABEL_WORKERS_TEST=32
+# CACHE_WORKERS 保持 12。
