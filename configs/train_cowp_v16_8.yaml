@@ -80,6 +80,8 @@ loss_weights:
   witness_mining_min_neg_per_scene: 8
   imitation: 0.15
   ranking: 0.75
+  # v16.8.22: all-critical NCF is an auxiliary stress diagnostic, not Layer-5 primary semantics.
+  global_ranking_aux: 0.10
   candidate_ncf_cls: 1.0
   candidate_false_safe_cls: 1.0
   closed_loop: 0.35
@@ -146,7 +148,8 @@ loss_weights:
   set_transport_recovery_positive_floor: 0.0001
   set_transport_candidate_budget: 3.0
   set_transport_candidate_max_class_weight: 6.0
-  set_transport_priority_budget_mix: 0.65
+  # v16.8.22: emphasize the protected-priority hard certificate; retain 20% global stress supervision.
+  set_transport_priority_budget_mix: 0.80
   set_transport_candidate_margin: 0.1
   set_transport_candidate_max_pairs: 256
   natural_base_deviation_obs: 0.0

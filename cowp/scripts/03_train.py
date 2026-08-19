@@ -49,7 +49,7 @@ from cowp.models.cowp_model import COWPModel
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.utils.checkpoint_compat import compatible_state_dict
-from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, paper_aligned_supervision_batch, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, priority_claim_loss, response_loss, set_transport_loss, witness_loss
+from cowp.models.losses import candidate_certificate_loss, candidate_classification_loss, natural_loss, paper_aligned_supervision_batch, planner_imitation_loss, planner_outcome_loss, planner_outcome_supervision, planner_ranking_loss, primary_candidate_targets, priority_claim_loss, response_loss, set_transport_loss, witness_loss
 
 
 def _device(name: str) -> torch.device:
@@ -614,13 +614,23 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
                 out.update({f"response_aux/{k}": v for k, v in rl.items() if k != "loss"})
                 losses.append(response_scale * rl["loss"])
     if stage in ("planner", "all"):
+        # The primary scalar ranking must follow the same protected-priority
+        # semantics as the hard certificate.  Global all-critical NCF remains a
+        # low-weight auxiliary stress signal rather than silently redefining the
+        # planner's main target.
+        primary_ncf, primary_fs, primary_mask, primary_source = primary_candidate_targets(batch)
         rank = planner_ranking_loss(
-            pred["planner_score"],
-            batch["cowp/candidates/noncoercive_feasible"].bool(),
-            batch["cowp/candidates/false_safe"].bool(),
-            batch.get("cowp/candidates/certificate_valid", batch["cowp/candidates/valid"]).bool()
-            & batch["cowp/candidates/valid"].bool(),
+            pred["planner_score"], primary_ncf, primary_fs, primary_mask,
         )
+        global_rank = pred["planner_score"].sum() * 0.0
+        if primary_source == "protected_priority":
+            global_rank = planner_ranking_loss(
+                pred["planner_score"],
+                batch["cowp/candidates/noncoercive_feasible"].bool(),
+                batch["cowp/candidates/false_safe"].bool(),
+                batch.get("cowp/candidates/certificate_valid", batch["cowp/candidates/valid"]).bool()
+                & batch["cowp/candidates/valid"].bool(),
+            )
         imitation = planner_imitation_loss(pred["planner_score"], batch)
         outcome_legacy = planner_outcome_loss(pred["planner_score"], batch)
         outcome = planner_outcome_supervision(pred.get("outcome"), pred["planner_score"], batch, loss_weights)
@@ -629,6 +639,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         cert_weight = float(loss_weights.get("candidate_certificate", 1.0))
         cert = candidate_certificate_loss(pred, batch, loss_weights)
         out["planner/ranking"] = rank
+        out["planner/global_ranking_aux"] = global_rank
         out["planner/imitation"] = imitation
         out["planner/outcome"] = outcome["loss"]
         out["planner/outcome_cls"] = outcome["cls"]
@@ -641,6 +652,7 @@ def _compute_losses(pred: dict[str, Any], batch: dict[str, torch.Tensor], stage:
         out.update({f"candidate_cert/{k}": v for k, v in cert.items() if k != "loss"})
         losses.append(
             loss_weights.get("ranking", 1.0) * rank
+            + loss_weights.get("global_ranking_aux", 0.10) * global_rank
             + loss_weights.get("imitation", 1.0) * imitation
             + loss_weights.get("closed_loop", 0.0) * outcome["loss"]
             + loss_weights.get("closed_loop_legacy", 0.0) * outcome_legacy

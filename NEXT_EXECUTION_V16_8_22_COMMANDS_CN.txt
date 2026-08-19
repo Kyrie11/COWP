@@ -1,0 +1,140 @@
+# COWP v16.8.22 下一步执行命令
+# 目标：先证明六层机制在现有 train-pilot NPZ 中有真实 within-scene/root contrast，
+#      再进入 fresh full-core。不要因为旧 0.30 all-critical prevalence gate 重新造标签。
+
+cd /path/to/COWP_v16_8_22_mechanism_support_patch
+
+export PYTHON_BIN=python
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+
+# 历史 promoted/full 数据，仅用于 full rebuild 时复用 train/val scenario-ID set；
+# 不复用旧 labels。
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+
+# 本轮上传的 v16.8.21 strict / train-pilot 结果在你机器上的真实目录。
+export SOURCE_STRICT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_support_strict_reaudit
+export SOURCE_TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_train_pilot
+
+# 关键：这里必须指向还保留 NPZ 的 pilot label/cache 目录。
+# 上传给 ChatGPT 的 compact zip 没有这些 NPZ，所以必须在原机器执行。
+export SOURCE_TRAIN_CACHE=$SOURCE_TRAIN_PILOT_ROOT/labels_train_v16_8_18
+
+export PROBE_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_22_support_strict_reaudit
+export TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_22_train_pilot_reaudit
+export FRESH_TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_22_train_pilot_fresh_source
+export FULL_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_22_full
+
+# ================================================================
+# 0. 代码回归
+# ================================================================
+PYTHONPATH=$PWD $PYTHON_BIN -m pytest -q \
+  tests/test_v16_8_22_mechanism_support.py \
+  tests/test_v16_8_21_support_policy.py \
+  tests/test_v16_8_20_dataset_support.py \
+  tests/test_set_transport_certificate.py \
+  tests/test_v11_bcot_budget.py \
+  tests/test_v16_8_root_conditioned_transport.py \
+  tests/test_losses_natural.py \
+  tests/test_priority.py \
+  tests/test_training_robustness_optimized.py
+
+bash -n NEXT_EXECUTION_V16_8_22_CN.sh \
+        NEXT_TRAIN_PILOT_V16_8_18_CN.sh \
+        PREPARE_COWP_V16_8_22_DATA_CN.sh
+
+# ================================================================
+# 1. 同一 v16.8.21 validation strict 证据做当前-code re-audit
+#    Scenario->label semantic fingerprint 不变，因此不需要重新生成 strict NPZ。
+# ================================================================
+bash NEXT_EXECUTION_V16_8_22_CN.sh reaudit-strict
+cat "$PROBE_ROOT/v16_8_22_strict_verdict.json"
+
+# 期望：
+#   pass=true
+#   recommend_full_rebuild=true
+#   failed_checks=[]
+# 注意：这里的 recommend_full_rebuild 表示“允许进入 train-pilot gate”，
+# 不表示跳过 train-pilot 直接 full-core。
+
+# ================================================================
+# 2. 最关键：在现有 1200 train-pilot NPZ 上运行六层机制 re-audit
+# ================================================================
+bash NEXT_EXECUTION_V16_8_22_CN.sh reaudit-train-pilot
+cat "$TRAIN_PILOT_ROOT/v16_8_22_train_pilot_verdict.json"
+cat "$TRAIN_PILOT_ROOT/mechanism_contrast_audit.json"
+
+# 新 hard gate 不再要求 all-critical any-NCF/all-scenes >= 0.30。
+# 它要求：
+#   - global auxiliary NCF candidate positives >= 1024
+#   - global auxiliary NCF scenes >= 128
+#   - protected NCF candidate positives >= 1024
+#   - protected false-safe positives >= 1024
+#   - natural/model/causal/certificate gates PASS
+#   - within-scene/root six-layer contrast PASS
+#
+# mechanism_contrast 必须检查：
+#   rankable_scenes >= 128
+#   rank_pairs >= 2048
+#   viability_switch_scenes >= 128
+#   viability_switch_roots >= 1024
+#   recovery_switch_scenes >= 32
+#   recovery_switch_roots >= 128
+#   opr_switch_scenes >= 128
+#   partial_opr_pairs >= 512
+
+# ================================================================
+# 3A. 如果第2步 PASS：不要重新构造 pilot，直接 full-core
+# ================================================================
+bash NEXT_EXECUTION_V16_8_22_CN.sh check
+
+export REUSE_OLD_SCENE_SET=1
+export LABEL_WORKERS_TRAIN=32
+export LABEL_WORKERS_VAL=24
+export CACHE_WORKERS=8
+
+bash NEXT_EXECUTION_V16_8_22_CN.sh full-core
+cat "$FULL_ROOT/full_core_support_verdict_v16_8_22.json"
+
+# full-core 现在是自包含的，不再依赖缺失的
+# PREPARE_COWP_V16_8_9_DATA_FAST_CN.sh。
+# 它 fresh rebuild Scenario->labels 和 TFExample cache，并要求：
+#   --require-waymax-ready
+#   --require-sdc-paths
+#   --require-all-labels-matched
+# 同时对 train/val 都执行 supervision/model/causal/mechanism-contrast gate。
+
+# ================================================================
+# 3B. 如果第2步 FAIL：只在“mechanism contrast 真缺失”时 fresh pilot
+# ================================================================
+# v16.8.22 fresh pilot 的 hard scene 已改成 protected-primary：
+#   priority-eligible && no protected-priority NCF
+# 而不是历史 all-critical hard。
+#
+# 只有出现以下 failed_checks 时才建议执行：
+#   six_layer_mechanism_contrast_pass=false
+# 或 natural/model/causal support 真失败。
+#
+# bash NEXT_EXECUTION_V16_8_22_CN.sh fresh-train-pilot
+# cat "$TRAIN_PILOT_ROOT/v16_8_22_train_pilot_verdict.json"
+# cat "$TRAIN_PILOT_ROOT/mechanism_contrast_audit.json"
+#
+# fresh pilot PASS 后再执行 full-core。
+
+# ================================================================
+# 4. core 数据 PASS 后才做 Waymax outcomes
+# ================================================================
+export WAYMAX_GPUS=0                    # 多卡例：0,1,2,3
+export REPLAY_NUM_SHARDS=1             # 多卡时与 GPU 数一致或更大
+export MAX_REPLAY_CANDIDATES=24
+export REPLAY_HORIZON=80
+
+bash NEXT_EXECUTION_V16_8_22_CN.sh outcomes
+
+# ================================================================
+# 5. 最终状态
+# ================================================================
+bash NEXT_EXECUTION_V16_8_22_CN.sh check
+
+# 训练时使用带 Waymax outcomes 的 cache，并显式启用 outcome labels。
+# 具体 mainline training 命令沿用你的既有训练入口，但必须使用 v16.8.22 code/config，
+# 并保留 --with-waymax-outcome-labels（若当前训练脚本采用该 flag）。

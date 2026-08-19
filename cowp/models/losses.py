@@ -66,6 +66,46 @@ def _candidate_certificate_mask(batch: dict[str, torch.Tensor]) -> torch.Tensor:
     return valid & (cert.bool() if cert is not None else valid)
 
 
+def primary_candidate_targets(
+    batch: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
+    """Return the paper-aligned *primary* candidate certificate targets.
+
+    v16.8.20 introduced explicit protected-priority candidate labels, but the
+    planner scalar in v16.8.21 was still trained against the older all-critical
+    labels.  That made an auxiliary global stress diagnostic act like the main
+    hard certificate and forced the train-pilot gate to chase the prevalence of
+    all-critical NCF scenes.
+
+    When the explicit priority labels are present, the primary discriminative
+    universe is therefore
+
+      certificate-valid AND conventional-safe AND priority-eligible.
+
+    The global all-critical labels remain available to the separate global BCOT
+    head and to an optional low-weight planner auxiliary.  Legacy caches fall
+    back to the old global labels so old checkpoints/tools remain readable.
+    """
+    cert = _candidate_certificate_mask(batch)
+    conventional = batch.get("cowp/candidates/conventional_safe")
+    if conventional is not None:
+        cert = cert & conventional.bool()
+
+    p_ncf = batch.get("cowp/candidates/priority_noncoercive_feasible")
+    p_fs = batch.get("cowp/candidates/priority_false_safe")
+    p_eligible = batch.get("cowp/candidates/priority_eligible")
+    if p_ncf is not None and p_fs is not None and p_eligible is not None:
+        mask = cert & p_eligible.bool()
+        return _binary_target(p_ncf), _binary_target(p_fs), mask, "protected_priority"
+
+    ncf = batch.get("cowp/candidates/noncoercive_feasible")
+    fs = batch.get("cowp/candidates/false_safe")
+    if ncf is None or fs is None:
+        z = torch.zeros_like(batch["cowp/candidates/valid"], dtype=torch.float32)
+        return z, z, torch.zeros_like(cert), "missing"
+    return _binary_target(ncf), _binary_target(fs), cert, "global_legacy_fallback"
+
+
 def _primitive_burden_targets(
     batch: dict[str, torch.Tensor],
     weights: dict[str, float],
@@ -1567,10 +1607,13 @@ def response_loss(pred: dict[str, torch.Tensor], batch: dict[str, torch.Tensor],
 
 
 def candidate_classification_loss(pred_scores: torch.Tensor, batch: dict[str, torch.Tensor], weights: dict[str, float]) -> dict[str, torch.Tensor]:
-    """Candidate-level auxiliary supervision for learned planner quality."""
-    mask = _candidate_certificate_mask(batch)
-    ncf = _binary_target(batch["cowp/candidates/noncoercive_feasible"])
-    false_safe = _binary_target(batch["cowp/candidates/false_safe"])
+    """Protected-priority auxiliary supervision for learned planner quality.
+
+    The planner scalar is a secondary ranker after the hard certificate.  Its
+    primary NCF/false-safe target must therefore use the same protected-priority
+    semantics as Layer 5, not the all-critical stress diagnostic.
+    """
+    ncf, false_safe, mask, _target_source = primary_candidate_targets(batch)
     # A collision-free but coercive/false-safe candidate is not a positive NCF
     # example for the planner ranking scalar.  Keeping the raw overlap here made
     # the auxiliary NCF/false-safe losses fight over the same score and produced
@@ -1612,7 +1655,7 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
     used only by the physical feasibility shield at inference.  Ambiguous candidates
     are excluded rather than silently treated as negatives for both concepts.
     """
-    mask = _candidate_certificate_mask(batch)
+    raw_ncf, raw_fs, mask, _target_source = primary_candidate_targets(batch)
     if not mask.any() or "candidate_ncf_logit" not in pred or "candidate_false_safe_logit" not in pred:
         z = _zero_like_loss(batch["cowp/candidates/valid"])
         return {
@@ -1621,14 +1664,8 @@ def candidate_certificate_loss(pred: dict[str, torch.Tensor], batch: dict[str, t
             "spread": z, "overlap_rate": z,
         }
 
-    raw_ncf = _binary_target(batch.get(
-        "cowp/candidates/noncoercive_feasible",
-        torch.zeros_like(pred["candidate_ncf_logit"]),
-    )) > 0.5
-    raw_fs = _binary_target(batch.get(
-        "cowp/candidates/false_safe",
-        torch.zeros_like(pred["candidate_false_safe_logit"]),
-    )) > 0.5
+    raw_ncf = raw_ncf > 0.5
+    raw_fs = raw_fs > 0.5
 
     # False-safe dominates only to repair noisy legacy caches.  In correctly built
     # labels the two classes are already mutually exclusive.

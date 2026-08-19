@@ -71,6 +71,8 @@ def main() -> None:
     ap.add_argument("--cache-dir", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--hard-scene-ids", default=None)
+    ap.add_argument("--hard-definition", choices=["global", "protected"], default="global",
+                    help="Hard-scene sampling definition. v16.8.22 train pilots should use protected: priority-eligible scenes with no protected-priority NCF candidate. global preserves historical behavior.")
     ap.add_argument("--hard-count", type=int, default=400, help="Number of hard scenes written for the paired probe; <=0 writes all.")
     ap.add_argument("--control-scene-ids", default=None)
     ap.add_argument("--limit", type=int, default=0)
@@ -157,7 +159,11 @@ def main() -> None:
             any_priority_ncf=int(any_priority_ncf),
             priority_eligible_without_ncf=int(any_priority_eligible and not any_priority_ncf),
         )
-        if any_conv and not any_ncf:
+        if args.hard_definition == "protected":
+            is_hard = bool(any_priority_eligible and not any_priority_ncf)
+        else:
+            is_hard = bool(any_conv and not any_ncf)
+        if is_hard:
             hard_ids.append(sid)
         else:
             other_ids.append(sid)
@@ -234,6 +240,7 @@ def main() -> None:
         },
         "macro_stats": {k: dict(v) for k, v in sorted(macro_stats.items())},
         "proposal_source_stats": {k: dict(v) for k, v in sorted(source_stats.items())},
+        "hard_definition": str(args.hard_definition),
         "hard_scene_total_count": len(hard_total_ids),
         "hard_scene_preferred_count": int(preferred_hard),
         "hard_scene_probe_count": len(hard_probe_ids),

@@ -90,7 +90,7 @@ run(){
 # usable natural/response/witness support distribution.
 run choose_train_pilot "$PYTHON_BIN" -m cowp.scripts.45_diagnose_proposal_ceiling \
   --cache-dir "$OLD_TRAIN_CACHE" --output "$CEILING_OLD" \
-  --hard-scene-ids "$HARD_IDS" --hard-count "$HARD_COUNT" \
+  --hard-scene-ids "$HARD_IDS" --hard-count "$HARD_COUNT" --hard-definition "${HARD_DEFINITION:-global}" \
   --random-scene-ids "$RANDOM_IDS" --random-count "$RANDOM_COUNT" --probe-total-count "$((HARD_COUNT + RANDOM_COUNT))" --random-exclude-hard-probe \
   --control-count 0 --seed "$SEED"
 cat "$HARD_IDS" "$RANDOM_IDS" | awk 'NF && !seen[$1]++{print $1}' > "$UNION_IDS"

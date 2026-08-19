@@ -1,0 +1,173 @@
+{
+  "schema_version": "cowp_v16_8_22_review_of_uploaded_v16_8_21_train_pilot_v1",
+  "source_pipeline_recommend_full_rebuild": false,
+  "source_failed_checks": [
+    "candidate_any_ncf_support"
+  ],
+  "direct_blocker": {
+    "legacy_check": "candidate_any_ncf_support",
+    "global_any_ncf_scenes": 346,
+    "scenes": 1200,
+    "global_any_ncf_scene_rate": 0.28833333333333333,
+    "legacy_threshold": 0.3
+  },
+  "protected_primary_support": {
+    "priority_eligible_scenes": 994,
+    "priority_ncf_scenes": 561,
+    "priority_ncf_given_eligible": 0.5643863179074446,
+    "pbtr_floor": 0.43561368209255535
+  },
+  "candidate_supervision": {
+    "candidate_ncf": {
+      "total": 57741,
+      "positive": 7219,
+      "negative": 50522,
+      "positive_rate": 0.12502381323496303
+    },
+    "priority_candidate_ncf": {
+      "total": 28956,
+      "positive": 12413,
+      "negative": 16543,
+      "positive_rate": 0.4286849012294516
+    },
+    "priority_candidate_false_safe": {
+      "total": 28956,
+      "positive": 16543,
+      "negative": 12413,
+      "positive_rate": 0.5713150987705484
+    },
+    "pair_relevance": {
+      "total": 346371,
+      "positive": 154015,
+      "negative": 192356,
+      "positive_rate": 0.4446532764001605
+    },
+    "witness_on_relevant": {
+      "total": 154015,
+      "positive": 107437,
+      "negative": 46578,
+      "positive_rate": 0.6975749115345908
+    },
+    "pair_ncf_on_relevant": {
+      "total": 154015,
+      "positive": 46578,
+      "negative": 107437,
+      "positive_rate": 0.3024250884654092
+    },
+    "mode_conflict_on_relevant": {
+      "total": 2340975,
+      "positive": 1721620,
+      "negative": 619355,
+      "positive_rate": 0.7354286141458153
+    },
+    "mode_affected_on_relevant": {
+      "total": 2340975,
+      "positive": 1721620,
+      "negative": 619355,
+      "positive_rate": 0.7354286141458153
+    },
+    "root_recovery_on_affected": {
+      "total": 1721620,
+      "positive": 685468,
+      "negative": 1036152,
+      "positive_rate": 0.39815290249880925
+    }
+  },
+  "model_support_pass": true,
+  "model_support_checks": {
+    "no_read_errors": true,
+    "no_integrity_errors": true,
+    "auditability_coverage": true,
+    "certificate_complete_scene_coverage": true,
+    "auditability_stratum_balance": true,
+    "certificate_stratum_balance": true,
+    "every_auditable_critical_has_natural_root": true,
+    "every_auditable_critical_has_multi_root_support": true,
+    "every_auditable_critical_has_low_burden_natural_root": true,
+    "every_auditable_critical_has_multi_low_burden_root_support": true,
+    "protected_prio_root_coverage": true,
+    "every_protected_prio_root_is_priority_preserved": true,
+    "natural_weights_valid": true,
+    "conflict_subset_affected": true,
+    "unsafe_event_intervals_complete": true,
+    "priority_label_overlap_zero": true,
+    "priority_ncf_label_consistency": true,
+    "priority_false_safe_label_consistency": true,
+    "root_indexed_response_support": true,
+    "confident_affected_root_support": true,
+    "response_slot_full_coverage": true,
+    "every_relevant_pair_has_full_response_bank": true,
+    "candidate_ncf_non_degenerate": true,
+    "candidate_false_safe_non_degenerate": true,
+    "pair_relevance_non_degenerate": true,
+    "witness_on_relevant_non_degenerate": true,
+    "pair_ncf_on_relevant_non_degenerate": true,
+    "response_safe_non_degenerate": true,
+    "response_low_burden_non_degenerate": true,
+    "response_min_burden_non_degenerate": true,
+    "mode_conflict_non_degenerate": true,
+    "mode_affected_non_degenerate": true,
+    "mode_retain_non_degenerate": true,
+    "root_recovery_non_degenerate": true,
+    "protected_candidate_feasible_non_degenerate": true,
+    "priority_candidate_ncf_non_degenerate": true,
+    "priority_candidate_false_safe_non_degenerate": true,
+    "natural_source_OBS": true,
+    "natural_source_NEU": true,
+    "natural_source_PRIO": true,
+    "response_source_PRED": true,
+    "response_source_OPT": true,
+    "response_source_EMG": true,
+    "multiple_positive_witness_mechanisms": true,
+    "witness_opr_finite_variable": true,
+    "witness_tail_finite_variable": true,
+    "witness_min_safe_burden_finite_variable": true,
+    "witness_burden_total_finite_variable": true,
+    "witness_burden_components_finite_variable": true,
+    "response_burden_finite_variable": true,
+    "root_min_safe_burden_finite_variable": true,
+    "root_recovery_score_finite_variable": true
+  },
+  "natural_support": {
+    "critical_agents_selected": 6502,
+    "auditable_critical_agents": 6257,
+    "rootless_critical_agents": 0,
+    "critical_agents_with_lt2_low_burden_roots": 0,
+    "protected_without_prio_root": 27,
+    "protected_prio_root_coverage": 0.9944976564092113
+  },
+  "causal_integrity": {
+    "no_read_errors": true,
+    "no_silent_blockers": true,
+    "no_irrelevant_blockers": true,
+    "transport_affected_matches_audit": true,
+    "transport_conflict_matches_audit": true,
+    "transport_retain_matches_audit": true,
+    "canonical_root_weight_matches_transport": true,
+    "affected_definition_consistent": true,
+    "burden_only_definition_consistent": true,
+    "no_responses_for_irrelevant_pairs": true
+  },
+  "causal_root_counts": {
+    "affected": 1753823,
+    "unsafe": 1753823,
+    "budget_crossed": 11128,
+    "burden_only": 0,
+    "affected_identity_error": 0,
+    "burden_only_identity_error": 0,
+    "transport_affected_mismatch": 0,
+    "transport_conflict_mismatch": 0,
+    "transport_retain_mismatch": 0,
+    "canonical_weight_mismatch": 0
+  },
+  "v16_8_22_unresolved_from_compact_archive": {
+    "mechanism_contrast_audit": "requires NPZ; uploaded compact archive contains zero NPZ files",
+    "needed_properties": [
+      "within-scene protected rank pairs",
+      "same agent/root viability switches across candidates",
+      "same-root recovery switches across candidates",
+      "protected OPR switches/partial mass"
+    ]
+  },
+  "judgment": "The uploaded v16.8.21 pilot fails only the obsolete all-critical scene-prevalence gate. Existing aggregate support is strong; v16.8.22 must run the new mechanism-contrast audit on the retained NPZ before full rebuild."
+}

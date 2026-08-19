@@ -87,7 +87,17 @@ def _missing_required_for_stage(data: dict[str, np.ndarray], stage: str | None) 
             if key not in data:
                 missing.append(key)
     if stage in ("planner", "planner_eval", "all"):
-        for key in ("cowp/candidates/noncoercive_feasible", "cowp/candidates/false_safe"):
+        # v16.8.22 Layer-5 contract: the primary planner/certificate target is
+        # protected-priority.  Keep global labels as auxiliary diagnostics, but
+        # fail early if a modern training cache silently drops the explicit
+        # priority candidate labels.
+        for key in (
+            "cowp/candidates/noncoercive_feasible",
+            "cowp/candidates/false_safe",
+            "cowp/candidates/priority_eligible",
+            "cowp/candidates/priority_noncoercive_feasible",
+            "cowp/candidates/priority_false_safe",
+        ):
             if key not in data:
                 missing.append(key)
     if stage == "planner_eval":

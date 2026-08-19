@@ -563,48 +563,74 @@ class SetTransportCertificateHead(nn.Module):
         else:
             cmask = critical_mask.bool()
         cm = cmask[:, None, :].expand(B, K, A)
+        # Layer-5 semantics: the primary BCOT certificate is protected-priority
+        # only.  v16.8.21 left a 5% floor on ego-priority pairs and fed an
+        # all-critical max deficit into the primary monotone calibrator.  Because
+        # all calibrator weights are constrained positive, those two paths made
+        # it impossible for an unprotected pair to be a *purely auxiliary* global
+        # diagnostic.  v16.8.22 removes that leakage exactly.
         priority_weight = torch.where(
             cm,
-            relevance_prob * (0.05 + 0.95 * priority_support),
+            relevance_prob * priority_support,
             torch.zeros_like(priority_support),
         )
         global_weight = cm.float() * relevance_prob
-        weight_denom = priority_weight.sum(dim=-1).clamp_min(1.0e-6)
+        priority_mass = priority_weight.sum(dim=-1)
+        has_priority = priority_mass > 1.0e-8
+        weight_denom = priority_mass.clamp_min(1.0e-6)
         global_denom = global_weight.sum(dim=-1).clamp_min(1.0)
-        candidate_mean_deficit = (priority_weight * pair_transport_deficit).sum(dim=-1) / weight_denom
+        candidate_mean_deficit_raw = (priority_weight * pair_transport_deficit).sum(dim=-1) / weight_denom
+        candidate_mean_deficit = torch.where(has_priority, candidate_mean_deficit_raw, torch.zeros_like(candidate_mean_deficit_raw))
         candidate_global_mean_deficit = (global_weight * pair_transport_deficit).sum(dim=-1) / global_denom
 
         tail_tau = max(float(candidate_tail_temperature), 1.0e-3)
+        priority_active = cm & (priority_weight > 1.0e-8)
         tail_logits = pair_transport_deficit / tail_tau + torch.log(priority_weight.clamp_min(1.0e-8))
-        tail_logits = torch.where(cm, tail_logits, torch.full_like(tail_logits, -1.0e4))
-        tail_weight = torch.softmax(tail_logits, dim=-1) * cm.float()
+        tail_logits = torch.where(priority_active, tail_logits, torch.full_like(tail_logits, -1.0e4))
+        tail_weight = torch.softmax(tail_logits, dim=-1) * priority_active.float()
         tail_weight = tail_weight / tail_weight.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
         global_tail_logits = torch.where(cm, pair_transport_deficit / tail_tau, torch.full_like(pair_transport_deficit, -1.0e4))
         global_tail_weight = torch.softmax(global_tail_logits, dim=-1) * cm.float()
         global_tail_weight = global_tail_weight / global_tail_weight.sum(dim=-1, keepdim=True).clamp_min(1.0e-6)
-        candidate_tail_deficit = (tail_weight * pair_transport_deficit).sum(dim=-1)
+        candidate_tail_deficit_raw = (tail_weight * pair_transport_deficit).sum(dim=-1)
+        candidate_tail_deficit = torch.where(has_priority, candidate_tail_deficit_raw, torch.zeros_like(candidate_tail_deficit_raw))
         candidate_global_tail_deficit = (global_tail_weight * pair_transport_deficit).sum(dim=-1)
         candidate_severe_prob = torch.where(cm, pair_severe_prob, torch.zeros_like(pair_severe_prob)).amax(dim=-1)
+        candidate_priority_max_deficit = torch.where(
+            cm, pair_transport_deficit * priority_support, torch.zeros_like(pair_transport_deficit)
+        ).amax(dim=-1)
         candidate_max_deficit = torch.where(cm, pair_transport_deficit, torch.zeros_like(pair_transport_deficit)).amax(dim=-1)
 
         priority_features = torch.stack([
-            candidate_mean_deficit, candidate_tail_deficit, candidate_severe_prob, candidate_max_deficit
+            candidate_mean_deficit, candidate_tail_deficit, candidate_severe_prob, candidate_priority_max_deficit
         ], dim=-1)
         global_features = torch.stack([
             candidate_global_mean_deficit, candidate_global_tail_deficit,
             torch.where(cm, pair_global_severe_prob, torch.zeros_like(pair_global_severe_prob)).amax(dim=-1),
             candidate_max_deficit,
         ], dim=-1)
-        candidate_transport_logit, candidate_transport_risk, candidate_risk_weight = self._monotone_calibrate(
+        candidate_transport_logit_raw, candidate_transport_risk_raw, candidate_risk_weight = self._monotone_calibrate(
             priority_features, self.candidate_risk_raw_weight,
             self.candidate_risk_threshold_logit, self.candidate_risk_log_scale,
+        )
+        # Vacuous protected-set semantics: when no protected/unknown-supported pair
+        # exists, the primary hard certificate must contribute exactly zero risk.
+        # The all-critical/global head below remains available to report burden
+        # transferred to non-protected actors.
+        candidate_transport_risk = torch.where(
+            has_priority, candidate_transport_risk_raw, torch.zeros_like(candidate_transport_risk_raw)
+        )
+        candidate_transport_logit = torch.where(
+            has_priority, candidate_transport_logit_raw, torch.full_like(candidate_transport_logit_raw, -20.0)
         )
         candidate_global_transport_logit, candidate_global_transport_risk, global_risk_weight = self._monotone_calibrate(
             global_features, self.global_risk_raw_weight,
             self.global_risk_threshold_logit, self.global_risk_log_scale,
         )
-        candidate_mean_uncertainty = (priority_weight * uncertainty).sum(dim=-1) / weight_denom
-        candidate_tail_uncertainty = (tail_weight * uncertainty).sum(dim=-1)
+        candidate_mean_uncertainty_raw = (priority_weight * uncertainty).sum(dim=-1) / weight_denom
+        candidate_mean_uncertainty = torch.where(has_priority, candidate_mean_uncertainty_raw, torch.zeros_like(candidate_mean_uncertainty_raw))
+        candidate_tail_uncertainty_raw = (tail_weight * uncertainty).sum(dim=-1)
+        candidate_tail_uncertainty = torch.where(has_priority, candidate_tail_uncertainty_raw, torch.zeros_like(candidate_tail_uncertainty_raw))
         candidate_transport_uncertainty = (
             0.60 * candidate_mean_uncertainty + 0.40 * candidate_tail_uncertainty
         ).clamp(0.0, 1.0)
@@ -659,7 +685,9 @@ class SetTransportCertificateHead(nn.Module):
             "candidate_mean_deficit": candidate_mean_deficit,
             "candidate_tail_deficit": candidate_tail_deficit,
             "candidate_severe_prob": candidate_severe_prob,
+            "candidate_priority_max_deficit": candidate_priority_max_deficit,
             "candidate_max_deficit": candidate_max_deficit,
+            "candidate_priority_mass": priority_mass,
             "candidate_transport_logit": candidate_transport_logit,
             "candidate_transport_risk": candidate_transport_risk,
             "candidate_global_transport_logit": candidate_global_transport_logit,
