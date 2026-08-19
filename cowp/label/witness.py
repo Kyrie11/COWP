@@ -5,10 +5,14 @@ import numpy as np
 from cowp.core.constants import MechanismToken, NaturalSource, PriorityRelation
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.collision import conventional_candidate_safe, unsafe_between
-from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions, closest_conflict_for_pair
+from cowp.geometry.lane_graph import build_conflict_regions, build_scene_conflict_regions, closest_conflict_for_pair, tta_to_region
 from cowp.label.burden import burden_total as weighted_burden_total
 from cowp.label.burden import compute_burden
-from cowp.label.safe_responses import build_root_recovery_trajectory_bank, root_conditioned_recovery_search
+from cowp.label.safe_responses import (
+    build_root_recovery_trajectory_bank,
+    prepare_root_recovery_burden_bank,
+    root_conditioned_recovery_search,
+)
 from cowp.label.audit_relevance import canonical_root_weights
 
 
@@ -157,7 +161,7 @@ def certify_witnesses(
     candidate_max_audited_tail = np.zeros(K, dtype=np.float32)
 
     cur = scene.current_time_index
-    regions = conflict_regions if conflict_regions is not None else build_scene_conflict_regions(scene, cfg)
+    regions = list(conflict_regions if conflict_regions is not None else build_scene_conflict_regions(scene, cfg))
     other_logged = []
     for j in range(scene.num_agents):
         if j == scene.sdc_track_index:
@@ -166,18 +170,64 @@ def certify_witnesses(
         if len(fut) and np.any(fut[:, 10] > 0.5):
             other_logged.append(future_states_to_traj7(fut, int(cfg.get("time", {}).get("future_steps", 80)), current_state=scene.states[j, cur]))
 
+    # Explanation-only conflict localization used to recompute TTA to all C
+    # regions for every positive (candidate,agent) witness.  Cache each
+    # candidate/agent TTA vector once.  This is exact: the same tta_to_region
+    # predicate and stable first-minimum tie rule are used below.
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    tta_cache_enabled = bool(cfg.get("engineering", {}).get("conflict_tta_cache_fastpath", True))
+    C = len(regions)
+    candidate_region_tta = np.full((K, C), np.inf, dtype=np.float32)
+    agent_region_tta = np.full((A, C), np.inf, dtype=np.float32)
+    if tta_cache_enabled and C:
+        for kk in range(K):
+            if bool(candidates["valid"][kk]):
+                tr = np.asarray(candidates["trajectory"][kk], dtype=np.float32)
+                for ci, region in enumerate(regions):
+                    candidate_region_tta[kk, ci] = float(tta_to_region(tr, region, dt=dt))
+        for aa in range(A):
+            valid_nat = np.where(np.asarray(natural["valid"][aa], dtype=bool))[0] if aa < natural["valid"].shape[0] else np.zeros(0, dtype=np.int32)
+            if len(valid_nat):
+                tr = np.asarray(natural["traj"][aa, int(valid_nat[0])], dtype=np.float32)
+                for ci, region in enumerate(regions):
+                    agent_region_tta[aa, ci] = float(tta_to_region(tr, region, dt=dt))
+
+    def _cached_conflict_region(kk: int, aa: int):
+        if not (tta_cache_enabled and C):
+            return None
+        ta = candidate_region_tta[kk]
+        tb = agent_region_tta[aa]
+        # Legacy closest_conflict_for_pair only updates the best row when its
+        # score is finite. If exactly one TTA is inf, delta/score are inf and the
+        # initial best=inf is not replaced. Therefore both TTAs must be finite.
+        usable = np.isfinite(ta) & np.isfinite(tb)
+        if not np.any(usable):
+            return None
+        idxs = np.where(usable)[0]
+        score = np.abs(ta[idxs] - tb[idxs]) + 0.01 * np.minimum(ta[idxs], tb[idxs])
+        # np.argmin is stable to the first minimum, matching the legacy '<' loop.
+        return regions[int(idxs[int(np.argmin(score))])]
+
     # Root residual trajectories depend only on the natural root/config, not on
-    # the ego candidate. Reuse the exact deterministic tube while keeping every
-    # safety/burden evaluation candidate-conditioned.
+    # the ego candidate. Reuse the exact deterministic tube and the safe-case
+    # burden for each root profile.
     recovery_banks: dict[tuple[int, int], list[np.ndarray]] = {}
+    recovery_static: dict[tuple[int, int], list[tuple[float, np.ndarray]]] = {}
     mechanism_mask = np.asarray(critical.get("mechanism_valid", critical["valid"]), dtype=bool)
     if bool(cfg.get("response", {}).get("root_conditioned_transport", {}).get("enabled", True)):
         for a in range(A):
             if not bool(critical["valid"][a]) or a >= len(mechanism_mask) or not bool(mechanism_mask[a]):
                 continue
+            idx = int(critical["track_index"][a])
+            object_type = int(scene.object_type[idx])
+            rho = PriorityRelation(int(critical.get("base_priority", np.zeros(A, dtype=np.int32))[a]))
             for root in np.where(np.asarray(natural["valid"][a], dtype=bool))[0]:
-                recovery_banks[(a, int(root))] = build_root_recovery_trajectory_bank(
-                    np.asarray(natural["traj"][a, root], dtype=np.float32), cfg
+                root_key = (a, int(root))
+                root_tr = np.asarray(natural["traj"][a, root], dtype=np.float32)
+                bank = build_root_recovery_trajectory_bank(root_tr, cfg)
+                recovery_banks[root_key] = bank
+                recovery_static[root_key] = prepare_root_recovery_burden_bank(
+                    root_tr, bank, cfg, object_type=object_type, rho=rho
                 )
 
     for k in range(K):
@@ -311,6 +361,8 @@ def certify_witnesses(
                         object_type=object_type, beta=beta, rho=rho,
                         trajectory_bank=recovery_banks.get((a, root)),
                         identity_cache=identity_cache,
+                        static_burden_bank=recovery_static.get((a, root)),
+                        min_only=bool(cfg.get("engineering", {}).get("root_recovery_min_only_fastpath", True)),
                     )
                     root_target_confidence[k, a, root] = 1.0
                     root_min_safe_burden[k, a, root] = min(
@@ -436,7 +488,10 @@ def certify_witnesses(
                 if regions:
                     agent_nat = natural["traj"][a, nat_valid_idx[0]] if len(nat_valid_idx) else None
                     if agent_nat is not None:
-                        region, _, _, _ = closest_conflict_for_pair(ego, agent_nat, regions, dt=float(cfg.get("time", {}).get("dt", 0.1)))
+                        if tta_cache_enabled:
+                            region = _cached_conflict_region(k, a)
+                        else:
+                            region, _, _, _ = closest_conflict_for_pair(ego, agent_nat, regions, dt=dt)
                         if region is not None:
                             conflict_region_id[k, a] = int(region.conflict_id)
             else:

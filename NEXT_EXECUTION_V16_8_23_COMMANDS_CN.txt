@@ -1,0 +1,55 @@
+# COWP v16.8.23 推荐执行顺序
+# 目标：先证明 fast path 与 v22 label 语义完全等价，再做 compact train/val/heldout-test full build。
+
+cd /path/to/COWP_v16_8_23_fast_full_rebuild
+
+export WOMD_ROOT=/data0/senzeyu2/dataset/WOMD/waymo_open_dataset_motion_v_1_3_1
+
+# 必须指向机器上“带真实 NPZ 的” v16.8.21/v22 train-pilot 根目录；上传给 ChatGPT 的 zip 没有 NPZ 不影响本地 benchmark。
+export SOURCE_TRAIN_PILOT_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_21_train_pilot
+export REFERENCE_LABEL_CACHE=$SOURCE_TRAIN_PILOT_ROOT/labels_train_v16_8_18
+export REFERENCE_PROFILE_JSONL=$SOURCE_TRAIN_PILOT_ROOT/profile_train_pilot.jsonl
+
+# ---------- Step 1: 64-scene semantic + speed benchmark ----------
+export BENCH_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_23_fast_benchmark_w16
+export BENCH_SCENES=64
+export LABEL_WORKERS=16
+bash NEXT_EXECUTION_V16_8_23_CN.sh benchmark
+cat "$BENCH_ROOT/benchmark_report.json"
+
+# 必须满足：
+#   semantic_equivalence_pass == true
+# 推荐同时满足：
+#   recommended_full_build == true
+# 若机器 CPU 很多，可用不同 BENCH_ROOT 对 LABEL_WORKERS=8/16/24 分别 benchmark，选择实际最快且无过订阅的一档。
+
+# ---------- Step 2: compact full train/val/heldout-test ----------
+# SOURCE_DATA_ROOT 只用来取得历史已筛选 scenario IDs；v16.8.23 会重新从 WOMD Scenario 生成所有 labels。
+export SOURCE_DATA_ROOT=/data0/senzeyu2/dataset/COWP/formal
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_23_compact_full
+
+export TRAIN_LIMIT=6000
+export VAL_LIMIT=1200
+export TEST_LIMIT=1500
+export SPLIT_SEED=cowp-v16.8.23-compact
+
+# 建议从 benchmark 最优 worker 数开始。下面是保守默认值。
+export LABEL_WORKERS_TRAIN=16
+export LABEL_WORKERS_VAL=12
+export LABEL_WORKERS_TEST=12
+export CACHE_WORKERS=8
+
+bash NEXT_EXECUTION_V16_8_23_CN.sh full-core
+cat "$COWP_ROOT/full_core_support_verdict_v16_8_23.json"
+
+# 只有 pass=true 才进入 outcomes / training。
+
+# ---------- Step 3: Waymax outcome attachment ----------
+export WAYMAX_GPUS=0
+export REPLAY_NUM_SHARDS=1
+bash NEXT_EXECUTION_V16_8_23_CN.sh outcomes
+bash NEXT_EXECUTION_V16_8_23_CN.sh check
+
+# ---------- Optional: 如果 6k train 后确实 data-limited ----------
+# 保留 val/test 不变，只新建一个 COWP_ROOT，将 TRAIN_LIMIT 提升到 10000。
+# 不建议一开始就重建 20k+；先让模型学习/validation/outcome 结果证明需要更多数据。

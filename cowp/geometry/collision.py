@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from cowp.geometry.boxes import obb_distance, obb_overlap
-from cowp.geometry.rss_like import same_heading_gap_violation
-from cowp.geometry.ttc import dangerous_ttc
+from cowp.geometry.rss_like import same_heading_gap_violation, same_heading_gap_violation_bool
+from cowp.geometry.ttc import dangerous_ttc, dangerous_ttc_bool
 
 
 @dataclass
@@ -49,6 +49,33 @@ def trajectory_collision(traj_a: np.ndarray, traj_b: np.ndarray, inflation: floa
     for k in possible:
         mask[int(k)] = obb_overlap(traj_a[int(k)], traj_b[int(k)], inflation)
     return bool(np.any(mask)), mask
+
+
+
+
+def trajectory_collision_bool(traj_a: np.ndarray, traj_b: np.ndarray, inflation: float = 0.1) -> bool:
+    """Boolean-only exact equivalent of ``trajectory_collision``."""
+    t = min(len(traj_a), len(traj_b))
+    if t == 0:
+        return False
+    center_dist, halfdiag_sum = _center_distance_and_halfdiag(traj_a, traj_b, inflation=inflation)
+    for k in np.where(center_dist <= halfdiag_sum + 1e-6)[0]:
+        if obb_overlap(traj_a[int(k)], traj_b[int(k)], inflation):
+            return True
+    return False
+
+
+def trajectory_near_miss_bool(traj_a: np.ndarray, traj_b: np.ndarray, threshold: float = 1.0) -> bool:
+    """Boolean-only exact equivalent of the near-miss predicate."""
+    t = min(len(traj_a), len(traj_b))
+    if t == 0:
+        return False
+    center_dist, halfdiag_sum = _center_distance_and_halfdiag(traj_a, traj_b, inflation=0.0)
+    lower_bound = np.maximum(0.0, center_dist - halfdiag_sum)
+    for k in np.where(lower_bound < float(threshold))[0]:
+        if obb_distance(traj_a[int(k)], traj_b[int(k)]) < float(threshold):
+            return True
+    return False
 
 
 def trajectory_near_miss(traj_a: np.ndarray, traj_b: np.ndarray, threshold: float = 1.0) -> tuple[bool, np.ndarray, float]:
@@ -164,3 +191,52 @@ def conventional_candidate_safe(ego_traj: np.ndarray, other_trajs: list[np.ndarr
     if np.nanmax(np.abs(acc)) > float(cfg.get("candidate", {}).get("max_decel_mps2", 6.0)) + 1.0:
         return False
     return True
+
+
+def unsafe_between_bool(
+    ego_traj: np.ndarray,
+    agent_traj: np.ndarray,
+    cfg: dict,
+    agent_type: int = 1,
+    agent_lane_dist: np.ndarray | None = None,
+) -> bool:
+    """Fast boolean-only equivalent of ``unsafe_between(...).unsafe``.
+
+    Search-heavy label stages do not need event masks or minimum-distance
+    diagnostics.  This function preserves the exact logical predicates while
+    short-circuiting once any unsafe mechanism is known to be active.
+    """
+    unsafe_cfg = cfg.get("unsafe", cfg)
+    if agent_lane_dist is not None:
+        threshold = float(unsafe_cfg.get("severe_offroad_distance_m", 4.0))
+        if bool(np.any(np.asarray(agent_lane_dist[: len(agent_traj)]) > threshold)):
+            return True
+    if same_heading_gap_violation_bool(
+        rear_traj=agent_traj,
+        front_traj=ego_traj,
+        heading_tolerance=np.deg2rad(float(unsafe_cfg.get("rss_heading_tolerance_deg", 35.0))),
+        rho=float(unsafe_cfg.get("rss_reaction_time_s", 0.5)),
+        a_max_accel=float(unsafe_cfg.get("rss_a_max_accel", 2.0)),
+        b_min=float(unsafe_cfg.get("rss_b_min_comfort", 3.0)),
+        b_max=float(unsafe_cfg.get("rss_b_max_front", 6.0)),
+        min_gap=float(unsafe_cfg.get("rss_min_gap_m", 2.0)),
+        lateral_margin=float(unsafe_cfg.get("rss_lateral_margin_m", 0.75)),
+    ):
+        return True
+    far, _ = _center_broadphase_far(ego_traj, agent_traj, cfg, agent_type)
+    if far:
+        return False
+    if int(agent_type) == 1:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vehicle_m", 1.0))
+        ttc_min = float(unsafe_cfg.get("ttc_min_vehicle_s", 1.5))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vehicle_m", 15.0))
+    else:
+        near_thresh = float(unsafe_cfg.get("near_miss_distance_vru_m", 1.5))
+        ttc_min = float(unsafe_cfg.get("ttc_min_vru_s", 2.0))
+        dist_gate = float(unsafe_cfg.get("ttc_distance_gate_vru_m", 20.0))
+    inflation = float(unsafe_cfg.get("collision_inflation_m", 0.1))
+    if trajectory_collision_bool(ego_traj, agent_traj, inflation):
+        return True
+    if trajectory_near_miss_bool(ego_traj, agent_traj, near_thresh):
+        return True
+    return dangerous_ttc_bool(ego_traj, agent_traj, ttc_min, dist_gate)

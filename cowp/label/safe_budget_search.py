@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from cowp.core.constants import PriorityRelation
-from cowp.geometry.collision import unsafe_between
+from cowp.geometry.collision import unsafe_between, unsafe_between_bool
 from cowp.label.burden import compute_burden
 
 
@@ -16,6 +16,15 @@ class BudgetProfile:
     schedule: tuple[tuple[float, float, float], ...]  # (start_s, duration_s, accel_mps2)
     lateral_offset_m: float = 0.0
     hard: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedBudgetTrajectory:
+    trajectory: np.ndarray
+    profile: BudgetProfile
+    safe_burden: float
+    safe_components: np.ndarray
+    safe_score: float
 
 
 def rollout_accel_schedule(current: np.ndarray, horizon: int, dt: float, schedule: tuple[tuple[float, float, float], ...], lateral_offset_m: float = 0.0) -> np.ndarray:
@@ -88,6 +97,40 @@ def build_safe_budget_trajectory_bank(
     return rows
 
 
+
+def prepare_safe_budget_trajectory_bank(
+    trajectory_bank: list[tuple[np.ndarray, BudgetProfile]],
+    *,
+    object_type: int,
+    cfg: dict,
+    natural_ref: np.ndarray | None,
+    rho: PriorityRelation,
+) -> list[PreparedBudgetTrajectory]:
+    """Precompute candidate-independent burden for the collision-free case.
+
+    For a response already proven safe, ``compute_burden(...,
+    risk_known_zero=True)`` does not depend on the ego candidate.  Storing this
+    value once per agent/profile removes millions of duplicate kinematics and
+    progress computations during a full build without changing any label.
+    """
+    s_cfg = cfg.get("response", {}).get("safe_budget_search", {})
+    beta_margin = float(s_cfg.get("hard_profile_penalty", 0.25))
+    out: list[PreparedBudgetTrajectory] = []
+    for tr, prof in trajectory_bank:
+        b, comps = compute_burden(
+            tr, None, cfg, object_type, natural_ref=natural_ref, rho=rho,
+            risk_known_zero=True,
+        )
+        priority_cost = 0.05 * prof.priority + (beta_margin if prof.hard else 0.0)
+        option_cost = 0.25 * float(comps[4])
+        out.append(PreparedBudgetTrajectory(
+            trajectory=tr, profile=prof, safe_burden=float(b),
+            safe_components=np.asarray(comps).copy(),
+            safe_score=float(b) + priority_cost + option_cost,
+        ))
+    return out
+
+
 def typed_safe_budget_search(
     current: np.ndarray,
     horizon: int,
@@ -119,34 +162,75 @@ def typed_safe_budget_search_evaluated(
     cfg: dict,
     natural_ref: np.ndarray | None = None,
     rho: PriorityRelation = PriorityRelation.UNKNOWN,
-    trajectory_bank: list[tuple[np.ndarray, BudgetProfile]] | None = None,
+    trajectory_bank: list[tuple[np.ndarray, BudgetProfile]] | list[PreparedBudgetTrajectory] | None = None,
 ) -> list[tuple[np.ndarray, str, float, bool, np.ndarray]]:
-    """Like typed_safe_budget_search, but returns safety/burden results too.
+    """Evaluate the typed safe-budget bank with exact semantics-preserving fast paths.
 
-    Safe-response generation needs the selected budget trajectories and their
-    final ``is_safe`` / burden fields.  Returning the already computed values
-    avoids re-running unsafe_between + compute_burden for the same trajectory.
-    The ranking and returned trajectory set are identical to
-    typed_safe_budget_search.
+    When a prepared bank is supplied, collision-free burden is reused exactly.
+    If the configured unsafe penalty dominates every possible prepared safe
+    score, the search can stop once ``N`` safe profiles have been found in
+    ascending safe-score order: no unseen unsafe profile can enter the top-N.
+    If fewer than N safe profiles exist, every unsafe row is evaluated exactly
+    as in the legacy implementation before final sorting.
     """
     s_cfg = cfg.get("response", {}).get("safe_budget_search", {})
+    eng = cfg.get("engineering", {})
     beam_width = int(s_cfg.get("beam_width", 16))
     max_return = int(s_cfg.get("max_return", 16))
-    bank = trajectory_bank if trajectory_bank is not None else build_safe_budget_trajectory_bank(current, horizon, dt, cfg)
-    rows: list[tuple[float, np.ndarray, str, float, bool, np.ndarray]] = []
+    n_return = max(1, min(max_return, beam_width))
     beta_margin = float(s_cfg.get("hard_profile_penalty", 0.25))
     unsafe_penalty = float(s_cfg.get("unsafe_penalty", 100.0))
-    for tr, prof in bank:
-        unsafe = unsafe_between(ego_candidate, tr, cfg, agent_type=object_type)
-        burden, comps = compute_burden(
-            tr, ego_candidate, cfg, object_type, natural_ref=natural_ref, rho=rho,
-            risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe.unsafe,
+    fast_bool = bool(eng.get("unsafe_bool_fastpath", True))
+    early_stop = bool(eng.get("safe_budget_early_stop_fastpath", True))
+
+    bank = trajectory_bank if trajectory_bank is not None else build_safe_budget_trajectory_bank(current, horizon, dt, cfg)
+    prepared = bool(bank) and isinstance(bank[0], PreparedBudgetTrajectory)
+    if prepared:
+        pbank = list(bank)  # type: ignore[arg-type]
+    else:
+        pbank = prepare_safe_budget_trajectory_bank(
+            list(bank), object_type=object_type, cfg=cfg, natural_ref=natural_ref, rho=rho
         )
-        priority_cost = 0.05 * prof.priority + (beta_margin if prof.hard else 0.0)
-        # Penalize option component for hard profiles even when collision-free, so
-        # the search prefers natural/comfort-preserving responses when available.
-        option_cost = 0.25 * float(comps[4])
-        score = (unsafe_penalty if unsafe.unsafe else 0.0) + float(burden) + priority_cost + option_cost
-        rows.append((score, tr, prof.name, float(burden), not unsafe.unsafe, comps))
+
+    # Stable sort preserves the legacy profile order on equal scores.
+    ordered = sorted(enumerate(pbank), key=lambda x: (float(x[1].safe_score), int(x[0])))
+    safe_rows: list[tuple[float, np.ndarray, str, float, bool, np.ndarray]] = []
+    unsafe_rows: list[PreparedBudgetTrajectory] = []
+    max_safe_score = max((float(x.safe_score) for x in pbank), default=0.0)
+    unsafe_dominated = unsafe_penalty > max_safe_score
+
+    for _idx, row in ordered:
+        is_unsafe = (
+            unsafe_between_bool(ego_candidate, row.trajectory, cfg, agent_type=object_type)
+            if fast_bool else
+            bool(unsafe_between(ego_candidate, row.trajectory, cfg, agent_type=object_type).unsafe)
+        )
+        if not is_unsafe:
+            safe_rows.append((
+                float(row.safe_score), row.trajectory, row.profile.name,
+                float(row.safe_burden), True, np.asarray(row.safe_components).copy(),
+            ))
+            if early_stop and unsafe_dominated and len(safe_rows) >= n_return:
+                # Because ``ordered`` is ascending in exact safe score, these are
+                # the N best safe rows. Every unsafe row has score >= unsafe_penalty
+                # and therefore cannot displace them.
+                safe_rows.sort(key=lambda x: x[0])
+                return [(tr, name, burden, safe, comps) for _, tr, name, burden, safe, comps in safe_rows[:n_return]]
+        else:
+            unsafe_rows.append(row)
+
+    rows = list(safe_rows)
+    # If fewer than N safe profiles exist, unsafe profiles can be returned and
+    # must retain the legacy candidate-conditioned risk burden exactly.
+    if len(safe_rows) < n_return:
+        for row in unsafe_rows:
+            burden, comps = compute_burden(
+                row.trajectory, ego_candidate, cfg, object_type,
+                natural_ref=natural_ref, rho=rho, risk_known_zero=False,
+            )
+            priority_cost = 0.05 * row.profile.priority + (beta_margin if row.profile.hard else 0.0)
+            option_cost = 0.25 * float(comps[4])
+            score = unsafe_penalty + float(burden) + priority_cost + option_cost
+            rows.append((score, row.trajectory, row.profile.name, float(burden), False, comps))
     rows.sort(key=lambda x: x[0])
-    return [(tr, name, burden, safe, comps) for _, tr, name, burden, safe, comps in rows[: max(1, min(max_return, beam_width, len(rows)))]]
+    return [(tr, name, burden, safe, comps) for _, tr, name, burden, safe, comps in rows[: min(n_return, len(rows))]]

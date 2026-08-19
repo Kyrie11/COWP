@@ -6,10 +6,14 @@ import numpy as np
 
 from cowp.core.constants import PriorityRelation, ResponseSource
 from cowp.core.types import ScenarioData
-from cowp.geometry.collision import unsafe_between
+from cowp.geometry.collision import unsafe_between, unsafe_between_bool
 from cowp.label.burden import compute_burden
 from cowp.label.trajectory_primitives import constant_accel_trajectory
-from cowp.label.safe_budget_search import build_safe_budget_trajectory_bank, typed_safe_budget_search_evaluated
+from cowp.label.safe_budget_search import (
+    build_safe_budget_trajectory_bank,
+    prepare_safe_budget_trajectory_bank,
+    typed_safe_budget_search_evaluated,
+)
 
 
 @dataclass(frozen=True)
@@ -183,6 +187,24 @@ def build_root_recovery_trajectory_bank(root: np.ndarray, cfg: dict) -> list[np.
     ]
 
 
+def prepare_root_recovery_burden_bank(
+    root: np.ndarray,
+    trajectory_bank: list[np.ndarray],
+    cfg: dict,
+    *,
+    object_type: int,
+    rho: PriorityRelation,
+) -> list[tuple[float, np.ndarray]]:
+    """Candidate-independent burden for a safe same-root recovery trajectory."""
+    out: list[tuple[float, np.ndarray]] = []
+    for tr in trajectory_bank:
+        b, comps = compute_burden(
+            tr, None, cfg, int(object_type), natural_ref=root, rho=rho, risk_known_zero=True
+        )
+        out.append((float(b), np.asarray(comps).copy()))
+    return out
+
+
 def root_conditioned_recovery_search(
     root: np.ndarray,
     ego: np.ndarray,
@@ -193,34 +215,63 @@ def root_conditioned_recovery_search(
     rho: PriorityRelation,
     trajectory_bank: list[np.ndarray] | None = None,
     identity_cache: tuple[float, bool] | None = None,
+    static_burden_bank: list[tuple[float, np.ndarray]] | None = None,
+    min_only: bool = False,
 ) -> tuple[float, bool, int]:
     """Search a bounded time-warp tube around one natural root.
 
-    This oracle defines q_ikm independently of the finite response slots used by
-    the neural decoder.  Every conflicting root receives the same control budget,
-    so recoverability cannot become negative merely because another root consumed
-    the global top-R response bank.  All controls preserve the root polyline and
-    only alter its longitudinal timing.
+    ``min_only=True`` is an exact fast path for witness/transport labels: safe
+    burden has zero pair-risk and is therefore candidate-independent.  Profiles
+    are tested in ascending static burden and the first safe profile is the exact
+    minimum-burden safe response.  The legacy full scan remains the default for
+    callers that need the total number of safe profiles.
     """
     bank = trajectory_bank if trajectory_bank is not None else build_root_recovery_trajectory_bank(root, cfg)
+    static = static_burden_bank
+    if static is None:
+        static = prepare_root_recovery_burden_bank(
+            root, bank, cfg, object_type=int(object_type), rho=rho
+        )
+    fast_bool = bool(cfg.get("engineering", {}).get("unsafe_bool_fastpath", True))
+
+    if min_only:
+        order = sorted(range(len(bank)), key=lambda j: (float(static[j][0]), int(j)))
+        for j in order:
+            tr = bank[j]
+            if j == 0 and identity_cache is not None and np.array_equal(
+                np.asarray(tr, dtype=np.float32), np.asarray(root, dtype=np.float32)
+            ):
+                b_cached, safe_cached = identity_cache
+                if bool(safe_cached):
+                    best = float(np.clip(float(b_cached), 0.0, 2.0))
+                    return best, bool(best <= float(beta)), 1
+                continue
+            unsafe = (
+                unsafe_between_bool(ego, tr, cfg, agent_type=int(object_type))
+                if fast_bool else bool(unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe)
+            )
+            if not unsafe:
+                best = float(np.clip(float(static[j][0]), 0.0, 2.0))
+                return best, bool(best <= float(beta)), 1
+        return 2.0, False, 0
+
     best = float("inf")
     safe_count = 0
     for j, tr in enumerate(bank):
-        # label_search_profiles[0] is the exact identity profile in the v16.8
-        # contract.  Reuse the already-computed audit value when available.
         if j == 0 and identity_cache is not None and np.array_equal(np.asarray(tr, dtype=np.float32), np.asarray(root, dtype=np.float32)):
             b_cached, safe_cached = identity_cache
             if bool(safe_cached):
                 safe_count += 1
                 best = min(best, float(b_cached))
             continue
-        if unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe:
-            continue
-        b, _ = compute_burden(
-            tr, ego, cfg, int(object_type), natural_ref=root, rho=rho, risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)),
+        unsafe = (
+            unsafe_between_bool(ego, tr, cfg, agent_type=int(object_type))
+            if fast_bool else bool(unsafe_between(ego, tr, cfg, agent_type=int(object_type)).unsafe)
         )
+        if unsafe:
+            continue
         safe_count += 1
-        best = min(best, float(b))
+        best = min(best, float(static[j][0]))
     if not np.isfinite(best):
         return 2.0, False, safe_count
     best = float(np.clip(best, 0.0, 2.0))
@@ -369,6 +420,7 @@ def generate_safe_responses(
     burden_components = np.zeros((K, A, R, 6), dtype=np.float32)
 
     primitive_bank: dict[int, tuple[int, int, PriorityRelation, np.ndarray, list[_ResponsePrimitive]]] = {}
+    primitive_static: dict[int, list[tuple[float, np.ndarray]]] = {}
     budget_bank: dict[int, list] = {}
     budget_enabled = bool(cfg.get("response", {}).get("safe_budget_search", {}).get("enabled", True))
     dt = float(cfg.get("time", {}).get("dt", 0.1))
@@ -376,10 +428,20 @@ def generate_safe_responses(
     for a in range(A):
         if critical["valid"][a] and a < len(mechanism_mask) and mechanism_mask[a]:
             primitive_bank[a] = _response_primitives_for_agent(scene, a, critical, natural, cfg)
+            _idx, object_type, rho, nat_ref, primitives = primitive_bank[a]
+            primitive_static[a] = [
+                compute_burden(
+                    p.traj, None, cfg, object_type, natural_ref=p.natural_ref, rho=rho, risk_known_zero=True
+                )
+                for p in primitives
+            ]
             if budget_enabled:
                 curr_idx = int(critical["track_index"][a])
                 curr = scene.states[curr_idx, scene.current_time_index]
-                budget_bank[a] = build_safe_budget_trajectory_bank(curr, H, dt, cfg)
+                raw_budget = build_safe_budget_trajectory_bank(curr, H, dt, cfg)
+                budget_bank[a] = prepare_safe_budget_trajectory_bank(
+                    raw_budget, object_type=object_type, cfg=cfg, natural_ref=nat_ref, rho=rho
+                )
 
     for k in range(K):
         if not candidates["valid"][k]:
@@ -408,7 +470,7 @@ def generate_safe_responses(
                 ):
                     sort_cost = (0.0 if safe else 10.0) + float(b)
                     evaluated.append((sort_cost, float(b), tr, ResponseSource.OPT, bool(safe), comps, -1, 0.0))
-            for primitive in primitives:
+            for primitive_i, primitive in enumerate(primitives):
                 tr = primitive.traj
                 if not np.all(np.isfinite(tr)):
                     continue
@@ -431,17 +493,19 @@ def generate_safe_responses(
                             )
                         reused_identity = True
                 if not reused_identity:
-                    unsafe_obj = unsafe_between(ego, tr, cfg, agent_type=object_type)
-                    unsafe_flag = bool(unsafe_obj.unsafe)
-                    b, comps = compute_burden(
-                        tr,
-                        ego,
-                        cfg,
-                        object_type,
-                        natural_ref=primitive.natural_ref,
-                        rho=rho,
-                        risk_known_zero=bool(cfg.get("engineering", {}).get("risk_known_zero_fastpath", True)) and not unsafe_flag,
+                    unsafe_flag = (
+                        unsafe_between_bool(ego, tr, cfg, agent_type=object_type)
+                        if bool(cfg.get("engineering", {}).get("unsafe_bool_fastpath", True))
+                        else bool(unsafe_between(ego, tr, cfg, agent_type=object_type).unsafe)
                     )
+                    if not unsafe_flag:
+                        b, comps = primitive_static[a][primitive_i]
+                        comps = np.asarray(comps).copy()
+                    else:
+                        b, comps = compute_burden(
+                            tr, ego, cfg, object_type, natural_ref=primitive.natural_ref, rho=rho,
+                            risk_known_zero=False,
+                        )
                 sort_cost = (0.0 if not unsafe_flag else 10.0) + float(b)
                 evaluated.append(
                     (

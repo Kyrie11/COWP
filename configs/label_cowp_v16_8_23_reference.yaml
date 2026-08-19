@@ -11,10 +11,10 @@ engineering:
   # All v16.8.23 fast paths below are intended to be label-semantic preserving.
   # ``reference`` A/B builds disable them and are compared bitwise before full rebuild.
   risk_known_zero_fastpath: true
-  unsafe_bool_fastpath: true
-  safe_budget_early_stop_fastpath: true
-  root_recovery_min_only_fastpath: true
-  conflict_tta_cache_fastpath: true
+  unsafe_bool_fastpath: false
+  safe_budget_early_stop_fastpath: false
+  root_recovery_min_only_fastpath: false
+  conflict_tta_cache_fastpath: false
 limits:
   max_agents: 128
   max_critical_agents: 6

@@ -28,3 +28,22 @@ def dangerous_ttc(traj_a: np.ndarray, traj_b: np.ndarray, ttc_min: float, distan
     dist = np.linalg.norm(pos_b - pos_a, axis=-1)
     mask = (ttc < float(ttc_min)) & (dist < float(distance_gate))
     return bool(np.any(mask)), mask
+
+
+def dangerous_ttc_bool(traj_a: np.ndarray, traj_b: np.ndarray, ttc_min: float, distance_gate: float) -> bool:
+    """Boolean-only equivalent of :func:`dangerous_ttc`.
+
+    It deliberately avoids materializing the final boolean mask because label
+    search only needs the predicate.  Numerical operations are otherwise the
+    same as ``dangerous_ttc``.
+    """
+    t = min(len(traj_a), len(traj_b))
+    if t == 0:
+        return False
+    pos_a = traj_a[:t, :2]
+    pos_b = traj_b[:t, :2]
+    vel_a = traj_a[:t, 3:5]
+    vel_b = traj_b[:t, 3:5]
+    ttc = pairwise_ttc(pos_a, vel_a, pos_b, vel_b)
+    dist = np.linalg.norm(pos_b - pos_a, axis=-1)
+    return bool(np.any((ttc < float(ttc_min)) & (dist < float(distance_gate))))
