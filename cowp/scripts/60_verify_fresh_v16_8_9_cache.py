@@ -26,6 +26,7 @@ REQUIRED_KEYS = (
     "cowp/candidates/audited_pair_count",
     "cowp/candidates/ncf_blocker_count",
     "cowp/critical/valid",
+    "cowp/critical/mechanism_valid",
     "cowp/audit/pair_relevant",
     "cowp/audit/relevance_mass",
     "cowp/audit/root_affected",
@@ -99,6 +100,7 @@ def main() -> None:
     source_counts = Counter()
     ncf_scenes = valid_scenes = 0
     silent_blockers = irrelevant_blockers = affected_mismatch = 0
+    ignored_unauditable_selected_pairs = 0
     conflict_mismatch = retain_mismatch = canonical_weight_mismatch = 0
     affected_definition_error = burden_only_definition_error = 0
     sdc_paths_missing = sdc_paths_not_ready = 0
@@ -147,7 +149,8 @@ def main() -> None:
                 # v16.8.9 semantic integrity: irrelevant pairs are vacuously
                 # noncoercive and every relevant non-NCF pair must carry a witness.
                 req = {k: files.get(k) for k in (
-                    "cowp/candidates/valid", "cowp/critical/valid", "cowp/audit/pair_relevant",
+                    "cowp/candidates/valid", "cowp/critical/valid", "cowp/critical/mechanism_valid",
+                    "cowp/audit/pair_relevant",
                     "cowp/witness/exists", "cowp/witness/pair_noncoercive_feasible",
                     "cowp/audit/root_affected", "cowp/audit/root_unsafe",
                     "cowp/audit/root_budget_crossed", "cowp/audit/root_burden_only_affected",
@@ -157,9 +160,21 @@ def main() -> None:
                     "cowp/transport/canonical_root_weight",
                 )}
                 if all(v is not None for v in req.values()):
-                    cv = np.asarray(z[req["cowp/candidates/valid"]], dtype=bool)
-                    av = np.asarray(z[req["cowp/critical/valid"]], dtype=bool)
-                    base = cv[:, None] & av[None, :]
+                    cv = np.asarray(z[req["cowp/candidates/valid"]], dtype=bool).reshape(-1)
+                    av = np.asarray(z[req["cowp/critical/valid"]], dtype=bool).reshape(-1)
+                    mechanism_valid = np.asarray(z[req["cowp/critical/mechanism_valid"]], dtype=bool).reshape(-1)
+                    if mechanism_valid.shape != av.shape:
+                        missing["cowp/critical/mechanism_valid:shape"] += 1
+                        continue
+                    # Selected-but-mechanism-unauditable critical actors are intentionally
+                    # outside the NCF certificate domain.  witness.py and every downstream
+                    # supervision/model/causal audit use the same mask.  Do not interpret the
+                    # default-false pair tensors of those excluded actors as NCF blockers.
+                    selected_base = cv[:, None] & av[None, :]
+                    base = selected_base & mechanism_valid[None, :]
+                    ignored_unauditable_selected_pairs += int(
+                        (selected_base & ~mechanism_valid[None, :]).sum()
+                    )
                     rel = np.asarray(z[req["cowp/audit/pair_relevant"]], dtype=bool)
                     ex = np.asarray(z[req["cowp/witness/exists"]], dtype=bool)
                     pn = np.asarray(z[req["cowp/witness/pair_noncoercive_feasible"]], dtype=bool)
@@ -241,7 +256,7 @@ def main() -> None:
         reasons.append(f"SDC-path contract not ready={sdc_paths_not_ready}")
 
     result = {
-        "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v2",
+        "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v3",
         "pass": not reasons,
         "cache_dir": str(root.resolve()),
         "files": len(paths),
@@ -259,6 +274,7 @@ def main() -> None:
         "proposal_source_candidate_counts_inspected": dict(source_counts),
         "silent_blocker_count": silent_blockers,
         "irrelevant_blocker_count": irrelevant_blockers,
+        "ignored_unauditable_selected_pair_count": ignored_unauditable_selected_pairs,
         "affected_root_mismatch_count": affected_mismatch,
         "conflict_root_mismatch_count": conflict_mismatch,
         "retained_root_mismatch_count": retain_mismatch,
