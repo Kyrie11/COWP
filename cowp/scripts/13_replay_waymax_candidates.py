@@ -119,8 +119,14 @@ def main() -> None:
         help="Old resume behavior: treat existing failed outcome rows as completed and skip them.",
     )
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
-    ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL. Enables per-candidate timing breakdown fields in the outcomes JSONL and aggregated timing fields in the profile.")
+    ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL.")
+    ap.add_argument("--profile-detail", choices=["scene", "candidate"], default="candidate", help="candidate preserves the historical fine-grained per-step timing instrumentation; scene avoids those perf_counter calls and is recommended for full replay.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
+    ap.add_argument("--jit-env-reset", action="store_true", help="Best-effort JAX-jit wrapper around env.reset. Falls back to eager reset if tracing is unsupported.")
+    ap.add_argument("--attach-output-dir", default=None, help="Optional output cache directory for incremental per-scene NPZ attachment during replay. JSONL remains authoritative and scripts/12 should still be run once for final reconciliation.")
+    ap.add_argument("--attach-compress", action="store_true", help="Compress incremental attached NPZs. Default is uncompressed for speed, matching the v24 core cache.")
+    ap.add_argument("--attach-max-pending", type=int, default=2, help="Bounded number of background incremental NPZ writes per replay process.")
+    ap.add_argument("--progress-desc", default=None, help="Custom tqdm description, useful for identifying split/GPU/shard when multiple workers share one terminal.")
     ap.add_argument("--done-check-interval", type=int, default=1, help="Check Waymax state.done every N steps. Default 1 preserves previous behavior. 0 disables early-done checks and should only be used after validating equivalence on smoke runs.")
     ap.add_argument("--metric-eval-mode", choices=["step", "sampled", "adaptive", "final"], default="step", help="step updates metrics every simulator step; sampled updates every --metric-eval-interval steps plus the final step; adaptive adds risk-guarded extra checks near other agents; final computes metrics once after rollout.")
     ap.add_argument("--metric-eval-interval", type=int, default=1, help="Metric update interval for --metric-eval-mode sampled/adaptive. 1 is equivalent to step mode; 2/5 are faster approximations. Ignored by final mode.")
@@ -165,7 +171,13 @@ def main() -> None:
         gc_every_scenes=args.gc_every_scenes,
         state_source=args.state_source,
         profile_replay_jsonl=args.profile_replay_jsonl,
+        profile_detail=str(args.profile_detail),
         jit_env_step=bool(args.jit_env_step),
+        jit_env_reset=bool(args.jit_env_reset),
+        attach_output_dir=args.attach_output_dir,
+        attach_compress=bool(args.attach_compress),
+        attach_max_pending=int(args.attach_max_pending),
+        progress_desc=args.progress_desc,
         done_check_interval=int(args.done_check_interval),
         metric_eval_mode=str(args.metric_eval_mode),
         metric_eval_interval=int(args.metric_eval_interval),

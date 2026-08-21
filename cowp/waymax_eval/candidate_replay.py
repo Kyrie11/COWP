@@ -4,6 +4,8 @@ import gc
 import json
 import os
 import time
+from collections import defaultdict, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from cowp.utils.progress import tqdm_iter
 from cowp.waymax_eval.metrics_standard import WaymaxStandardMetricAccumulator, build_waymax_metric_objects
 from cowp.waymax_eval.policy_wrapper import _to_numpy, _wrap_angle, extract_current_agent_state
 from cowp.waymax_eval.rollout import _env_step, _make_waymax_environment, _state_done
+from cowp.waymax_eval.outcome_attach import attach_rows_to_cache_file
 
 
 def restore_key(k: str) -> str:
@@ -98,14 +101,28 @@ _CANDIDATE_TIMING_KEYS = (
 )
 
 
-def _make_jitted_env_step(env: Any):
-    """Best-effort JIT wrapper for one Waymax env.step call.
+class _JitCallableWithFallback:
+    """Call a jitted function and permanently fall back to eager on trace/runtime setup failure."""
 
-    This is an optimization only: the replay loop still applies the same fixed
-    action sequence, computes the same metrics, and performs the same done checks
-    by default.  If JAX/Waymax cannot trace the local env.step API, callers keep
-    using the original eager Python step path.
-    """
+    def __init__(self, jitted: Any, eager: Any):
+        self._jitted = jitted
+        self._eager = eager
+        self.using_jit = True
+        self.last_error: str | None = None
+
+    def __call__(self, *args, **kwargs):
+        if not self.using_jit:
+            return self._eager(*args, **kwargs)
+        try:
+            return self._jitted(*args, **kwargs)
+        except Exception as exc:
+            self.using_jit = False
+            self.last_error = str(exc)
+            return self._eager(*args, **kwargs)
+
+
+def _make_jitted_env_step(env: Any):
+    """Best-effort JIT wrapper for one Waymax env.step call with eager fallback."""
     try:
         import jax  # type: ignore
     except Exception as exc:  # pragma: no cover
@@ -114,7 +131,16 @@ def _make_jitted_env_step(env: Any):
     def _step(state, action):
         return _env_step(env, state, action)
 
-    return jax.jit(_step)
+    return _JitCallableWithFallback(jax.jit(_step), _step)
+
+
+def _make_jitted_env_reset(env: Any):
+    """Best-effort JIT wrapper for Waymax env.reset with eager fallback."""
+    try:
+        import jax  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"jax unavailable for --jit-env-reset: {exc}") from exc
+    return _JitCallableWithFallback(jax.jit(env.reset), env.reset)
 
 def scenario_id_from_arrays(arrays: dict[str, np.ndarray], path: str | Path | None = None) -> str:
     for key in ("scenario/id", "scenario__id", "womd/scenario/id", "womd__scenario__id"):
@@ -631,6 +657,7 @@ def replay_candidate_on_env(
     metric_set: str = "safety",
     collect_timing: bool = False,
     step_fn: Any | None = None,
+    reset_fn: Any | None = None,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
@@ -638,7 +665,7 @@ def replay_candidate_on_env(
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
     t = time.perf_counter()
-    state = env.reset(init_state)
+    state = reset_fn(init_state) if reset_fn is not None else env.reset(init_state)
     if collect_timing:
         timings["timing/env_reset_s"] = time.perf_counter() - t
 
@@ -918,6 +945,32 @@ def read_existing_outcome_keys(path: str | Path | None) -> set[tuple[str, int]]:
     return keys
 
 
+def _read_existing_outcome_rows_by_scenario(path: str | Path | None) -> dict[str, dict[int, dict[str, Any]]]:
+    """Read a repaired replay JSONL into a compact per-scene candidate map."""
+    out: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
+    if path is None:
+        return out
+    p = Path(path)
+    if not p.exists():
+        return out
+    with p.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(row, dict):
+                continue
+            key = _jsonl_row_key_or_none(row)
+            if key is None:
+                continue
+            out[key[0]][int(key[1])] = row
+    return out
+
+
 def _append_jsonl_lines(path: str | Path, lines: list[str]) -> None:
     if not lines:
         return
@@ -985,13 +1038,19 @@ def replay_cache_candidates_to_jsonl(
     gc_every_scenes: int = 16,
     state_source: str = "auto",
     profile_replay_jsonl: str | Path | None = None,
+    profile_detail: str = "candidate",
     jit_env_step: bool = False,
+    jit_env_reset: bool = False,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
     metric_guard_radius_m: float = 8.0,
     metric_guard_window_steps: int = 1,
     retry_failed_existing: bool = True,
+    attach_output_dir: str | Path | None = None,
+    attach_compress: bool = False,
+    attach_max_pending: int = 2,
+    progress_desc: str | None = None,
 ) -> dict[str, Any]:
     from cowp.waymax_eval.dataloader import simulator_state_from_tensor_cache_arrays, waymax_state_generator_for_sids, waymax_state_generator_with_ids
 
@@ -1020,7 +1079,60 @@ def replay_cache_candidates_to_jsonl(
     if profile_path is not None:
         profile_path.parent.mkdir(parents=True, exist_ok=True)
         profile_path.write_text("", encoding="utf-8")
-    collect_timing = profile_path is not None
+    profile_detail = str(profile_detail or "candidate").strip().lower()
+    if profile_detail not in {"scene", "candidate"}:
+        raise ValueError(f"profile_detail must be scene or candidate, got {profile_detail!r}")
+    # Scene-level profiling remains enabled when a profile path is supplied, but
+    # expensive per-step perf_counter instrumentation is opt-in via candidate mode.
+    collect_timing = profile_path is not None and profile_detail == "candidate"
+
+    # Incremental attachment is independent of replay correctness.  JSONL remains
+    # the source of truth; completed scene NPZs are written atomically in a bounded
+    # background I/O thread and scripts/12 still performs a final reconciliation.
+    attach_dir = Path(attach_output_dir) if attach_output_dir else None
+    if attach_dir is not None:
+        attach_dir.mkdir(parents=True, exist_ok=True)
+        if attach_dir.resolve() == cache_dir.resolve():
+            raise ValueError("--attach-output-dir must be different from --cache-dir; incremental attachment must not overwrite the core cache")
+    known_rows_by_sid = _read_existing_outcome_rows_by_scenario(out_path) if attach_dir is not None else defaultdict(dict)
+    attach_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"cowp-attach-{int(shard_index):03d}") if attach_dir is not None else None
+    attach_pending: deque[Future] = deque()
+    attach_written = 0
+    attach_skipped = 0
+    attach_failed = 0
+    attach_max_pending = max(1, int(attach_max_pending or 1))
+
+    def _consume_attach_future(fut: Future) -> None:
+        nonlocal attach_written, attach_skipped, attach_failed
+        try:
+            result = fut.result()
+        except Exception:
+            attach_failed += 1
+            raise
+        if str(result.get("status", "")) == "written":
+            attach_written += 1
+        else:
+            attach_skipped += 1
+
+    def _drain_attach(*, all_pending: bool = False) -> None:
+        if attach_executor is None:
+            return
+        while attach_pending and (all_pending or len(attach_pending) >= attach_max_pending):
+            _consume_attach_future(attach_pending.popleft())
+
+    def _submit_scene_attach(sid: str) -> None:
+        if attach_executor is None or attach_dir is None or sid not in sid_to_path:
+            return
+        rows = list(known_rows_by_sid.get(sid, {}).values())
+        if not rows:
+            return
+        src = sid_to_path[sid]
+        dst = attach_dir / src.name
+        attach_pending.append(attach_executor.submit(
+            attach_rows_to_cache_file, src, dst, rows,
+            compress=bool(attach_compress), skip_if_complete=True,
+        ))
+        _drain_attach(all_pending=False)
 
     total_written = 0
     total_failed = 0
@@ -1033,6 +1145,7 @@ def replay_cache_candidates_to_jsonl(
     metric_objects, metric_errors = build_waymax_metric_objects(metric_names_for_set(metric_set))
     env_cache: dict[tuple[int, str], Any] = {}
     env_step_fn_cache: dict[tuple[int, str], Any | None] = {}
+    env_reset_fn_cache: dict[tuple[int, str], Any | None] = {}
 
     state_source = str(state_source or "auto").lower()
     if state_source not in {"auto", "cache", "tfexample"}:
@@ -1053,7 +1166,7 @@ def replay_cache_candidates_to_jsonl(
     # prevents split/index mismatches from leaving matched=0 for hours.
     if use_cache_state:
         gen = ((sid, path) for sid, path in sid_to_path.items())
-        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay from tensor cache", unit="scene")
+        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc=(progress_desc or "Waymax candidate replay from tensor cache"), unit="scene")
     else:
         iterator_ref = {"iterator": None}
 
@@ -1066,7 +1179,7 @@ def replay_cache_candidates_to_jsonl(
             gen = waymax_state_generator_for_sids(data_config, set(sid_to_path.keys()), tfexample_glob=tfexample_glob, split=split, tfexample_index_jsonl=tfexample_index_jsonl, progress_callback=scan_progress)
         else:
             gen = waymax_state_generator_with_ids(data_config, tfexample_glob=tfexample_glob, split=split)
-        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc="Waymax candidate replay", unit="scene")
+        iterator = tqdm_iter(gen, enabled=progress, total=len(sid_to_path) if sid_to_path else None, desc=(progress_desc or "Waymax candidate replay"), unit="scene")
         iterator_ref["iterator"] = iterator
 
     for item in iterator:
@@ -1138,6 +1251,7 @@ def replay_cache_candidates_to_jsonl(
                                 cand_s=f"{mean_s:.3f}",
                                 refresh=True,
                             )
+                        _submit_scene_attach(sid)
                         if int(gc_every_scenes) > 0 and scenes_matched % int(gc_every_scenes) == 0:
                             gc.collect()
                         if not remaining:
@@ -1179,9 +1293,11 @@ def replay_cache_candidates_to_jsonl(
                         continue
                     row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"cache_state_failed: {exc}"}
                     failure_lines.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
+                    known_rows_by_sid[sid][int(k)] = row
                     done.add((sid, int(k)))
                     total_failed += 1
                 _append_jsonl_lines(out_path, failure_lines)
+                _submit_scene_attach(sid)
                 remaining.discard(sid)
                 if profile_path is not None:
                     scene_profile.update({"status": "cache_state_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
@@ -1230,6 +1346,7 @@ def replay_cache_candidates_to_jsonl(
                 env = _make_waymax_environment(max_num_objects=max_objects, action_mode=action_mode)
                 env_cache[env_key] = env
             step_fn = None
+            reset_fn = None
             if bool(jit_env_step):
                 if env_key not in env_step_fn_cache:
                     try:
@@ -1238,7 +1355,16 @@ def replay_cache_candidates_to_jsonl(
                         env_step_fn_cache[env_key] = None
                         scene_profile["jit_env_step_error"] = str(jit_exc)
                 step_fn = env_step_fn_cache.get(env_key)
+            if bool(jit_env_reset):
+                if env_key not in env_reset_fn_cache:
+                    try:
+                        env_reset_fn_cache[env_key] = _make_jitted_env_reset(env)
+                    except Exception as jit_exc:
+                        env_reset_fn_cache[env_key] = None
+                        scene_profile["jit_env_reset_error"] = str(jit_exc)
+                reset_fn = env_reset_fn_cache.get(env_key)
             scene_profile["jit_env_step"] = bool(step_fn is not None)
+            scene_profile["jit_env_reset"] = bool(reset_fn is not None)
             scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["metric_eval_mode"] = str(metric_eval_mode)
             scene_profile["metric_eval_interval"] = int(metric_eval_interval)
@@ -1254,9 +1380,11 @@ def replay_cache_candidates_to_jsonl(
                     continue
                 row = {"scenario_id": sid, "candidate_index": int(k), "rollout_valid": False, "error": f"scene_init_failed: {exc}"}
                 failure_lines.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
+                known_rows_by_sid[sid][int(k)] = row
                 done.add((sid, int(k)))
                 total_failed += 1
             _append_jsonl_lines(out_path, failure_lines)
+            _submit_scene_attach(sid)
             remaining.discard(sid)
             if profile_path is not None:
                 scene_profile.update({"status": "scene_init_failed", "failed": total_failed, "seconds": time.perf_counter() - scene_t0})
@@ -1304,6 +1432,7 @@ def replay_cache_candidates_to_jsonl(
                     metric_set=metric_set,
                     collect_timing=collect_timing,
                     step_fn=step_fn,
+                    reset_fn=reset_fn,
                     done_check_interval=int(done_check_interval),
                     metric_eval_mode=str(metric_eval_mode),
                     metric_eval_interval=int(metric_eval_interval),
@@ -1332,12 +1461,14 @@ def replay_cache_candidates_to_jsonl(
             row["metric_set"] = str(metric_set)
             row["metric_eval_mode"] = str(metric_eval_mode)
             row["metric_eval_interval"] = int(metric_eval_interval)
+            known_rows_by_sid[sid][int(k)] = dict(row)
             rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
             done.add((sid, int(k)))
         t = time.perf_counter()
         if rows_to_write:
             _append_jsonl_lines(out_path, rows_to_write)
         write_outcomes_s = time.perf_counter() - t
+        _submit_scene_attach(sid)
         remaining.discard(sid)
         if profile_path is not None:
             scene_profile.update(
@@ -1362,12 +1493,15 @@ def replay_cache_candidates_to_jsonl(
                 pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
         if hasattr(iterator, "set_postfix"):
             mean_s = candidate_seconds / max(total_written + total_failed, 1)
-            iterator.set_postfix(matched=scenes_matched, rows=total_written, failed=total_failed, remaining=len(remaining), cand_s=f"{mean_s:.3f}", refresh=True)
+            iterator.set_postfix(matched=scenes_matched, rows=total_written, failed=total_failed, npz=attach_written, pending_npz=len(attach_pending), remaining=len(remaining), cand_s=f"{mean_s:.3f}", refresh=True)
         del arrays
         if int(gc_every_scenes) > 0 and scenes_matched % int(gc_every_scenes) == 0:
             gc.collect()
         if not remaining:
             break
+    _drain_attach(all_pending=True)
+    if attach_executor is not None:
+        attach_executor.shutdown(wait=True)
     return {
         "cache_dir": str(cache_dir),
         "outcomes_jsonl": str(out_path),
@@ -1390,7 +1524,13 @@ def replay_cache_candidates_to_jsonl(
         "gc_every_scenes": int(gc_every_scenes),
         "state_source": "cache" if use_cache_state else "tfexample",
         "profile_replay_jsonl": str(profile_path) if profile_path is not None else None,
+        "profile_detail": str(profile_detail),
         "jit_env_step": bool(jit_env_step),
+        "jit_env_reset": bool(jit_env_reset),
+        "attach_output_dir": str(attach_dir) if attach_dir is not None else None,
+        "incremental_npz_written": int(attach_written),
+        "incremental_npz_skipped_complete": int(attach_skipped),
+        "incremental_npz_failed": int(attach_failed),
         "done_check_interval": int(done_check_interval),
         "metric_eval_mode": str(metric_eval_mode),
         "metric_eval_interval": int(metric_eval_interval),

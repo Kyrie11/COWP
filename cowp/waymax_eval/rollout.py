@@ -2337,12 +2337,23 @@ def _make_waymax_environment(max_num_objects: int | None = None, action_mode: st
     # DeltaGlobal is the correct dynamics for --waymax-action-mode delta_xy_yaw.
     # StateDynamics expects a 5-D absolute [x, y, yaw, vel_x, vel_y] action.
     if action_mode == "absolute_xy_yaw":
-        dynamics_names = ("StateDynamics", "DeltaGlobal")
+        # FixedCandidateReplayPolicy emits [x, y, yaw, vx, vy] in this mode.
+        # DeltaGlobal consumes delta-style actions and is not a semantics-preserving
+        # compatibility fallback.  Fail fast rather than silently interpreting a
+        # 5-D absolute candidate with the wrong dynamics model.
+        dynamics_cls = getattr(dynamics, "StateDynamics", None)
+        if dynamics_cls is None:
+            raise RuntimeError(
+                "--waymax-action-mode absolute_xy_yaw requires waymax.dynamics.StateDynamics; "
+                "refusing the old DeltaGlobal fallback because it changes replay semantics."
+            )
     else:
-        dynamics_names = ("DeltaGlobal", "StateDynamics")
-    dynamics_cls = next((getattr(dynamics, name, None) for name in dynamics_names if getattr(dynamics, name, None) is not None), None)
-    if dynamics_cls is None:
-        raise RuntimeError(f"Unsupported Waymax API: expected one of {dynamics_names} in waymax.dynamics.")
+        dynamics_cls = getattr(dynamics, "DeltaGlobal", None)
+        if dynamics_cls is None:
+            raise RuntimeError(
+                "delta Waymax action mode requires waymax.dynamics.DeltaGlobal; "
+                "refusing a StateDynamics fallback because the action contract differs."
+            )
     dyn = dynamics_cls()
 
     env_config = getattr(_config, "EnvironmentConfig", lambda: None)()

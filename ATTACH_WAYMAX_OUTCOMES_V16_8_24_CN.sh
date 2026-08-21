@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Three-split Waymax candidate replay for the v16.8.24 compact COWP cache.
-# Label construction is CPU-only; the two A30 GPUs are used here, where JAX/
-# Waymax can actually benefit from them.
+# Optimized three-split Waymax candidate replay for v16.8.24.
+# Invariants deliberately preserved:
+#   * same tensor-cache source and balanced candidate selection
+#   * same MAX_REPLAY_CANDIDATES and REPLAY_HORIZON values
+#   * exact per-step OverlapMetric/OffroadMetric evaluation
+#   * done check every step
+#   * JSONL remains the source of truth and final scripts/12 reconciliation remains
+# Engineering changes only:
+#   * live tqdm is no longer swallowed by command substitution/grep
+#   * one atomic _waymax NPZ is emitted as soon as each scene finishes
+#   * NPZ writing overlaps GPU replay in a bounded background I/O thread
+#   * full-run profiling defaults to scene-level (no per-step perf_counter overhead)
+#   * optional JAX JIT for env.reset/env.step; defaults OFF until the supplied A/B equivalence gate passes
+
 PYTHON_BIN="${PYTHON_BIN:-python}"
 COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full}"
 BASE_TRAIN="${BASE_TRAIN:-$COWP_ROOT/tensor_cache_train}"
@@ -16,52 +27,120 @@ REPLAY_ROOT="${REPLAY_ROOT:-$COWP_ROOT/waymax_replay_v16_8_24}"
 MAX_CANDIDATES="${MAX_REPLAY_CANDIDATES:-24}"
 HORIZON="${REPLAY_HORIZON:-80}"
 WAYMAX_GPUS="${WAYMAX_GPUS:-0,1}"
+WAYMAX_GC_EVERY_SCENES="${WAYMAX_GC_EVERY_SCENES:-64}"
+WAYMAX_ATTACH_MAX_PENDING="${WAYMAX_ATTACH_MAX_PENDING:-2}"
+WAYMAX_PROFILE_DETAIL="${WAYMAX_PROFILE_DETAIL:-scene}"
+WAYMAX_JIT_ENV_STEP="${WAYMAX_JIT_ENV_STEP:-0}"
+WAYMAX_JIT_ENV_RESET="${WAYMAX_JIT_ENV_RESET:-0}"
+
 IFS=',' read -r -a GPUS <<< "$WAYMAX_GPUS"
+[[ "${#GPUS[@]}" -ge 1 ]] || { echo "WAYMAX_GPUS is empty" >&2; exit 2; }
 NUM_SHARDS="${REPLAY_NUM_SHARDS:-${#GPUS[@]}}"
 [[ "$NUM_SHARDS" -ge 1 ]] || NUM_SHARDS=1
+if [[ "$NUM_SHARDS" -gt "${#GPUS[@]}" && "${WAYMAX_ALLOW_GPU_OVERSUBSCRIBE:-0}" != "1" ]]; then
+  echo "Refusing GPU oversubscription: REPLAY_NUM_SHARDS=$NUM_SHARDS but only ${#GPUS[@]} GPU ids were supplied." >&2
+  echo "Use one replay process per GPU for throughput, or set WAYMAX_ALLOW_GPU_OVERSUBSCRIBE=1 explicitly." >&2
+  exit 2
+fi
 
 for p in "$BASE_TRAIN" "$BASE_VAL" "$BASE_TEST"; do
   [[ -d "$p" ]] || { echo "Missing core tensor cache: $p" >&2; exit 3; }
 done
 mkdir -p "$REPLAY_ROOT" "$OUT_TRAIN" "$OUT_VAL" "$OUT_TEST"
 
+# Global array populated by replay_split.  replay_split is called directly (not
+# in a process substitution), so child tqdm/log output remains connected to the
+# terminal instead of being consumed by grep/mapfile.
+REPLAY_FILES=()
+
+_jit_args=()
+[[ "$WAYMAX_JIT_ENV_STEP" == "1" ]] && _jit_args+=(--jit-env-step)
+[[ "$WAYMAX_JIT_ENV_RESET" == "1" ]] && _jit_args+=(--jit-env-reset)
+
+cleanup_children(){
+  local rc=$?
+  jobs -pr | xargs -r kill 2>/dev/null || true
+  exit "$rc"
+}
+trap cleanup_children INT TERM
+
 replay_split(){
-  local split="$1" cache="$2"
-  local -a pids=() files=()
+  local split="$1" cache="$2" outdir="$3"
+  local -a pids=()
+  REPLAY_FILES=()
+
+  echo "============================================================"
+  echo "[$split] replay start: cache=$cache output=$outdir shards=$NUM_SHARDS max_candidates=$MAX_CANDIDATES horizon=$HORIZON"
+  echo "[$split] exact safety metrics: metric_eval_mode=step, done_check_interval=1"
+  echo "[$split] incremental NPZ attachment enabled; JSONL is still authoritative"
+
   for ((s=0;s<NUM_SHARDS;s++)); do
     local gpu="${GPUS[$((s % ${#GPUS[@]}))]}"
-    local out="$REPLAY_ROOT/${split}_bal${MAX_CANDIDATES}_safety_shard$(printf '%03d' "$s")_of_$(printf '%03d' "$NUM_SHARDS").jsonl"
-    files+=("$out")
-    echo "[$split shard $s/$NUM_SHARDS] GPU=$gpu -> $out" >&2
+    local tag="shard$(printf '%03d' "$s")_of_$(printf '%03d' "$NUM_SHARDS")"
+    local out="$REPLAY_ROOT/${split}_bal${MAX_CANDIDATES}_safety_${tag}.jsonl"
+    local profile="$REPLAY_ROOT/${split}_profile_${tag}.jsonl"
+    local log="$REPLAY_ROOT/${split}_${tag}.log"
+    REPLAY_FILES+=("$out")
+    echo "[$split $tag] GPU=$gpu -> $out"
     (
       export CUDA_VISIBLE_DEVICES="$gpu"
       export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+      export COWP_TQDM_POSITION="$s"
       "$PYTHON_BIN" -u -m cowp.scripts.13_replay_waymax_candidates \
-        --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml \
-        --cache-dir "$cache" --state-source cache --outcomes-jsonl "$out" \
-        --candidate-selection balanced --max-candidates-per-scene "$MAX_CANDIDATES" \
-        --rollout-horizon-steps "$HORIZON" --waymax-device gpu \
-        --waymax-action-mode absolute_xy_yaw --metric-set safety \
-        --num-shards "$NUM_SHARDS" --shard-index "$s" --gc-every-scenes "${WAYMAX_GC_EVERY_SCENES:-64}" \
-        --profile-replay-jsonl "$REPLAY_ROOT/${split}_profile_shard$(printf '%03d' "$s").jsonl"
-    ) > >(tee "$REPLAY_ROOT/${split}_shard$(printf '%03d' "$s").log") 2>&1 &
+        --data-config configs/data.yaml \
+        --label-config configs/label_cowp_v16_8.yaml \
+        --eval-config configs/eval_cowp_v16_8.yaml \
+        --cache-dir "$cache" \
+        --state-source cache \
+        --outcomes-jsonl "$out" \
+        --candidate-selection balanced \
+        --max-candidates-per-scene "$MAX_CANDIDATES" \
+        --rollout-horizon-steps "$HORIZON" \
+        --waymax-device gpu \
+        --waymax-action-mode absolute_xy_yaw \
+        --metric-set safety \
+        --metric-eval-mode step \
+        --metric-eval-interval 1 \
+        --done-check-interval 1 \
+        --num-shards "$NUM_SHARDS" \
+        --shard-index "$s" \
+        --gc-every-scenes "$WAYMAX_GC_EVERY_SCENES" \
+        --profile-replay-jsonl "$profile" \
+        --profile-detail "$WAYMAX_PROFILE_DETAIL" \
+        --attach-output-dir "$outdir" \
+        --attach-max-pending "$WAYMAX_ATTACH_MAX_PENDING" \
+        --progress-desc "$split GPU=$gpu ${s}/${NUM_SHARDS}" \
+        "${_jit_args[@]}"
+    ) > >(tee -a "$log") 2>&1 &
     pids+=("$!")
   done
+
   local rc=0
-  for pid in "${pids[@]}"; do wait "$pid" || rc=$?; done
+  for pid in "${pids[@]}"; do
+    local one_rc=0
+    wait "$pid" || one_rc=$?
+    if [[ "$one_rc" -ne 0 ]]; then
+      rc="$one_rc"
+    fi
+  done
   [[ "$rc" -eq 0 ]] || { echo "$split replay failed (rc=$rc)" >&2; return "$rc"; }
-  printf '%s\n' "${files[@]}"
+  echo "[$split] replay workers complete; running final JSONL->NPZ reconciliation"
 }
 
 attach_split(){
   local split="$1" base="$2" outdir="$3"
-  local -a files=()
-  mapfile -t files < <(replay_split "$split" "$base" | grep -E '^/.+\.jsonl$')
-  [[ "${#files[@]}" -eq "$NUM_SHARDS" ]] || { echo "Could not collect $split replay shards" >&2; return 4; }
-  "$PYTHON_BIN" -m cowp.scripts.12_attach_waymax_candidate_outcomes \
-    --cache-dir "$base" --output-dir "$outdir" --outcomes-jsonl "${files[@]}" \
-    --repair-outcomes-jsonl --skip-existing
-  "$PYTHON_BIN" -m cowp.scripts.14_verify_waymax_cache --cache-dir "$outdir"
+  replay_split "$split" "$base" "$outdir"
+  [[ "${#REPLAY_FILES[@]}" -eq "$NUM_SHARDS" ]] || { echo "Could not collect $split replay shards" >&2; return 4; }
+
+  # Incremental replay already writes most NPZs.  This pass is intentionally kept
+  # as a deterministic repair/finalization layer for resumed/interrupted jobs.
+  "$PYTHON_BIN" -u -m cowp.scripts.12_attach_waymax_candidate_outcomes \
+    --cache-dir "$base" \
+    --output-dir "$outdir" \
+    --outcomes-jsonl "${REPLAY_FILES[@]}" \
+    --repair-outcomes-jsonl \
+    --skip-existing
+  "$PYTHON_BIN" -u -m cowp.scripts.14_verify_waymax_cache --cache-dir "$outdir"
 }
 
 attach_split training "$BASE_TRAIN" "$OUT_TRAIN"
