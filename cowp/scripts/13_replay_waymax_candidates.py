@@ -120,7 +120,8 @@ def main() -> None:
     )
     ap.add_argument("--gc-every-scenes", type=int, default=16, help="Run Python GC every N matched scenes. Larger values reduce overhead; set 0 to disable explicit GC.")
     ap.add_argument("--profile-replay-jsonl", default=None, help="Optional per-scene replay timing JSONL.")
-    ap.add_argument("--profile-detail", choices=["scene", "candidate"], default="candidate", help="candidate preserves the historical fine-grained per-step timing instrumentation; scene avoids those perf_counter calls and is recommended for full replay.")
+    ap.add_argument("--profile-detail", choices=["scene", "candidate", "probe"], default="candidate", help="scene records coarse per-scene timings; candidate records dispatch-oriented fine timings for every new candidate; probe profiles only --profile-probe-candidates candidates, with half normal dispatch timing and half synchronization-aware GPU stage timing.")
+    ap.add_argument("--profile-probe-candidates", type=int, default=0, help="When --profile-detail probe, time only this many new candidates per worker (half dispatch, half synchronized). Normal replay is unchanged after the bounded probe budget is exhausted.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--jit-env-reset", action="store_true", help="Best-effort JAX-jit wrapper around env.reset. Falls back to eager reset if tracing is unsupported.")
     ap.add_argument("--attach-output-dir", default=None, help="Optional output cache directory for incremental per-scene NPZ attachment during replay. JSONL remains authoritative and scripts/12 should still be run once for final reconciliation.")
@@ -172,6 +173,7 @@ def main() -> None:
         state_source=args.state_source,
         profile_replay_jsonl=args.profile_replay_jsonl,
         profile_detail=str(args.profile_detail),
+        profile_probe_candidates=int(args.profile_probe_candidates),
         jit_env_step=bool(args.jit_env_step),
         jit_env_reset=bool(args.jit_env_reset),
         attach_output_dir=args.attach_output_dir,

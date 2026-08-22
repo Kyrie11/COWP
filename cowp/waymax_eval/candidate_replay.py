@@ -96,9 +96,36 @@ _CANDIDATE_TIMING_KEYS = (
     "timing/action_s",
     "timing/env_step_s",
     "timing/metric_update_s",
+    "timing/metric_OverlapMetric_s",
+    "timing/metric_OffroadMetric_s",
     "timing/done_check_s",
     "timing/metric_finalize_s",
 )
+
+
+def _block_until_ready_tree(value: Any) -> None:
+    """Synchronize a JAX pytree without copying it back to host.
+
+    JAX dispatch is asynchronous.  Plain perf_counter measurements around
+    env.step/metric.compute therefore measure mostly Python dispatch time and
+    can incorrectly charge the real accelerator work to the next NumPy/device
+    conversion.  The profile probe uses this helper only for a handful of
+    diagnostic candidates so stage timings correspond to completed GPU work.
+    It is never enabled for the normal full replay path.
+    """
+    try:
+        import jax  # type: ignore
+
+        leaves = jax.tree_util.tree_leaves(value)
+    except Exception:
+        leaves = [value]
+    for leaf in leaves:
+        block = getattr(leaf, "block_until_ready", None)
+        if callable(block):
+            try:
+                block()
+            except Exception:
+                pass
 
 
 class _JitCallableWithFallback:
@@ -576,18 +603,31 @@ class _FastSafetyMetricAccumulator:
             v = jnp.where(m, v, 0.0)
         return jnp.nan_to_num(jnp.max(v), nan=0.0, posinf=1.0, neginf=0.0)
 
-    def update(self, state: Any) -> None:
+    def update(
+        self,
+        state: Any,
+        *,
+        timing_out: dict[str, float] | None = None,
+        synchronize_timing: bool = False,
+    ) -> None:
         import jax.numpy as jnp  # type: ignore
 
         self.step_count += 1
         for name, metric in self.metric_objects:
+            t0 = time.perf_counter() if timing_out is not None else 0.0
             try:
                 scalar = self._sdc_scalar(metric.compute(state))
+                prev = self.max_values.get(name)
+                value = scalar if prev is None else jnp.maximum(prev, scalar)
+                self.max_values[name] = value
+                if synchronize_timing:
+                    _block_until_ready_tree(value)
             except Exception as exc:
                 self.errors.setdefault(name, str(exc))
                 continue
-            prev = self.max_values.get(name)
-            self.max_values[name] = scalar if prev is None else jnp.maximum(prev, scalar)
+            if timing_out is not None:
+                key = f"timing/metric_{name}_s"
+                timing_out[key] = float(timing_out.get(key, 0.0) + (time.perf_counter() - t0))
 
     def finalize(self, *, include_errors: bool = True) -> dict[str, float | int | dict[str, str]]:
         try:
@@ -656,6 +696,7 @@ def replay_candidate_on_env(
     initial_pose: np.ndarray | None = None,
     metric_set: str = "safety",
     collect_timing: bool = False,
+    synchronize_timing: bool = False,
     step_fn: Any | None = None,
     reset_fn: Any | None = None,
     done_check_interval: int = 1,
@@ -664,8 +705,12 @@ def replay_candidate_on_env(
     metric_guard_steps: set[int] | None = None,
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
+    if collect_timing:
+        timings["timing/mode"] = "sync" if synchronize_timing else "dispatch"
     t = time.perf_counter()
     state = reset_fn(init_state) if reset_fn is not None else env.reset(init_state)
+    if synchronize_timing:
+        _block_until_ready_tree(state)
     if collect_timing:
         timings["timing/env_reset_s"] = time.perf_counter() - t
 
@@ -678,6 +723,8 @@ def replay_candidate_on_env(
         num_objects=num_objects,
         initial_pose=initial_pose,
     )
+    if synchronize_timing:
+        _block_until_ready_tree((policy._fast_action_data_seq, policy._fast_action_valid))
     if collect_timing:
         timings["timing/policy_build_s"] = time.perf_counter() - t
 
@@ -711,10 +758,14 @@ def replay_candidate_on_env(
         if collect_timing:
             t = time.perf_counter()
         action = policy(state, step=step)
+        if synchronize_timing:
+            _block_until_ready_tree(action)
         if collect_timing:
             action_s += time.perf_counter() - t
             t = time.perf_counter()
         state = step_fn(state, action) if step_fn is not None else _env_step(env, state, action)
+        if synchronize_timing:
+            _block_until_ready_tree(state)
         if collect_timing:
             env_step_s += time.perf_counter() - t
             t = time.perf_counter()
@@ -728,7 +779,19 @@ def replay_candidate_on_env(
             if metric_eval_mode == "adaptive" and metric_guard_steps is not None and step_no in metric_guard_steps:
                 should_update_metric = True
         if should_update_metric:
-            metric_acc.update(state)
+            if isinstance(metric_acc, _FastSafetyMetricAccumulator):
+                metric_acc.update(
+                    state,
+                    timing_out=timings if collect_timing else None,
+                    synchronize_timing=bool(synchronize_timing),
+                )
+            else:
+                metric_acc.update(state)
+                if synchronize_timing:
+                    # The standard accumulator generally transfers results to host
+                    # inside update already. Keep this as a defensive barrier for
+                    # cross-version Waymax/JAX behavior.
+                    _block_until_ready_tree(state)
         if collect_timing:
             metric_s += time.perf_counter() - t
             t = time.perf_counter()
@@ -742,7 +805,16 @@ def replay_candidate_on_env(
             break
     if metric_eval_mode == "final":
         t_metric = time.perf_counter()
-        metric_acc.update(state)
+        if isinstance(metric_acc, _FastSafetyMetricAccumulator):
+            metric_acc.update(
+                state,
+                timing_out=timings if collect_timing else None,
+                synchronize_timing=bool(synchronize_timing),
+            )
+        else:
+            metric_acc.update(state)
+            if synchronize_timing:
+                _block_until_ready_tree(state)
         # Keep MetricSteps semantically tied to the rollout horizon even though
         # final-mode metrics are evaluated once on the complete SimulatorState.
         try:
@@ -1039,6 +1111,7 @@ def replay_cache_candidates_to_jsonl(
     state_source: str = "auto",
     profile_replay_jsonl: str | Path | None = None,
     profile_detail: str = "candidate",
+    profile_probe_candidates: int = 0,
     jit_env_step: bool = False,
     jit_env_reset: bool = False,
     done_check_interval: int = 1,
@@ -1078,13 +1151,24 @@ def replay_cache_candidates_to_jsonl(
     profile_path = Path(profile_replay_jsonl) if profile_replay_jsonl else None
     if profile_path is not None:
         profile_path.parent.mkdir(parents=True, exist_ok=True)
-        profile_path.write_text("", encoding="utf-8")
+        # Do not truncate an existing profile on resume.  Outcome JSONL continuity
+        # is independent of this file, but preserving old profile records makes it
+        # possible to compare multiple profiling/optimization runs afterward.
+        profile_path.touch(exist_ok=True)
     profile_detail = str(profile_detail or "candidate").strip().lower()
-    if profile_detail not in {"scene", "candidate"}:
-        raise ValueError(f"profile_detail must be scene or candidate, got {profile_detail!r}")
-    # Scene-level profiling remains enabled when a profile path is supplied, but
-    # expensive per-step perf_counter instrumentation is opt-in via candidate mode.
+    if profile_detail not in {"scene", "candidate", "probe"}:
+        raise ValueError(f"profile_detail must be scene, candidate, or probe, got {profile_detail!r}")
+    # candidate: historical dispatch-oriented fine timing for every new candidate.
+    # probe: only a small bounded set of new candidates is timed. Half use the
+    # normal asynchronous dispatch path; half insert stage barriers so env.step,
+    # OverlapMetric and OffroadMetric GPU work can be attributed accurately.
     collect_timing = profile_path is not None and profile_detail == "candidate"
+    profile_probe_candidates = max(0, int(profile_probe_candidates or 0))
+    probe_dispatch_budget = (profile_probe_candidates + 1) // 2
+    probe_sync_budget = profile_probe_candidates // 2
+    probe_dispatch_used = 0
+    probe_sync_used = 0
+    profile_run_id = f"pid{os.getpid()}_{time.time_ns()}"
 
     # Incremental attachment is independent of replay correctness.  JSONL remains
     # the source of truth; completed scene NPZs are written atomically in a bounded
@@ -1187,7 +1271,12 @@ def replay_cache_candidates_to_jsonl(
         arrays = None
         preselected_indices: list[int] | None = None
         scene_t0 = time.perf_counter()
-        scene_profile: dict[str, Any] = {"scenario_id": None, "source": "cache" if use_cache_state else "tfexample"}
+        scene_profile: dict[str, Any] = {
+            "scenario_id": None,
+            "source": "cache" if use_cache_state else "tfexample",
+            "profile_run_id": profile_run_id,
+            "profile_detail": profile_detail,
+        }
         if use_cache_state:
             sid, cache_path = item
             sid = str(sid)
@@ -1399,6 +1488,7 @@ def replay_cache_candidates_to_jsonl(
         rollout_s_scene = 0.0
         timing_sums = {k: 0.0 for k in _CANDIDATE_TIMING_KEYS}
         timing_count = 0
+        probe_records_scene: list[dict[str, Any]] = []
         for k in indices:
             if (sid, int(k)) in done:
                 skipped_rows_scene += 1
@@ -1417,6 +1507,19 @@ def replay_cache_candidates_to_jsonl(
                         radius_m=float(metric_guard_radius_m),
                         window_steps=int(metric_guard_window_steps),
                     )
+                candidate_collect_timing = bool(collect_timing)
+                candidate_sync_timing = False
+                candidate_probe_mode: str | None = None
+                if profile_path is not None and profile_detail == "probe":
+                    if probe_dispatch_used < probe_dispatch_budget:
+                        candidate_collect_timing = True
+                        candidate_probe_mode = "dispatch"
+                        probe_dispatch_used += 1
+                    elif probe_sync_used < probe_sync_budget:
+                        candidate_collect_timing = True
+                        candidate_sync_timing = True
+                        candidate_probe_mode = "sync"
+                        probe_sync_used += 1
                 outcome = replay_candidate_on_env(
                     env,
                     init_state,
@@ -1430,7 +1533,8 @@ def replay_cache_candidates_to_jsonl(
                     sdc_index=sdc_index,
                     initial_pose=initial_pose,
                     metric_set=metric_set,
-                    collect_timing=collect_timing,
+                    collect_timing=candidate_collect_timing,
+                    synchronize_timing=candidate_sync_timing,
                     step_fn=step_fn,
                     reset_fn=reset_fn,
                     done_check_interval=int(done_check_interval),
@@ -1439,7 +1543,7 @@ def replay_cache_candidates_to_jsonl(
                     metric_guard_steps=metric_guard_steps,
                 )
                 row.update(outcome)
-                if collect_timing:
+                if candidate_collect_timing:
                     timing_count += 1
                     for _tk in _CANDIDATE_TIMING_KEYS:
                         if _tk in row:
@@ -1447,6 +1551,18 @@ def replay_cache_candidates_to_jsonl(
                                 timing_sums[_tk] += float(row[_tk])
                             except Exception:
                                 pass
+                    if candidate_probe_mode is not None:
+                        probe_record: dict[str, Any] = {
+                            "candidate_index": int(k),
+                            "mode": str(candidate_probe_mode),
+                        }
+                        for _tk, _tv in row.items():
+                            if str(_tk).startswith("timing/") or _tk in {"steps", "rollout_seconds"}:
+                                try:
+                                    probe_record[str(_tk)] = float(_tv)
+                                except Exception:
+                                    probe_record[str(_tk)] = _tv
+                        probe_records_scene.append(probe_record)
                 total_written += 1
                 new_rows_scene += 1
             except Exception as exc:
@@ -1484,11 +1600,15 @@ def replay_cache_candidates_to_jsonl(
                     "seconds": time.perf_counter() - scene_t0,
                 }
             )
-            if collect_timing and timing_count > 0:
+            if timing_count > 0:
                 for _tk, _val in timing_sums.items():
                     suffix = _tk.split("/", 1)[1] if "/" in _tk else _tk
                     scene_profile[f"timing_sum/{suffix}"] = float(_val)
                     scene_profile[f"timing_mean/{suffix}"] = float(_val / max(timing_count, 1))
+            if probe_records_scene:
+                scene_profile["timing_probe_candidates"] = probe_records_scene
+                scene_profile["timing_probe_dispatch_used_total"] = int(probe_dispatch_used)
+                scene_profile["timing_probe_sync_used_total"] = int(probe_sync_used)
             with profile_path.open("a", encoding="utf-8") as pf:
                 pf.write(json.dumps(scene_profile, ensure_ascii=False, allow_nan=True) + "\n")
         if hasattr(iterator, "set_postfix"):
@@ -1525,6 +1645,10 @@ def replay_cache_candidates_to_jsonl(
         "state_source": "cache" if use_cache_state else "tfexample",
         "profile_replay_jsonl": str(profile_path) if profile_path is not None else None,
         "profile_detail": str(profile_detail),
+        "profile_probe_candidates": int(profile_probe_candidates),
+        "profile_probe_dispatch_used": int(probe_dispatch_used),
+        "profile_probe_sync_used": int(probe_sync_used),
+        "profile_run_id": profile_run_id,
         "jit_env_step": bool(jit_env_step),
         "jit_env_reset": bool(jit_env_reset),
         "attach_output_dir": str(attach_dir) if attach_dir is not None else None,
