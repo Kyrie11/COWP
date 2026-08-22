@@ -169,6 +169,79 @@ def _make_jitted_env_reset(env: Any):
         raise RuntimeError(f"jax unavailable for --jit-env-reset: {exc}") from exc
     return _JitCallableWithFallback(jax.jit(env.reset), env.reset)
 
+
+def _metric_result_sdc_scalar_jax(result: Any, sdc_index: Any):
+    """JAX-only equivalent of the fast safety SDC scalar extraction.
+
+    This intentionally mirrors ``_FastSafetyMetricAccumulator._sdc_scalar`` but
+    keeps the selection, validity mask, NaN handling, and running-max update
+    inside the compiled graph.  No metric formula is changed: the wrapped
+    Waymax metric's own ``compute`` method remains the source of truth.
+    """
+    import jax.numpy as jnp  # type: ignore
+
+    if hasattr(result, "value"):
+        value = getattr(result, "value")
+        valid = getattr(result, "valid", None)
+    elif isinstance(result, dict) and "value" in result:
+        value = result["value"]
+        valid = result.get("valid")
+    else:
+        value = result
+        valid = None
+
+    v = jnp.asarray(value, dtype=jnp.float32)
+    m = None if valid is None else jnp.asarray(valid, dtype=bool)
+    while getattr(v, "ndim", 0) > 1:
+        v = v[0]
+        if m is not None and getattr(m, "ndim", 0) > 1:
+            m = m[0]
+
+    if getattr(v, "ndim", 0) == 1 and int(v.shape[0]) > 0:
+        n = int(v.shape[0])
+        idx = jnp.clip(jnp.asarray(sdc_index, dtype=jnp.int32), 0, n - 1)
+        in_range = (jnp.asarray(sdc_index) >= 0) & (jnp.asarray(sdc_index) < n)
+        s = v[idx]
+        if m is not None and getattr(m, "ndim", 0) == 1 and int(m.shape[0]) == n:
+            s = jnp.where(m[idx], s, 0.0)
+            fallback_v = jnp.where(m, v, 0.0)
+        else:
+            fallback_v = v
+        fallback = jnp.nan_to_num(jnp.max(fallback_v), nan=0.0, posinf=1.0, neginf=0.0)
+        s = jnp.nan_to_num(s, nan=0.0, posinf=1.0, neginf=0.0)
+        return jnp.where(in_range, s, fallback)
+
+    if m is not None and getattr(m, "shape", None) == getattr(v, "shape", None):
+        v = jnp.where(m, v, 0.0)
+    return jnp.nan_to_num(jnp.max(v), nan=0.0, posinf=1.0, neginf=0.0)
+
+
+def _make_jitted_fast_metric_update(metric: Any):
+    """Compile one *unchanged* Waymax safety metric plus SDC max accumulation.
+
+    The function object is created once per replay worker (not once per
+    candidate), which is important because JAX caches compiled executables on
+    the jitted function object.  If a local Waymax build is not JIT compatible,
+    the existing permanent eager fallback preserves the previous behavior.
+    """
+    try:
+        import jax  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"jax unavailable for --jit-safety-metrics: {exc}") from exc
+
+    def _update(prev_max, state, sdc_index):
+        scalar = _metric_result_sdc_scalar_jax(metric.compute(state), sdc_index)
+        return jax.numpy.maximum(jax.numpy.asarray(prev_max, dtype=jax.numpy.float32), scalar)
+
+    return _JitCallableWithFallback(jax.jit(_update), _update)
+
+
+def _jit_wrappers_active(wrappers: dict[str, Any] | None) -> bool:
+    if not wrappers:
+        return False
+    vals = list(wrappers.values())
+    return bool(vals) and all(bool(getattr(x, "using_jit", False)) for x in vals)
+
 def scenario_id_from_arrays(arrays: dict[str, np.ndarray], path: str | Path | None = None) -> str:
     for key in ("scenario/id", "scenario__id", "womd/scenario/id", "womd__scenario__id"):
         if key in arrays:
@@ -568,13 +641,28 @@ class _FastSafetyMetricAccumulator:
     we accumulate their SDC values as JAX arrays and transfer them to host once.
     """
 
-    def __init__(self, *, metric_objects: list[tuple[str, Any]], init_errors: dict[str, str] | None = None, sdc_index: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        metric_objects: list[tuple[str, Any]],
+        init_errors: dict[str, str] | None = None,
+        sdc_index: int | None = None,
+        metric_update_fns: dict[str, Any] | None = None,
+    ) -> None:
         self.metric_objects = [(str(n), m) for n, m in (metric_objects or []) if str(n) in {"OverlapMetric", "OffroadMetric"}]
         self.init_errors = dict(init_errors or {})
         self.sdc_index = None if sdc_index is None else int(sdc_index)
+        self.metric_update_fns = dict(metric_update_fns or {})
         self.max_values: dict[str, Any] = {}
         self.errors: dict[str, str] = {}
         self.step_count = 0
+        self._sdc_index_jax = None
+        if self.metric_update_fns and self.sdc_index is not None:
+            try:
+                import jax.numpy as jnp  # type: ignore
+                self._sdc_index_jax = jnp.asarray(self.sdc_index, dtype=jnp.int32)
+            except Exception:
+                self._sdc_index_jax = None
 
     def _sdc_scalar(self, result: Any):
         import jax.numpy as jnp  # type: ignore
@@ -616,9 +704,16 @@ class _FastSafetyMetricAccumulator:
         for name, metric in self.metric_objects:
             t0 = time.perf_counter() if timing_out is not None else 0.0
             try:
-                scalar = self._sdc_scalar(metric.compute(state))
-                prev = self.max_values.get(name)
-                value = scalar if prev is None else jnp.maximum(prev, scalar)
+                update_fn = self.metric_update_fns.get(name)
+                if update_fn is not None and self._sdc_index_jax is not None:
+                    prev = self.max_values.get(name)
+                    if prev is None:
+                        prev = jnp.asarray(0.0, dtype=jnp.float32)
+                    value = update_fn(prev, state, self._sdc_index_jax)
+                else:
+                    scalar = self._sdc_scalar(metric.compute(state))
+                    prev = self.max_values.get(name)
+                    value = scalar if prev is None else jnp.maximum(prev, scalar)
                 self.max_values[name] = value
                 if synchronize_timing:
                     _block_until_ready_tree(value)
@@ -703,6 +798,7 @@ def replay_candidate_on_env(
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
     metric_guard_steps: set[int] | None = None,
+    fast_metric_update_fns: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timings: dict[str, float] = {}
     if collect_timing:
@@ -730,7 +826,12 @@ def replay_candidate_on_env(
 
     metric_list = metric_objects or []
     if _metric_set_is_fast_safety(metric_set, metric_list):
-        metric_acc: Any = _FastSafetyMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {}, sdc_index=sdc_index)
+        metric_acc: Any = _FastSafetyMetricAccumulator(
+            metric_objects=metric_list,
+            init_errors=metric_init_errors or {},
+            sdc_index=sdc_index,
+            metric_update_fns=fast_metric_update_fns,
+        )
     else:
         metric_acc = WaymaxStandardMetricAccumulator(metric_objects=metric_list, init_errors=metric_init_errors or {})
 
@@ -1086,6 +1187,88 @@ def _cache_path_has_womd_features(path: Path) -> bool:
     except Exception:
         return False
 
+def _resume_semantics_manifest_path(out_path: Path) -> Path:
+    return out_path.with_name(out_path.name + ".semantics.json")
+
+
+def _ensure_resume_semantics_manifest(
+    out_path: Path,
+    *,
+    semantics: dict[str, Any],
+    resume: bool,
+) -> dict[str, Any]:
+    """Guard a replay shard against accidental mixed-semantics resume.
+
+    JIT/compilation-cache/profile settings are deliberately excluded because
+    they are execution-only. Dataset-defining parameters are persisted next to
+    each shard JSONL. Existing v24 JSONLs created before this guard are adopted
+    once after checking every semantic field that is already present in rows.
+    """
+    manifest_path = _resume_semantics_manifest_path(out_path)
+    payload = {"schema_version": "cowp_v16_8_24_waymax_resume_semantics_v1", **semantics}
+    if not resume:
+        manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return {"resume_semantics_manifest": str(manifest_path), "resume_semantics_adopted_existing": False}
+
+    if manifest_path.exists():
+        old = json.loads(manifest_path.read_text(encoding="utf-8"))
+        diffs = {k: (old.get(k), v) for k, v in semantics.items() if old.get(k) != v}
+        if diffs:
+            raise RuntimeError(
+                "Refusing to resume Waymax JSONL with changed dataset semantics: "
+                + json.dumps(diffs, ensure_ascii=False, sort_keys=True)
+                + f". Existing manifest: {manifest_path}"
+            )
+        return {"resume_semantics_manifest": str(manifest_path), "resume_semantics_adopted_existing": False}
+
+    adopted = bool(out_path.exists() and out_path.stat().st_size > 0)
+    # Legacy rows already record the fields below. Validate them before adopting
+    # the old file into the stronger manifest guard. Corrupt tail rows are left
+    # to the normal resume-repair routine.
+    if adopted:
+        row_field_to_semantic = {
+            "action_mode": "action_mode",
+            "candidate_selection": "candidate_selection",
+            "max_candidates_per_scene": "max_candidates_per_scene",
+            "horizon_steps": "horizon_steps",
+            "metric_set": "metric_set",
+            "metric_eval_mode": "metric_eval_mode",
+            "metric_eval_interval": "metric_eval_interval",
+            "done_check_interval": "done_check_interval",
+            "num_shards": "num_shards",
+            "shard_index": "shard_index",
+        }
+        mismatches: list[dict[str, Any]] = []
+        max_steps = 0
+        with out_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line_no, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                for row_key, sem_key in row_field_to_semantic.items():
+                    if row_key in row and row.get(row_key) != semantics.get(sem_key):
+                        mismatches.append({"line": line_no, "field": row_key, "old": row.get(row_key), "new": semantics.get(sem_key)})
+                try:
+                    max_steps = max(max_steps, int(row.get("steps", 0) or 0))
+                except Exception:
+                    pass
+                if len(mismatches) >= 20:
+                    break
+        if max_steps > int(semantics.get("horizon_steps", max_steps)):
+            mismatches.append({"field": "horizon_steps", "observed_existing_steps": max_steps, "new": semantics.get("horizon_steps")})
+        if mismatches:
+            raise RuntimeError(
+                "Refusing to adopt legacy Waymax JSONL because existing rows conflict with current semantics: "
+                + json.dumps(mismatches[:20], ensure_ascii=False)
+            )
+    payload["adopted_existing_jsonl_without_manifest"] = adopted
+    manifest_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return {"resume_semantics_manifest": str(manifest_path), "resume_semantics_adopted_existing": adopted}
+
+
 def replay_cache_candidates_to_jsonl(
     *,
     cache_dir: str | Path,
@@ -1114,6 +1297,7 @@ def replay_cache_candidates_to_jsonl(
     profile_probe_candidates: int = 0,
     jit_env_step: bool = False,
     jit_env_reset: bool = False,
+    jit_safety_metrics: bool = False,
     done_check_interval: int = 1,
     metric_eval_mode: str = "step",
     metric_eval_interval: int = 1,
@@ -1134,6 +1318,25 @@ def replay_cache_candidates_to_jsonl(
     if limit_scenes is not None:
         keep = set(list(sid_to_path.keys())[: int(limit_scenes)])
         sid_to_path = {sid: p for sid, p in sid_to_path.items() if sid in keep}
+
+    resume_semantics_stats = _ensure_resume_semantics_manifest(
+        out_path,
+        semantics={
+            "cache_dir": str(cache_dir.resolve()),
+            "candidate_selection": str(candidate_selection),
+            "max_candidates_per_scene": None if max_candidates_per_scene is None else int(max_candidates_per_scene),
+            "horizon_steps": int(horizon_steps),
+            "action_mode": str(action_mode),
+            "metric_set": str(metric_set),
+            "metric_eval_mode": str(metric_eval_mode),
+            "metric_eval_interval": int(metric_eval_interval),
+            "done_check_interval": int(done_check_interval),
+            "state_source_requested": str(state_source),
+            "num_shards": int(num_shards),
+            "shard_index": int(shard_index),
+        },
+        resume=bool(resume),
+    )
 
     resume_repair_stats: dict[str, int] = {}
     if resume:
@@ -1227,6 +1430,15 @@ def replay_cache_candidates_to_jsonl(
     remaining = set(sid_to_path.keys())
 
     metric_objects, metric_errors = build_waymax_metric_objects(metric_names_for_set(metric_set))
+    fast_metric_update_fns: dict[str, Any] = {}
+    if bool(jit_safety_metrics) and _metric_set_is_fast_safety(metric_set, metric_objects):
+        for _metric_name, _metric in metric_objects:
+            if str(_metric_name) not in {"OverlapMetric", "OffroadMetric"}:
+                continue
+            try:
+                fast_metric_update_fns[str(_metric_name)] = _make_jitted_fast_metric_update(_metric)
+            except Exception as _jit_metric_exc:
+                metric_errors.setdefault(str(_metric_name), f"jit setup failed; eager metric retained: {_jit_metric_exc}")
     env_cache: dict[tuple[int, str], Any] = {}
     env_step_fn_cache: dict[tuple[int, str], Any | None] = {}
     env_reset_fn_cache: dict[tuple[int, str], Any | None] = {}
@@ -1454,6 +1666,8 @@ def replay_cache_candidates_to_jsonl(
                 reset_fn = env_reset_fn_cache.get(env_key)
             scene_profile["jit_env_step"] = bool(step_fn is not None)
             scene_profile["jit_env_reset"] = bool(reset_fn is not None)
+            scene_profile["jit_safety_metrics_requested"] = bool(jit_safety_metrics)
+            scene_profile["jit_safety_metrics_active"] = bool(_jit_wrappers_active(fast_metric_update_fns))
             scene_profile["done_check_interval"] = int(done_check_interval)
             scene_profile["metric_eval_mode"] = str(metric_eval_mode)
             scene_profile["metric_eval_interval"] = int(metric_eval_interval)
@@ -1541,6 +1755,7 @@ def replay_cache_candidates_to_jsonl(
                     metric_eval_mode=str(metric_eval_mode),
                     metric_eval_interval=int(metric_eval_interval),
                     metric_guard_steps=metric_guard_steps,
+                    fast_metric_update_fns=fast_metric_update_fns,
                 )
                 row.update(outcome)
                 if candidate_collect_timing:
@@ -1574,9 +1789,15 @@ def replay_cache_candidates_to_jsonl(
             candidate_seconds += sec
             row["rollout_seconds"] = float(sec)
             row["action_mode"] = str(action_mode)
+            row["candidate_selection"] = str(candidate_selection)
+            row["max_candidates_per_scene"] = None if max_candidates_per_scene is None else int(max_candidates_per_scene)
+            row["horizon_steps"] = int(horizon_steps)
             row["metric_set"] = str(metric_set)
             row["metric_eval_mode"] = str(metric_eval_mode)
             row["metric_eval_interval"] = int(metric_eval_interval)
+            row["done_check_interval"] = int(done_check_interval)
+            row["num_shards"] = int(num_shards)
+            row["shard_index"] = int(shard_index)
             known_rows_by_sid[sid][int(k)] = dict(row)
             rows_to_write.append(json.dumps(row, ensure_ascii=False, allow_nan=True))
             done.add((sid, int(k)))
@@ -1587,6 +1808,9 @@ def replay_cache_candidates_to_jsonl(
         _submit_scene_attach(sid)
         remaining.discard(sid)
         if profile_path is not None:
+            scene_profile["jit_env_step_active"] = bool(step_fn is not None and getattr(step_fn, "using_jit", True))
+            scene_profile["jit_env_reset_active"] = bool(reset_fn is not None and getattr(reset_fn, "using_jit", True))
+            scene_profile["jit_safety_metrics_active"] = bool(_jit_wrappers_active(fast_metric_update_fns))
             scene_profile.update(
                 {
                     "status": "ok",
@@ -1631,6 +1855,7 @@ def replay_cache_candidates_to_jsonl(
         "candidate_targets": candidate_targets,
         "rows_written_or_resumed": len(done),
         **resume_repair_stats,
+        **resume_semantics_stats,
         "new_success_rows": total_written,
         "new_failed_rows": total_failed,
         "unmatched_cache_scenes": len(remaining),
@@ -1651,6 +1876,8 @@ def replay_cache_candidates_to_jsonl(
         "profile_run_id": profile_run_id,
         "jit_env_step": bool(jit_env_step),
         "jit_env_reset": bool(jit_env_reset),
+        "jit_safety_metrics_requested": bool(jit_safety_metrics),
+        "jit_safety_metrics_active": bool(_jit_wrappers_active(fast_metric_update_fns)),
         "attach_output_dir": str(attach_dir) if attach_dir is not None else None,
         "incremental_npz_written": int(attach_written),
         "incremental_npz_skipped_complete": int(attach_skipped),

@@ -153,3 +153,60 @@ def test_v24_shell_keeps_exact_metrics_and_live_progress_path() -> None:
     rollout_text = (root / "cowp" / "waymax_eval" / "rollout.py").read_text(encoding="utf-8")
     assert "requires waymax.dynamics.StateDynamics" in rollout_text
     assert 'dynamics_names = ("StateDynamics", "DeltaGlobal")' not in rollout_text
+
+
+def test_jitted_fast_metric_update_preserves_sdc_max() -> None:
+    import jax.numpy as jnp
+    from cowp.waymax_eval.candidate_replay import _make_jitted_fast_metric_update
+
+    class FakeMetric:
+        def compute(self, state):
+            x = jnp.asarray(state, dtype=jnp.float32)
+            return {"value": x, "valid": jnp.asarray([True, True, True])}
+
+    f = _make_jitted_fast_metric_update(FakeMetric())
+    prev = jnp.asarray(0.25, dtype=jnp.float32)
+    out = f(prev, jnp.asarray([0.1, 0.8, 0.2], dtype=jnp.float32), jnp.asarray(1, dtype=jnp.int32))
+    assert float(np.asarray(out)) == np.float32(0.8)
+    assert f.using_jit
+
+
+def test_resume_semantics_manifest_rejects_changed_horizon(tmp_path: Path) -> None:
+    from cowp.waymax_eval.candidate_replay import _ensure_resume_semantics_manifest
+
+    out = tmp_path / "shard.jsonl"
+    out.write_text(
+        json.dumps({
+            "scenario_id": "s",
+            "candidate_index": 0,
+            "rollout_valid": True,
+            "collision": False,
+            "offroad": False,
+            "steps": 80,
+            "action_mode": "absolute_xy_yaw",
+            "metric_set": "safety",
+            "metric_eval_mode": "step",
+            "metric_eval_interval": 1,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    sem = {
+        "cache_dir": str(tmp_path),
+        "candidate_selection": "balanced",
+        "max_candidates_per_scene": 24,
+        "horizon_steps": 80,
+        "action_mode": "absolute_xy_yaw",
+        "metric_set": "safety",
+        "metric_eval_mode": "step",
+        "metric_eval_interval": 1,
+        "done_check_interval": 1,
+        "state_source_requested": "cache",
+        "num_shards": 2,
+        "shard_index": 0,
+    }
+    info = _ensure_resume_semantics_manifest(out, semantics=sem, resume=True)
+    assert info["resume_semantics_adopted_existing"] is True
+    bad = dict(sem, horizon_steps=40)
+    import pytest
+    with pytest.raises(RuntimeError):
+        _ensure_resume_semantics_manifest(out, semantics=bad, resume=True)

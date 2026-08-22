@@ -13,7 +13,7 @@ set -euo pipefail
 #   * one atomic _waymax NPZ is emitted as soon as each scene finishes
 #   * NPZ writing overlaps GPU replay in a bounded background I/O thread
 #   * full-run profiling defaults to scene-level (no per-step perf_counter overhead)
-#   * optional JAX JIT for env.reset/env.step; defaults OFF until the supplied A/B equivalence gate passes
+#   * optional JAX JIT for env.step and the unchanged Waymax safety metrics; defaults OFF until the supplied A/B equivalence gate passes
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full}"
@@ -32,6 +32,8 @@ WAYMAX_ATTACH_MAX_PENDING="${WAYMAX_ATTACH_MAX_PENDING:-2}"
 WAYMAX_PROFILE_DETAIL="${WAYMAX_PROFILE_DETAIL:-scene}"
 WAYMAX_JIT_ENV_STEP="${WAYMAX_JIT_ENV_STEP:-0}"
 WAYMAX_JIT_ENV_RESET="${WAYMAX_JIT_ENV_RESET:-0}"
+WAYMAX_JIT_SAFETY_METRICS="${WAYMAX_JIT_SAFETY_METRICS:-0}"
+WAYMAX_JAX_COMPILATION_CACHE_DIR="${WAYMAX_JAX_COMPILATION_CACHE_DIR:-$COWP_ROOT/.jax_compilation_cache_waymax_v16_8_24}"
 
 IFS=',' read -r -a GPUS <<< "$WAYMAX_GPUS"
 [[ "${#GPUS[@]}" -ge 1 ]] || { echo "WAYMAX_GPUS is empty" >&2; exit 2; }
@@ -46,7 +48,7 @@ fi
 for p in "$BASE_TRAIN" "$BASE_VAL" "$BASE_TEST"; do
   [[ -d "$p" ]] || { echo "Missing core tensor cache: $p" >&2; exit 3; }
 done
-mkdir -p "$REPLAY_ROOT" "$OUT_TRAIN" "$OUT_VAL" "$OUT_TEST"
+mkdir -p "$REPLAY_ROOT" "$OUT_TRAIN" "$OUT_VAL" "$OUT_TEST" "$WAYMAX_JAX_COMPILATION_CACHE_DIR"
 
 # Global array populated by replay_split.  replay_split is called directly (not
 # in a process substitution), so child tqdm/log output remains connected to the
@@ -56,6 +58,7 @@ REPLAY_FILES=()
 _jit_args=()
 [[ "$WAYMAX_JIT_ENV_STEP" == "1" ]] && _jit_args+=(--jit-env-step)
 [[ "$WAYMAX_JIT_ENV_RESET" == "1" ]] && _jit_args+=(--jit-env-reset)
+[[ "$WAYMAX_JIT_SAFETY_METRICS" == "1" ]] && _jit_args+=(--jit-safety-metrics)
 
 cleanup_children(){
   local rc=$?
@@ -72,6 +75,8 @@ replay_split(){
   echo "============================================================"
   echo "[$split] replay start: cache=$cache output=$outdir shards=$NUM_SHARDS max_candidates=$MAX_CANDIDATES horizon=$HORIZON"
   echo "[$split] exact safety metrics: metric_eval_mode=step, done_check_interval=1"
+  echo "[$split] JIT: env_step=$WAYMAX_JIT_ENV_STEP env_reset=$WAYMAX_JIT_ENV_RESET safety_metrics=$WAYMAX_JIT_SAFETY_METRICS"
+  echo "[$split] JAX persistent cache: $WAYMAX_JAX_COMPILATION_CACHE_DIR"
   echo "[$split] incremental NPZ attachment enabled; JSONL is still authoritative"
 
   for ((s=0;s<NUM_SHARDS;s++)); do
@@ -85,6 +90,11 @@ replay_split(){
     (
       export CUDA_VISIBLE_DEVICES="$gpu"
       export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+      # Each physical GPU gets a stable local persistent JAX compilation cache.
+      # This avoids recompiling the same env.step/metric graphs when the script
+      # advances from train -> val -> heldout or after an interrupted resume.
+      export JAX_COMPILATION_CACHE_DIR="$WAYMAX_JAX_COMPILATION_CACHE_DIR/gpu${gpu}"
+      mkdir -p "$JAX_COMPILATION_CACHE_DIR"
       export COWP_TQDM_POSITION="$s"
       "$PYTHON_BIN" -u -m cowp.scripts.13_replay_waymax_candidates \
         --data-config configs/data.yaml \

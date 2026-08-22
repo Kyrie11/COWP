@@ -62,7 +62,8 @@ def _print_jax_runtime(device: str, *, require_gpu: bool = False) -> None:
         f"devices={devices} gpu_devices={gpu_devices} "
         f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')} "
         f"JAX_PLATFORM_NAME={os.environ.get('JAX_PLATFORM_NAME', '<unset>')} "
-        f"JAX_PLATFORMS={os.environ.get('JAX_PLATFORMS', '<unset>')}"
+        f"JAX_PLATFORMS={os.environ.get('JAX_PLATFORMS', '<unset>')} "
+        f"JAX_COMPILATION_CACHE_DIR={os.environ.get('JAX_COMPILATION_CACHE_DIR', '<unset>')}"
     )
     if require_gpu and not gpu_devices:
         raise RuntimeError(
@@ -124,6 +125,15 @@ def main() -> None:
     ap.add_argument("--profile-probe-candidates", type=int, default=0, help="When --profile-detail probe, time only this many new candidates per worker (half dispatch, half synchronized). Normal replay is unchanged after the bounded probe budget is exhausted.")
     ap.add_argument("--jit-env-step", action="store_true", help="Best-effort JAX-jit wrapper around env.step. Preserves the same actions, metrics and done checks; falls back to eager step if tracing is unsupported.")
     ap.add_argument("--jit-env-reset", action="store_true", help="Best-effort JAX-jit wrapper around env.reset. Falls back to eager reset if tracing is unsupported.")
+    ap.add_argument(
+        "--jit-safety-metrics",
+        action="store_true",
+        help=(
+            "JIT the unchanged Waymax OverlapMetric/OffroadMetric compute graphs and their SDC running-max extraction. "
+            "Only applies to --metric-set safety/fast; the metric definitions, per-step evaluation cadence, and labels are unchanged. "
+            "Use CHECK_WAYMAX_JIT_EQUIVALENCE_V16_8_24_CN.sh before enabling on a resumed full build."
+        ),
+    )
     ap.add_argument("--attach-output-dir", default=None, help="Optional output cache directory for incremental per-scene NPZ attachment during replay. JSONL remains authoritative and scripts/12 should still be run once for final reconciliation.")
     ap.add_argument("--attach-compress", action="store_true", help="Compress incremental attached NPZs. Default is uncompressed for speed, matching the v24 core cache.")
     ap.add_argument("--attach-max-pending", type=int, default=2, help="Bounded number of background incremental NPZ writes per replay process.")
@@ -176,6 +186,7 @@ def main() -> None:
         profile_probe_candidates=int(args.profile_probe_candidates),
         jit_env_step=bool(args.jit_env_step),
         jit_env_reset=bool(args.jit_env_reset),
+        jit_safety_metrics=bool(args.jit_safety_metrics),
         attach_output_dir=args.attach_output_dir,
         attach_compress=bool(args.attach_compress),
         attach_max_pending=int(args.attach_max_pending),
