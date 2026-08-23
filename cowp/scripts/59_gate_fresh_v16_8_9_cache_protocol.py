@@ -47,7 +47,6 @@ FINGERPRINT_FILES = (
     "cowp/scripts/76_reaudit_v16_8_21_strict_for_v16_8_22.py",
     "cowp/scripts/19_diagnose_waymax_cache_sufficiency.py",
     "configs/label_cowp_v16_8.yaml",
-    "configs/label_cowp_v16_8_25_mcfc.yaml",
     "configs/model_cowp_v16_8.yaml",
     "configs/train_cowp_v16_8.yaml",
     "cowp/models/set_transport_head.py",
@@ -76,7 +75,6 @@ LABEL_SEMANTIC_FILES = (
     "cowp/data/parse_scenario_proto.py",
     "configs/data.yaml",
     "configs/label_cowp_v16_8.yaml",
-    "configs/label_cowp_v16_8_25_mcfc.yaml",
 )
 
 FRESH_PROVENANCE_KEYS = (

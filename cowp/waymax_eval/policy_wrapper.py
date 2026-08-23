@@ -95,7 +95,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m == "cowp" and g == "hard":
+    if m in {"cowp", "cowp_cert_utility"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -2509,6 +2509,24 @@ class COWPWaymaxPolicy:
             # conventional frontier in the current scene.  This makes the online
             # controller consistent with the set-valued NCF certificate used in
             # learned-offline evaluation.
+            if method == "cowp_cert_utility" and gate_mode in {"priority", "soft"}:
+                # Same semantic certificate and physical shield as COWP, but no
+                # second BCOT/frontier ranking among already accepted trajectories.
+                # This isolates the post-certificate ranking question while keeping
+                # the online physical-safety guard unchanged.
+                pcfg_ctu = self.cfg.get("planning", {})
+                physical_ok_ctu = (
+                    (action_risk <= float(pcfg_ctu.get("candidate_hard_max_action_risk", 0.45)))
+                    & (rule_risk <= float(pcfg_ctu.get("candidate_hard_max_rule_risk", 0.70)))
+                    & (outcome_risk <= float(self.outcome_risk_threshold))
+                )
+                shielded = certificate_accepted & physical_ok_ctu
+                if bool(shielded.any().detach().cpu().item()):
+                    selection_mask = shielded
+                else:
+                    selection_mask = certificate_accepted
+                adjusted_scores = scores
+
             if method == "cowp" and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (

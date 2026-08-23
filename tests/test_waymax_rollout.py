@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from cowp.waymax_eval.baselines import ablation_for_method
 
 
@@ -110,7 +112,7 @@ def test_closed_loop_prefilter_preserves_global_scenario_index(monkeypatch):
     assert [row["steps"] for row in outputs] == [1, 1]
 
 
-def test_closed_loop_exact_ids_are_filtered_before_state_build_and_keep_global_indices(monkeypatch):
+def test_closed_loop_exact_ids_resolve_requested_set(monkeypatch):
     from cowp.waymax_eval import dataloader, rollout
 
     class State:
@@ -126,16 +128,13 @@ def test_closed_loop_exact_ids_are_filtered_before_state_build_and_keep_global_i
         def step(self, state, action):
             return State(state.name, done=True)
 
-    requested_sets = []
-
-    def fake_exact_generator(*args, **kwargs):
-        requested_sets.append(set(args[1]))
-        # Simulate dataset scan order rather than allowlist order.
-        for sid in ("scene-c", "scene-a"):
-            if sid in args[1]:
-                yield sid, State(sid)
-
-    monkeypatch.setattr(dataloader, "waymax_state_generator_for_sids", fake_exact_generator)
+    requested = ["scene-b", "scene-a"]
+    # Generator order intentionally differs from the manifest order.
+    monkeypatch.setattr(
+        dataloader,
+        "waymax_state_generator_for_sids",
+        lambda *args, **kwargs: iter([("scene-a", State("a")), ("scene-b", State("b"))]),
+    )
     monkeypatch.setattr(rollout, "_make_waymax_environment", lambda **kwargs: Env())
     seen = []
 
@@ -143,31 +142,27 @@ def test_closed_loop_exact_ids_are_filtered_before_state_build_and_keep_global_i
         seen.append((state.name, scenario_index))
         return object()
 
-    outputs = rollout.waymax_closed_loop_rollout(
-        {},
-        policy,
-        scenario_ids=["scene-a", "scene-b", "scene-c", "scene-d"],
-        horizon_steps=2,
-        progress=False,
-        shard_index=0,
-        num_shards=2,
-        prefilter_shards=True,
-        jit_env=False,
-        status_every=0,
+    rows = rollout.waymax_closed_loop_rollout(
+        {}, policy, scenario_ids=requested, horizon_steps=2,
+        progress=False, jit_env=False, status_every=0,
     )
+    assert {r["scenario_id"] for r in rows} == set(requested)
+    # scenario_index follows manifest position, giving deterministic policy identity.
+    assert seen == [("a", 1), ("b", 0)]
 
-    assert requested_sets == [{"scene-a", "scene-c"}]
-    assert seen == [("scene-c", 2), ("scene-a", 0)]
-    assert [row["scenario_id"] for row in outputs] == ["scene-c", "scene-a"]
 
-
-def test_closed_loop_exact_ids_fail_when_requested_id_is_missing(monkeypatch):
-    import pytest
+def test_closed_loop_exact_ids_fail_if_any_requested_id_is_missing(monkeypatch):
     from cowp.waymax_eval import dataloader, rollout
 
     class State:
         done = True
         num_objects = 4
+
+    monkeypatch.setattr(
+        dataloader,
+        "waymax_state_generator_for_sids",
+        lambda *args, **kwargs: iter([("scene-a", State())]),
+    )
 
     class Env:
         def reset(self, state):
@@ -176,20 +171,10 @@ def test_closed_loop_exact_ids_fail_when_requested_id_is_missing(monkeypatch):
         def step(self, state, action):
             return state
 
-    monkeypatch.setattr(
-        dataloader,
-        "waymax_state_generator_for_sids",
-        lambda *args, **kwargs: iter([("scene-a", State())]),
-    )
     monkeypatch.setattr(rollout, "_make_waymax_environment", lambda **kwargs: Env())
-
-    with pytest.raises(RuntimeError, match="resolved 1/2"):
+    with pytest.raises(RuntimeError, match="missing 1"):
         rollout.waymax_closed_loop_rollout(
-            {},
-            lambda state, **kwargs: object(),
-            scenario_ids=["scene-a", "scene-b"],
-            horizon_steps=1,
-            progress=False,
-            jit_env=False,
-            status_every=0,
+            {}, lambda state, **kwargs: object(),
+            scenario_ids=["scene-a", "scene-b"], horizon_steps=1,
+            progress=False, jit_env=False, status_every=0,
         )

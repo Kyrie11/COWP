@@ -66,9 +66,10 @@ def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
         "no_ncf": "planner_score_only",
     }
     m = aliases.get(m, m)
-    if m == "cowp" and g == "hard":
-        # The paper/code now treats COWP as priority-aware NCF.  The original
-        # universal veto remains available as method=universal_ncf.
+    if m in {"cowp", "cowp_cert_utility"} and g == "hard":
+        # The paper/code treats the primary COWP certificate as priority-aware NCF.
+        # ``cowp_cert_utility`` shares the exact same certificate and changes only
+        # the post-certificate selector, so it must inherit the same gate semantics.
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -830,6 +831,25 @@ def _select_from_learned(
     # recall and accepted-rate depend on an arbitrary top-k implementation detail.
     certificate_accepted = accepted.clone()
     selection_mask = accepted
+
+    if method == "cowp_cert_utility" and gate_mode in {"priority", "soft"}:
+        # v16.8.25 diagnostic/repair: certificate-then-utility (CTU).  Keep the
+        # semantic BCOT/P-NCF certificate exactly unchanged and preserve the same
+        # action/rule/outcome physical shield used by COWP, but do not use the same
+        # transport risk a second time to rank already-admissible candidates.
+        # If the physical shield would empty a scene, retain the semantic certificate
+        # set and let the existing fallback/utility path handle it, matching online
+        # behavior rather than creating a new source of fallback only in offline eval.
+        pcfg_ctu = (cfg or {}).get("planning", {}) if isinstance(cfg, dict) else {}
+        physical_ok_ctu = (
+            (action_risk <= float(pcfg_ctu.get("candidate_hard_max_action_risk", 0.45)))
+            & (rule_risk <= float(pcfg_ctu.get("candidate_hard_max_rule_risk", 0.70)))
+            & (outcome_risk <= float(outcome_risk_threshold))
+        )
+        shielded = certificate_accepted & physical_ok_ctu
+        has_shielded = shielded.any(dim=-1, keepdim=True)
+        selection_mask = torch.where(has_shielded, shielded, certificate_accepted)
+        adjusted_scores = scores
 
     if method == "cowp" and gate_mode in {"priority", "soft"}:
         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
@@ -1725,6 +1745,12 @@ def _learned_offline_candidate_eval_many(
     cert_fs_targets: list[np.ndarray] = []
     cert_q_scores: list[np.ndarray] = []
     cert_q_targets: list[np.ndarray] = []
+    outcome_collision_scores: list[np.ndarray] = []
+    outcome_collision_targets: list[np.ndarray] = []
+    outcome_offroad_scores: list[np.ndarray] = []
+    outcome_offroad_targets: list[np.ndarray] = []
+    outcome_unsafe_scores: list[np.ndarray] = []
+    outcome_unsafe_targets: list[np.ndarray] = []
     priority_transport_scores: list[np.ndarray] = []
     priority_transport_targets: list[np.ndarray] = []
     global_transport_scores: list[np.ndarray] = []
@@ -1798,6 +1824,33 @@ def _learned_offline_candidate_eval_many(
             ncf_np = batch["cowp/candidates/noncoercive_feasible"].bool().detach().cpu().numpy()
             fs_np = batch["cowp/candidates/false_safe"].bool().detach().cpu().numpy()
             valid_np = cand_mask.detach().cpu().numpy()
+
+            # Measure the learned Waymax outcome head without using it for
+            # selection.  Attached candidate rollouts are already present in the
+            # current cache, so this is a zero-rebuild diagnostic deciding whether
+            # an outcome safety shield is worth testing in a later step.
+            outcome_pred = pred.get("outcome", {})
+            rv_t = batch.get("waymax/candidate_rollout_valid")
+            col_tgt_t = batch.get("waymax/candidate_collision")
+            off_tgt_t = batch.get("waymax/candidate_offroad")
+            if (isinstance(outcome_pred, dict) and torch.is_tensor(rv_t)
+                    and torch.is_tensor(col_tgt_t) and torch.is_tensor(off_tgt_t)):
+                col_logit_t = outcome_pred.get("collision_logit")
+                off_logit_t = outcome_pred.get("offroad_logit")
+                if torch.is_tensor(col_logit_t) and torch.is_tensor(off_logit_t):
+                    eval_mask_t = rv_t.bool() & cand_mask
+                    if bool(eval_mask_t.any().item()):
+                        col_prob_t = torch.sigmoid(col_logit_t.detach().float()).clamp(0.0, 1.0)
+                        off_prob_t = torch.sigmoid(off_logit_t.detach().float()).clamp(0.0, 1.0)
+                        unsafe_prob_t = (1.0 - (1.0 - col_prob_t) * (1.0 - off_prob_t)).clamp(0.0, 1.0)
+                        unsafe_tgt_t = col_tgt_t.bool() | off_tgt_t.bool()
+                        outcome_collision_scores.append(col_prob_t[eval_mask_t].cpu().numpy())
+                        outcome_collision_targets.append(col_tgt_t.bool()[eval_mask_t].cpu().numpy())
+                        outcome_offroad_scores.append(off_prob_t[eval_mask_t].cpu().numpy())
+                        outcome_offroad_targets.append(off_tgt_t.bool()[eval_mask_t].cpu().numpy())
+                        outcome_unsafe_scores.append(unsafe_prob_t[eval_mask_t].cpu().numpy())
+                        outcome_unsafe_targets.append(unsafe_tgt_t[eval_mask_t].cpu().numpy())
+
             cert_ncf_t, cert_fs_t, cert_q_t = _candidate_certificate_scores(pred, pred["planner_score"], cfg, cand_mask)
             cert_risk_t = _candidate_certificate_risk(cert_ncf_t, cert_fs_t, cert_q_t, cfg)
             pressure_prior_t = _candidate_pressure_prior_torch(batch, cfg, pred["planner_score"].detach().float())
@@ -1944,6 +1997,16 @@ def _learned_offline_candidate_eval_many(
     cert_ncf_auprc = _average_precision_binary(np.concatenate(cert_ncf_scores), np.concatenate(cert_ncf_targets)) if cert_ncf_scores else 0.0
     cert_fs_auprc = _average_precision_binary(np.concatenate(cert_fs_scores), np.concatenate(cert_fs_targets)) if cert_fs_scores else 0.0
     cert_q_auprc = _average_precision_binary(np.concatenate(cert_q_scores), np.concatenate(cert_q_targets)) if cert_q_scores else 0.0
+    outcome_collision_auprc = _average_precision_binary(
+        np.concatenate(outcome_collision_scores), np.concatenate(outcome_collision_targets)
+    ) if outcome_collision_scores else None
+    outcome_offroad_auprc = _average_precision_binary(
+        np.concatenate(outcome_offroad_scores), np.concatenate(outcome_offroad_targets)
+    ) if outcome_offroad_scores else None
+    outcome_unsafe_auprc = _average_precision_binary(
+        np.concatenate(outcome_unsafe_scores), np.concatenate(outcome_unsafe_targets)
+    ) if outcome_unsafe_scores else None
+    outcome_evaluated_candidates = int(sum(x.size for x in outcome_unsafe_scores))
     priority_transport_fs_auprc = _average_precision_binary(
         np.concatenate(priority_transport_scores), np.concatenate(priority_transport_targets)
     ) if priority_transport_scores else 0.0
@@ -1983,6 +2046,11 @@ def _learned_offline_candidate_eval_many(
             row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
             row["CandidateCertificate/Quality_AUPRC"] = float(cert_q_auprc)
             row["CandidateCertificate/RiskRankingPairAccuracy"] = float(cert_rank_good / max(cert_rank_total, 1)) if cert_rank_total else 0.0
+            row["OutcomeHead/EvaluatedCandidates"] = int(outcome_evaluated_candidates)
+            row["OutcomeHead/Collision_AUPRC"] = float(outcome_collision_auprc) if outcome_collision_auprc is not None else None
+            row["OutcomeHead/Offroad_AUPRC"] = float(outcome_offroad_auprc) if outcome_offroad_auprc is not None else None
+            row["OutcomeHead/UnsafeUnion_AUPRC"] = float(outcome_unsafe_auprc) if outcome_unsafe_auprc is not None else None
+            row["OutcomeHead/UsedForSelection"] = bool(float(outcome_risk_penalty) > 0.0)
             row["BCOT/PriorityFalseSafe_AUPRC"] = float(priority_transport_fs_auprc)
             row["BCOT/GlobalFalseSafe_AUPRC"] = float(global_transport_fs_auprc)
             # Backward-compatible alias now follows the decision certificate,
@@ -2498,9 +2566,6 @@ def waymax_closed_loop_rollout(
     clear_accelerator_cache: bool = False,
     split: str | None = None,
     tfexample_glob: str | None = None,
-    scenario_ids: list[str] | tuple[str, ...] | set[str] | None = None,
-    tfexample_index_jsonl: str | None = None,
-    require_all_scenario_ids: bool = True,
     shard_index: int = 0,
     num_shards: int = 1,
     reuse_env: bool = True,
@@ -2509,6 +2574,7 @@ def waymax_closed_loop_rollout(
     jit_standard_metrics: bool = True,
     status_every: int = 10,
     standard_metric_names: set[str] | list[str] | tuple[str, ...] | None = None,
+    scenario_ids: list[str] | tuple[str, ...] | None = None,
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -2525,51 +2591,39 @@ def waymax_closed_loop_rollout(
     horizon = int(horizon_steps) if horizon_steps is not None else 80
     num_shards = max(int(num_shards), 1)
     shard_index = int(shard_index) % num_shards
-
-    exact_ids: list[str] | None = None
+    exact_ids = None
     if scenario_ids is not None:
-        # Preserve the user's first-occurrence order.  Sets are sorted only so a
-        # programmatic set input remains deterministic across paired methods.
-        raw_ids = sorted(str(x) for x in scenario_ids) if isinstance(scenario_ids, set) else [str(x) for x in scenario_ids]
-        exact_ids = list(dict.fromkeys(x for x in raw_ids if x))
-        if not exact_ids:
-            raise ValueError("scenario_ids was provided but contains no non-empty ids")
-        indexed_ids = [(idx, sid) for idx, sid in enumerate(exact_ids) if idx % num_shards == shard_index]
-        if num_scenarios is not None and int(num_scenarios) < len(indexed_ids):
-            if require_all_scenario_ids:
-                raise ValueError(
-                    "--num-scenarios would truncate an exact-ID shard while strict resolution is enabled. "
-                    "Use a smaller scenario-id file for a pilot, or pass --allow-missing-scenario-ids for diagnostics."
-                )
-            indexed_ids = indexed_ids[: max(int(num_scenarios), 0)]
-        id_to_global_index = {sid: idx for idx, sid in indexed_ids}
-        requested_ids_this_shard = [sid for _, sid in indexed_ids]
-        exact_gen = waymax_state_generator_for_sids(
-            data_config,
-            set(requested_ids_this_shard),
-            split=split,
-            tfexample_glob=tfexample_glob,
-            tfexample_index_jsonl=tfexample_index_jsonl,
-        )
-        gen = ((id_to_global_index[sid], sid, state) for sid, state in exact_gen)
-        total = len(requested_ids_this_shard)
-        use_prefilter = True
-    else:
-        requested_ids_this_shard = []
-        use_prefilter = bool(prefilter_shards) and num_shards > 1
-        if use_prefilter:
-            base_gen = waymax_state_generator_sharded(
+        exact_ids = [str(x).strip() for x in scenario_ids if str(x).strip()]
+        if len(exact_ids) != len(set(exact_ids)):
+            raise ValueError("scenario_ids contains duplicates; exact-ID evaluation requires a unique manifest")
+        if num_scenarios is not None:
+            raise ValueError("Do not combine num_scenarios with exact scenario_ids; it could silently truncate the held-out set")
+    use_prefilter = bool(prefilter_shards) and num_shards > 1 and exact_ids is None
+    requested_shard_ids: list[str] | None = None
+    if exact_ids is not None:
+        requested_shard_ids = [sid for i, sid in enumerate(exact_ids) if (i % num_shards) == shard_index]
+        requested_index = {sid: i for i, sid in enumerate(exact_ids)}
+        if requested_shard_ids:
+            sid_gen = waymax_state_generator_for_sids(
                 data_config,
+                set(requested_shard_ids),
                 split=split,
                 tfexample_glob=tfexample_glob,
-                shard_index=shard_index,
-                num_shards=num_shards,
             )
-            gen = ((idx, None, state) for idx, state in base_gen)
+            gen = ((requested_index[sid], sid, state) for sid, state in sid_gen)
         else:
-            base_gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
-            gen = ((idx, None, state) for idx, state in base_gen)
-        total = num_scenarios
+            gen = iter(())
+    elif use_prefilter:
+        gen = waymax_state_generator_sharded(
+            data_config,
+            split=split,
+            tfexample_glob=tfexample_glob,
+            shard_index=shard_index,
+            num_shards=num_shards,
+        )
+    else:
+        gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
+    total = len(requested_shard_ids) if requested_shard_ids is not None else num_scenarios
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
     env_cache: dict[tuple[int | None, str], tuple[object, _WaymaxEnvOps]] = {}
@@ -2585,9 +2639,16 @@ def waymax_closed_loop_rollout(
         from cowp.waymax_eval.metrics_standard import build_waymax_metric_objects
 
         standard_metric_objects, standard_metric_errors = build_waymax_metric_objects(standard_metric_names)
-    for raw_index, scenario_id, init_state in iterator:
-        if exact_ids is None and (not use_prefilter) and num_shards > 1 and (raw_index % num_shards) != shard_index:
-            continue
+    resolved_exact_ids: set[str] = set()
+    for record in iterator:
+        if exact_ids is not None:
+            raw_index, scenario_id, init_state = record
+            resolved_exact_ids.add(str(scenario_id))
+        else:
+            raw_index, init_state = record
+            scenario_id = None
+            if (not use_prefilter) and num_shards > 1 and (raw_index % num_shards) != shard_index:
+                continue
         scenario_index = raw_index
         max_objects = getattr(init_state, "num_objects", None)
         if max_objects is None and hasattr(init_state, "log_trajectory"):
@@ -2655,16 +2716,14 @@ def waymax_closed_loop_rollout(
                     flush=True,
                 )
                 last_status_at = now
-        if exact_ids is None and num_scenarios is not None and len(outputs) >= num_scenarios:
+        if num_scenarios is not None and len(outputs) >= num_scenarios:
             break
-    if exact_ids is not None and require_all_scenario_ids:
-        evaluated = {str(row.get("scenario_id")) for row in outputs if row.get("scenario_id") is not None}
-        missing = [sid for sid in requested_ids_this_shard if sid not in evaluated]
+    if requested_shard_ids is not None:
+        missing = sorted(set(requested_shard_ids) - resolved_exact_ids)
         if missing:
-            preview = ", ".join(missing[:8])
-            suffix = " ..." if len(missing) > 8 else ""
+            preview = ", ".join(missing[:10])
             raise RuntimeError(
-                f"Exact-ID Waymax rollout resolved {len(evaluated)}/{len(requested_ids_this_shard)} requested "
-                f"scenario ids on shard {shard_index}/{num_shards}; missing: {preview}{suffix}"
+                f"Exact-ID Waymax evaluation resolved {len(resolved_exact_ids)}/{len(requested_shard_ids)} "
+                f"requested scenarios on shard {shard_index}/{num_shards}; missing {len(missing)}: {preview}"
             )
     return outputs

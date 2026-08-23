@@ -104,14 +104,13 @@ def main() -> None:
     timing = {
         int(ProposalSource.LEGACY_TIMING), int(ProposalSource.ROBUST_BCTE),
         int(ProposalSource.PRIORITY_HOLD_RELEASE), int(ProposalSource.PRIORITY_SMOOTH_YIELD),
-        int(ProposalSource.JOINT_ROUTE_NCF), int(ProposalSource.MULTI_CONFLICT_CORRIDOR),
+        int(ProposalSource.JOINT_ROUTE_NCF),
     }
     schemes: dict[str, set[int] | None] = {
         "all": None,
         "without_priority_hold_release": all_nonpad - {int(ProposalSource.PRIORITY_HOLD_RELEASE)},
         "without_priority_smooth_yield": all_nonpad - {int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
         "without_joint_route_ncf": all_nonpad - {int(ProposalSource.JOINT_ROUTE_NCF)},
-        "without_multi_conflict_corridor": all_nonpad - {int(ProposalSource.MULTI_CONFLICT_CORRIDOR)},
         "without_rmr_bcte": all_nonpad - {int(ProposalSource.ROBUST_BCTE)},
         "without_legacy_timing": all_nonpad - {int(ProposalSource.LEGACY_TIMING)},
         "without_any_interaction_timing": all_nonpad - timing,
@@ -119,8 +118,6 @@ def main() -> None:
         "base_plus_rmr_plus_priority_commitment": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_HOLD_RELEASE)},
         "base_plus_rmr_plus_priority_smooth_yield": (all_nonpad - timing) | {int(ProposalSource.ROBUST_BCTE), int(ProposalSource.PRIORITY_SMOOTH_YIELD)},
         "base_plus_joint_route_ncf": (all_nonpad - timing) | {int(ProposalSource.JOINT_ROUTE_NCF)},
-        "base_plus_multi_conflict_corridor": (all_nonpad - timing) | {int(ProposalSource.MULTI_CONFLICT_CORRIDOR)},
-        "base_plus_joint_plus_corridor": (all_nonpad - timing) | {int(ProposalSource.JOINT_ROUTE_NCF), int(ProposalSource.MULTI_CONFLICT_CORRIDOR)},
     }
 
     ds = COWPNpzDataset(args.cache_dir)
@@ -175,7 +172,7 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": "cowp_v16_8_25_proposal_source_ablation_v5",
+        "schema_version": "cowp_v16_8_20_proposal_source_ablation_v4",
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "evaluation_subset": {"modulo": modulo, "remainder": remainder, "num_scenes": len(indices)},
         "proposal_source_candidate_counts": dict(source_candidate_counts),
@@ -200,7 +197,6 @@ def main() -> None:
     no_commit = result["ablations"]["without_priority_hold_release"]
     no_psy = result["ablations"]["without_priority_smooth_yield"]
     no_joint = result["ablations"]["without_joint_route_ncf"]
-    no_corridor = result["ablations"]["without_multi_conflict_corridor"]
     result["priority_hold_release_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_commit["any_ncf_scene_rate"],
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_commit["best_case_selected_false_safe_lower_bound"],
@@ -219,13 +215,6 @@ def main() -> None:
         "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_joint["best_case_selected_false_safe_lower_bound"],
         "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_joint["best_case_pbtr_lower_bound"],
         "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_joint["mean_valid_candidates"],
-    }
-    result["multi_conflict_corridor_increment"] = {
-        "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - no_corridor["any_ncf_scene_rate"],
-        "delta_priority_ncf_scene_rate": full["any_priority_ncf_scene_rate"] - no_corridor["any_priority_ncf_scene_rate"],
-        "delta_false_safe_floor": full["best_case_selected_false_safe_lower_bound"] - no_corridor["best_case_selected_false_safe_lower_bound"],
-        "delta_pbtr_floor": full["best_case_pbtr_lower_bound"] - no_corridor["best_case_pbtr_lower_bound"],
-        "delta_mean_valid_candidates": full["mean_valid_candidates"] - no_corridor["mean_valid_candidates"],
     }
     result["rmr_increment"] = {
         "delta_any_ncf_scene_rate": full["any_ncf_scene_rate"] - base["any_ncf_scene_rate"],

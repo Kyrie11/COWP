@@ -48,53 +48,18 @@ def _parse_metric_names(value: str | None):
     return {x.strip() for x in text.split(",") if x.strip()}
 
 
-
-
-def _read_scenario_id_file(path: str | None) -> list[str] | None:
-    """Read an ordered exact-ID allowlist from txt or JSONL.
-
-    Duplicate ids are removed while preserving the first occurrence so paired
-    method evaluations share an unambiguous, stable scenario index.
-    """
+def _load_scenario_ids_file(path: str | None) -> list[str] | None:
     if not path:
         return None
-    src = Path(path)
-    if not src.exists():
-        raise FileNotFoundError(f"Scenario-id file does not exist: {src}")
-    ids: list[str] = []
-    seen: set[str] = set()
-    with src.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            text = line.strip()
-            if not text or text.startswith("#"):
-                continue
-            sid = None
-            try:
-                row = json.loads(text)
-                if isinstance(row, dict):
-                    sid = row.get("scenario_id", row.get("id"))
-                elif isinstance(row, str):
-                    sid = row
-            except Exception:
-                pass
-            if sid is None:
-                sid = text.split()[0]
-            sid = str(sid).strip()
-            if not sid:
-                raise ValueError(f"Empty scenario id at {src}:{line_no}")
-            if sid not in seen:
-                seen.add(sid)
-                ids.append(sid)
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"scenario id file not found: {p}")
+    ids = [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not ids:
-        raise ValueError(f"Scenario-id file is empty: {src}")
+        raise ValueError(f"scenario id file is empty: {p}")
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"scenario id file contains duplicate ids: {p}")
     return ids
-
-
-def _scenario_id_digest(ids: list[str] | None) -> str | None:
-    if ids is None:
-        return None
-    payload = "\n".join(ids).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _json_safe(obj):
@@ -119,9 +84,7 @@ def main() -> None:
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--waymax-split", choices=["training", "validation", "testing"], default="validation", help="WOMD split for --mode waymax. Default validation avoids evaluating online rollouts on training.")
     ap.add_argument("--tfexample-glob", default=None, help="Optional Waymax/tf.Example path override for --mode waymax.")
-    ap.add_argument("--scenario-ids-file", default=None, help="Optional txt/JSONL exact scenario-id allowlist for --mode waymax. Every requested id must be resolved unless --allow-missing-scenario-ids is set.")
-    ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional scenario-id -> TFRecord shard index. With --scenario-ids-file this skips unrelated shards before exact-ID Waymax decoding.")
-    ap.add_argument("--allow-missing-scenario-ids", action="store_true", help="Do not fail exact-ID Waymax evaluation when requested ids cannot be resolved. Intended only for diagnostics, never final held-out reporting.")
+    ap.add_argument("--scenario-ids-file", default=None, help="Exact scenario-ID allowlist for --mode waymax. Every requested ID must be resolved; missing IDs are a hard error.")
     ap.add_argument("--num-shards", type=int, default=1, help="Shard online Waymax rollouts across multiple parallel processes.")
     ap.add_argument("--shard-index", type=int, default=0, help="Shard id in [0, num_shards) for --mode waymax.")
     ap.add_argument("--batch-size", type=int, default=8)
@@ -141,7 +104,7 @@ def main() -> None:
     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
-    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
     ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
@@ -170,7 +133,6 @@ def main() -> None:
     args = ap.parse_args()
     _configure_waymax_runtime(args)
     cfg = load_config(args.label_config, args.data_config, args.eval_config)
-    exact_scenario_ids = _read_scenario_id_file(args.scenario_ids_file)
     protocol_cfg = cfg.get("eval", {}) if isinstance(cfg, dict) else {}
     actual_non_ego_policy = str(protocol_cfg.get("actual_non_ego_policy", "logged_replay"))
     reactive_mixture_implemented = bool(protocol_cfg.get("reactive_mixture_implemented", False))
@@ -374,6 +336,7 @@ def main() -> None:
         else:
             raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")
         horizon = args.rollout_horizon_steps or int(cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
+        scenario_ids = _load_scenario_ids_file(args.scenario_ids_file)
         rollouts = waymax_closed_loop_rollout(
             cfg,
             policy_fn,
@@ -386,9 +349,6 @@ def main() -> None:
             clear_accelerator_cache=args.clear_accelerator_cache,
             split=args.waymax_split,
             tfexample_glob=args.tfexample_glob,
-            scenario_ids=exact_scenario_ids,
-            tfexample_index_jsonl=args.tfexample_index_jsonl,
-            require_all_scenario_ids=not bool(args.allow_missing_scenario_ids),
             shard_index=args.shard_index,
             num_shards=args.num_shards,
             reuse_env=bool(args.reuse_waymax_env),
@@ -397,6 +357,7 @@ def main() -> None:
             jit_standard_metrics=bool(args.jit_waymax_metrics),
             status_every=int(args.status_every),
             standard_metric_names=_parse_metric_names(args.waymax_standard_metric_names),
+            scenario_ids=scenario_ids,
         )
         payload = {
             "mode": "waymax",
@@ -407,10 +368,10 @@ def main() -> None:
             "waymax_split": args.waymax_split,
             "tfexample_glob": args.tfexample_glob,
             "scenario_ids_file": args.scenario_ids_file,
-            "scenario_ids_requested": len(exact_scenario_ids) if exact_scenario_ids is not None else None,
-            "scenario_ids_sha256": _scenario_id_digest(exact_scenario_ids),
-            "tfexample_index_jsonl": args.tfexample_index_jsonl,
-            "require_all_scenario_ids": not bool(args.allow_missing_scenario_ids),
+            "scenario_ids_requested": int(len(scenario_ids)) if scenario_ids is not None else None,
+            "scenario_ids_requested_on_shard": int(sum(1 for i in range(len(scenario_ids)) if i % max(int(args.num_shards), 1) == int(args.shard_index) % max(int(args.num_shards), 1))) if scenario_ids is not None else None,
+            "scenario_ids_sha256": hashlib.sha256("\n".join(scenario_ids).encode("utf-8")).hexdigest() if scenario_ids is not None else None,
+            "scenario_ids_resolved": [str(x.get("scenario_id")) for x in rollouts if x.get("scenario_id") is not None],
             "waymax_standard_metric_names": sorted(_parse_metric_names(args.waymax_standard_metric_names)) if isinstance(_parse_metric_names(args.waymax_standard_metric_names), set) else args.waymax_standard_metric_names,
             "reuse_waymax_env": bool(args.reuse_waymax_env),
             "prefilter_waymax_shards": bool(args.prefilter_waymax_shards),
@@ -426,13 +387,6 @@ def main() -> None:
             "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
             "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
         }
-        if exact_scenario_ids is not None:
-            requested_shard = [sid for idx, sid in enumerate(exact_scenario_ids) if idx % max(int(args.num_shards), 1) == int(args.shard_index) % max(int(args.num_shards), 1)]
-            evaluated_ids = [str(x["scenario_id"]) for x in rollouts if x.get("scenario_id") is not None]
-            payload["scenario_ids_requested_this_shard"] = len(requested_shard)
-            payload["scenario_ids_evaluated_this_shard"] = len(evaluated_ids)
-            payload["scenario_id_exact_coverage"] = float(len(evaluated_ids) / max(len(requested_shard), 1))
-            payload["scenario_ids_missing_this_shard"] = sorted(set(requested_shard) - set(evaluated_ids))
         if args.waymax_standard_metrics:
             payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]
             payload["standard_metric_summary"] = aggregate_waymax_standard_metrics(rollouts)

@@ -2728,20 +2728,18 @@ This revision does **not** change the COWP planner, natural-basis mathematics, r
 
 See `ALGORITHM_CHANGELOG_V16_8_24.md`. The release fixes the missing profile-summary module reference, adds report-only benchmark recovery and active-chain dependency preflight, persists WOMD Scenario indices across benchmark/full build, makes compact split selection self-contained, tunes CPU worker defaults, and attaches Waymax outcomes to train/val/heldout-test. Label semantics are unchanged from the semantically verified v16.8.23 fast path.
 
-## v16.8.25 — Exact-ID Waymax repair + experimental MCFC (2026-08-23)
+## v16.8.25 — Certificate-Then-Utility probe, immutable planner repair, and exact-ID Waymax evaluation
 
-See `ALGORITHM_CHANGELOG_V16_8_25.md`. Current v16.8.24 evidence attributes the dominant learned-offline ceiling to proposal support (`AnyNCF` about 0.35--0.36; oracle selected false-safe floor about 0.59--0.60) while protected/global BCOT discrimination is already strong. This revision therefore (1) repairs the previously non-functional exact-ID Waymax held-out path and records exact scenario coverage, and (2) adds an **opt-in, unpromoted** Multi-Conflict Feasibility Corridor proposal family that replaces JR's single-acceleration timing profile with piecewise protected timing knots plus post-conflict recovery. The canonical v16.8 label config remains behaviorally unchanged; MCFC is enabled only by `configs/label_cowp_v16_8_25_mcfc.yaml`.
+See `ALGORITHM_CHANGELOG_V16_8_25.md` for the full evidence/decision log. This revision is based only on the original v16.8.24 code/results and reuses the existing v16.8.24 labels/caches; it makes no proposal, label, split, RCOT-target, or dataset reconstruction change. The previously suggested MCFC experiment was never run and is not part of this release.
 
-MCFC must pass a paired validation proposal probe before any full rebuild/retraining. If it fails, disable it; do not repeat PCHR/threshold-only/flat-certificate attempts. The currently inspected 1,200-scene held-out set is now diagnostic rather than final-blind for subsequent algorithm selection; final paper evaluation must use a new untouched split sampled from unused WOMD validation IDs after configuration freeze. The current data also contain zero burden-only affected roots, so affected-root-vs-conflict-only superiority is not an empirically supported headline claim yet.
+The existing held-out evidence localizes the dominant global ceiling to proposal support (`AnyNCF=0.36346`, fixed-bank selected-false-safe floor `0.59475`) while RCOT/BCOT remains the strongest learned mechanism (`LowSafeExist AUPRC=0.89743`, priority/global BCOT false-safe AUPRC `0.83736/0.92806`). The generic candidate classifier remains weak (`NCF/false-safe AUPRC 0.17558/0.35444`). COWP also retains a secondary selector gap: NCF selection recall given an available NCF proposal is `0.78877`, with `0.07677` selected false-safe excess above the proposal floor.
 
-### v16.8.25 evidence protocol addendum
+v16.8.25 therefore adds `cowp_cert_utility`, a one-factor Certificate-Then-Utility diagnostic: use the exact same protected-priority BCOT hard certificate and physical shield as COWP, but remove the second BCOT/set-preservation ranking pass and rank the surviving certified set by planner score. Original `cowp` behavior is unchanged. Candidate outcome heads are now reported with collision/offroad/unsafe AUPRC but remain excluded from selection (`outcome-risk-penalty=0`) until evidence supports a physical-risk guard.
 
-- Added `cowp/scripts/85_screen_v16_8_25_mcfc_probe.py`: MCFC now requires a
-  source-attributed effect-size gate (not just an aggregate fresh-bank pass)
-  before full rebuild/retraining.
-- Added `NEXT_RUN_COMMANDS_V16_8_25_MCFC_CN.sh`: exact-ID v16.8 strict-Waymax
-  diagnosis -> validation-only MCFC probe -> blind-final ID freeze -> gated
-  rebuild/retrain -> one-shot final-blind evaluation.
-- The already-inspected v16.8.24 1,200-scene held-out set is development-only
-  for future algorithm decisions; a new content-blind ID-hash holdout is
-  required for final claims.
+The original execution command used `--stage all`; this jointly retuned mechanism/planner modules and selected checkpoints by total loss rather than the v16.8 immutable-mechanism planner protocol. Planner-only repair now keeps candidate encoder, natural decoder, witness decoder, SetTransport/BCOT, response decoder, graph, and learned priority gate frozen/deterministic. A 6-epoch, `1e-5` cross-stage warm start is provided but is intentionally gated behind the no-training CTU probe.
+
+The original strict Waymax command supplied `--scenario-ids-file` although the evaluator did not parse/propagate it. The exact-ID evaluation path is now implemented with duplicate rejection, no silent `num_scenarios` truncation, hard failure on unresolved requested IDs, scenario IDs in rollout outputs, and manifest hashing.
+
+No current claim is made that CTU improves COWP. Promotion requires certificate invariance, non-inferior validation burden/false-safe/progress, and paired exact-ID Waymax. The current dataset contains zero burden-only affected roots (`affected == unsafe`), so the affected-root extension is not independently supported and is scheduled for a clean conflict-only retraining ablation only after the selector is locked.
+
+v16.8.25 local validation: focused CTU/exact-ID/immutable-planner tests **9 passed**; full suite **252 passed, 5 skipped, 8 failed**. The eight failures are the same uploaded-repository historical issues (six missing archived launchers, two stale hard-coded semantic fingerprints), not new functional regressions. `compileall` and `bash -n NEXT_RUN_COMMANDS_V16_8_25_CTU_CN.sh` pass.

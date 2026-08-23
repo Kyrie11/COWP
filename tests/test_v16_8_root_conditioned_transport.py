@@ -79,6 +79,7 @@ def test_planner_freezes_validated_transport_and_response_modules():
             self.witness_decoder = torch.nn.Linear(2, 2)
             self.set_transport = torch.nn.Linear(2, 2)
             self.response_decoder = torch.nn.Linear(2, 2)
+            self.priority_claim = torch.nn.Linear(2, 2)
 
     model = Dummy()
     module._set_stage_freeze(
@@ -88,7 +89,8 @@ def test_planner_freezes_validated_transport_and_response_modules():
     )
     assert not any(p.requires_grad for p in model.set_transport.parameters())
     assert not any(p.requires_grad for p in model.response_decoder.parameters())
-    assert any(p.requires_grad for p in model.candidate_encoder.parameters())
+    assert not any(p.requires_grad for p in model.candidate_encoder.parameters())
+    assert not any(p.requires_grad for p in model.priority_claim.parameters())
 
 
 def _controlled_head_output(*, conflict: float, retain_conditional: float, recovery: float, root_min_burden: float):

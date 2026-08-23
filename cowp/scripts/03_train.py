@@ -1197,11 +1197,20 @@ def _set_stage_freeze(
     elif stage == "planner":
         policy = {
             "graph": True,
-            "candidate_encoder": bool(warmup_frozen),
+            # v16.8 promises an immutable certificate-to-selector interface.  The
+            # planner already detaches candidate/backbone features, so unfreezing
+            # CandidateEncoder after a warmup cannot help planner gradients; it only
+            # re-enables dropout in a representation consumed by frozen RCOT/BCOT.
+            # Keep it frozen/deterministic for the entire planner-only repair.
+            "candidate_encoder": True,
             "natural_decoder": True,
             "witness_decoder": True,
             "set_transport": bool(freeze_transport_during_planner),
             "response_decoder": bool(freeze_response_during_planner),
+            # Protected priority is part of hard-certificate semantics (rule anchors
+            # plus a learned fallback for unknown relations), so a selector repair
+            # must not silently retune this gate either.
+            "priority_claim": True,
         }
     else:
         policy = {"graph": False, "candidate_encoder": False, "natural_decoder": False, "witness_decoder": False}
@@ -1599,6 +1608,13 @@ def main() -> None:
     # v8 restricted this check to response/all, which would make planner loading
     # unexpectedly pull the huge trajectory tensor once response labels were
     # correctly enabled for planner.
+    if stage == "all":
+        _rank0_print(
+            "WARNING: --stage all jointly updates mechanism and planner modules and selects checkpoints by total loss. "
+            "Use it only for legacy/exploratory reproduction. For attribution/publication runs, warm-start a separate "
+            "--stage planner phase so natural/witness/transport/response semantics remain frozen."
+        )
+
     response_stage = stage in {"response", "witness", "planner", "all"}
     include_response_traj = bool(response_stage and float(loss_weights.get("response_traj_l1", 0.1)) != 0.0)
     include_response_components = bool(response_stage and float(loss_weights.get("response_components_l1", 0.25)) != 0.0)
