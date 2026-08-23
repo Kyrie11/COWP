@@ -378,3 +378,127 @@ def module_effect_metrics(
             metrics[method]["DecisionChangeVsFull"] = float(changes / max(len(rows), 1))
             metrics[method]["AcceptedJaccardVsFull"] = float(np.mean(jaccards)) if jaccards else 1.0
     return metrics
+
+
+def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
+    """Compact per-episode rows for attributing physical failures to fallback/selection.
+
+    These rows intentionally contain only aggregated online diagnostics plus Waymax
+    event metrics; they are much smaller than serializing every policy step.
+    """
+    out: list[dict] = []
+    for idx, item in enumerate(rollouts):
+        rows = item.get("policy_diagnostics", []) or []
+        std = item.get("standard_metrics", {}) or {}
+        n = len(rows)
+        fallback = np.asarray([bool(r.get("fallback_used", False)) for r in rows], dtype=bool) if n else np.asarray([], dtype=bool)
+        reasons = [str(r.get("fallback_reason", "none")) for r in rows]
+
+        def _mean(key: str, *, mask: np.ndarray | None = None) -> float | None:
+            if not rows:
+                return None
+            vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float64)
+            valid = np.isfinite(vals)
+            if mask is not None:
+                valid &= mask
+            return float(vals[valid].mean()) if valid.any() else None
+
+        first_fallback = next((j for j, r in enumerate(rows) if bool(r.get("fallback_used", False))), None)
+        rec: dict[str, object] = {
+            "scenario_id": str(item.get("scenario_id", idx)),
+            "steps": int(item.get("steps", n)),
+            "fallback_step_rate": float(fallback.mean()) if fallback.size else 0.0,
+            "fallback_episode": bool(fallback.any()) if fallback.size else False,
+            "first_fallback_policy_step": int(first_fallback) if first_fallback is not None else None,
+            "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
+            "no_conventional_step_rate": float(sum(x == "no_conventional_use_least_coercive_valid" for x in reasons) / max(n, 1)),
+            "no_valid_step_rate": float(sum(x == "no_valid_candidate" for x in reasons) / max(n, 1)),
+            "accepted_priority_ncf_step_rate": float(sum(x == "accepted_priority_ncf" for x in reasons) / max(n, 1)),
+            "mean_accepted_candidates": _mean("accepted_candidates"),
+            "mean_conventional_candidates": _mean("conventional_candidates"),
+            "mean_valid_candidates": _mean("valid_candidates"),
+            "mean_selected_action_risk": _mean("selected_candidate_action_risk"),
+            "mean_selected_rule_risk": _mean("selected_candidate_rule_risk"),
+            "mean_selected_cert_risk": _mean("selected_candidate_cert_risk"),
+            "mean_selected_outcome_risk": _mean("selected_outcome_risk"),
+            "fallback_mean_selected_outcome_risk": _mean("selected_outcome_risk", mask=fallback) if fallback.size else None,
+            "accepted_mean_selected_outcome_risk": _mean("selected_outcome_risk", mask=~fallback) if fallback.size else None,
+        }
+        for key in (
+            "CR", "CollisionRate", "OffroadRate", "KinematicsInfeasibilityRate", "EP",
+            "WaymaxAny/OverlapMetric", "WaymaxAny/OffroadMetric", "WaymaxAny/KinematicsInfeasibilityMetric",
+            "FirstPositiveStep/OverlapMetric", "FirstPositiveStep/OffroadMetric", "FirstPositiveStep/KinematicsInfeasibilityMetric",
+        ):
+            if key in std:
+                rec[key] = std[key]
+
+        # How much of the policy history before the first physical event was already
+        # fallback?  This is more informative than episode-level co-occurrence when
+        # fallback happens in >90% of episodes.
+        event_map = {
+            "collision": "FirstPositiveStep/OverlapMetric",
+            "offroad": "FirstPositiveStep/OffroadMetric",
+            "kinematics": "FirstPositiveStep/KinematicsInfeasibilityMetric",
+        }
+        for name, first_key in event_map.items():
+            if first_key in std and fallback.size:
+                first_metric_step = max(int(std[first_key]), 1)  # accumulator is 1-indexed after env step
+                prefix = fallback[: min(first_metric_step, fallback.size)]
+                rec[f"fallback_rate_before_first_{name}"] = float(prefix.mean()) if prefix.size else 0.0
+                rec[f"fallback_at_action_before_first_{name}"] = bool(fallback[min(first_metric_step - 1, fallback.size - 1)])
+        out.append(rec)
+    return out
+
+
+def physical_failure_attribution_summary(rollouts: list[dict]) -> dict[str, float]:
+    """Episode-level association diagnostics between physical failures and fallback.
+
+    This is attribution *localization*, not a causal claim.  It tells the next
+    experiment whether to focus on accepted-plan selection or uncertified fallback.
+    """
+    rows = policy_diagnostic_scenario_rows(rollouts)
+    if not rows:
+        return {}
+    out: dict[str, float] = {"Episodes": float(len(rows))}
+    fb = np.asarray([float(r.get("fallback_step_rate", 0.0)) for r in rows], dtype=np.float64)
+    no_cert = np.asarray([float(r.get("no_certificate_step_rate", 0.0)) for r in rows], dtype=np.float64)
+    act = np.asarray([float(r.get("mean_selected_action_risk") or 0.0) for r in rows], dtype=np.float64)
+    cert = np.asarray([float(r.get("mean_selected_cert_risk") or 0.0) for r in rows], dtype=np.float64)
+    out["MeanFallbackStepRate"] = float(fb.mean())
+    out["EpisodesFallbackMajorityRate"] = float((fb >= 0.5).mean())
+
+    event_keys = {
+        "CR": "CR",
+        "Collision": "CollisionRate",
+        "Offroad": "OffroadRate",
+        "Kinematics": "KinematicsInfeasibilityRate",
+    }
+    for label, key in event_keys.items():
+        event = np.asarray([float(r.get(key, 0.0)) > 0.0 for r in rows], dtype=bool)
+        out[f"{label}/Rate"] = float(event.mean())
+        if event.any():
+            out[f"{label}/MeanFallbackStepRate_Pos"] = float(fb[event].mean())
+            out[f"{label}/MeanNoCertificateStepRate_Pos"] = float(no_cert[event].mean())
+            out[f"{label}/MeanActionRisk_Pos"] = float(act[event].mean())
+            out[f"{label}/MeanCertRisk_Pos"] = float(cert[event].mean())
+            before_key = {
+                "Collision": "fallback_rate_before_first_collision",
+                "Offroad": "fallback_rate_before_first_offroad",
+                "Kinematics": "fallback_rate_before_first_kinematics",
+            }.get(label)
+            if before_key:
+                vals = np.asarray([float(r.get(before_key, np.nan)) for r in rows], dtype=np.float64)
+                vals = vals[event & np.isfinite(vals)]
+                if vals.size:
+                    out[f"{label}/MeanFallbackRateBeforeFirstEvent"] = float(vals.mean())
+        if (~event).any():
+            out[f"{label}/MeanFallbackStepRate_Neg"] = float(fb[~event].mean())
+            out[f"{label}/MeanNoCertificateStepRate_Neg"] = float(no_cert[~event].mean())
+            out[f"{label}/MeanActionRisk_Neg"] = float(act[~event].mean())
+            out[f"{label}/MeanCertRisk_Neg"] = float(cert[~event].mean())
+        high = fb >= 0.5
+        if high.any():
+            out[f"{label}/Rate_FallbackMajority"] = float(event[high].mean())
+        if (~high).any():
+            out[f"{label}/Rate_FallbackMinority"] = float(event[~high].mean())
+    return out

@@ -66,7 +66,7 @@ def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
         "no_ncf": "planner_score_only",
     }
     m = aliases.get(m, m)
-    if m in {"cowp", "cowp_cert_utility"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome"} and g == "hard":
         # The paper/code treats the primary COWP certificate as priority-aware NCF.
         # ``cowp_cert_utility`` shares the exact same certificate and changes only
         # the post-certificate selector, so it must inherit the same gate semantics.
@@ -656,7 +656,7 @@ def _select_from_learned(
     action_risk = _candidate_action_risk_torch(batch, cand_valid, cfg)
     action_decision_risk = _scene_normalized_risk_torch(action_risk, cand_valid, cfg)
     outcome = pred.get("outcome", {})
-    if isinstance(outcome, dict) and float(outcome_risk_penalty) > 0.0:
+    if isinstance(outcome, dict) and (float(outcome_risk_penalty) > 0.0 or method == "cowp_fallback_outcome"):
         col_r = torch.sigmoid(outcome.get("collision_logit", torch.zeros_like(scores)).detach().float()).clamp(0.0, 1.0)
         off_r = torch.sigmoid(outcome.get("offroad_logit", torch.zeros_like(scores)).detach().float()).clamp(0.0, 1.0)
         # Probability union stays in [0,1].  Do not use log-divergence here: the
@@ -851,7 +851,7 @@ def _select_from_learned(
         selection_mask = torch.where(has_shielded, shielded, certificate_accepted)
         adjusted_scores = scores
 
-    if method == "cowp" and gate_mode in {"priority", "soft"}:
+    if method in {"cowp", "cowp_fallback_outcome"} and gate_mode in {"priority", "soft"}:
         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
         # explanatory evidence, but selection is anchored by a candidate-level NCF
         # certificate trained from the dataset's noncoercive_feasible/false_safe
@@ -898,6 +898,7 @@ def _select_from_learned(
         keep_frac = float(pcfg.get("candidate_frontier_keep_fraction", 0.40))
         keep_min = int(pcfg.get("candidate_frontier_min_keep", 1))
         keep_max = int(pcfg.get("candidate_frontier_max_keep", 4))
+        frontier_outcome_risk = torch.zeros_like(outcome_decision_risk) if method == "cowp_fallback_outcome" else outcome_decision_risk
         frontier, frontier_scores, _pareto_counts = select_set_preservation_frontier_batch(
             scores=scores,
             base_mask=frontier_base,
@@ -907,7 +908,7 @@ def _select_from_learned(
             progress_shortfall=progress_shortfall,
             action_risk=action_decision_risk,
             rule_risk=rule_decision_risk,
-            outcome_risk=outcome_decision_risk,
+            outcome_risk=frontier_outcome_risk,
             ncf_probability=frontier_ncf_prob,
             false_safe_probability=frontier_false_safe_prob,
             cfg=pcfg,
@@ -979,6 +980,48 @@ def _average_precision_binary(score: np.ndarray, target: np.ndarray) -> float:
     precision = tp / np.maximum(np.arange(1, len(y) + 1, dtype=np.float64), 1.0)
     return float((precision * y).sum() / max(float(y.sum()), 1.0))
 
+
+
+def _binary_probability_diagnostics(score: np.ndarray, target: np.ndarray, *, bins: int = 10) -> dict[str, float]:
+    """Calibration/operating diagnostics for a probability-like binary score."""
+    score = np.asarray(score, dtype=np.float64).reshape(-1)
+    target = np.asarray(target, dtype=bool).reshape(-1)
+    finite = np.isfinite(score)
+    score, target = np.clip(score[finite], 0.0, 1.0), target[finite]
+    if score.size == 0:
+        return {"prevalence": 0.0, "brier": 0.0, "ece10": 0.0, "recall_at_fpr_0p05": 0.0, "recall_at_fpr_0p10": 0.0}
+    y = target.astype(np.float64)
+    brier = float(np.mean((score - y) ** 2))
+    ece = 0.0
+    edges = np.linspace(0.0, 1.0, int(bins) + 1)
+    for j in range(int(bins)):
+        lo, hi = edges[j], edges[j + 1]
+        mask = (score >= lo) & (score < hi if j + 1 < int(bins) else score <= hi)
+        if mask.any():
+            ece += float(mask.mean()) * abs(float(score[mask].mean()) - float(y[mask].mean()))
+
+    def recall_at_fpr(max_fpr: float) -> float:
+        neg = ~target
+        pos = target
+        nneg, npos = int(neg.sum()), int(pos.sum())
+        if nneg == 0 or npos == 0:
+            return 0.0
+        order = np.argsort(-score, kind="mergesort")
+        y = target[order]
+        fp = np.cumsum((~y).astype(np.float64))
+        tp = np.cumsum(y.astype(np.float64))
+        fpr = fp / float(nneg)
+        tpr = tp / float(npos)
+        valid = fpr <= float(max_fpr) + 1e-12
+        return float(tpr[valid].max()) if valid.any() else 0.0
+
+    return {
+        "prevalence": float(y.mean()),
+        "brier": brier,
+        "ece10": float(ece),
+        "recall_at_fpr_0p05": recall_at_fpr(0.05),
+        "recall_at_fpr_0p10": recall_at_fpr(0.10),
+    }
 
 def _root_low_safe_target_eval(batch, mode_count: int):
     """Build the explicit per-natural-root low-burden safe-response target.
@@ -2007,6 +2050,15 @@ def _learned_offline_candidate_eval_many(
         np.concatenate(outcome_unsafe_scores), np.concatenate(outcome_unsafe_targets)
     ) if outcome_unsafe_scores else None
     outcome_evaluated_candidates = int(sum(x.size for x in outcome_unsafe_scores))
+    outcome_collision_diag = _binary_probability_diagnostics(
+        np.concatenate(outcome_collision_scores), np.concatenate(outcome_collision_targets)
+    ) if outcome_collision_scores else {}
+    outcome_offroad_diag = _binary_probability_diagnostics(
+        np.concatenate(outcome_offroad_scores), np.concatenate(outcome_offroad_targets)
+    ) if outcome_offroad_scores else {}
+    outcome_unsafe_diag = _binary_probability_diagnostics(
+        np.concatenate(outcome_unsafe_scores), np.concatenate(outcome_unsafe_targets)
+    ) if outcome_unsafe_scores else {}
     priority_transport_fs_auprc = _average_precision_binary(
         np.concatenate(priority_transport_scores), np.concatenate(priority_transport_targets)
     ) if priority_transport_scores else 0.0
@@ -2050,7 +2102,11 @@ def _learned_offline_candidate_eval_many(
             row["OutcomeHead/Collision_AUPRC"] = float(outcome_collision_auprc) if outcome_collision_auprc is not None else None
             row["OutcomeHead/Offroad_AUPRC"] = float(outcome_offroad_auprc) if outcome_offroad_auprc is not None else None
             row["OutcomeHead/UnsafeUnion_AUPRC"] = float(outcome_unsafe_auprc) if outcome_unsafe_auprc is not None else None
-            row["OutcomeHead/UsedForSelection"] = bool(float(outcome_risk_penalty) > 0.0)
+            for prefix, diag in (("Collision", outcome_collision_diag), ("Offroad", outcome_offroad_diag), ("UnsafeUnion", outcome_unsafe_diag)):
+                for key, value in diag.items():
+                    row[f"OutcomeHead/{prefix}_{key}"] = float(value)
+            row["OutcomeHead/UsedForSelection"] = bool(float(outcome_risk_penalty) > 0.0 or method_name == "cowp_fallback_outcome")
+            row["OutcomeHead/SelectionScope"] = "fallback_only" if method_name == "cowp_fallback_outcome" and float(outcome_risk_penalty) <= 0.0 else ("all" if float(outcome_risk_penalty) > 0.0 else "none")
             row["BCOT/PriorityFalseSafe_AUPRC"] = float(priority_transport_fs_auprc)
             row["BCOT/GlobalFalseSafe_AUPRC"] = float(global_transport_fs_auprc)
             # Backward-compatible alias now follows the decision certificate,
@@ -2554,6 +2610,36 @@ def _state_done(state) -> bool:
     return False
 
 
+
+def _runtime_block_until_ready(value):
+    """Best-effort JAX synchronization for small profiling runs only."""
+    try:
+        import jax  # type: ignore
+        leaves = jax.tree_util.tree_leaves(value)
+        for leaf in leaves:
+            block = getattr(leaf, "block_until_ready", None)
+            if callable(block):
+                block()
+    except Exception:
+        block = getattr(value, "block_until_ready", None)
+        if callable(block):
+            try:
+                block()
+            except Exception:
+                pass
+    return value
+
+
+def _timed_generator(source):
+    it = iter(source)
+    while True:
+        t0 = time.perf_counter()
+        try:
+            item = next(it)
+        except StopIteration:
+            return
+        yield item, float(time.perf_counter() - t0)
+
 def waymax_closed_loop_rollout(
     data_config,
     policy_fn: Callable,
@@ -2575,6 +2661,9 @@ def waymax_closed_loop_rollout(
     status_every: int = 10,
     standard_metric_names: set[str] | list[str] | tuple[str, ...] | None = None,
     scenario_ids: list[str] | tuple[str, ...] | None = None,
+    tfexample_index_jsonl: str | None = None,
+    profile_runtime: bool = False,
+    profile_runtime_sync: bool = False,
 ):
     """Run real Waymax closed-loop simulation by stepping a Waymax environment.
 
@@ -2609,6 +2698,7 @@ def waymax_closed_loop_rollout(
                 set(requested_shard_ids),
                 split=split,
                 tfexample_glob=tfexample_glob,
+                tfexample_index_jsonl=tfexample_index_jsonl,
             )
             gen = ((requested_index[sid], sid, state) for sid, state in sid_gen)
         else:
@@ -2624,7 +2714,8 @@ def waymax_closed_loop_rollout(
     else:
         gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
     total = len(requested_shard_ids) if requested_shard_ids is not None else num_scenarios
-    iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
+    timed_gen = _timed_generator(gen) if profile_runtime else ((record, 0.0) for record in gen)
+    iterator = tqdm_iter(timed_gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
     env_cache: dict[tuple[int | None, str], tuple[object, _WaymaxEnvOps]] = {}
     call_policy = _make_policy_caller(policy_fn)
@@ -2640,7 +2731,9 @@ def waymax_closed_loop_rollout(
 
         standard_metric_objects, standard_metric_errors = build_waymax_metric_objects(standard_metric_names)
     resolved_exact_ids: set[str] = set()
-    for record in iterator:
+    for timed_record in iterator:
+        record, data_next_s = timed_record
+        scenario_t0 = time.perf_counter()
         if exact_ids is not None:
             raw_index, scenario_id, init_state = record
             resolved_exact_ids.add(str(scenario_id))
@@ -2654,6 +2747,7 @@ def waymax_closed_loop_rollout(
         if max_objects is None and hasattr(init_state, "log_trajectory"):
             max_objects = getattr(init_state.log_trajectory, "num_objects", None)
         env_key = (int(max_objects) if max_objects is not None else None, str(action_mode))
+        env_t0 = time.perf_counter()
         if reuse_env and env_key in env_cache:
             env, env_ops = env_cache[env_key]
         else:
@@ -2662,7 +2756,13 @@ def waymax_closed_loop_rollout(
             if reuse_env:
                 env_cache[env_key] = (env, env_ops)
         state = env_ops.reset(init_state)
+        if profile_runtime_sync:
+            _runtime_block_until_ready(state)
+        env_reset_s = float(time.perf_counter() - env_t0)
         steps = 0
+        policy_s = 0.0
+        env_step_s = 0.0
+        metric_s = 0.0
         policy_diagnostics = []
         metric_acc = (
             WaymaxStandardMetricAccumulator(
@@ -2674,17 +2774,27 @@ def waymax_closed_loop_rollout(
             else None
         )
         for step in range(horizon):
+            t0 = time.perf_counter()
             action = call_policy(state, step=step, scenario_index=scenario_index)
+            if profile_runtime_sync:
+                _runtime_block_until_ready(action)
+            policy_s += float(time.perf_counter() - t0)
             diag = _consume_policy_diagnostics(policy_fn)
             if diag is not None:
                 policy_diagnostics.append(diag)
+            t0 = time.perf_counter()
             state = env_ops.step(state, action)
+            if profile_runtime_sync:
+                _runtime_block_until_ready(state)
+            env_step_s += float(time.perf_counter() - t0)
             steps += 1
             if metric_acc is not None:
                 # Waymax's built-in metrics are per-current-timestep metrics.  Update
                 # after every simulator step so episode CR/offroad/wrong-way are
                 # any-over-rollout events, not just the final frame.
+                t0 = time.perf_counter()
                 metric_acc.update(state)
+                metric_s += float(time.perf_counter() - t0)
             if _state_done(state):
                 break
         if metric_acc is not None and steps == 0:
@@ -2694,6 +2804,17 @@ def waymax_closed_loop_rollout(
         # memory to grow with --num-scenarios.  Metrics are computed before dropping
         # the state, so the JSON payload still contains the required evaluation info.
         item = {"steps": steps, "policy_diagnostics": policy_diagnostics}
+        if profile_runtime:
+            item["runtime_profile"] = {
+                "data_next_s": float(data_next_s),
+                "env_reset_s": float(env_reset_s),
+                "policy_s": float(policy_s),
+                "env_step_s": float(env_step_s),
+                "metric_s": float(metric_s),
+                "scenario_total_s": float(time.perf_counter() - scenario_t0),
+                "steps": int(steps),
+                "sync_for_profile": bool(profile_runtime_sync),
+            }
         if scenario_id is not None:
             item["scenario_id"] = str(scenario_id)
         if compute_standard_metrics and metric_acc is not None:

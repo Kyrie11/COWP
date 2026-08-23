@@ -42,6 +42,16 @@ def _to_numpy(x: Any) -> np.ndarray:
         raise TypeError(f"Cannot convert object of type {type(x)!r} to numpy array") from exc
 
 
+def _device_get_many(values: list[Any]) -> list[Any]:
+    """Fetch a group of JAX leaves behind one host synchronization when possible."""
+    try:
+        import jax  # type: ignore
+
+        return list(jax.device_get(tuple(values)))
+    except Exception:
+        return values
+
+
 def _get_field(obj: Any, names: tuple[str, ...]) -> Any | None:
     for name in names:
         if obj is None:
@@ -95,7 +105,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -153,31 +163,46 @@ def _extract_sdc_index(state: Any, default: int = 0) -> int:
 
 
 def _extract_traj_components(
-    state: Any, *, allow_logged_fallback: bool = False, prefer_logged: bool = False
+    state: Any, *, allow_logged_fallback: bool = False, prefer_logged: bool = False, traj: Any | None = None
 ) -> dict[str, np.ndarray]:
-    traj, _ = _traj_arrays(
-        state, allow_logged_fallback=allow_logged_fallback, prefer_logged=prefer_logged
-    )
-    x = _unwrap_batch_dim(_to_numpy(_get_field(traj, ("x", "center_x"))))
-    y = _unwrap_batch_dim(_to_numpy(_get_field(traj, ("y", "center_y"))))
-    yaw_field = _get_field(traj, ("yaw", "heading", "bbox_yaw"))
-    vx_field = _get_field(traj, ("vel_x", "velocity_x", "vx"))
-    vy_field = _get_field(traj, ("vel_y", "velocity_y", "vy"))
-    length_field = _get_field(traj, ("length",))
-    width_field = _get_field(traj, ("width",))
-    height_field = _get_field(traj, ("height",))
-    valid_field = _get_field(traj, ("valid",))
+    if traj is None:
+        traj, _ = _traj_arrays(
+            state, allow_logged_fallback=allow_logged_fallback, prefer_logged=prefer_logged
+        )
+    raw = [
+        _get_field(traj, ("x", "center_x")),
+        _get_field(traj, ("y", "center_y")),
+        _get_field(traj, ("yaw", "heading", "bbox_yaw")),
+        _get_field(traj, ("vel_x", "velocity_x", "vx")),
+        _get_field(traj, ("vel_y", "velocity_y", "vy")),
+        _get_field(traj, ("length",)),
+        _get_field(traj, ("width",)),
+        _get_field(traj, ("height",)),
+        _get_field(traj, ("valid",)),
+    ]
+    if raw[0] is None or raw[1] is None:
+        raise ValueError("trajectory must expose x/y components")
+    host = _device_get_many(raw)
+    x = _unwrap_batch_dim(np.asarray(host[0]))
+    y = _unwrap_batch_dim(np.asarray(host[1]))
     zeros = np.zeros_like(x, dtype=np.float32)
+
+    def arr(i: int, default: np.ndarray, *, boolean: bool = False) -> np.ndarray:
+        if raw[i] is None:
+            return default.copy()
+        a = _unwrap_batch_dim(np.asarray(host[i]))
+        return a.astype(bool) if boolean else a.astype(np.float32)
+
     return {
         "x": x.astype(np.float32),
         "y": y.astype(np.float32),
-        "yaw": _unwrap_batch_dim(_to_numpy(yaw_field)).astype(np.float32) if yaw_field is not None else zeros.copy(),
-        "vx": _unwrap_batch_dim(_to_numpy(vx_field)).astype(np.float32) if vx_field is not None else zeros.copy(),
-        "vy": _unwrap_batch_dim(_to_numpy(vy_field)).astype(np.float32) if vy_field is not None else zeros.copy(),
-        "length": _unwrap_batch_dim(_to_numpy(length_field)).astype(np.float32) if length_field is not None else np.full_like(x, 4.8, dtype=np.float32),
-        "width": _unwrap_batch_dim(_to_numpy(width_field)).astype(np.float32) if width_field is not None else np.full_like(x, 1.9, dtype=np.float32),
-        "height": _unwrap_batch_dim(_to_numpy(height_field)).astype(np.float32) if height_field is not None else np.full_like(x, 1.6, dtype=np.float32),
-        "valid": _unwrap_batch_dim(_to_numpy(valid_field)).astype(bool) if valid_field is not None else np.ones_like(x, dtype=bool),
+        "yaw": arr(2, zeros),
+        "vx": arr(3, zeros),
+        "vy": arr(4, zeros),
+        "length": arr(5, np.full_like(x, 4.8, dtype=np.float32)),
+        "width": arr(6, np.full_like(x, 1.9, dtype=np.float32)),
+        "height": arr(7, np.full_like(x, 1.6, dtype=np.float32)),
+        "valid": arr(8, np.ones_like(x, dtype=bool), boolean=True),
     }
 
 
@@ -319,13 +344,17 @@ def _extract_logged_future_agent_trajs(state: Any, sdc_index: int, cfg: dict) ->
 
 
 def extract_online_state_bundle(
-    state: Any, cfg: dict
+    state: Any, cfg: dict, *, cached_sdc_index: int | None = None
 ) -> tuple[np.ndarray, np.ndarray, int, dict[str, np.ndarray], int]:
-    """Extract history/current state once for the causal online policy."""
-    _, t = _traj_arrays(state)
-    comps = _extract_traj_components(state)
+    """Extract history/current state once for the causal online policy.
+
+    Trajectory leaves are copied from JAX to host as one pytree.  SDC identity is
+    invariant within a scenario and may be supplied by the policy cache.
+    """
+    traj, t = _traj_arrays(state)
+    comps = _extract_traj_components(state, traj=traj)
     hist, cur11 = _history_from_components(comps, t, cfg)
-    sdc = _extract_sdc_index(state)
+    sdc = int(cached_sdc_index) if cached_sdc_index is not None else _extract_sdc_index(state)
     return hist, cur11, sdc, comps, t
 
 
@@ -1988,6 +2017,8 @@ class COWPWaymaxPolicy:
         self._previous_selected_traj: np.ndarray | None = None
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
+        self._cached_sdc_scenario_index: int | None = None
+        self._cached_sdc_index: int | None = None
 
     def _trajectory_to_action(
         self,
@@ -2040,7 +2071,13 @@ class COWPWaymaxPolicy:
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
-        history, agent_state, sdc_index, traj_components, current_t = extract_online_state_bundle(state, self.cfg)
+        cached_sdc = self._cached_sdc_index if (scenario_index is not None and self._cached_sdc_scenario_index == int(scenario_index)) else None
+        history, agent_state, sdc_index, traj_components, current_t = extract_online_state_bundle(
+            state, self.cfg, cached_sdc_index=cached_sdc
+        )
+        if scenario_index is not None and cached_sdc is None:
+            self._cached_sdc_scenario_index = int(scenario_index)
+            self._cached_sdc_index = int(sdc_index)
         if scenario_index is not None and self._cached_roadgraph_scenario_index == int(scenario_index) and self._cached_roadgraph is not None:
             roadgraph = self._cached_roadgraph
         else:
@@ -2311,7 +2348,7 @@ class COWPWaymaxPolicy:
                 candidate_progress = self.torch.zeros_like(scores)
             progress_ref = candidate_progress[cand_valid].max().clamp_min(1.0e-6) if has_valid else self.torch.tensor(1.0, device=self.dev, dtype=scores.dtype)
             progress_shortfall = (1.0 - (candidate_progress / progress_ref).clamp(0.0, 1.0)).clamp(0.0, 1.0)
-            if isinstance(outcome, dict) and float(self.outcome_risk_penalty) > 0.0:
+            if isinstance(outcome, dict) and (float(self.outcome_risk_penalty) > 0.0 or method == "cowp_fallback_outcome"):
                 col_r = self.torch.sigmoid(outcome.get("collision_logit", self.torch.zeros_like(scores))[0].float()).clamp(0.0, 1.0)
                 off_r = self.torch.sigmoid(outcome.get("offroad_logit", self.torch.zeros_like(scores))[0].float()).clamp(0.0, 1.0)
                 outcome_risk = self.torch.nan_to_num(1.0 - (1.0 - col_r) * (1.0 - off_r), nan=1.0, posinf=1.0, neginf=0.0)
@@ -2527,7 +2564,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method == "cowp" and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -2563,6 +2600,7 @@ class COWPWaymaxPolicy:
                         frontier_false_safe_prob = cand_false_safe_prob
                     shield_risk = rule_mix * rule_decision_risk + action_mix * action_decision_risk + outcome_mix * outcome_decision_risk
                     frontier_risk = noncoercive_risk + shield_tie_mix * shield_risk
+                    frontier_outcome_risk = self.torch.zeros_like(outcome_decision_risk) if method == "cowp_fallback_outcome" else outcome_decision_risk
                     result = select_set_preservation_frontier_1d(
                         scores=scores,
                         base_mask=frontier_base,
@@ -2572,7 +2610,7 @@ class COWPWaymaxPolicy:
                         progress_shortfall=progress_shortfall,
                         action_risk=action_decision_risk,
                         rule_risk=rule_decision_risk,
-                        outcome_risk=outcome_decision_risk,
+                        outcome_risk=frontier_outcome_risk,
                         ncf_probability=frontier_ncf_prob,
                         false_safe_probability=frontier_false_safe_prob,
                         cfg=pcfg_selector,

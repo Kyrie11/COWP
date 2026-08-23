@@ -17,7 +17,12 @@ from cowp.waymax_eval.rollout import (
     waymax_closed_loop_rollout,
 )
 from cowp.waymax_eval.policy_wrapper import make_cowp_policy
-from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
+from cowp.waymax_eval.metrics_cowp import (
+    physical_failure_attribution_summary,
+    policy_diagnostic_episode_summary,
+    policy_diagnostic_scenario_rows,
+    policy_diagnostic_summary,
+)
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 
 
@@ -84,6 +89,7 @@ def main() -> None:
     ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--waymax-split", choices=["training", "validation", "testing"], default="validation", help="WOMD split for --mode waymax. Default validation avoids evaluating online rollouts on training.")
     ap.add_argument("--tfexample-glob", default=None, help="Optional Waymax/tf.Example path override for --mode waymax.")
+    ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional scenario-id -> TFExample shard index. Exact-ID Waymax uses it to avoid scanning irrelevant record shards.")
     ap.add_argument("--scenario-ids-file", default=None, help="Exact scenario-ID allowlist for --mode waymax. Every requested ID must be resolved; missing IDs are a hard error.")
     ap.add_argument("--num-shards", type=int, default=1, help="Shard online Waymax rollouts across multiple parallel processes.")
     ap.add_argument("--shard-index", type=int, default=0, help="Shard id in [0, num_shards) for --mode waymax.")
@@ -104,7 +110,7 @@ def main() -> None:
     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
-    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
     ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
@@ -127,6 +133,8 @@ def main() -> None:
     ap.add_argument("--prefilter-waymax-shards", action=argparse.BooleanOptionalAction, default=True, help="Apply modulo sharding before SimulatorState construction. Scenario assignment and metrics are unchanged.")
     ap.add_argument("--jit-waymax-env", action=argparse.BooleanOptionalAction, default=True, help="JIT cached Waymax reset/step functions, with automatic fallback to the original eager path.")
     ap.add_argument("--jit-waymax-metrics", action=argparse.BooleanOptionalAction, default=True, help="JIT Waymax metric compute functions, with automatic per-metric fallback.")
+    ap.add_argument("--profile-waymax-runtime", action="store_true", help="Record per-scenario data/reset/policy/env-step/metric timing. Use on a small exact-ID subset first.")
+    ap.add_argument("--profile-waymax-sync", action="store_true", help="Synchronize JAX device work around timing sections for accurate bottleneck attribution. Slows execution; profiling only.")
     ap.add_argument("--status-every", type=int, default=10, help="When --no-progress is used, print one compact rollout heartbeat every N completed scenarios.")
     ap.add_argument("--output", default="outputs/eval_metrics.json")
     ap.add_argument("--no-progress", action="store_true")
@@ -358,6 +366,9 @@ def main() -> None:
             status_every=int(args.status_every),
             standard_metric_names=_parse_metric_names(args.waymax_standard_metric_names),
             scenario_ids=scenario_ids,
+            tfexample_index_jsonl=args.tfexample_index_jsonl,
+            profile_runtime=bool(args.profile_waymax_runtime),
+            profile_runtime_sync=bool(args.profile_waymax_sync),
         )
         payload = {
             "mode": "waymax",
@@ -386,10 +397,30 @@ def main() -> None:
             "mechanism_ground_truth_available_online": False,
             "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
             "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
+            "scenario_diagnostics": policy_diagnostic_scenario_rows(rollouts),
+            "physical_failure_attribution_summary": physical_failure_attribution_summary(rollouts),
+            "tfexample_index_jsonl": args.tfexample_index_jsonl,
+            "profile_waymax_runtime": bool(args.profile_waymax_runtime),
+            "profile_waymax_sync": bool(args.profile_waymax_sync),
         }
         if args.waymax_standard_metrics:
             payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]
             payload["standard_metric_summary"] = aggregate_waymax_standard_metrics(rollouts)
+        runtime_rows = [x.get("runtime_profile", {}) for x in rollouts if x.get("runtime_profile")]
+        if runtime_rows:
+            keys = ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s", "scenario_total_s")
+            runtime_summary = {}
+            for key in keys:
+                vals = [float(r.get(key, 0.0)) for r in runtime_rows]
+                runtime_summary[f"mean/{key}"] = float(sum(vals) / max(len(vals), 1))
+                runtime_summary[f"sum/{key}"] = float(sum(vals))
+            total_component = sum(runtime_summary[f"sum/{k}"] for k in ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s"))
+            if total_component > 0.0:
+                for key in ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s"):
+                    runtime_summary[f"fraction/{key}"] = float(runtime_summary[f"sum/{key}"] / total_component)
+            runtime_summary["scenarios"] = int(len(runtime_rows))
+            payload["waymax_runtime_profile_summary"] = runtime_summary
+            payload["waymax_runtime_profiles"] = runtime_rows
 
     if isinstance(payload, dict):
         payload["bcot_risk_budget"] = float(

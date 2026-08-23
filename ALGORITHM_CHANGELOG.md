@@ -2743,3 +2743,19 @@ The original strict Waymax command supplied `--scenario-ids-file` although the e
 No current claim is made that CTU improves COWP. Promotion requires certificate invariance, non-inferior validation burden/false-safe/progress, and paired exact-ID Waymax. The current dataset contains zero burden-only affected roots (`affected == unsafe`), so the affected-root extension is not independently supported and is scheduled for a clean conflict-only retraining ablation only after the selector is locked.
 
 v16.8.25 local validation: focused CTU/exact-ID/immutable-planner tests **9 passed**; full suite **252 passed, 5 skipped, 8 failed**. The eight failures are the same uploaded-repository historical issues (six missing archived launchers, two stale hard-coded semantic fingerprints), not new functional regressions. `compileall` and `bash -n NEXT_RUN_COMMANDS_V16_8_25_CTU_CN.sh` pass.
+
+## v16.8.26 — CTU Negative Result, Fallback-Only Physical-Risk Probe, and Strict-Waymax Attribution/Acceleration
+
+See `ALGORITHM_CHANGELOG_V16_8_26.md` for the complete record.
+
+Key decisions:
+- reject CTU as the default selector: removing the post-certificate set-preservation frontier consistently worsened EP, PBTR/FSR, NCF-selection recall, NPR, and strict-Waymax EP;
+- retain the original certificate-compatible COWP frontier;
+- do not rebuild the dataset/proposal bank in this release;
+- treat the 200-ID strict Waymax runs as complete and valid, but do not infer fallback causality from aggregate diagnostics alone;
+- add `cowp_fallback_outcome`, which leaves the certified COWP path exactly unchanged and exposes the already-trained outcome head only to the explicit uncertified fallback ranker;
+- add outcome calibration/low-FPR diagnostics before any physical hard-gate promotion;
+- add first-event/fallback temporal diagnostics and strict conventional/planner baselines for physical-failure localization;
+- add exact-ID TFExample-index plumbing, runtime profiling, batched JAX->host state transfer, cached SDC identity, and optional two-A30 parallel exact-ID sharding.
+
+The uploaded MCFC probe archive is incomplete (`profile_labels.jsonl` empty; no paired/source-ablation/promotion outputs) and provides no algorithm evidence.

@@ -222,6 +222,7 @@ class WaymaxStandardMetricAccumulator:
     max_values: dict[str, float] = field(default_factory=dict)
     final_values: dict[str, float] = field(default_factory=dict)
     mean_values: dict[str, list[float]] = field(default_factory=dict)
+    first_positive_steps: dict[str, int] = field(default_factory=dict)
     step_count: int = 0
     errors: dict[str, str] = field(default_factory=dict)
     _metric_compute_fns: list[tuple[str, Any, Any, bool]] = field(default_factory=list, init=False, repr=False)
@@ -289,6 +290,8 @@ class WaymaxStandardMetricAccumulator:
             self.final_values[name] = float(scalar)
             self.max_values[name] = max(self.max_values.get(name, float("-inf")), float(scalar))
             self.mean_values.setdefault(name, []).append(float(scalar))
+            if name in _EVENT_METRICS and float(scalar) > 0.0 and name not in self.first_positive_steps:
+                self.first_positive_steps[name] = int(self.step_count)
 
     def finalize(self, *, include_errors: bool = True) -> dict[str, float | int | dict[str, str]]:
         out: dict[str, float | int | dict[str, str]] = {"MetricSteps": int(self.step_count)}
@@ -322,6 +325,8 @@ class WaymaxStandardMetricAccumulator:
         for name in sorted(self.max_values):
             if name in _EVENT_METRICS:
                 out[f"WaymaxAny/{name}"] = float(self.max_values[name] > 0.0)
+                if name in self.first_positive_steps:
+                    out[f"FirstPositiveStep/{name}"] = int(self.first_positive_steps[name])
         for name, vals in sorted(self.mean_values.items()):
             if vals and name not in _EVENT_METRICS and name != "ProgressionMetric":
                 out[f"WaymaxMean/{name}"] = float(np.mean(vals))
