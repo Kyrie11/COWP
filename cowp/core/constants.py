@@ -63,6 +63,9 @@ class ProposalSource(IntEnum):
     # v16.8.20: one causal route timing jointly satisfies protected constraints
     # across multiple ego-reachable conflict regions.
     JOINT_ROUTE_NCF = 14
+    # v16.8.25: a piecewise route-time corridor satisfies several protected
+    # pass-after constraints while allowing post-conflict speed recovery.
+    MULTI_CONFLICT_CORRIDOR = 15
 
 
 class NaturalSource(IntEnum):

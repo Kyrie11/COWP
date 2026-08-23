@@ -108,3 +108,88 @@ def test_closed_loop_prefilter_preserves_global_scenario_index(monkeypatch):
 
     assert seen == [("one", 0, 1), ("three", 0, 3)]
     assert [row["steps"] for row in outputs] == [1, 1]
+
+
+def test_closed_loop_exact_ids_are_filtered_before_state_build_and_keep_global_indices(monkeypatch):
+    from cowp.waymax_eval import dataloader, rollout
+
+    class State:
+        def __init__(self, name, done=False):
+            self.name = name
+            self.done = done
+            self.num_objects = 4
+
+    class Env:
+        def reset(self, state):
+            return state
+
+        def step(self, state, action):
+            return State(state.name, done=True)
+
+    requested_sets = []
+
+    def fake_exact_generator(*args, **kwargs):
+        requested_sets.append(set(args[1]))
+        # Simulate dataset scan order rather than allowlist order.
+        for sid in ("scene-c", "scene-a"):
+            if sid in args[1]:
+                yield sid, State(sid)
+
+    monkeypatch.setattr(dataloader, "waymax_state_generator_for_sids", fake_exact_generator)
+    monkeypatch.setattr(rollout, "_make_waymax_environment", lambda **kwargs: Env())
+    seen = []
+
+    def policy(state, *, step, scenario_index):
+        seen.append((state.name, scenario_index))
+        return object()
+
+    outputs = rollout.waymax_closed_loop_rollout(
+        {},
+        policy,
+        scenario_ids=["scene-a", "scene-b", "scene-c", "scene-d"],
+        horizon_steps=2,
+        progress=False,
+        shard_index=0,
+        num_shards=2,
+        prefilter_shards=True,
+        jit_env=False,
+        status_every=0,
+    )
+
+    assert requested_sets == [{"scene-a", "scene-c"}]
+    assert seen == [("scene-c", 2), ("scene-a", 0)]
+    assert [row["scenario_id"] for row in outputs] == ["scene-c", "scene-a"]
+
+
+def test_closed_loop_exact_ids_fail_when_requested_id_is_missing(monkeypatch):
+    import pytest
+    from cowp.waymax_eval import dataloader, rollout
+
+    class State:
+        done = True
+        num_objects = 4
+
+    class Env:
+        def reset(self, state):
+            return state
+
+        def step(self, state, action):
+            return state
+
+    monkeypatch.setattr(
+        dataloader,
+        "waymax_state_generator_for_sids",
+        lambda *args, **kwargs: iter([("scene-a", State())]),
+    )
+    monkeypatch.setattr(rollout, "_make_waymax_environment", lambda **kwargs: Env())
+
+    with pytest.raises(RuntimeError, match="resolved 1/2"):
+        rollout.waymax_closed_loop_rollout(
+            {},
+            lambda state, **kwargs: object(),
+            scenario_ids=["scene-a", "scene-b"],
+            horizon_steps=1,
+            progress=False,
+            jit_env=False,
+            status_every=0,
+        )

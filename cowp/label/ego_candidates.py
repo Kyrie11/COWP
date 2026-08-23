@@ -7,7 +7,7 @@ import numpy as np
 from cowp.core.constants import MacroType, PriorityRelation, ProposalSource
 from cowp.core.types import ScenarioData, future_states_to_traj7
 from cowp.geometry.lane_graph import ConflictRegion, build_conflict_regions, build_scene_conflict_regions, trajectory_entry_to_region, tta_to_region
-from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, repair_planar_kinematics, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
+from cowp.label.trajectory_primitives import constant_accel_trajectory, piecewise_quintic_progress_trajectory, priority_hold_release_trajectory, repair_planar_kinematics, resample_logged, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory
 from cowp.label.natural_alternatives import _map_route_polylines, _required_route_length, _timed_polyline_trajectory
 from cowp.label.priority import determine_priority
 
@@ -1004,6 +1004,220 @@ def generate_ego_candidates(scene: ScenarioData, cfg: dict, conflict_regions: li
                     if accepted:
                         joint_keys.add(key)
                         joint_added += 1
+
+    # v16.8.25 Multi-Conflict Feasibility Corridor (MCFC).  JR-NCF above is
+    # intentionally low-dimensional: a single acceleration must satisfy every
+    # protected conflict and therefore tends to remain slow long after the
+    # binding interaction.  MCFC keeps the same causal/map-only contract but
+    # fits a piecewise zero-endpoint-acceleration progress schedule through the
+    # protected pass-after corridor, then explicitly recovers speed when route
+    # length and horizon permit.  It is a proposal-support repair, not a second
+    # safety classifier; the downstream conventional/BCOT certificates remain
+    # authoritative.
+    if bool(cand_cfg.get("multi_conflict_corridor_enabled", False)) and regions and len(candidates) < K:
+        nat_cfg = cfg.get("natural", {})
+        corridor_route_max = max(1, int(cand_cfg.get("route_topology_max_routes", 2)))
+        required = _required_route_length(
+            ego_cur,
+            horizon,
+            dt,
+            nat_cfg,
+            accel=max(0.0, float(cand_cfg.get("multi_conflict_corridor_recovery_accel_mps2", [0.8])[-1])),
+        )
+        corridor_routes = _map_route_polylines(scene, ego_cur, required, nat_cfg)[:corridor_route_max]
+        corridor_max = max(0, int(cand_cfg.get("multi_conflict_corridor_max_candidates", 8)))
+        corridor_max_regions = max(1, int(cand_cfg.get("multi_conflict_corridor_max_regions", 4)))
+        corridor_gaps = [float(x) for x in cand_cfg.get("multi_conflict_corridor_gap_s", [0.8, 1.4])]
+        corridor_speed_scales = [float(x) for x in cand_cfg.get("multi_conflict_corridor_entry_speed_scale", [0.60, 0.85])]
+        corridor_recovery_accels = [float(x) for x in cand_cfg.get("multi_conflict_corridor_recovery_accel_mps2", [0.8, 1.4])]
+        corridor_recovery_window = max(float(cand_cfg.get("multi_conflict_corridor_recovery_window_s", 2.0)), 2.0 * dt)
+        corridor_min_knot_dt = max(float(cand_cfg.get("multi_conflict_corridor_min_knot_dt_s", 0.6)), 2.0 * dt)
+        corridor_tol = max(float(cand_cfg.get("multi_conflict_corridor_tta_tolerance_s", max(0.20, 2.0 * dt))), dt)
+        corridor_commit_t = max(float(cand_cfg.get("multi_conflict_corridor_commitment_check_s", 1.0)), dt)
+        corridor_min_drop = max(float(cand_cfg.get("multi_conflict_corridor_min_speed_drop_mps", 0.4)), 0.0)
+        corridor_max_entry_speed = max(float(cand_cfg.get("multi_conflict_corridor_max_entry_speed_mps", 6.0)), 0.5)
+        corridor_max_speed = max(float(cand_cfg.get("multi_conflict_corridor_max_recovery_speed_mps", 13.0)), corridor_max_entry_speed)
+        protected_rel = {int(PriorityRelation.AGENT_PRIORITY), int(PriorityRelation.EQUAL_OR_NEGOTIATED)}
+        corridor_added = 0
+        corridor_keys: set[tuple[int, int, int, int]] = set()
+        v0 = max(float(ego_cur[5] if len(ego_cur) > 5 else np.linalg.norm(ego_cur[3:5])), 0.0)
+
+        for ridx, route_path in enumerate(corridor_routes):
+            if corridor_added >= corridor_max or len(candidates) >= K:
+                break
+            route_keep = _timed_polyline_trajectory(route_path, ego_cur, horizon, dt, accel=0.0, nat_cfg=nat_cfg)
+            if route_keep is None:
+                continue
+            constraints: list[tuple[float, float, ConflictRegion, int, float]] = []
+            for region in regions:
+                ego_tta, dist = trajectory_entry_to_region(route_keep, region, current_state=ego_cur, dt=dt)
+                if not (np.isfinite(ego_tta) and np.isfinite(dist) and dist > 0.5):
+                    continue
+                protected_rows: list[tuple[int, float]] = []
+                for agent_index, _early, _nominal, late in _agent_tta_envelopes_to_region(scene, region, cfg):
+                    rho = _causal_priority_relation(scene, int(agent_index), route_keep, cfg)
+                    if int(rho) in protected_rel:
+                        protected_rows.append((int(agent_index), float(late)))
+                if not protected_rows:
+                    continue
+                binding_agent, binding_late = max(protected_rows, key=lambda z: (z[1], z[0]))
+                constraints.append((float(ego_tta), float(dist), region, int(binding_agent), float(binding_late)))
+            # Progress, rather than current-time TTA, defines the knot order.
+            constraints.sort(key=lambda row: (row[1], row[0], int(row[2].conflict_id)))
+            dedup_constraints: list[tuple[float, float, ConflictRegion, int, float]] = []
+            for row in constraints:
+                if dedup_constraints and row[1] <= dedup_constraints[-1][1] + 0.25:
+                    # Keep the stricter protected deadline at nearly the same
+                    # route location, avoiding degenerate consecutive knots.
+                    if row[4] > dedup_constraints[-1][4]:
+                        dedup_constraints[-1] = row
+                    continue
+                dedup_constraints.append(row)
+            constraints = dedup_constraints[:corridor_max_regions]
+            if not constraints:
+                continue
+
+            # Route arc available to the projected progress profile.
+            route_xy = np.asarray(route_path, dtype=np.float32)[:, :2]
+            if len(route_xy) < 2:
+                continue
+            if float(np.linalg.norm(route_xy[0] - ego_cur[:2])) > 1.0e-3:
+                route_xy = np.concatenate([np.asarray(ego_cur[:2], dtype=np.float32)[None, :], route_xy], axis=0)
+            route_len = float(np.sum(np.linalg.norm(np.diff(route_xy, axis=0), axis=1)))
+
+            for gap in corridor_gaps:
+                if corridor_added >= corridor_max or len(candidates) >= K:
+                    break
+                active: list[tuple[float, float, ConflictRegion, int, float]] = []
+                prev_target = 0.0
+                prev_dist = 0.0
+                for ego_tta, dist, region, agent_index, late in constraints:
+                    raw_target = float(late + gap)
+                    if raw_target <= 0.35 or raw_target > horizon_s + 2.0:
+                        continue
+                    # Later route conflicts cannot receive an earlier knot even
+                    # if independent agent envelopes overlap in time.  A small
+                    # distance-aware lower bound avoids impossible knot order.
+                    min_travel = max(corridor_min_knot_dt, (float(dist) - prev_dist) / max(corridor_max_speed, 0.5))
+                    target = max(raw_target, prev_target + min_travel)
+                    active.append((ego_tta, float(dist), region, int(agent_index), float(target)))
+                    prev_target, prev_dist = float(target), float(dist)
+                if not active:
+                    continue
+
+                for speed_scale in corridor_speed_scales:
+                    if corridor_added >= corridor_max or len(candidates) >= K:
+                        break
+                    base_times: list[float] = []
+                    base_dist: list[float] = []
+                    base_speeds: list[float] = []
+                    last_t, last_d = 0.0, 0.0
+                    last_v = v0
+                    feasible_knots = True
+                    for _ego_tta, dist, _region, _agent_index, target in active:
+                        seg_t = max(float(target - last_t), dt)
+                        seg_d = max(float(dist - last_d), 1.0e-3)
+                        avg_v = seg_d / seg_t
+                        # A low but nonzero conflict-entry speed avoids PCHR's
+                        # full-stop feasibility collapse while preserving an
+                        # observable yielding commitment.
+                        entry_v = float(np.clip(
+                            min(v0 * max(speed_scale, 0.05), 1.5 * avg_v),
+                            0.5,
+                            corridor_max_entry_speed,
+                        ))
+                        if not np.isfinite(entry_v):
+                            feasible_knots = False
+                            break
+                        base_times.append(float(target))
+                        base_dist.append(float(dist))
+                        base_speeds.append(entry_v)
+                        last_t, last_d, last_v = float(target), float(dist), entry_v
+                    if not feasible_knots:
+                        continue
+
+                    for recovery_accel in corridor_recovery_accels:
+                        if corridor_added >= corridor_max or len(candidates) >= K:
+                            break
+                        times = list(base_times)
+                        distances = list(base_dist)
+                        speeds = list(base_speeds)
+                        recovery_used = False
+                        if last_t < horizon_s - 2.0 * dt and route_len > last_d + 0.75:
+                            rec_t = min(horizon_s, last_t + corridor_recovery_window)
+                            rec_dt = max(rec_t - last_t, dt)
+                            desired_v = float(np.clip(last_v + max(recovery_accel, 0.0) * rec_dt, last_v, min(max(v0, last_v), corridor_max_speed)))
+                            desired_d = last_d + 0.5 * (last_v + desired_v) * rec_dt
+                            rec_d = min(desired_d, route_len - 0.25)
+                            if rec_d > last_d + 0.5:
+                                # If map support truncates the recovery distance,
+                                # lower the endpoint speed consistently instead
+                                # of demanding an aggressive compressed segment.
+                                mean_v = (rec_d - last_d) / rec_dt
+                                rec_v = float(np.clip(2.0 * mean_v - last_v, last_v, desired_v))
+                                times.append(float(rec_t))
+                                distances.append(float(rec_d))
+                                speeds.append(rec_v)
+                                recovery_used = rec_v > last_v + 0.10
+
+                        key = (
+                            int(ridx), int(round(gap * 10.0)),
+                            int(round(speed_scale * 100.0)), int(round(max(recovery_accel, 0.0) * 10.0)),
+                        )
+                        if key in corridor_keys:
+                            continue
+                        base = piecewise_quintic_progress_trajectory(
+                            ego_cur,
+                            horizon,
+                            dt,
+                            waypoint_times_s=times,
+                            waypoint_distances_m=distances,
+                            waypoint_speeds_mps=speeds,
+                        )
+                        if base is None:
+                            continue
+                        tr = _project_progress_profile_to_route(
+                            base,
+                            route_path,
+                            ego_cur,
+                            dt,
+                            attach_max_m=float(cand_cfg.get("route_topology_attach_max_m", nat_cfg.get("map_route_search_radius_m", 8.0))),
+                        )
+                        if tr is None:
+                            continue
+                        # If the corridor actually delays ego relative to the
+                        # current-state route, require a visible early commitment.
+                        delayed = any(target > ego_tta + 0.35 for ego_tta, _d, _r, _a, target in active)
+                        if delayed and ego_speed > 1.5:
+                            check_idx = min(max(int(round(corridor_commit_t / dt)) - 1, 0), horizon - 1)
+                            check_speed = float(np.linalg.norm(tr[check_idx, 3:5]))
+                            if check_speed > max(ego_speed - corridor_min_drop, 0.5) + 1.0e-6:
+                                continue
+                        violations: list[float] = []
+                        for _ego_tta, _dist, region, _agent_index, target in active:
+                            actual_tta, _actual_dist = trajectory_entry_to_region(tr, region, current_state=ego_cur, dt=dt)
+                            violations.append(0.0 if not np.isfinite(actual_tta) else max(0.0, float(target - actual_tta)))
+                        if violations and max(violations) > corridor_tol + 1.0e-6:
+                            continue
+                        binding = max(active, key=lambda row: (row[4] - row[0], row[4], -row[1]))
+                        accepted = add(
+                            tr,
+                            MacroType.MERGE_BEHIND,
+                            util=0.08 + 0.04 * gap + 0.02 * max(0.0, -speed_scale) - (0.03 if recovery_used else 0.0),
+                            neutral=True,
+                            source=ProposalSource.MULTI_CONFLICT_CORRIDOR,
+                            region_id=int(binding[2].conflict_id),
+                            target_time_s=float(binding[4]),
+                            timing_side=1,
+                            target_agent_index=int(binding[3]),
+                            gap_s=gap,
+                            accel_mps2=float(recovery_accel if recovery_used else 0.0),
+                            entry_distance_m=float(binding[1]),
+                            target_tta_error_s=float(max(violations) if violations else 0.0),
+                        )
+                        if accepted:
+                            corridor_keys.add(key)
+                            corridor_added += 1
 
     # Fill remaining slots with terminal speed/position lattice variants.  Both
     # terminal speed and progress offsets affect the primitive geometry; otherwise

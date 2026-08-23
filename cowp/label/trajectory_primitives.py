@@ -301,6 +301,96 @@ def priority_hold_release_trajectory(
     return repair_planar_kinematics(out, current=cur, dt=dt)
 
 
+
+def piecewise_quintic_progress_trajectory(
+    current: np.ndarray,
+    horizon: int,
+    dt: float,
+    *,
+    waypoint_times_s: list[float] | tuple[float, ...] | np.ndarray,
+    waypoint_distances_m: list[float] | tuple[float, ...] | np.ndarray,
+    waypoint_speeds_mps: list[float] | tuple[float, ...] | np.ndarray,
+) -> np.ndarray | None:
+    """Causal longitudinal schedule through several timed progress waypoints.
+
+    Each segment is a quintic Hermite curve matching position and speed with
+    zero acceleration at both endpoints.  It is intentionally a low-dimensional
+    proposal primitive rather than an optimizer: callers choose causal waypoint
+    times/distances (for example protected conflict-entry deadlines), then the
+    common candidate validator remains authoritative for acceleration, jerk and
+    map compliance.
+
+    Waypoints may lie beyond the rollout horizon.  This is useful for a
+    pass-after constraint whose protected time is just outside the horizon: the
+    sampled prefix then naturally stays before the conflict instead of forcing a
+    stop-and-hold action.
+    """
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    H = int(horizon)
+    dt = max(float(dt), 1.0e-4)
+    times = np.asarray(waypoint_times_s, dtype=np.float64).reshape(-1)
+    distances = np.asarray(waypoint_distances_m, dtype=np.float64).reshape(-1)
+    speeds = np.asarray(waypoint_speeds_mps, dtype=np.float64).reshape(-1)
+    if H <= 0 or cur.size < 7 or len(times) == 0 or not (len(times) == len(distances) == len(speeds)):
+        return None
+    if not (np.all(np.isfinite(times)) and np.all(np.isfinite(distances)) and np.all(np.isfinite(speeds))):
+        return None
+    if np.any(times <= 0.0) or np.any(np.diff(times) <= max(0.25 * dt, 1.0e-4)):
+        return None
+    if np.any(distances <= 0.0) or np.any(np.diff(distances) <= 1.0e-3) or np.any(speeds < 0.0):
+        return None
+
+    v0 = float(max(cur[5] if cur.size > 5 else np.linalg.norm(cur[3:5]), 0.0))
+    knot_t = np.concatenate([[0.0], times])
+    knot_s = np.concatenate([[0.0], distances])
+    knot_v = np.concatenate([[v0], speeds])
+
+    def _quintic_state(t: float, duration: float, s0: float, va: float, s1: float, vb: float) -> tuple[float, float]:
+        """Quintic Hermite position/speed with zero endpoint accelerations."""
+        T = max(float(duration), 1.0e-8)
+        u = float(np.clip(t / T, 0.0, 1.0))
+        u2, u3, u4, u5 = u*u, u**3, u**4, u**5
+        h00 = 1.0 - 10.0*u3 + 15.0*u4 - 6.0*u5
+        h10 = u - 6.0*u3 + 8.0*u4 - 3.0*u5
+        h01 = 10.0*u3 - 15.0*u4 + 6.0*u5
+        h11 = -4.0*u3 + 7.0*u4 - 3.0*u5
+        # Derivatives with respect to normalized time u.
+        dh00 = -30.0*u2 + 60.0*u3 - 30.0*u4
+        dh10 = 1.0 - 18.0*u2 + 32.0*u3 - 15.0*u4
+        dh01 = 30.0*u2 - 60.0*u3 + 30.0*u4
+        dh11 = -12.0*u2 + 28.0*u3 - 15.0*u4
+        pos = h00*s0 + h10*T*va + h01*s1 + h11*T*vb
+        vel = (dh00*s0 + dh01*s1) / T + dh10*va + dh11*vb
+        return float(pos), float(vel)
+
+    x0, y0 = float(cur[0]), float(cur[1])
+    yaw = float(cur[6])
+    length = float(cur[7] if cur.size > 7 and cur[7] > 0 else 4.8)
+    width = float(cur[8] if cur.size > 8 and cur[8] > 0 else 1.9)
+    direction = np.asarray([np.cos(yaw), np.sin(yaw)], dtype=np.float32)
+    out = np.zeros((H, 7), dtype=np.float32)
+    prev_s = 0.0
+    for k in range(H):
+        t = float((k + 1) * dt)
+        seg = int(np.searchsorted(knot_t[1:], t, side="left"))
+        if seg < len(times):
+            local_t = t - float(knot_t[seg])
+            duration = float(knot_t[seg + 1] - knot_t[seg])
+            s_t, v_t = _quintic_state(
+                local_t, duration, float(knot_s[seg]), float(knot_v[seg]),
+                float(knot_s[seg + 1]), float(knot_v[seg + 1]),
+            )
+        else:
+            s_t = float(knot_s[-1] + knot_v[-1] * (t - knot_t[-1]))
+            v_t = float(knot_v[-1])
+        if not np.isfinite(s_t) or not np.isfinite(v_t) or v_t < -1.0e-3 or s_t < prev_s - 1.0e-3:
+            return None
+        prev_s = max(prev_s, float(s_t))
+        pos = np.asarray([x0, y0], dtype=np.float32) + direction * prev_s
+        speed = max(float(v_t), 0.0)
+        out[k] = [pos[0], pos[1], yaw, direction[0] * speed, direction[1] * speed, length, width]
+    return repair_planar_kinematics(out, current=cur, dt=dt)
+
 def resample_logged(
     logged: np.ndarray,
     horizon: int,

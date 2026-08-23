@@ -2498,6 +2498,9 @@ def waymax_closed_loop_rollout(
     clear_accelerator_cache: bool = False,
     split: str | None = None,
     tfexample_glob: str | None = None,
+    scenario_ids: list[str] | tuple[str, ...] | set[str] | None = None,
+    tfexample_index_jsonl: str | None = None,
+    require_all_scenario_ids: bool = True,
     shard_index: int = 0,
     num_shards: int = 1,
     reuse_env: bool = True,
@@ -2513,23 +2516,60 @@ def waymax_closed_loop_rollout(
     SimulatorState.  This function intentionally does not use proto-derived COWP
     labels; it is the closed-loop path for validating a planner in Waymax.
     """
-    from cowp.waymax_eval.dataloader import waymax_state_generator, waymax_state_generator_sharded
+    from cowp.waymax_eval.dataloader import (
+        waymax_state_generator,
+        waymax_state_generator_for_sids,
+        waymax_state_generator_sharded,
+    )
 
     horizon = int(horizon_steps) if horizon_steps is not None else 80
     num_shards = max(int(num_shards), 1)
     shard_index = int(shard_index) % num_shards
-    use_prefilter = bool(prefilter_shards) and num_shards > 1
-    if use_prefilter:
-        gen = waymax_state_generator_sharded(
+
+    exact_ids: list[str] | None = None
+    if scenario_ids is not None:
+        # Preserve the user's first-occurrence order.  Sets are sorted only so a
+        # programmatic set input remains deterministic across paired methods.
+        raw_ids = sorted(str(x) for x in scenario_ids) if isinstance(scenario_ids, set) else [str(x) for x in scenario_ids]
+        exact_ids = list(dict.fromkeys(x for x in raw_ids if x))
+        if not exact_ids:
+            raise ValueError("scenario_ids was provided but contains no non-empty ids")
+        indexed_ids = [(idx, sid) for idx, sid in enumerate(exact_ids) if idx % num_shards == shard_index]
+        if num_scenarios is not None and int(num_scenarios) < len(indexed_ids):
+            if require_all_scenario_ids:
+                raise ValueError(
+                    "--num-scenarios would truncate an exact-ID shard while strict resolution is enabled. "
+                    "Use a smaller scenario-id file for a pilot, or pass --allow-missing-scenario-ids for diagnostics."
+                )
+            indexed_ids = indexed_ids[: max(int(num_scenarios), 0)]
+        id_to_global_index = {sid: idx for idx, sid in indexed_ids}
+        requested_ids_this_shard = [sid for _, sid in indexed_ids]
+        exact_gen = waymax_state_generator_for_sids(
             data_config,
+            set(requested_ids_this_shard),
             split=split,
             tfexample_glob=tfexample_glob,
-            shard_index=shard_index,
-            num_shards=num_shards,
+            tfexample_index_jsonl=tfexample_index_jsonl,
         )
+        gen = ((id_to_global_index[sid], sid, state) for sid, state in exact_gen)
+        total = len(requested_ids_this_shard)
+        use_prefilter = True
     else:
-        gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
-    total = num_scenarios
+        requested_ids_this_shard = []
+        use_prefilter = bool(prefilter_shards) and num_shards > 1
+        if use_prefilter:
+            base_gen = waymax_state_generator_sharded(
+                data_config,
+                split=split,
+                tfexample_glob=tfexample_glob,
+                shard_index=shard_index,
+                num_shards=num_shards,
+            )
+            gen = ((idx, None, state) for idx, state in base_gen)
+        else:
+            base_gen = enumerate(waymax_state_generator(data_config, split=split, tfexample_glob=tfexample_glob))
+            gen = ((idx, None, state) for idx, state in base_gen)
+        total = num_scenarios
     iterator = tqdm_iter(gen, enabled=progress, total=total, desc=f"Waymax closed-loop rollout shard {shard_index}/{num_shards}", unit="scenario")
     outputs = []
     env_cache: dict[tuple[int | None, str], tuple[object, _WaymaxEnvOps]] = {}
@@ -2545,8 +2585,8 @@ def waymax_closed_loop_rollout(
         from cowp.waymax_eval.metrics_standard import build_waymax_metric_objects
 
         standard_metric_objects, standard_metric_errors = build_waymax_metric_objects(standard_metric_names)
-    for raw_index, init_state in iterator:
-        if (not use_prefilter) and num_shards > 1 and (raw_index % num_shards) != shard_index:
+    for raw_index, scenario_id, init_state in iterator:
+        if exact_ids is None and (not use_prefilter) and num_shards > 1 and (raw_index % num_shards) != shard_index:
             continue
         scenario_index = raw_index
         max_objects = getattr(init_state, "num_objects", None)
@@ -2593,6 +2633,8 @@ def waymax_closed_loop_rollout(
         # memory to grow with --num-scenarios.  Metrics are computed before dropping
         # the state, so the JSON payload still contains the required evaluation info.
         item = {"steps": steps, "policy_diagnostics": policy_diagnostics}
+        if scenario_id is not None:
+            item["scenario_id"] = str(scenario_id)
         if compute_standard_metrics and metric_acc is not None:
             item["standard_metrics"] = metric_acc.finalize()
         if keep_rollout_state:
@@ -2613,6 +2655,16 @@ def waymax_closed_loop_rollout(
                     flush=True,
                 )
                 last_status_at = now
-        if num_scenarios is not None and len(outputs) >= num_scenarios:
+        if exact_ids is None and num_scenarios is not None and len(outputs) >= num_scenarios:
             break
+    if exact_ids is not None and require_all_scenario_ids:
+        evaluated = {str(row.get("scenario_id")) for row in outputs if row.get("scenario_id") is not None}
+        missing = [sid for sid in requested_ids_this_shard if sid not in evaluated]
+        if missing:
+            preview = ", ".join(missing[:8])
+            suffix = " ..." if len(missing) > 8 else ""
+            raise RuntimeError(
+                f"Exact-ID Waymax rollout resolved {len(evaluated)}/{len(requested_ids_this_shard)} requested "
+                f"scenario ids on shard {shard_index}/{num_shards}; missing: {preview}{suffix}"
+            )
     return outputs

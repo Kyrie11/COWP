@@ -2727,3 +2727,21 @@ This revision does **not** change the COWP planner, natural-basis mathematics, r
 ## v16.8.24 — rebuild readiness and execution-chain repair
 
 See `ALGORITHM_CHANGELOG_V16_8_24.md`. The release fixes the missing profile-summary module reference, adds report-only benchmark recovery and active-chain dependency preflight, persists WOMD Scenario indices across benchmark/full build, makes compact split selection self-contained, tunes CPU worker defaults, and attaches Waymax outcomes to train/val/heldout-test. Label semantics are unchanged from the semantically verified v16.8.23 fast path.
+
+## v16.8.25 — Exact-ID Waymax repair + experimental MCFC (2026-08-23)
+
+See `ALGORITHM_CHANGELOG_V16_8_25.md`. Current v16.8.24 evidence attributes the dominant learned-offline ceiling to proposal support (`AnyNCF` about 0.35--0.36; oracle selected false-safe floor about 0.59--0.60) while protected/global BCOT discrimination is already strong. This revision therefore (1) repairs the previously non-functional exact-ID Waymax held-out path and records exact scenario coverage, and (2) adds an **opt-in, unpromoted** Multi-Conflict Feasibility Corridor proposal family that replaces JR's single-acceleration timing profile with piecewise protected timing knots plus post-conflict recovery. The canonical v16.8 label config remains behaviorally unchanged; MCFC is enabled only by `configs/label_cowp_v16_8_25_mcfc.yaml`.
+
+MCFC must pass a paired validation proposal probe before any full rebuild/retraining. If it fails, disable it; do not repeat PCHR/threshold-only/flat-certificate attempts. The currently inspected 1,200-scene held-out set is now diagnostic rather than final-blind for subsequent algorithm selection; final paper evaluation must use a new untouched split sampled from unused WOMD validation IDs after configuration freeze. The current data also contain zero burden-only affected roots, so affected-root-vs-conflict-only superiority is not an empirically supported headline claim yet.
+
+### v16.8.25 evidence protocol addendum
+
+- Added `cowp/scripts/85_screen_v16_8_25_mcfc_probe.py`: MCFC now requires a
+  source-attributed effect-size gate (not just an aggregate fresh-bank pass)
+  before full rebuild/retraining.
+- Added `NEXT_RUN_COMMANDS_V16_8_25_MCFC_CN.sh`: exact-ID v16.8 strict-Waymax
+  diagnosis -> validation-only MCFC probe -> blind-final ID freeze -> gated
+  rebuild/retrain -> one-shot final-blind evaluation.
+- The already-inspected v16.8.24 1,200-scene held-out set is development-only
+  for future algorithm decisions; a new content-blind ID-hash holdout is
+  required for final claims.

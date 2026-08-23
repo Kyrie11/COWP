@@ -97,3 +97,22 @@ def test_psy_is_generated_for_protected_stop_control_interaction() -> None:
     assert np.all(np.asarray(out["proposal_timing_side"])[psy] == 1)
     assert np.all(np.asarray(out["proposal_target_agent_index"])[psy] == 1)
     assert int(out["_proposal_debug"]["accepted_by_source"].get("PRIORITY_SMOOTH_YIELD", 0)) > 0
+
+
+def test_piecewise_quintic_progress_hits_multiple_waypoints_and_recovers() -> None:
+    from cowp.label.trajectory_primitives import piecewise_quintic_progress_trajectory
+
+    cur = np.asarray([0, 0, 0, 8, 0, 8, 0, 4.8, 1.9, 1.6, 1], dtype=np.float32)
+    tr = piecewise_quintic_progress_trajectory(
+        cur,
+        80,
+        0.1,
+        waypoint_times_s=[3.0, 5.0, 7.0],
+        waypoint_distances_m=[18.0, 28.0, 42.0],
+        waypoint_speeds_mps=[4.0, 5.0, 8.0],
+    )
+    assert tr is not None
+    assert abs(float(tr[29, 0]) - 18.0) < 0.20
+    assert abs(float(tr[49, 0]) - 28.0) < 0.20
+    assert abs(float(tr[69, 0]) - 42.0) < 0.20
+    assert float(np.linalg.norm(tr[69, 3:5])) > float(np.linalg.norm(tr[49, 3:5]))

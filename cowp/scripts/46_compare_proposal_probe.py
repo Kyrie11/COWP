@@ -67,6 +67,7 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
     phr = valid & (source == int(ProposalSource.PRIORITY_HOLD_RELEASE))
     psy = valid & (source == int(ProposalSource.PRIORITY_SMOOTH_YIELD))
     joint = valid & (source == int(ProposalSource.JOINT_ROUTE_NCF))
+    corridor = valid & (source == int(ProposalSource.MULTI_CONFLICT_CORRIDOR))
     timing_err = np.asarray(
         row.get("cowp/candidates/proposal_target_tta_error_s", np.full(len(valid), np.nan, dtype=np.float32)),
         dtype=np.float32,
@@ -123,6 +124,9 @@ def _summarize(row: dict[str, np.ndarray]) -> dict[str, float | bool | int]:
         "joint_count": int(joint.sum()),
         "joint_ncf_count": int((joint & ncf).sum()),
         "joint_priority_ncf_count": int((joint & priority_ncf).sum()),
+        "corridor_count": int(corridor.sum()),
+        "corridor_ncf_count": int((corridor & ncf).sum()),
+        "corridor_priority_ncf_count": int((corridor & priority_ncf).sum()),
         "rmr_timing_error_count": int(rmr_err.size),
         "rmr_timing_error_sum_s": float(rmr_err.sum()) if rmr_err.size else 0.0,
         "rmr_timing_error_max_s": float(rmr_err.max()) if rmr_err.size else 0.0,
@@ -236,6 +240,12 @@ def _aggregate(ids: list[str], old: dict, new: dict) -> tuple[Counter, list[int]
             new_scene_with_joint=int(int(b.get("joint_count", 0)) > 0),
             new_scene_with_joint_ncf=int(int(b.get("joint_ncf_count", 0)) > 0),
             new_scene_with_joint_priority_ncf=int(int(b.get("joint_priority_ncf_count", 0)) > 0),
+            new_corridor_candidates=int(b.get("corridor_count", 0)),
+            new_corridor_ncf_candidates=int(b.get("corridor_ncf_count", 0)),
+            new_corridor_priority_ncf_candidates=int(b.get("corridor_priority_ncf_count", 0)),
+            new_scene_with_corridor=int(int(b.get("corridor_count", 0)) > 0),
+            new_scene_with_corridor_ncf=int(int(b.get("corridor_ncf_count", 0)) > 0),
+            new_scene_with_corridor_priority_ncf=int(int(b.get("corridor_priority_ncf_count", 0)) > 0),
             new_rmr_timing_error_count=int(b["rmr_timing_error_count"]),
             new_rmr_timing_error_sum_s=float(b["rmr_timing_error_sum_s"]),
         )
@@ -325,7 +335,7 @@ def main() -> None:
         "no_unexpected_build_errors": not build_errors and not unexpected_missing_new,
     }
     result = {
-        "schema_version": "cowp_v16_8_20_causal_priority_joint_probe_v5",
+        "schema_version": "cowp_v16_8_25_mcfc_probe_v6",
         "old_cache": str(Path(args.old_cache).resolve()),
         "new_cache": str(Path(args.new_cache).resolve()),
         "new_build_profile": str(Path(args.new_build_profile).resolve()) if args.new_build_profile else None,
@@ -384,6 +394,12 @@ def main() -> None:
             "joint_route_ncf_candidate_count": int(c["new_joint_candidates"]),
             "joint_route_ncf_global_ncf_candidate_count": int(c["new_joint_ncf_candidates"]),
             "joint_route_ncf_priority_ncf_candidate_count": int(c["new_joint_priority_ncf_candidates"]),
+            "scene_with_multi_conflict_corridor_rate": _rate(c["new_scene_with_corridor"], n),
+            "scene_with_multi_conflict_corridor_global_ncf_rate": _rate(c["new_scene_with_corridor_ncf"], n),
+            "scene_with_multi_conflict_corridor_priority_ncf_rate": _rate(c["new_scene_with_corridor_priority_ncf"], n),
+            "multi_conflict_corridor_candidate_count": int(c["new_corridor_candidates"]),
+            "multi_conflict_corridor_global_ncf_candidate_count": int(c["new_corridor_ncf_candidates"]),
+            "multi_conflict_corridor_priority_ncf_candidate_count": int(c["new_corridor_priority_ncf_candidates"]),
         },
         "paired": {
             "old_hard_scene_count": int(hard_c["old_hard"]),
