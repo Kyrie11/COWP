@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import time
 
 import numpy as np
 
@@ -72,6 +73,13 @@ def _unwrap_batch_dim(arr: np.ndarray) -> np.ndarray:
 
 def _wrap_angle(x: np.ndarray | float) -> np.ndarray | float:
     return (np.asarray(x) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _macro_name(value: int) -> str:
+    try:
+        return MacroType(int(value)).name
+    except Exception:
+        return f"UNKNOWN_{int(value)}"
 
 
 def _canonical_online_method(method: str | None, gate_mode: str | None = None) -> tuple[str, str]:
@@ -719,7 +727,6 @@ def _add_candidate(
     sdc_index: int,
     roadgraph: dict[str, np.ndarray],
     cfg: dict,
-    conventional_check: bool = True,
     other_future_trajs: np.ndarray | None = None,
 ) -> None:
     if len(out) >= int(cfg.get("limits", {}).get("max_candidates", 64)):
@@ -743,11 +750,14 @@ def _add_candidate(
         old_speed = float(np.linalg.norm(old_traj[-1, 3:5]))
         if np.linalg.norm(old_traj[-1, :2] - end) < dedup_eps and abs(old_speed - end_speed) < speed_eps:
             return
-    conv = True
-    if conventional_check:
-        conv = _roadgraph_drivable_mask(traj, roadgraph) and _collision_free_against_constant_velocity(
-            traj, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs
-        )
+    # Conventional-safe is a semantic contract, not a candidate-source hint.
+    # Every candidate that enters the conventional pool must have actually passed
+    # the same online drivable-corridor and causal collision screens.  Candidates
+    # that fail this audit are still retained as dynamically valid emergency
+    # options; only their conventional_safe bit is false.
+    conv = _roadgraph_drivable_mask(traj, roadgraph) and _collision_free_against_constant_velocity(
+        traj, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs
+    )
     out.append(traj.astype(np.float32))
     macros.append(int(macro))
     utils.append(float(utility))
@@ -840,7 +850,7 @@ def _route_lane_aware_candidates(
     # Reserve the core neutral option before optional timing/lane-change banks can
     # saturate K.  Offline v16.8.6 uses the same reservation principle.
     neutral_tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
-    _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)
+    _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     # v16.8.8 online base-bank reservation.  Optional RMR/PSY refinements are
     # allowed to use spare slots, but they must not erase both lateral escape
@@ -1157,8 +1167,9 @@ def _route_lane_aware_candidates(
 
     # Ensure the online batch contains a minimally useful ego-motion set even in
     # low-speed scenes where endpoint de-duplication and dynamics checks collapse
-    # many primitives.  These are still kinematically repaired and checked first;
-    # only the final neutral fallback bypasses the conservative mask.
+    # many primitives.  Every supplemental/neutral candidate is still subjected
+    # to the same conventional-safety audit; failed candidates remain valid only
+    # for the explicitly uncertified last-resort pool.
     min_online = int(cfg.get("planning", {}).get("min_online_candidates", min(8, K)))
     if len(candidates) < min_online:
         supplemental_acc = [0.25, -0.25, 0.75, -0.75, 1.25, -1.25]
@@ -1173,7 +1184,7 @@ def _route_lane_aware_candidates(
     # Final neutral retry (normally de-duplicated against the reserved neutral slot).
     if len(candidates) < K:
         tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
-        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, conventional_check=False, other_future_trajs=other_future_trajs)
+        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs)
 
     traj = np.zeros((K, H, 7), dtype=np.float32)
     valid = np.zeros(K, dtype=bool)
@@ -1989,6 +2000,8 @@ class COWPWaymaxPolicy:
     adaptive_frontier_margin: float = 0.20
     outcome_risk_penalty: float = 0.0
     outcome_risk_threshold: float = 1.10
+    profile_policy_runtime: bool = False
+    profile_policy_runtime_sync: bool = False
 
     def __post_init__(self) -> None:
         import torch
@@ -2019,6 +2032,19 @@ class COWPWaymaxPolicy:
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
         self._cached_sdc_scenario_index: int | None = None
         self._cached_sdc_index: int | None = None
+
+    def _profile_sync(self) -> None:
+        if not bool(self.profile_policy_runtime_sync):
+            return
+        if getattr(self.dev, "type", "cpu") == "cuda":
+            try:
+                self.torch.cuda.synchronize(self.dev)
+            except Exception:
+                pass
+
+    def _profile_stamp(self) -> float:
+        self._profile_sync()
+        return time.perf_counter()
 
     def _trajectory_to_action(
         self,
@@ -2065,6 +2091,8 @@ class COWPWaymaxPolicy:
             return datatypes.Action(data=data, valid=valid)
 
     def __call__(self, state: Any, *, step: int | None = None, scenario_index: int | None = None) -> Any:
+        profile_enabled = bool(self.profile_policy_runtime)
+        profile_t0 = self._profile_stamp() if profile_enabled else 0.0
         if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
             self._previous_longitudinal_accel = 0.0
             self._previous_selected_traj = None
@@ -2101,10 +2129,12 @@ class COWPWaymaxPolicy:
             # learned response/certificate branch.  This also removes a second full
             # device-to-host trajectory copy at every simulator step.
             other_future_trajs = None
+        profile_t_state = self._profile_stamp() if profile_enabled else 0.0
         batch_np = build_online_batch(
             agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
             other_future_trajs=other_future_trajs, compute_rule_risk=needs_cowp_risk,
         )
+        profile_t_candidate = self._profile_stamp() if profile_enabled else 0.0
         online_keys = (
             "state/history",
             "state/agent_valid",
@@ -2122,8 +2152,10 @@ class COWPWaymaxPolicy:
             "map/conflict_region_valid",
         )
         batch = {k: self.torch.as_tensor(batch_np[k], device=self.dev) for k in online_keys if k in batch_np}
+        profile_t_h2d = self._profile_stamp() if profile_enabled else 0.0
         with self.torch.inference_mode():
             pred = self.model(batch, stage="planner")
+            profile_t_model = self._profile_stamp() if profile_enabled else 0.0
             scores = self.torch.nan_to_num(pred["planner_score"][0].float(), nan=1e6, posinf=1e6, neginf=-1e6)
             cand_valid = batch["cowp/candidates/valid"][0].bool()
             # One host synchronization for a predicate reused throughout the
@@ -2176,6 +2208,9 @@ class COWPWaymaxPolicy:
                         fallback_reason = "baseline_use_valid"
                     has_select = has_valid
                 selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if has_select else 0
+                selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.PAD)
+                selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
+                selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
                 baseline_host = self.torch.stack([
                     select_mask.sum().float(),
                     cand_valid.sum().float(),
@@ -2188,6 +2223,10 @@ class COWPWaymaxPolicy:
                     "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                     "step": int(step) if step is not None else -1,
                     "selected_candidate": int(selected),
+                    "selected_macro_type": int(selected_macro_type),
+                    "selected_macro_name": _macro_name(selected_macro_type),
+                    "selected_candidate_valid": bool(selected_candidate_valid),
+                    "selected_candidate_conventional_safe": bool(selected_candidate_conventional_safe),
                     "accepted_candidates": int(baseline_host[0]),
                     "frontier_candidates": -1,
                     "valid_candidates": int(baseline_host[1]),
@@ -2238,6 +2277,22 @@ class COWPWaymaxPolicy:
                 self._diagnostics_log.append(diag)
                 traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
                 self._previous_selected_traj = np.array(traj, copy=True)
+                if profile_enabled:
+                    profile_t_selection = self._profile_stamp()
+                    action = self._trajectory_to_action(state, agent_state, sdc_index, traj)
+                    profile_t_action = self._profile_stamp()
+                    diag.update({
+                        "runtime_state_extract_map_s": float(profile_t_state - profile_t0),
+                        "runtime_candidate_build_cpu_s": float(profile_t_candidate - profile_t_state),
+                        "runtime_h2d_s": float(profile_t_h2d - profile_t_candidate),
+                        "runtime_model_forward_s": float(profile_t_model - profile_t_h2d),
+                        "runtime_selection_s": float(profile_t_selection - profile_t_model),
+                        "runtime_action_projection_s": float(profile_t_action - profile_t_selection),
+                        "runtime_policy_total_s": float(profile_t_action - profile_t0),
+                    })
+                    self._diagnostics_log[-1] = dict(diag)
+                    self._last_diagnostics = diag
+                    return action
                 return self._trajectory_to_action(state, agent_state, sdc_index, traj)
 
             pcfg = self.cfg.get("planning", {})
@@ -2679,6 +2734,14 @@ class COWPWaymaxPolicy:
                 fallback_used = True
                 fallback_reason = "no_valid_candidate"
             selected = int(self.torch.argmin(self.torch.where(select_mask, select_score, self.torch.full_like(select_score, float("inf")))).item()) if has_valid else 0
+            selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.PAD)
+            selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
+            selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
+            if fallback_reason == "no_certificate_use_least_coercive_conventional" and not selected_candidate_conventional_safe:
+                raise RuntimeError(
+                    "Conventional fallback integrity violation: selected candidate did not pass the "
+                    "online conventional-safety audit. This indicates candidate-pool semantic corruption."
+                )
             selected_witness = witness[selected]
             selected_opr = opr[selected]
             has_crit = bool(crit_mask.any().detach().cpu().item())
@@ -2732,6 +2795,10 @@ class COWPWaymaxPolicy:
                 "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                 "step": int(step) if step is not None else -1,
                 "selected_candidate": int(selected),
+                "selected_macro_type": int(selected_macro_type),
+                "selected_macro_name": _macro_name(selected_macro_type),
+                "selected_candidate_valid": bool(selected_candidate_valid),
+                "selected_candidate_conventional_safe": bool(selected_candidate_conventional_safe),
                 "certificate_accepted_candidates": int(host[0]),
                 "accepted_candidates": int(host[0]),
                 "frontier_candidates": int(host[1]),
@@ -2783,6 +2850,29 @@ class COWPWaymaxPolicy:
         self._diagnostics_log.append(diag)
         traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
         self._previous_selected_traj = np.array(traj, copy=True)
+        if profile_enabled:
+            profile_t_selection = self._profile_stamp()
+            action = self._trajectory_to_action(
+                state,
+                agent_state,
+                sdc_index,
+                traj,
+                precomputed_target=action_targets_np[selected],
+                precomputed_accel=float(action_accels_np[selected]),
+            )
+            profile_t_action = self._profile_stamp()
+            diag.update({
+                "runtime_state_extract_map_s": float(profile_t_state - profile_t0),
+                "runtime_candidate_build_cpu_s": float(profile_t_candidate - profile_t_state),
+                "runtime_h2d_s": float(profile_t_h2d - profile_t_candidate),
+                "runtime_model_forward_s": float(profile_t_model - profile_t_h2d),
+                "runtime_selection_s": float(profile_t_selection - profile_t_model),
+                "runtime_action_projection_s": float(profile_t_action - profile_t_selection),
+                "runtime_policy_total_s": float(profile_t_action - profile_t0),
+            })
+            self._diagnostics_log[-1] = dict(diag)
+            self._last_diagnostics = diag
+            return action
         return self._trajectory_to_action(
             state,
             agent_state,
@@ -2818,6 +2908,8 @@ def make_cowp_policy(
     adaptive_frontier_margin: float = 0.20,
     outcome_risk_penalty: float = 0.0,
     outcome_risk_threshold: float = 1.10,
+    profile_policy_runtime: bool = False,
+    profile_policy_runtime_sync: bool = False,
 ) -> COWPWaymaxPolicy:
     return COWPWaymaxPolicy(
         checkpoint=checkpoint,
@@ -2835,4 +2927,6 @@ def make_cowp_policy(
         adaptive_frontier_margin=adaptive_frontier_margin,
         outcome_risk_penalty=outcome_risk_penalty,
         outcome_risk_threshold=outcome_risk_threshold,
+        profile_policy_runtime=profile_policy_runtime,
+        profile_policy_runtime_sync=profile_policy_runtime_sync,
     )

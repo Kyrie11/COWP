@@ -80,6 +80,21 @@ def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
     return m, g
 
 
+def _outcome_head_selection_metadata(method: str, outcome_risk_penalty: float) -> tuple[bool, str]:
+    """Return method-local reporting metadata for the learned outcome head.
+
+    This helper intentionally mirrors selection semantics and avoids leaking a
+    stale loop variable across multi-method learned-offline reports.
+    """
+    m = str(method or "cowp").lower()
+    penalty = float(outcome_risk_penalty)
+    if penalty > 0.0:
+        return True, "all"
+    if m == "cowp_fallback_outcome":
+        return True, "fallback_only"
+    return False, "none"
+
+
 def _stop_like_mask(batch, cand_valid, conventional):
     import torch
 
@@ -2092,7 +2107,8 @@ def _learned_offline_candidate_eval_many(
         }
         for method_name in method_list
     }
-    for method_out in out_by_method.values():
+    for method_name, method_out in out_by_method.items():
+        outcome_used, outcome_scope = _outcome_head_selection_metadata(method_name, outcome_risk_penalty)
         for (th, budget), row in method_out.items():
             row["CandidateCertificate/NCF_AUPRC"] = float(cert_ncf_auprc)
             row["CandidateCertificate/FalseSafe_AUPRC"] = float(cert_fs_auprc)
@@ -2105,8 +2121,8 @@ def _learned_offline_candidate_eval_many(
             for prefix, diag in (("Collision", outcome_collision_diag), ("Offroad", outcome_offroad_diag), ("UnsafeUnion", outcome_unsafe_diag)):
                 for key, value in diag.items():
                     row[f"OutcomeHead/{prefix}_{key}"] = float(value)
-            row["OutcomeHead/UsedForSelection"] = bool(float(outcome_risk_penalty) > 0.0 or method_name == "cowp_fallback_outcome")
-            row["OutcomeHead/SelectionScope"] = "fallback_only" if method_name == "cowp_fallback_outcome" and float(outcome_risk_penalty) <= 0.0 else ("all" if float(outcome_risk_penalty) > 0.0 else "none")
+            row["OutcomeHead/UsedForSelection"] = bool(outcome_used)
+            row["OutcomeHead/SelectionScope"] = str(outcome_scope)
             row["BCOT/PriorityFalseSafe_AUPRC"] = float(priority_transport_fs_auprc)
             row["BCOT/GlobalFalseSafe_AUPRC"] = float(global_transport_fs_auprc)
             # Backward-compatible alias now follows the decision certificate,

@@ -134,7 +134,9 @@ def main() -> None:
     ap.add_argument("--jit-waymax-env", action=argparse.BooleanOptionalAction, default=True, help="JIT cached Waymax reset/step functions, with automatic fallback to the original eager path.")
     ap.add_argument("--jit-waymax-metrics", action=argparse.BooleanOptionalAction, default=True, help="JIT Waymax metric compute functions, with automatic per-metric fallback.")
     ap.add_argument("--profile-waymax-runtime", action="store_true", help="Record per-scenario data/reset/policy/env-step/metric timing. Use on a small exact-ID subset first.")
-    ap.add_argument("--profile-waymax-sync", action="store_true", help="Synchronize JAX device work around timing sections for accurate bottleneck attribution. Slows execution; profiling only.")
+    ap.add_argument("--profile-waymax-sync", action="store_true", help="Synchronize JAX device work around outer Waymax timing sections. Slows execution; profiling only.")
+    ap.add_argument("--profile-policy-runtime", action="store_true", help="Record fine-grained COWP policy timings: state/map, candidate build, H2D, model forward, selection, action projection.")
+    ap.add_argument("--profile-policy-sync", action="store_true", help="Synchronize the PyTorch CUDA stream around fine-grained policy timing sections. Profiling only.")
     ap.add_argument("--status-every", type=int, default=10, help="When --no-progress is used, print one compact rollout heartbeat every N completed scenarios.")
     ap.add_argument("--output", default="outputs/eval_metrics.json")
     ap.add_argument("--no-progress", action="store_true")
@@ -340,6 +342,8 @@ def main() -> None:
                 adaptive_frontier_margin=args.adaptive_frontier_margin,
                 outcome_risk_penalty=args.outcome_risk_penalty,
                 outcome_risk_threshold=args.outcome_risk_threshold,
+                profile_policy_runtime=bool(args.profile_policy_runtime),
+                profile_policy_runtime_sync=bool(args.profile_policy_sync),
             )
         else:
             raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")
@@ -402,6 +406,8 @@ def main() -> None:
             "tfexample_index_jsonl": args.tfexample_index_jsonl,
             "profile_waymax_runtime": bool(args.profile_waymax_runtime),
             "profile_waymax_sync": bool(args.profile_waymax_sync),
+            "profile_policy_runtime": bool(args.profile_policy_runtime),
+            "profile_policy_sync": bool(args.profile_policy_sync),
         }
         if args.waymax_standard_metrics:
             payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]

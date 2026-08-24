@@ -250,6 +250,29 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
         vals = vals[np.isfinite(vals)]
         if vals.size:
             out[f"ClosedLoopMean/{key}"] = float(np.mean(vals))
+    for key in (
+        "runtime_state_extract_map_s",
+        "runtime_candidate_build_cpu_s",
+        "runtime_h2d_s",
+        "runtime_model_forward_s",
+        "runtime_selection_s",
+        "runtime_action_projection_s",
+        "runtime_policy_total_s",
+    ):
+        vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float64)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            out[f"ClosedLoopPolicyRuntimeMean/{key}"] = float(np.mean(vals))
+            out[f"ClosedLoopPolicyRuntimeSum/{key}"] = float(np.sum(vals))
+    runtime_total = out.get("ClosedLoopPolicyRuntimeSum/runtime_policy_total_s")
+    if runtime_total and float(runtime_total) > 0.0:
+        for key in (
+            "runtime_state_extract_map_s", "runtime_candidate_build_cpu_s", "runtime_h2d_s",
+            "runtime_model_forward_s", "runtime_selection_s", "runtime_action_projection_s",
+        ):
+            val = out.get(f"ClosedLoopPolicyRuntimeSum/{key}")
+            if val is not None:
+                out[f"ClosedLoopPolicyRuntimeFraction/{key}"] = float(val) / float(runtime_total)
     reasons = [str(r.get("fallback_reason", "none")) for r in rows]
     for reason in sorted(set(reasons)):
         out[f"ClosedLoopFallbackReason/{reason}"] = float(sum(x == reason for x in reasons) / max(len(reasons), 1))
@@ -444,8 +467,15 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             if first_key in std and fallback.size:
                 first_metric_step = max(int(std[first_key]), 1)  # accumulator is 1-indexed after env step
                 prefix = fallback[: min(first_metric_step, fallback.size)]
+                action_idx = min(first_metric_step - 1, fallback.size - 1)
+                action_row = rows[action_idx] if action_idx < len(rows) else {}
                 rec[f"fallback_rate_before_first_{name}"] = float(prefix.mean()) if prefix.size else 0.0
-                rec[f"fallback_at_action_before_first_{name}"] = bool(fallback[min(first_metric_step - 1, fallback.size - 1)])
+                rec[f"fallback_at_action_before_first_{name}"] = bool(fallback[action_idx])
+                rec[f"selected_candidate_valid_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_valid", False))
+                rec[f"selected_conventional_safe_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_conventional_safe", False))
+                rec[f"selected_macro_type_at_action_before_first_{name}"] = int(action_row.get("selected_macro_type", -1))
+                rec[f"selected_macro_name_at_action_before_first_{name}"] = str(action_row.get("selected_macro_name", "unknown"))
+                rec[f"fallback_reason_at_action_before_first_{name}"] = str(action_row.get("fallback_reason", "none"))
         out.append(rec)
     return out
 
