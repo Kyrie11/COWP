@@ -113,7 +113,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recovery_bridge"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -122,6 +122,23 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
     elif m in {"idm_lattice", "conventional_safety", "planner_score_only"}:
         g = "none"
     return m, g
+
+
+def _recursive_viability_recovery_mask(cand_valid, roadgraph_safe, collision_prefix_steps):
+    """Lexicographic recovery set used only when full conventional feasibility is empty.
+
+    The function intentionally has no tunable weights: preserve the drivable pool
+    when it is non-empty, then retain candidates that maximize the causal
+    collision-free prefix.  The caller applies the existing fallback score only
+    inside this set.  It works with torch boolean/float tensors without importing
+    torch at module import time.
+    """
+    road_pool = cand_valid & roadgraph_safe
+    pool = road_pool if bool(road_pool.any().detach().cpu().item()) else cand_valid
+    if not bool(pool.any().detach().cpu().item()):
+        return cand_valid
+    max_prefix = collision_prefix_steps[pool].max()
+    return pool & (collision_prefix_steps >= max_prefix)
 
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
@@ -603,15 +620,9 @@ def _candidate_dyn_ok(traj: np.ndarray, cfg: dict) -> bool:
     )
 
 
-def _roadgraph_drivable_mask(
-    traj: np.ndarray,
-    roadgraph: dict[str, np.ndarray],
-    max_dist: float = 5.5,
-    *,
-    lane_mask: np.ndarray | None = None,
-) -> bool:
+def _roadgraph_drivable_mask(traj: np.ndarray, roadgraph: dict[str, np.ndarray], max_dist: float = 5.5) -> bool:
     xy = roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32))
-    valid = _lane_centerline_mask(roadgraph) if lane_mask is None else np.asarray(lane_mask, dtype=bool)
+    valid = _lane_centerline_mask(roadgraph)
     if len(xy) == 0 or not np.any(valid):
         return True
     sample = traj[np.linspace(0, len(traj) - 1, min(8, len(traj)), dtype=np.int64), :2]
@@ -654,24 +665,26 @@ def _prepare_collision_check_context(
     sdc_index: int,
     cfg: dict,
     *,
-    horizon: int,
+    horizon_steps: int,
     other_future_trajs: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Precompute candidate-invariant causal collision-screen state for one policy step.
+    """Precompute candidate-invariant data for the causal online collision audit.
 
-    The v16.8.28 implementation rebuilt the same priority/nearest-agent ranking and
-    the same constant-velocity/logged-causal future arrays for every candidate.
-    Candidate generation dominates online policy runtime, so this cache removes
-    repeated Python/NumPy work without changing the screening equations or order.
+    v16.8.28 rebuilt the same nearby-agent ranking and constant-velocity future for
+    every candidate.  Those quantities depend only on the current simulator state,
+    so caching them once per policy step is execution-equivalent and materially
+    reduces the CPU candidate-build hot path.  The returned object is deliberately
+    plain NumPy/Python data so it never changes device placement or model semantics.
     """
     pcfg = cfg.get("planning", {})
     dt = float(cfg.get("time", {}).get("dt", 0.1))
-    H_full = int(max(horizon, 1))
+    H_full = int(horizon_steps)
     H = min(H_full, int(pcfg.get("online_collision_check_horizon_steps", H_full)))
     stride = max(1, int(pcfg.get("online_collision_check_stride", 2)))
     idx = np.arange(0, H, stride, dtype=np.int64)
     if idx.size == 0:
         idx = np.asarray([0], dtype=np.int64)
+
     ego = agent_state[sdc_index]
     ego_radius = max(float(ego[7]), float(ego[8]), 4.0) * 0.5
     valid = agent_state[:, 10] > 0.5
@@ -680,10 +693,13 @@ def _prepare_collision_check_context(
     ego_dir = np.asarray([np.cos(ego_yaw), np.sin(ego_yaw)], dtype=np.float32)
     ego_lat = np.asarray([-ego_dir[1], ego_dir[0]], dtype=np.float32)
     ego_speed = max(float(ego[5]), float(np.linalg.norm(ego[3:5])))
+    logged_buffer = float(pcfg.get("online_logged_collision_buffer_m", 0.10))
+    cv_buffer = float(pcfg.get("online_priority_cv_collision_buffer_m", 0.35))
+    require_cv = bool(pcfg.get("online_require_cv_for_priority_agents", True))
     max_dist = float(pcfg.get("online_collision_agent_radius_m", 60.0))
     max_agents = int(pcfg.get("online_collision_max_agents", 24))
 
-    ranked: list[tuple[int, float, bool, float, float, float]] = []
+    ranked: list[tuple[int, float, bool]] = []
     for j in range(agent_state.shape[0]):
         if j == sdc_index or not valid[j]:
             continue
@@ -695,41 +711,136 @@ def _prepare_collision_check_context(
         lateral = abs(float(np.dot(rel, ego_lat)))
         rel_speed = float(max(0.0, ego_speed - np.dot(agent_state[j, 3:5], ego_dir)))
         ttc = longitudinal / max(rel_speed, 1e-3) if longitudinal > 0.0 and rel_speed > 0.25 else 99.0
-        priority_like = (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or (ttc <= float(pcfg.get("online_priority_ttc_s", 5.0)))
+        priority_like = (-8.0 <= longitudinal <= 55.0 and lateral <= 7.5) or (
+            ttc <= float(pcfg.get("online_priority_ttc_s", 5.0))
+        )
         rank = (0 if priority_like else 1, dist)
-        ranked.append((j, float(rank[0]) * 1000.0 + rank[1], priority_like, longitudinal, lateral, ttc))
+        ranked.append((j, float(rank[0]) * 1000.0 + rank[1], priority_like))
     ranked.sort(key=lambda x: x[1])
     if max_agents > 0:
         ranked = ranked[:max_agents]
 
     agents: list[dict[str, Any]] = []
-    for j, key, priority_like, longitudinal, lateral, ttc in ranked:
+    for j, _key, priority_like in ranked:
         other_radius = max(float(agent_state[j, 7]), float(agent_state[j, 8]), 4.0) * 0.5
+        radius = ego_radius + other_radius + 0.5
         logged, cv = _agent_future_xy(agent_state, j, H_full, dt, other_future_trajs)
-        logged_xy = np.asarray(logged[idx], dtype=np.float32)
-        cv_xy = np.asarray(cv[idx], dtype=np.float32)
+        logged_xy = logged[idx]
+        cv_xy = cv[idx]
         if not np.isfinite(logged_xy).all():
             logged_xy = cv_xy
+        if not np.isfinite(logged_xy).all():
+            continue
         agents.append({
-            "track_index": int(j),
-            "key": float(key),
+            "index": int(j),
             "priority_like": bool(priority_like),
-            "longitudinal": float(longitudinal),
-            "lateral": float(lateral),
-            "ttc": float(ttc),
-            "radius": float(ego_radius + other_radius + 0.5),
-            "logged_xy": logged_xy,
-            "cv_xy": cv_xy,
+            "logged_xy": np.asarray(logged_xy, dtype=np.float32),
+            "cv_xy": np.asarray(cv_xy, dtype=np.float32),
+            "base_threshold_m": float(radius + logged_buffer),
+            "priority_threshold_m": float(radius + cv_buffer),
         })
+    if agents:
+        base_xy = np.stack([np.asarray(a["logged_xy"], dtype=np.float32) for a in agents], axis=0)
+        cv_xy = np.stack([np.asarray(a["cv_xy"], dtype=np.float32) for a in agents], axis=0)
+        base_threshold_m = np.asarray([float(a["base_threshold_m"]) for a in agents], dtype=np.float32)
+        priority_threshold_m = np.asarray([float(a["priority_threshold_m"]) for a in agents], dtype=np.float32)
+        priority_like = np.asarray([bool(a["priority_like"]) for a in agents], dtype=bool)
+    else:
+        S = int(idx.size)
+        base_xy = np.zeros((0, S, 2), dtype=np.float32)
+        cv_xy = np.zeros((0, S, 2), dtype=np.float32)
+        base_threshold_m = np.zeros((0,), dtype=np.float32)
+        priority_threshold_m = np.zeros((0,), dtype=np.float32)
+        priority_like = np.zeros((0,), dtype=bool)
     return {
-        "horizon_full": H_full,
         "idx": idx,
-        "logged_buffer": float(pcfg.get("online_logged_collision_buffer_m", 0.10)),
-        "cv_buffer": float(pcfg.get("online_priority_cv_collision_buffer_m", 0.35)),
-        "require_cv": bool(pcfg.get("online_require_cv_for_priority_agents", True)),
+        "horizon_steps": int(H),
+        "full_horizon_steps": int(H_full),
+        "require_cv": bool(require_cv),
         "agents": agents,
+        # Stacked views remove the Python agent loop from every candidate audit.
+        # They are derived from the exact same v16.8.28 agent futures/thresholds.
+        "base_xy": base_xy,
+        "cv_xy": cv_xy,
+        "base_threshold_m": base_threshold_m,
+        "priority_threshold_m": priority_threshold_m,
+        "priority_like": priority_like,
     }
 
+
+def _collision_audit_against_context(traj: np.ndarray, context: dict[str, Any]) -> dict[str, Any]:
+    """Return the exact old full-horizon decision plus a causal survival prefix.
+
+    ``safe_prefix_steps`` is diagnostic/recovery information only: it is the first
+    raw trajectory index at which the existing causal circle/CV screen is violated,
+    or the configured collision-check horizon when no violation occurs.  It does
+    not promote a candidate to ``conventional_safe`` and therefore cannot weaken
+    the v16.8.27 conventional-safety integrity contract.
+
+    v16.8.29 evaluates all preselected nearby agents in one NumPy broadcast.  This
+    removes the per-candidate Python agent loop while preserving the v16.8.28
+    boolean inequalities and the same sampled time indices.
+    """
+    idx = np.asarray(context.get("idx", np.asarray([0], dtype=np.int64)), dtype=np.int64)
+    H = int(context.get("horizon_steps", len(traj)))
+    if idx.size == 0:
+        idx = np.asarray([0], dtype=np.int64)
+    traj_xy = np.asarray(traj[idx, :2], dtype=np.float32)
+    if not np.isfinite(traj_xy).all():
+        return {
+            "safe": False,
+            "safe_prefix_steps": 0,
+            "min_clearance_margin_m": float("-inf"),
+            "violation_source": "nonfinite_ego",
+        }
+
+    base_xy = np.asarray(context.get("base_xy", np.zeros((0, idx.size, 2), dtype=np.float32)), dtype=np.float32)
+    if base_xy.shape[0] == 0:
+        return {
+            "safe": True,
+            "safe_prefix_steps": int(H),
+            "min_clearance_margin_m": 999.0,
+            "violation_source": "none",
+        }
+    base_thr = np.asarray(context["base_threshold_m"], dtype=np.float32)[:, None]
+    d_base = np.linalg.norm(traj_xy[None, :, :] - base_xy, axis=-1)
+    base_margin = d_base - base_thr
+    min_margin = float(np.min(base_margin))
+    base_bad = base_margin < 0.0
+    earliest_base = H
+    if bool(np.any(base_bad)):
+        first_cols = np.flatnonzero(np.any(base_bad, axis=0))
+        if first_cols.size:
+            earliest_base = int(idx[int(first_cols[0])])
+
+    earliest_priority = H
+    require_cv = bool(context.get("require_cv", True))
+    priority_like = np.asarray(context.get("priority_like", np.zeros((base_xy.shape[0],), dtype=bool)), dtype=bool)
+    if require_cv and bool(np.any(priority_like)):
+        cv_xy = np.asarray(context["cv_xy"], dtype=np.float32)[priority_like]
+        cv_thr = np.asarray(context["priority_threshold_m"], dtype=np.float32)[priority_like, None]
+        d_cv = np.linalg.norm(traj_xy[None, :, :] - cv_xy, axis=-1)
+        cv_margin = d_cv - cv_thr
+        min_margin = min(min_margin, float(np.min(cv_margin)))
+        cv_bad = cv_margin < 0.0
+        if bool(np.any(cv_bad)):
+            first_cols = np.flatnonzero(np.any(cv_bad, axis=0))
+            if first_cols.size:
+                earliest_priority = int(idx[int(first_cols[0])])
+
+    earliest = min(earliest_base, earliest_priority)
+    if earliest >= H:
+        source = "none"
+    elif earliest_base <= earliest_priority:
+        source = "base_cv"
+    else:
+        source = "priority_cv_buffer"
+    return {
+        "safe": bool(earliest >= H),
+        "safe_prefix_steps": int(min(max(earliest, 0), H)),
+        "min_clearance_margin_m": float(min_margin),
+        "violation_source": str(source),
+    }
 
 def _collision_free_against_constant_velocity(
     traj: np.ndarray,
@@ -738,120 +849,20 @@ def _collision_free_against_constant_velocity(
     cfg: dict,
     other_future_trajs: np.ndarray | None = None,
     *,
-    context: dict[str, Any] | None = None,
+    prepared_context: dict[str, Any] | None = None,
 ) -> bool:
-    pcfg = cfg.get("planning", {})
-    H_full = int(len(traj))
-    if context is None or int(context.get("horizon_full", -1)) != H_full:
+    """Causal conventional collision screen, with an exact-equivalent fast path."""
+    context = prepared_context
+    if context is None:
         context = _prepare_collision_check_context(
-            agent_state, sdc_index, cfg, horizon=H_full, other_future_trajs=other_future_trajs
+            agent_state,
+            sdc_index,
+            cfg,
+            horizon_steps=int(len(traj)),
+            other_future_trajs=other_future_trajs,
         )
-    idx = np.asarray(context["idx"], dtype=np.int64)
-    traj_xy = np.asarray(traj[idx, :2], dtype=np.float32)
-    if not np.isfinite(traj_xy).all():
-        return False
-    logged_buffer = float(context.get("logged_buffer", pcfg.get("online_logged_collision_buffer_m", 0.10)))
-    cv_buffer = float(context.get("cv_buffer", pcfg.get("online_priority_cv_collision_buffer_m", 0.35)))
-    require_cv = bool(context.get("require_cv", pcfg.get("online_require_cv_for_priority_agents", True)))
-    for item in context.get("agents", []):
-        logged_xy = np.asarray(item["logged_xy"], dtype=np.float32)
-        cv_xy = np.asarray(item["cv_xy"], dtype=np.float32)
-        if not np.isfinite(logged_xy).all():
-            logged_xy = cv_xy
-        if not np.isfinite(logged_xy).all():
-            continue
-        radius = float(item["radius"])
-        min_logged = float(np.min(np.linalg.norm(traj_xy - logged_xy, axis=-1)))
-        if min_logged < radius + logged_buffer:
-            return False
-        if require_cv and bool(item["priority_like"]) and np.isfinite(cv_xy).all():
-            min_cv = float(np.min(np.linalg.norm(traj_xy - cv_xy, axis=-1)))
-            if min_cv < radius + cv_buffer:
-                return False
-    return True
+    return bool(_collision_audit_against_context(traj, context)["safe"])
 
-
-def _candidate_endpoint_as_agent_state(candidate_state: np.ndarray, template: np.ndarray) -> np.ndarray:
-    """Convert a 7D trajectory state into the 11D current-state layout."""
-    out = np.asarray(template, dtype=np.float32).copy()
-    c = np.asarray(candidate_state, dtype=np.float32)
-    out[0:2] = c[0:2]
-    out[3:5] = c[3:5]
-    out[5] = float(np.linalg.norm(c[3:5]))
-    out[6] = float(c[2])
-    if c.shape[0] > 5 and np.isfinite(c[5]) and c[5] > 0:
-        out[7] = float(c[5])
-    if c.shape[0] > 6 and np.isfinite(c[6]) and c[6] > 0:
-        out[8] = float(c[6])
-    out[10] = 1.0
-    return out
-
-
-def _recovery_bridge_viability_mask(
-    candidates: np.ndarray,
-    cand_valid: np.ndarray,
-    conventional_safe: np.ndarray,
-    agent_state: np.ndarray,
-    sdc_index: int,
-    roadgraph: dict[str, np.ndarray],
-    cfg: dict,
-    *,
-    other_future_trajs: np.ndarray | None = None,
-    collision_context: dict[str, Any] | None = None,
-    lane_mask: np.ndarray | None = None,
-) -> np.ndarray:
-    """Hard recovery bridge for the full-horizon-conventional-empty state.
-
-    COWP's main certificate remains full-horizon and unchanged.  When that
-    physical support set collapses, this auxiliary set asks a different,
-    receding-horizon question: can we commit only the same short horizon already
-    used by the action-consistency shield and still retain an explicit bounded
-    stopping continuation that passes the *same* causal road/lane and collision
-    audit?  A candidate is a bridge only when the spliced prefix+backup trajectory
-    preserves an explicitly screened road/collision-safe continuation.  Dynamic
-    executability of the committed prefix is inherited from ``cand_valid`` and
-    remains protected by the existing near-term action-risk hard shield; the
-    bounded-stop continuation is executed through the same jerk/yaw-limited
-    one-step controller if later replans remain in recovery.  No learned outcome
-    score or new scalar penalty can make a candidate enter this set.
-    """
-    K, H = int(candidates.shape[0]), int(candidates.shape[1])
-    out = np.zeros(K, dtype=bool)
-    if H <= 0 or not (0 <= int(sdc_index) < int(agent_state.shape[0])):
-        return out
-    pcfg = cfg.get("planning", {})
-    commit = int(pcfg.get("online_recovery_commit_steps", pcfg.get("online_action_risk_horizon_steps", 8)))
-    commit = max(1, min(commit, H))
-    decel = float(pcfg.get("fallback_decel_mps2", -2.0))
-    if lane_mask is None:
-        lane_mask = _lane_centerline_mask(roadgraph)
-    if collision_context is None:
-        collision_context = _prepare_collision_check_context(
-            agent_state, sdc_index, cfg, horizon=H, other_future_trajs=other_future_trajs
-        )
-    base_current = np.asarray(agent_state[int(sdc_index)], dtype=np.float32)
-    for k in np.flatnonzero(np.asarray(cand_valid, dtype=bool) & ~np.asarray(conventional_safe, dtype=bool)):
-        prefix = np.asarray(candidates[k, :commit], dtype=np.float32)
-        terminal_current = _candidate_endpoint_as_agent_state(prefix[-1], base_current)
-        remain = H - commit
-        if remain > 0:
-            backup = smooth_stop_trajectory(terminal_current, remain, float(cfg.get("time", {}).get("dt", 0.1)), decel=decel)
-            bridge = np.concatenate([prefix, backup], axis=0).astype(np.float32, copy=False)
-        else:
-            bridge = prefix
-        # ``cand_valid`` already certifies the committed prefix's trajectory
-        # dynamics.  The backup is the same bounded stop used by execution and is
-        # realized through the existing jerk/yaw-limited one-step projector; avoid
-        # falsely rejecting it by re-applying the offline primitive jerk statistic
-        # to the artificial prefix/backup splice.
-        if not _roadgraph_drivable_mask(bridge, roadgraph, lane_mask=lane_mask):
-            continue
-        if not _collision_free_against_constant_velocity(
-            bridge, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs, context=collision_context
-        ):
-            continue
-        out[int(k)] = True
-    return out
 
 def _add_candidate(
     out: list[np.ndarray],
@@ -867,8 +878,8 @@ def _add_candidate(
     cfg: dict,
     other_future_trajs: np.ndarray | None = None,
     *,
-    collision_context: dict[str, Any] | None = None,
-    lane_mask: np.ndarray | None = None,
+    collision_ctx: dict[str, Any] | None = None,
+    audits: list[dict[str, Any]] | None = None,
 ) -> None:
     if len(out) >= int(cfg.get("limits", {}).get("max_candidates", 64)):
         return
@@ -891,31 +902,47 @@ def _add_candidate(
         old_speed = float(np.linalg.norm(old_traj[-1, 3:5]))
         if np.linalg.norm(old_traj[-1, :2] - end) < dedup_eps and abs(old_speed - end_speed) < speed_eps:
             return
-    # Conventional-safe is a semantic contract, not a candidate-source hint.
-    # Every candidate that enters the conventional pool must have actually passed
-    # the same online drivable-corridor and causal collision screens.  Candidates
-    # that fail this audit are still retained as dynamically valid emergency
-    # options; only their conventional_safe bit is false.
-    road_ok = (
-        _roadgraph_drivable_mask(traj, roadgraph)
-        if lane_mask is None
-        else _roadgraph_drivable_mask(traj, roadgraph, lane_mask=lane_mask)
-    )
-    collision_ok = (
-        _collision_free_against_constant_velocity(
+
+    # Conventional-safe remains the exact v16.8.27 contract: roadgraph audit AND
+    # the full configured causal collision screen.  v16.8.29 records the two
+    # components separately and exposes the collision-safe prefix only for an
+    # explicitly uncertified recovery branch.
+    road_ok = bool(_roadgraph_drivable_mask(traj, roadgraph))
+    if collision_ctx is not None:
+        collision_audit = _collision_audit_against_context(traj, collision_ctx)
+        collision_ok = bool(collision_audit["safe"])
+    elif road_ok:
+        collision_ok = bool(_collision_free_against_constant_velocity(
             traj, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs
-        )
-        if collision_context is None
-        else _collision_free_against_constant_velocity(
-            traj, agent_state, sdc_index, cfg, other_future_trajs=other_future_trajs, context=collision_context
-        )
-    ) if road_ok else False
+        ))
+        collision_audit = {
+            "safe": collision_ok,
+            "safe_prefix_steps": int(len(traj)) if collision_ok else 0,
+            "min_clearance_margin_m": 0.0,
+            "violation_source": "unknown",
+        }
+    else:
+        # Preserve the historical short-circuit for direct helper/unit-test calls.
+        collision_ok = False
+        collision_audit = {
+            "safe": False,
+            "safe_prefix_steps": 0,
+            "min_clearance_margin_m": 0.0,
+            "violation_source": "not_evaluated_roadgraph_failed",
+        }
     conv = bool(road_ok and collision_ok)
     out.append(traj.astype(np.float32))
     macros.append(int(macro))
     utils.append(float(utility))
-    valids.append(bool(conv))
-
+    valids.append(conv)
+    if audits is not None:
+        audits.append({
+            "roadgraph_safe": bool(road_ok),
+            "collision_safe": bool(collision_ok),
+            "collision_safe_prefix_steps": int(collision_audit["safe_prefix_steps"]),
+            "collision_min_clearance_margin_m": float(collision_audit["min_clearance_margin_m"]),
+            "collision_violation_source": str(collision_audit["violation_source"]),
+        })
 
 def _online_arrival_accel(distance_m: float, speed_mps: float, target_time_s: float, cfg: dict) -> float | None:
     """Bounded constant-acceleration solution for an online conflict arrival time."""
@@ -969,9 +996,10 @@ def _route_lane_aware_candidates(
     cfg: dict,
     *,
     other_future_trajs: np.ndarray | None = None,
-    collision_context: dict[str, Any] | None = None,
-    lane_mask: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray,
+]:
     limits = cfg.get("limits", {})
     K = int(limits.get("max_candidates", 64))
     H = int(cfg.get("time", {}).get("future_steps", cfg.get("eval", {}).get("rollout_horizon_steps", 80)))
@@ -983,6 +1011,10 @@ def _route_lane_aware_candidates(
     macros: list[int] = []
     utils: list[float] = []
     conventional: list[bool] = []
+    audits: list[dict[str, Any]] = []
+    collision_ctx = _prepare_collision_check_context(
+        agent_state, sdc_index, cfg, horizon_steps=H, other_future_trajs=other_future_trajs
+    )
 
     cand_cfg = cfg.get("candidate", {})
     acc_bank = [0.0]
@@ -1000,12 +1032,12 @@ def _route_lane_aware_candidates(
         progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
         # Lower score is better. Prefer progress, penalize aggressive accel.
         util = -0.03 * progress + 0.08 * abs(acc)
-        _add_candidate(candidates, macros, utils, conventional, tr, macro, util, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+        _add_candidate(candidates, macros, utils, conventional, tr, macro, util, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # Reserve the core neutral option before optional timing/lane-change banks can
     # saturate K.  Offline v16.8.6 uses the same reservation principle.
     neutral_tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
-    _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+    _add_candidate(candidates, macros, utils, conventional, neutral_tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # v16.8.8 online base-bank reservation.  Optional RMR/PSY refinements are
     # allowed to use spare slots, but they must not erase both lateral escape
@@ -1026,8 +1058,7 @@ def _route_lane_aware_candidates(
             _add_candidate(
                 candidates, macros, utils, conventional, tr, macro,
                 -0.02 * progress + 0.15 + 0.03 * float(delay),
-                agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs,
-                collision_context=collision_context, lane_mask=lane_mask,
+                agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits,
             )
 
     # Stop / yield before likely conflicts.  In online mode we do not have proto
@@ -1045,7 +1076,7 @@ def _route_lane_aware_candidates(
     for dist in sorted(conflict_dists)[:4]:
         for margin in cand_cfg.get("stop_margin_to_conflict_m", [2.0, 5.0, 8.0]):
             tr = smooth_stop_trajectory(current, H, dt, decel=-2.0, stop_after_m=max(0.0, float(dist) - float(margin)))
-            _add_candidate(candidates, macros, utils, conventional, tr, MacroType.STOP_BEFORE_CONFLICT, 0.4 + 0.02 * max(0.0, 20.0 - dist), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+            _add_candidate(candidates, macros, utils, conventional, tr, MacroType.STOP_BEFORE_CONFLICT, 0.4 + 0.02 * max(0.0, 20.0 - dist), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # Merge-ahead/behind timing around nearby agents: vary speed to pass before or
     # after their projected conflict time.  This is still primitive-based, but it
@@ -1062,7 +1093,7 @@ def _route_lane_aware_candidates(
                     acc = float(np.clip(-0.9 * float(offset), -3.0, 2.0))
                     tr = constant_accel_trajectory(current, H, dt, accel=acc)
                     m = MacroType.MERGE_AHEAD if offset <= 0 else MacroType.MERGE_BEHIND
-                    _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+                    _add_candidate(candidates, macros, utils, conventional, tr, m, 0.05 + max(0.0, offset), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # v16.8.4 online BCS timing projection.  Waymax does not expose the offline
     # proto conflict-region graph at every policy step, so we retain the causal
@@ -1139,8 +1170,7 @@ def _route_lane_aware_candidates(
                         MacroType.MERGE_BEHIND if behind else MacroType.MERGE_AHEAD,
                         0.12 + (0.08 * gap if behind else 0.03 * gap),
                         agent_state, sdc_index, roadgraph, cfg,
-                        other_future_trajs=other_future_trajs,
-                        collision_context=collision_context, lane_mask=lane_mask,
+                        other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits,
                     )
                     if len(candidates) > before_count:
                         timing_profile_bins.add(profile_key)
@@ -1200,8 +1230,7 @@ def _route_lane_aware_candidates(
                             _add_candidate(
                                 candidates, macros, utils, conventional, tr, MacroType.MERGE_BEHIND,
                                 0.18 + 0.06 * gap, agent_state, sdc_index, roadgraph, cfg,
-                                other_future_trajs=other_future_trajs,
-                                collision_context=collision_context, lane_mask=lane_mask,
+                                other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits,
                             )
                             if len(candidates) > before:
                                 phr_added += 1
@@ -1265,8 +1294,7 @@ def _route_lane_aware_candidates(
                             _add_candidate(
                                 candidates, macros, utils, conventional, tr, MacroType.MERGE_BEHIND,
                                 0.16 + 0.05 * gap, agent_state, sdc_index, roadgraph, cfg,
-                                other_future_trajs=other_future_trajs,
-                                collision_context=collision_context, lane_mask=lane_mask,
+                                other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits,
                             )
                             if len(candidates) > before:
                                 psy_added += 1
@@ -1284,7 +1312,7 @@ def _route_lane_aware_candidates(
                     lane_change_duration_s=float(cfg.get("planning", {}).get("online_lane_change_duration_s", 4.0)),
                 )
                 progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
-                _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+                _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.15 + 0.03 * float(delay), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # Terminal position-speed frontier fill.  This exposes distinct progress/yield
     # alternatives after closed-loop states have drifted away from the root cache.
@@ -1321,8 +1349,7 @@ def _route_lane_aware_candidates(
                     util = -0.025 * float(target_s) + 0.08 * abs(float(dv)) + 0.10 * abs(float(lat))
                     _add_candidate(
                         candidates, macros, utils, conventional, tr, macro, util,
-                        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs,
-                        collision_context=collision_context, lane_mask=lane_mask,
+                        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits
                     )
 
     # Ensure the online batch contains a minimally useful ego-motion set even in
@@ -1339,25 +1366,38 @@ def _route_lane_aware_candidates(
             macro = MacroType.ACCELERATE_CROSS if acc > 0 else MacroType.YIELD
             tr = constant_accel_trajectory(current, H, dt, accel=float(acc))
             progress = float(np.linalg.norm(tr[-1, :2] - tr[0, :2]))
-            _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+            _add_candidate(candidates, macros, utils, conventional, tr, macro, -0.02 * progress + 0.10 * abs(acc), agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     # Final neutral retry (normally de-duplicated against the reserved neutral slot).
     if len(candidates) < K:
         tr = smooth_stop_trajectory(current, H, dt, decel=float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0)))
-        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask)
+        _add_candidate(candidates, macros, utils, conventional, tr, MacroType.NEUTRAL_EGO, 0.8, agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs, collision_ctx=collision_ctx, audits=audits)
 
     traj = np.zeros((K, H, 7), dtype=np.float32)
     valid = np.zeros(K, dtype=bool)
     conventional_safe = np.zeros(K, dtype=bool)
     macro = np.full(K, int(MacroType.PAD), dtype=np.int64)
     utility = np.zeros(K, dtype=np.float32)
+    roadgraph_safe = np.zeros(K, dtype=bool)
+    collision_safe = np.zeros(K, dtype=bool)
+    collision_safe_prefix_steps = np.zeros(K, dtype=np.int32)
+    collision_min_clearance_margin_m = np.full(K, -999.0, dtype=np.float32)
     for i, tr in enumerate(candidates[:K]):
         traj[i] = tr
         valid[i] = True
         conventional_safe[i] = bool(conventional[i])
         macro[i] = int(macros[i])
         utility[i] = float(utils[i])
-    return traj, valid, conventional_safe, macro, utility
+        if i < len(audits):
+            audit = audits[i]
+            roadgraph_safe[i] = bool(audit.get("roadgraph_safe", False))
+            collision_safe[i] = bool(audit.get("collision_safe", False))
+            collision_safe_prefix_steps[i] = int(audit.get("collision_safe_prefix_steps", 0))
+            collision_min_clearance_margin_m[i] = np.float32(audit.get("collision_min_clearance_margin_m", -999.0))
+    return (
+        traj, valid, conventional_safe, macro, utility,
+        roadgraph_safe, collision_safe, collision_safe_prefix_steps, collision_min_clearance_margin_m,
+    )
 
 
 def _critical_interaction_rank(agent_state: np.ndarray, sdc_index: int, candidates: np.ndarray, cand_valid: np.ndarray, cfg: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -1857,7 +1897,6 @@ def build_online_batch(
     roadgraph: dict[str, np.ndarray] | None = None,
     other_future_trajs: np.ndarray | None = None,
     compute_rule_risk: bool = True,
-    compute_recovery_bridge: bool = False,
     include_training_targets: bool = False,
 ) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
@@ -1886,27 +1925,11 @@ def build_online_batch(
     if 0 <= sdc_index < max_agents:
         agent_mask[sdc_index] = True
 
-    # Cache candidate-invariant conventional-screen state once per replanning step.
-    # This is semantics-preserving: individual candidates still execute the exact
-    # same roadgraph/collision inequalities in the same order.
-    use_screen_cache = bool(cfg.get("planning", {}).get("online_cache_conventional_context", True))
-    lane_mask = _lane_centerline_mask(roadgraph) if use_screen_cache else None
-    collision_context = (
-        _prepare_collision_check_context(
-            agent_state, sdc_index, cfg, horizon=H, other_future_trajs=other_future_trajs
-        )
-        if use_screen_cache else None
-    )
-    cand_traj, cand_valid, conventional_safe, macro, utility = _route_lane_aware_candidates(
-        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs,
-        collision_context=collision_context, lane_mask=lane_mask,
-    )
-    recovery_bridge = (
-        _recovery_bridge_viability_mask(
-            cand_traj, cand_valid, conventional_safe, agent_state, sdc_index, roadgraph, cfg,
-            other_future_trajs=other_future_trajs, collision_context=collision_context, lane_mask=lane_mask,
-        )
-        if compute_recovery_bridge else np.zeros(K, dtype=bool)
+    (
+        cand_traj, cand_valid, conventional_safe, macro, utility,
+        roadgraph_safe, collision_safe, collision_safe_prefix_steps, collision_min_clearance_margin_m,
+    ) = _route_lane_aware_candidates(
+        agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
     )
     crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
     if compute_rule_risk:
@@ -1926,7 +1949,10 @@ def build_online_batch(
         "cowp/candidates/macro_type": macro[None],
         "cowp/candidates/ego_utility_prior": utility[None],
         "cowp/candidates/conventional_safe": conventional_safe[None],
-        "cowp/candidates/recovery_bridge_viable": recovery_bridge[None],
+        "cowp/candidates/roadgraph_safe": roadgraph_safe[None],
+        "cowp/candidates/collision_safe": collision_safe[None],
+        "cowp/candidates/collision_safe_prefix_steps": collision_safe_prefix_steps[None],
+        "cowp/candidates/collision_min_clearance_margin_m": collision_min_clearance_margin_m[None],
         "cowp/candidates/rule_risk": rule_risk[None],
         "cowp/critical/track_index": crit_idx[None],
         "cowp/critical/input_index": crit_idx[None],
@@ -2349,7 +2375,6 @@ class COWPWaymaxPolicy:
         batch_np = build_online_batch(
             agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
             other_future_trajs=other_future_trajs, compute_rule_risk=needs_cowp_risk,
-            compute_recovery_bridge=(method == "cowp_recovery_bridge"),
         )
         profile_t_candidate = self._profile_stamp() if profile_enabled else 0.0
         online_keys = (
@@ -2361,7 +2386,10 @@ class COWPWaymaxPolicy:
             "cowp/candidates/macro_type",
             "cowp/candidates/ego_utility_prior",
             "cowp/candidates/conventional_safe",
-            "cowp/candidates/recovery_bridge_viable",
+            "cowp/candidates/roadgraph_safe",
+            "cowp/candidates/collision_safe",
+            "cowp/candidates/collision_safe_prefix_steps",
+            "cowp/candidates/collision_min_clearance_margin_m",
             "cowp/candidates/rule_risk",
             "cowp/critical/track_index",
             "cowp/critical/input_index",
@@ -2382,9 +2410,16 @@ class COWPWaymaxPolicy:
             # stream to synchronize many times per simulator step.
             has_valid = bool(cand_valid.any().detach().cpu().item())
             conventional = batch.get("cowp/candidates/conventional_safe", batch["cowp/candidates/valid"])[0].bool()
-            recovery_bridge_viable = batch.get(
-                "cowp/candidates/recovery_bridge_viable", self.torch.zeros_like(batch["cowp/candidates/valid"])
-            )[0].bool()
+            roadgraph_safe = batch.get("cowp/candidates/roadgraph_safe", batch["cowp/candidates/valid"])[0].bool()
+            collision_safe = batch.get("cowp/candidates/collision_safe", batch["cowp/candidates/conventional_safe"])[0].bool()
+            collision_prefix_steps = batch.get(
+                "cowp/candidates/collision_safe_prefix_steps",
+                self.torch.zeros_like(batch["cowp/candidates/valid"], dtype=self.torch.int32),
+            )[0].float()
+            collision_margin = batch.get(
+                "cowp/candidates/collision_min_clearance_margin_m",
+                self.torch.zeros_like(batch["cowp/candidates/valid"], dtype=self.torch.float32),
+            )[0].float()
             utility = batch.get("cowp/candidates/ego_utility_prior", None)
             utility_scores = self.torch.nan_to_num(utility[0].float(), nan=1e6, posinf=1e6, neginf=-1e6) if utility is not None else scores
             continuity_np = _plan_continuity_risk_np(
@@ -2434,6 +2469,7 @@ class COWPWaymaxPolicy:
                 selected_macro_name = _macro_name(selected_macro_type) if has_valid else "EMERGENCY_BOUNDED_STOP"
                 selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
                 selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
+                valid_prefix = collision_prefix_steps[cand_valid] if has_valid else collision_prefix_steps[:0]
                 baseline_host = self.torch.stack([
                     select_mask.sum().float(),
                     cand_valid.sum().float(),
@@ -2441,7 +2477,25 @@ class COWPWaymaxPolicy:
                     batch["cowp/critical/valid"][0].bool().sum().float(),
                     batch["map/conflict_region_valid"][0].bool().sum().float(),
                     scores[selected] if has_valid else scores.new_tensor(0.0),
+                    (cand_valid & roadgraph_safe).sum().float(),
+                    (cand_valid & collision_safe).sum().float(),
+                    valid_prefix.max() if valid_prefix.numel() else scores.new_tensor(0.0),
+                    collision_prefix_steps[selected] if has_valid else scores.new_tensor(0.0),
+                    roadgraph_safe[selected].float() if has_valid else scores.new_tensor(0.0),
+                    collision_safe[selected].float() if has_valid else scores.new_tensor(0.0),
+                    collision_margin[selected] if has_valid else scores.new_tensor(0.0),
                 ]).detach().cpu().tolist()
+                conv_n, road_n, coll_n = int(baseline_host[2]), int(baseline_host[6]), int(baseline_host[7])
+                if conv_n > 0:
+                    zero_conv_reason = "none"
+                elif road_n == 0 and coll_n == 0:
+                    zero_conv_reason = "road_and_collision_empty"
+                elif road_n == 0:
+                    zero_conv_reason = "roadgraph_empty"
+                elif coll_n == 0:
+                    zero_conv_reason = "collision_empty"
+                else:
+                    zero_conv_reason = "intersection_empty"
                 diag = {
                     "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                     "step": int(step) if step is not None else -1,
@@ -2454,6 +2508,14 @@ class COWPWaymaxPolicy:
                     "frontier_candidates": -1,
                     "valid_candidates": int(baseline_host[1]),
                     "conventional_candidates": int(baseline_host[2]),
+                    "roadgraph_safe_candidates": int(baseline_host[6]),
+                    "collision_safe_candidates": int(baseline_host[7]),
+                    "max_collision_safe_prefix_steps": int(round(baseline_host[8])),
+                    "selected_collision_safe_prefix_steps": int(round(baseline_host[9])),
+                    "selected_candidate_roadgraph_safe": bool(baseline_host[10] > 0.5),
+                    "selected_candidate_collision_safe": bool(baseline_host[11] > 0.5),
+                    "selected_collision_min_clearance_margin_m": float(baseline_host[12]),
+                    "zero_conventional_reason": str(zero_conv_reason),
                     "critical_agents": int(baseline_host[3]),
                     "conflict_tokens": int(baseline_host[4]),
                     "fallback_used": bool(fallback_used),
@@ -2846,7 +2908,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recovery_bridge"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -2919,22 +2981,9 @@ class COWPWaymaxPolicy:
             stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
             # The candidate-valid branch subsumes every valid stop-like candidate.
             # Do not keep a dead "emergency_stop_like" branch after cand_valid.any().
-            # Recovery-viability bridge is a hard set, not a score bonus.  It is
-            # only eligible after the full-horizon conventional set is empty and
-            # remains subject to the existing near-term action/rule shields.
-            if method == "cowp_recovery_bridge":
-                recovery_mask = (
-                    cand_valid
-                    & recovery_bridge_viable
-                    & (action_risk <= float(pcfg_runtime.get("candidate_hard_max_action_risk", 0.45)))
-                    & (rule_risk <= float(pcfg_runtime.get("candidate_hard_max_rule_risk", 0.70)))
-                )
-            else:
-                recovery_mask = self.torch.zeros_like(cand_valid)
             fallback_flags = self.torch.stack([
                 selection_mask.any(),
                 (cand_valid & conventional).any(),
-                recovery_mask.any(),
                 cand_valid.any(),
             ]).detach().cpu().tolist()
             fallback_transport_ucb = (
@@ -2961,15 +3010,26 @@ class COWPWaymaxPolicy:
                 fallback_used = True
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
-                select_mask = recovery_mask
-                select_score = fallback_score
                 fallback_used = True
-                fallback_reason = "no_conventional_use_recovery_bridge"
-            elif bool(fallback_flags[3]):
-                select_mask = cand_valid
-                select_score = fallback_score
-                fallback_used = True
-                fallback_reason = "no_conventional_use_least_coercive_valid"
+                if method == "cowp_recursive_viability":
+                    # Recursive Viability Recovery (RVR): the full-horizon
+                    # conventional set is empty, so no candidate may be called
+                    # safe.  Instead of scalar-risk ranking over all failed
+                    # candidates, first preserve drivable candidates when any
+                    # exist, then retain only those with the longest causal
+                    # collision-free prefix under the *same* conventional screen.
+                    # The existing COWP fallback score is only a tie-break inside
+                    # that maximal-prefix set.  This is lexicographic and adds no
+                    # tuned risk weight or softened certificate threshold.
+                    select_mask = _recursive_viability_recovery_mask(
+                        cand_valid, roadgraph_safe, collision_prefix_steps
+                    )
+                    select_score = fallback_score
+                    fallback_reason = "no_conventional_use_recursive_viability"
+                else:
+                    select_mask = cand_valid
+                    select_score = fallback_score
+                    fallback_reason = "no_conventional_use_least_coercive_valid"
             else:
                 # No selectable candidate exists.  Selection diagnostics remain
                 # explicitly uncertified; execution is resolved later from the
@@ -2989,12 +3049,6 @@ class COWPWaymaxPolicy:
                     "Conventional fallback integrity violation: selected candidate did not pass the "
                     "online conventional-safety audit. This indicates candidate-pool semantic corruption."
                 )
-            if fallback_reason == "no_conventional_use_recovery_bridge":
-                if (not has_valid) or (not bool(recovery_mask[selected].detach().cpu().item())):
-                    raise RuntimeError(
-                        "Recovery-bridge integrity violation: selected candidate is outside the hard "
-                        "recovery-viability set."
-                    )
             selected_witness = witness[selected] if has_valid else witness[:0]
             selected_opr = opr[selected] if has_valid else opr[:0]
             has_crit = bool(crit_mask.any().detach().cpu().item())
@@ -3042,10 +3096,26 @@ class COWPWaymaxPolicy:
                 valid_action.mean() if valid_action.numel() else zero,
                 bsel[crit_mask].max() if bsel is not None and has_crit else zero,
                 csel[crit_mask].max() if csel is not None and has_crit else zero,
-                recovery_mask.sum().float(),
-                (recovery_bridge_viable[selected].float() if has_valid else zero),
+                (cand_valid & roadgraph_safe).sum().float(),
+                (cand_valid & collision_safe).sum().float(),
+                collision_prefix_steps[cand_valid].max() if has_valid else zero,
+                collision_prefix_steps[selected] if has_valid else zero,
+                roadgraph_safe[selected].float() if has_valid else zero,
+                collision_safe[selected].float() if has_valid else zero,
+                collision_margin[selected] if has_valid else zero,
             ]
             host = self.torch.stack([x.float() for x in diagnostic_tensors]).detach().cpu().tolist()
+            conv_n, road_n, coll_n = int(host[3]), int(host[34]), int(host[35])
+            if conv_n > 0:
+                zero_conv_reason = "none"
+            elif road_n == 0 and coll_n == 0:
+                zero_conv_reason = "road_and_collision_empty"
+            elif road_n == 0:
+                zero_conv_reason = "roadgraph_empty"
+            elif coll_n == 0:
+                zero_conv_reason = "collision_empty"
+            else:
+                zero_conv_reason = "intersection_empty"
             diag = {
                 "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                 "step": int(step) if step is not None else -1,
@@ -3059,6 +3129,14 @@ class COWPWaymaxPolicy:
                 "frontier_candidates": int(host[1]),
                 "valid_candidates": int(host[2]),
                 "conventional_candidates": int(host[3]),
+                "roadgraph_safe_candidates": int(host[34]),
+                "collision_safe_candidates": int(host[35]),
+                "max_collision_safe_prefix_steps": int(round(host[36])),
+                "selected_collision_safe_prefix_steps": int(round(host[37])),
+                "selected_candidate_roadgraph_safe": bool(host[38] > 0.5),
+                "selected_candidate_collision_safe": bool(host[39] > 0.5),
+                "selected_collision_min_clearance_margin_m": float(host[40]),
+                "zero_conventional_reason": str(zero_conv_reason),
                 "critical_agents": int(host[4]),
                 "conflict_tokens": int(host[5]),
                 "fallback_used": bool(fallback_used),
@@ -3100,8 +3178,6 @@ class COWPWaymaxPolicy:
                 diag["max_predicted_burden"] = float(host[32])
             if c_i is not None:
                 diag["max_predicted_c_i"] = float(host[33])
-            diag["recovery_bridge_candidates"] = int(host[34])
-            diag["selected_recovery_bridge_viable"] = bool(host[35] > 0.5)
             diag["selected_plan_continuity_risk"] = float(continuity_np[selected]) if has_valid else 0.0
         traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
             batch_np["cowp/candidates/trajectory"][0], selected, has_valid, agent_state[sdc_index], self.cfg

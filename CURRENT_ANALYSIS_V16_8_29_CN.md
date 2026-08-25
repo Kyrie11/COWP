@@ -1,304 +1,272 @@
 # V16.8.28 结果审计与 V16.8.29 下一步设计
 
-## 0. 结论先行
+## 1. 结论先行
 
-这一次 **V16.8.28 strict Waymax 结果可以用于算法归因**。没有发现类似 V16.8.26 的 conventional-safe 语义污染，也没有发现 V16.8.27 的 PAD execution 污染。parallel2 的 exact-200 证据链完整：四方法同一 200-ID set、同一 checkpoint、两个 100-scene shard 不重叠且完整覆盖、merged 指标能逐 scene 精确复算、physical attribution 可重现。
+这次和 v16.8.26 / v16.8.27 不同：**上传的 v16.8.28 parallel2 exact-200 结果已经足够干净，可以做当前层级的算法归因。** 我没有发现需要再次把整轮 strict Waymax 作废的工程阻断。
 
-上传包中没有保留 split-mode 的最终 JSON。由于 parallel2 已完整成功，split 只是同一实验的备用执行方式，不是第二份必须的科学证据；以后 parallel2 成功后不要再跑 split。
+需要保留两个边界：
 
-本轮预注册分叉被明确收敛到：**common online physical-feasibility / proposal-action interface**。更具体地说，dominant actionable bottleneck 是 **full-horizon conventional support 在 receding-horizon closed-loop 中频繁塌缩**，随后 controller 从大量“动态有效但未通过完整物理 conventional audit”的候选里执行。
+1. 上传结果包里没有 `waymax_diag200_split` 的单进程 split 输出，因此无法对 parallel2 与 split 做独立数值复现；
+2. 包里也没有新 runtime profile JSON，所以速度判断继续以 v16.8.27 已得到的 CPU candidate-build 热点和本轮代码审计为基础，新版本提供 12-scene profile 做服务器实测。
 
-因此下一步不应再调 RCOT/BCOT、outcome 权重或 planner score，也不应重建数据。V16.8.29 只实现一个可证伪机制：**Receding-Horizon Recovery-Viability Bridge (RVB)**。
+这两个缺口不妨碍当前 parallel2 结果内部的一致性和 first-event attribution。
 
----
+## 2. 结果完整性
 
-## 1. 论文主线与这一轮问题的关系
+四个方法均满足：
 
-论文的真正核心不是 courtesy cost，而是把 false-safe planning 作为 feasibility defect：protected-priority road user 必须保留足够的 same-root low-burden safe response，BCOT/RCOT 用于结构化证据和 hard-first non-coercive certificate。主证书与 all-critical diagnostic 分开，proposal sufficiency 与 selector/certificate quality 也分开。
+- 200 个唯一 exact IDs；
+- manifest logical SHA256 = `3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f`；
+- shard0/shard1 各 100，互斥且并集精确等于 manifest；
+- merged summary 可由 200 scenario rows 对 CR / Collision / Offroad / Kinematics / EP 逐项精确复算，最大误差 0；
+- 四方法 EP 都在同样 196 个 finite scenes 上比较；
+- v16.8.28 emergency repair 的语义一致：每个场景的 `emergency_action_step_rate`、`zero_valid_candidate_step_rate`、`no_valid_step_rate` 完全一致。
 
-这意味着物理闭环问题不能用“把一个 physical outcome penalty 混进 COWP score”粗暴解决，否则会破坏论文最干净的贡献分解：
+因此这轮没有再次出现“统计是真的，但 controller 语义错了”的情况。
 
-1. social/non-coercive feasibility；
-2. physical execution feasibility；
-3. ego utility/ranking。
+## 3. 主结果
 
-V16.8.28 的 clean evidence 正好说明第二层在 closed-loop operating regime 下存在一个独立断层，所以这一轮应该补一个与主 social certificate 正交的 physical recovery-recourse object，而不是重写 COWP 主证书。
+| Method | CR | Collision | Offroad | Kin infeasible | EP | Fallback step |
+|---|---:|---:|---:|---:|---:|---:|
+| COWP | 0.195 | 0.170 | 0.030 | 0.125 | 1.0461 | 0.7168 |
+| COWP + fallback outcome | 0.185 | 0.165 | 0.025 | 0.130 | 1.0239 | 0.7229 |
+| Conventional safety | 0.240 | 0.220 | 0.020 | 0.085 | 0.7142 | 0.5907 |
+| Planner-score-only | 0.270 | 0.245 | 0.025 | 0.100 | 0.8644 | 0.0213 |
 
----
+### COWP vs planner-score-only
 
-## 2. 数据集状态：本轮无需重建
+这是本轮最强的正证据：
 
-formal_v16_8_24_compact_full_5k 的 train/val/heldout 规模为 5000/1000/1200。natural-support 结构在 split 间稳定：protected priority-root coverage 接近 99.4% 以上，rootless critical actors 为 0，低 burden roots 的可用性没有显示 split collapse。历史 cache verifier 的 irrelevant blocker 属于既知旧问题，而 affected/conflict/retained/root-weight 等核心 semantic mismatch 为 0。
+- CR: `0.195 vs 0.270`, paired McNemar `p≈0.00813`;
+- collision: `0.170 vs 0.245`, `p≈0.00592`;
+- paired EP: planner - COWP = `-0.18166`, bootstrap 95% CI `[-0.26516,-0.11414]`.
 
-这与历史 learned-offline 结果一致：RCOT/BCOT 当前不是主要的 representation-learning bottleneck。用户已明确不考虑重建数据，本轮也没有新证据推翻这一点。
+因此不能把当前问题表述成“COWP certificate/selector 整体导致 physical failure”。恰恰相反，在同一 candidate/checkpoint/execution interface 下，COWP 相比裸 planner-score 显著改善 collision，同时进度也更高。
 
-长期的 **global ceiling** 仍是 fixed-bank proposal sufficiency：历史 held-out AnyNCF 约 36%，oracle false-safe floor 约 59.5%。但那是 false-safe 主任务的长期上限；当前 strict collision 的 actionable bottleneck 已经更具体地定位到 online physical support horizon，不应现在把两个问题混在一起。
+### COWP vs conventional safety
 
----
+- collision: `0.170 vs 0.220`, conventional - COWP = +0.05，McNemar `p≈0.0755`；
+- EP: conventional - COWP = `-0.33188`, bootstrap 95% CI `[-0.44294,-0.23644]`.
 
-## 3. V16.8.28 结果完整性
+200 场景下 collision 差异只是趋势，不能写成显著安全优势，但 COWP 的 progress-efficiency 优势非常明确。
 
-### 3.1 exact-ID / shard / merge
+### fallback outcome：现在可以正式作为 clean negative
 
-- exact manifest：200 unique IDs；逻辑 SHA256 = `3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f`。
-- `cowp / cowp_fallback_outcome / conventional_safety / planner_score_only` 的 merged scene-ID set 与 manifest **精确一致**。
-- 每方法 shard0/shard1 各 100 scenes，互不相交，union = exact 200。
-- 四方法 checkpoint 相同。
-- CR / Collision / Offroad / Kinematics / EP 均可从 200 per-scenario rows 精确复算。
-- `waymax_200_physical_attribution.json` 可由当前 analyzer 重建。
+修掉前两轮的 conventional/PAD 污染后：
 
-注意：merged JSON 的 row order 与原 manifest order 不相同，因此不能用 merged row sequence 重算 manifest SHA。正确 integrity check 是 manifest 自身 hash + result ID set equality。交付的 `V16_8_28_RESULT_INTEGRITY_AUDIT.json` 已按此修正。
+- collision 只从 `0.170→0.165`, `p=1.0`；
+- CR `0.195→0.185`, `p≈0.774`；
+- kinematics 反而 `0.125→0.130`；
+- paired EP 下降 `-0.02218`, 95% CI `[-0.03896,-0.00726]`。
 
-### 3.2 V16.8.28 execution repair 是否生效
+因此 outcome head 可以继续做 diagnostic，但不应该进入下一版 hard physical certificate，也不值得继续调 fallback outcome weight。
 
-生效。no-valid 时不再执行 zero PAD slot，而是明确记录：
+## 4. 按上一轮预注册顺序判定 physical bottleneck
 
-- selected candidate = -1；
-- selected candidate valid = false；
-- `EMERGENCY_BOUNDED_STOP`；
-- `execution_trajectory_source=bounded_smooth_stop`。
+上一轮要求 clean rerun 后在三条路中选择：
 
-更重要的是，当前 collision 只有 2/34 紧邻 bounded emergency action，说明 v16.8.27 的 PAD execution 已不再是 collision dominant source。
+A. `fallback && conventional_safe` → Recovery Certificate；
 
----
+B. `accepted_priority_ncf` → Execution-Viability Certificate；
 
-## 4. 主结果与预注册判断
+C. conventional/planner 也暴露同类 failure → common online proposal/action interface。
 
-| Method | CR | Collision | Offroad | Kinematics | EP |
-|---|---:|---:|---:|---:|---:|
-| COWP | 19.5% | 17.0% | 3.0% | 12.5% | 1.0461 |
-| COWP + fallback outcome | 18.5% | 16.5% | 2.5% | 13.0% | 1.0239 |
-| Conventional safety | 24.0% | 22.0% | 2.0% | 8.5% | 0.7142 |
-| Planner-score-only | 27.0% | 24.5% | 2.5% | 10.0% | 0.8644 |
-
-### 4.1 不是 accepted COWP certificate collision
+### Collision 明确选择 C，但可进一步收紧
 
 COWP 34 个 collision：
 
-- 34/34 first collision 前一动作属于 fallback；
-- 32/34 = `no_conventional_use_least_coercive_valid`；
-- 2/34 = no-valid bounded emergency；
-- 0/34 前一动作是 conventional-safe；
-- 0/34 是 `accepted_priority_ncf`。
+- 32 个 first collision 前一步 = `no_conventional_use_least_coercive_valid`；
+- 2 个 = `no_valid_candidate` 的 bounded smooth stop；
+- **0 个 conventional-safe fallback**；
+- **0 个 accepted priority-NCF path**。
 
-所以不支持“RCOT/BCOT certificate 接受了物理危险 candidate，导致 dominant collision”的假设。
+Conventional baseline 44 个 collision：
 
-### 4.2 也不是 conventional-safe recovery 排序失败
+- 43 个发生在 conventional pool 已空后的 `baseline_use_stop_like`；
+- 1 个 no-valid emergency；
+- first collision 前同样 **0 个 conventional-safe action**。
 
-如果真正 conventional-safe fallback pool 中候选很多，但 selector 排错，应该看到 collision 紧邻 `selected_conventional_safe=true`。实际 COWP collision 是 0/34。
+因此当前 collision 的 dominant actionable bottleneck 不是“certificate 太严”，不是“BCOT 排错了”，也不是“conventional-safe recovery score 不好”，而是：
 
-因此也不支持“只需要设计一个更好的 conventional recovery ranker”的假设。
+> **闭环进入大量没有任何 full-horizon conventional-safe proposal 的状态；之后 planner 被迫在已经失败 conventional audit 的候选中执行 uncertified action。**
 
-### 4.3 common lower-layer interface 得到支持
+这就是 **online conventional-feasible support collapse**。
 
-Conventional-safety baseline 44 个 collision 中：
+COWP collision episode 的 zero-conventional step rate 平均 `0.80993`，非 collision episode 为 `0.50512`；34/34 collision episode 在 first collision 前都已经经历 zero-conventional。zero-conventional exposure 在四种方法之间相关系数约 `0.87–0.97`，说明它是共同 candidate/screen operating-regime 问题，而非 COWP-specific artifact。
 
-- 43/44 first collision 前是 `baseline_use_stop_like`；
-- 0/44 前一 candidate conventional-safe；
-- 仅 1/44 no-valid emergency。
+### 但“proposal support 不足”还不能直接作为唯一解释
 
-Planner-score-only 49 个 collision 中：
+当前 `conventional_safe` = roadgraph surrogate ∩ 8 秒 causal constant-velocity collision screen，而控制器每 0.1 秒 replanning。
 
-- 47/49 是 accepted dynamic-valid baseline candidate；
-- 0/49 前一 candidate conventional-safe；
-- macro 极度集中在 MERGE_BEHIND（46/49）。
+所以 zero-conventional 可能由四种机制产生：
 
-因此 collision 并非 COWP-specific；baseline 同样暴露出 candidate physical support / action interface 的问题。这正符合上一轮预注册的第三分支。
+1. 真正没有有用 proposal；
+2. 8 秒 CV open-loop screen 对 receding-horizon control 过保守；
+3. roadgraph centerline-distance surrogate 过保守/不准确；
+4. roadgraph 与 collision 各自有 survivor，但没有同一 candidate 同时通过。
 
----
+若现在直接扩 proposal 或直接把 8 秒改成 2 秒，都无法区分根因，且后者本质只是调 horizon。
 
-## 5. dominant bottleneck 为什么不是“proposal 数量少”
+## 5. 模型/算法各层状态
 
-COWP online step 统计：
+### 可以冻结
 
-- fallback step rate = 71.675%；
-- accepted priority-NCF ≈ 28.325%；
-- no-certificate but conventional ≈ 15.981%；
-- no-conventional but dynamic-valid ≈ 53.038%；
-- no-valid ≈ 2.656%；
-- zero full-horizon conventional candidate ≈ 55.694%；
-- mean valid candidates ≈ 33.27；
-- mean conventional candidates ≈ 6.64；
-- mean accepted/certified ≈ 4.37。
+**Natural roots / natural basis**：历史机制门控已过，当前 physical failure 不在这里。
 
-也就是说，大多数失败状态不是“候选一个都没有”，而是：**有几十个 dynamic-valid proposal，但完整约 8 s primitive 没有一个通过 conventional physical screen。**
+**RCOT**：held-out Root LowSafeExist AUPRC 约 0.897，是当前最强机制信号之一。
 
-Waymax 只执行 0.1 s 后重新规划。当前实现却把一个 candidate 是否能进入 conventional pool，绑定到完整 primitive 对 causal-CV/logged future + roadgraph 的 8 s pass/fail。这使 physical feasibility 从一个应该具有 receding-horizon recourse 含义的对象，变成全时域二值过滤器。一旦全时域 set 空，controller 直接跳到 unrestricted dynamic-valid fallback。
+**BCOT**：priority/global false-safe AUPRC 约 0.837/0.928，明显强于 generic candidate classifier。
 
-这就是目前最有解释力的 structural gap：
+**Protected-priority hard feasibility**：仍比 universal hard veto 更符合已得到证据和论文 claim。
 
-> **full-horizon physical refusal -> no explicit short-horizon recoverability certificate -> unrestricted-valid execution**。
+**Certificate-compatible set-preservation frontier**：CTU 已作为 clean negative；不要退回 certificate → planner-score argmin。
 
----
+**Outcome head**：冻结为 diagnostic-only。clean strict negative 已经足够，不再花迭代调权重。
 
-## 6. 各层当前状态
+### 暂时不能冻结
 
-| Layer | 状态 | 处理建议 |
-|---|---|---|
-| Natural typed roots / protected-priority semantics | 证据稳定 | Freeze |
-| RCOT same-root recovery transport | 强：历史 held-out low-safe AUPRC ~0.897 | Freeze |
-| BCOT protected/global false-safe | 强：历史 ~0.837 / ~0.928 | Freeze |
-| All-critical BCOT | 合理 diagnostic，不应 universal veto | Freeze as diagnostic |
-| Main protected-priority hard certificate | 未被当前 collision 证伪 | Freeze |
-| Certificate-compatible set-preservation frontier | CTU 负消融支持其价值 | Freeze |
-| Generic flat candidate classifier | 弱 | 不升级 |
-| Outcome head | clean strict probe 无显著安全收益、损失 EP | Archive negative |
-| Planner score / utility | planner-only 安全和 EP 都更差 | 非 dominant bottleneck |
-| Raw dynamic proposal count | ~33 valid/step | 非当前 bottleneck |
-| Full-horizon conventional support | ~55.7% steps set 空 | **Dominant actionable bottleneck** |
-| no-valid execution | v16.8.28 已修；collision 仅 2/34 紧邻 | Freeze repair |
-| Accepted-path kinematic executability | 16/25 kinematics 紧邻 accepted priority-NCF | Secondary branch, later |
-| Fixed-bank NCF proposal support | false-safe 主任务长期 ceiling | Later proposal work |
+**Online conventional feasibility representation**：这是当前最大不确定层，需要拆 collision/roadgraph/support。
 
----
+**No-conventional uncertified recovery**：collision 几乎全部发生在这里，是当前第一改动对象。
 
-## 7. clean negative：不要再追 fallback outcome weight
+**Proposal bank**：长期 fixed-bank ceiling 仍存在，但这轮先不扩 bank；必须先证明 zero-conventional 是 true support shortage 还是 screen/receding-horizon mismatch。
 
-COWP + fallback-outcome 相比 COWP：
+**Action projection / physical execution viability**：是 secondary bottleneck。COWP 25 个 kinematics first event 中 16 个来自 accepted_priority_ncf，17/25 前一步是 conventional-safe。这说明 collision 修完后还需要单独处理 accepted-path kinematic viability。
 
-- collision -0.5pp，McNemar p=1.0；
-- CR -1.0pp，p≈0.774；
-- kinematics +0.5pp；
-- EP 平均 -0.02218，paired bootstrap 95% CI [-0.03896, -0.00726]。
+## 6. 当前 dominant bottleneck
 
-这说明现有 outcome head 并没有解决当前 recovery support gap，而且以 progress 为代价。因为 v16.8.28 已修复两轮工程污染，这次可以把该方向正式归档为当前设计下的 negative probe，而不是再调 0.5/1.0/2.0 权重。
+分两层：
 
----
+- **长期 global ceiling**：fixed-bank proposal support（历史 AnyNCF ≈ 36%，oracle false-safe floor ≈ 59.5%）；
+- **当前 actionable dominant bottleneck**：online conventional-feasible support collapse，尤其 collision-side。
 
-## 8. 为什么下一步不是简单 Recovery Certificate 或 Execution-Viability Certificate
+当前不要再追 RCOT/BCOT AUPRC 的小幅提升，也不要进入 outcome weight、BCOT budget、planner repair。
 
-上一轮设定三分叉：
+## 7. V16.8.29：Recursive Viability Recovery（RVR）
 
-1. conventional-safe fallback collision -> Recovery Certificate；
-2. accepted COWP path collision -> Execution-Viability Certificate；
-3. baselines 也高 collision -> common online proposal/action interface。
+我实现的新方法 `cowp_recursive_viability` 严格保护已验证主线。
 
-当前主 collision 属于 3；但 kinematics 中确有 16/25 紧邻 accepted priority-NCF，说明 2 作为**次级独立问题**存在。若现在同时加 recovery + accepted-path dynamics shield，会把两类 failure source 耦合，下一轮又无法知道哪个贡献有效。
+### 不变部分
 
-因此 v16.8.29 只解决 collision dominant 的 branch 3；accepted-path kinematics 留到下一轮。如果 RVB 后 collision 明显下降但 kinematics 不变，正好获得干净证据支持后续的 orthogonal Execution-Viability Certificate。
+只要存在 certificate candidate：完全等同 COWP。
 
----
+certificate 空但存在 conventional-safe candidate：完全等同 COWP 的 conventional fallback。
 
-## 9. V16.8.29：Receding-Horizon Recovery-Viability Bridge
+只有 full conventional pool 为空才改变。
 
-### 9.1 机制
+### 新 recovery
 
-主 COWP 路径完全不变。只有当 full-horizon conventional set 为空、dynamic-valid set 非空时：
+对每个 dynamically valid candidate，在完全相同的 causal collision screen 下记录 first violation 的 prefix length `h_k`。
 
-1. 对每个 dynamic-valid / non-conventional candidate 截取前 8 steps（默认 0.8 s）；
-2. 从该 prefix endpoint 用已有 smooth-stop primitive 构造 bounded-stop continuation；
-3. splice 成完整 horizon；
-4. 使用**原有同一套** roadgraph drivable + causal logged/CV collision check 做硬筛选；
-5. selection 时继续要求已有 hard action-risk / rule-risk shield；
-6. bridge set 内使用原 fallback score；
-7. bridge set 空才进入原 unrestricted-valid fallback。
+选择顺序：
 
-新方法名：`cowp_recovery_bridge`。
+1. 若存在 roadgraph-safe valid candidates，先保留它们；
+2. 在保留池中只留下 `h_k` 最大者；
+3. 原 COWP fallback composite score 只在并列者之间排序。
 
-### 9.2 它没有改变什么
+它不降低 conventional threshold、不缩 horizon、不添加 weight、不训练新 head，也不把这些 candidate 改称 safe/NCF。
 
-- 不改 natural roots；
-- 不改 RCOT / BCOT；
-- 不改 protected set；
-- 不改 certificate risk budget；
-- 不改 main frontier；
-- 不加 outcome head；
-- 不加新 learned module；
-- 不给 STOP/YIELD 宏天然 safe 标签；
-- 不删除 original valid fallback，因此不会用 coverage 改变伪装效果。
+### 为什么这轮先做它
 
-### 9.3 论文级 novelty 应该如何理解
+它直接检验一个关键假设：
 
-generic contingency / backup trajectory / recursive feasibility 本身已经有大量工作，因此不能把“我也拼一个 stop backup”写成 contribution。当前文献甚至直接在 receding-horizon 中维护共享 initial segment 后 branching 的 contingency trajectories，或联合优化 exploration/fallback trajectories，以及用 reachable-set barrier 保证 safety。
+> 当前 binary 8 秒 conventional test 在 0.1 秒 receding-horizon planner 中是否丢失了“谁能让系统保持更久可恢复”的 ordering information？
 
-真正可能达到 CCF-A 机制标准的对象是 **dual feasibility**：
+如果 RVR 能显著减少 collision，同时 selected safe-prefix 明显上升，那么下一步才值得把它升级为更正规的 **physical recursive viability** 层；如果无效，就说明 maximal temporal slack 也救不了，应该转向 proposal support / route-topology / roadgraph/action interface。
 
-- `Non-Coercive Feasibility`：protected agents 保留 same-root low-burden options；
-- `Recovery Viability`：当 full-horizon physical support 暂时空时，ego 只能执行仍保留显式 physical recourse 的短前缀。
+## 8. CCF-A novelty 边界
 
-即 planner 不再把“social feasibility / physical recoverability / utility”揉成一个 score，而是两个正交 hard-set + 后续 ordering。这个结构只有在 v16.8.29 strict paired evidence 有效后才值得升格为论文 contribution；现在仍应叫 preregistered mechanism probe。
+`max safe prefix` 本身不能作为论文 contribution。recursive feasibility、MPC safety filter、reachable/backup set 都是成熟方向。
 
----
+如果这个 probe 成功，真正值得写成方法贡献的是：
 
-## 10. 下一轮预注册判据
+> **Orthogonal Dual Feasibility**：把 COWP 的 protected-priority social non-coercive feasibility 与 physical recursive viability 正交组合，而不是把两种风险塞进一个 scalar cost。
 
-只比较同一 exact-200 的 `cowp` 与 `cowp_recovery_bridge`：
+可形成：
 
-### A. Bridge available + used，collision 显著下降，EP 基本不损失
-
-支持：closed-loop 主要问题确实是 full-horizon conventional support 与 short-horizon recourse 之间的 horizon mismatch。下一步可将 RVB 升级为主算法组件，并做 3 seeds / 更大 scene set / bridge availability-calibration / causal screen ablation。
-
-### B. Bridge availability 很低
-
-支持：当前 primitive family 或物理几何 support 本身缺少 recoverable prefix。下一步应做 proposal-support redesign，而不是调 fallback score；仍无需立刻重建 dataset labels。
-
-### C. Bridge available/used，但 collision 不下降
-
-支持：当前 causal CV/logged screen 或 candidate -> one-step action projection 与 Waymax physical evolution不一致。下一步做 projection/dynamics consistency mechanism，而不是再加 outcome/risk penalty。
-
-### D. Collision 改善但 kinematics 仍由 accepted priority-NCF 主导
-
-说明 dominant collision 与 secondary executability 成功解耦。下一版再单独设计 Execution-Viability Certificate，避免本轮混因。
-
----
-
-## 11. 速度优化
-
-v16.8.27 profiler 已显示 CPU candidate construction ≈87.8–88.6% policy time，model forward ≈5.8%，selection ≈4.2–4.8%。所以继续优化 GPU model forward 的收益很有限。
-
-v16.8.29 在不改变 screen 数学定义的前提下，将每个 policy step 对所有候选重复的：
-
-- lane-centerline mask；
-- nearby agent priority/nearest ranking；
-- logged/CV causal futures；
-- collision radii；
-- sample index；
-
-提取成一次 cache，candidate 只做 candidate-dependent distance checks。
-
-`tests/test_v16_8_29_recovery_viability.py` 对 cached/uncached candidate bank 做 bit-exact equality。新的本地 32-agent + lane-map microbenchmark（包含 cache build 自身）约为 0.282s -> 0.254s，约 9.9% candidate-build reduction。服务器端端到端收益必须由 `profile_parallel2` 实测，不承诺固定比例。
-
-两张 A30 的正确用法仍是 scenario-level 2-process sharding：process0 Torch+JAX co-locate A30-0，process1 co-locate A30-1。场景独立，结果按 exact scenario ID merge。下一轮只跑两方法，不再跑四方法，因此相比 v16.8.28 的四方法 sweep，计算量本身也约减半。
-
----
-
-## 12. 回归与工程状态
-
-- v16.8.29 `sanity`: **20/20 passed**。
-- 全仓：**270 passed / 5 skipped / 8 historical failures**。
-- 8 failures 与 v16.8.28 相同：6 个压缩包缺失的旧 launcher；2 个旧 semantic fingerprint hard-code。
-- 没有新功能 regression。
-
-因此没有工程 blocker 需要把 V16.8.28 或 v16.8.29 probe 作废。
-
----
-
-## 13. 下一步指令
-
-```bash
-cd COWP_v16_8_29_RECOVERY_VIABILITY
-
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh sanity
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh make_ids
-
-# 仅当旧 TFExample index 不存在时：
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh build_tfindex
-
-# 可选，先测服务器实际速度：
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh profile_parallel2
-
-# 推荐的唯一主实验：两张 A30，same exact-200，只跑 COWP + RVB
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh waymax_recovery200_parallel2
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh analyze_parallel2
+```text
+natural roots
+→ same-root RCOT
+→ protected-priority BCOT social certificate
+→ certificate-compatible robustness frontier
+→ causal recursive physical viability / recoverability
+→ explicit uncertified emergency
 ```
 
-如果、且仅如果，两进程 co-location OOM，再改为：
+最终论文版应给出明确的 recursive viability/recovery condition 和保证/校准边界，并证明它不会通过放松 social certificate 换物理指标。
+
+## 9. 为什么不应该每轮再跑 4×200
+
+### Development gate
+
+新代码带一个 outcome-enriched **dev64**：
+
+- 34 个当前全部 COWP collision scenes；
+- 30 个 zero-conventional exposure 最高的 non-collision scenes。
+
+只跑 COWP + RVR：`2×64=128` scene-method rollouts，相对之前 `4×200=800` 少 **6.25 倍**。
+
+这个集合因为使用了 v16.8.28 outcome 选择，**严禁用于论文 claim**。它的作用只是快速 falsify 新机制。
+
+`analyze_diag64` 会先自动检查新代码中的普通 COWP 是否逐场景复现随包保存的 v16.8.28 dev64 reference。只要 speed refactor 改了旧 COWP 行为，就会直接 fail，不继续解释 RVR。
+
+### Confirmation gate
+
+dev64 有正信号后，再跑 exact200 的 COWP + RVR 两个方法：400 scene-method rollouts，仍比旧四方法整组少 2 倍。
+
+不要每次重复 `fallback_outcome/conventional/planner`；它们在当前代码未触及的部分可以作为已冻结参照。算法最终锁定时再做完整 publication protocol。
+
+### 最终论文实验纪律
+
+这一组 exact-200 已经在多轮迭代中用于设计选择，后续应视为 development strict set。算法真正 freeze 后，需要从未参与调算法的场景建立新的 final evaluation set，并按论文自己的协议跑 ≥3 seeds、paired scenario CI。这个动作不等于重建训练数据。
+
+## 10. Waymax 加速
+
+历史 profiler 已经定位 CPU online candidate construction 占 policy 时间约 88%，model forward 约 6%，selection 约 4–5%。
+
+v16.8.29 对 collision audit 做两层严格等价优化：
+
+1. nearby-agent ranking + constant-velocity future 每 policy step 只构造一次；
+2. 24 个 nearby agents 的距离检查改成 NumPy broadcast，去掉每 candidate 的 Python agent loop。
+
+随机状态 regression 用 literal v16.8.28 reference 对照 conventional collision boolean；当前 focused sanity 20/20 passed。
+
+本地 synthetic 64-agent/48-candidate microbenchmark 中，collision-audit 子组件约 `7.3x` faster。它不能替代 A30 服务器 wall-time profile，因此新 launcher 保留 `profile_parallel2`。
+
+## 11. 下一步命令
 
 ```bash
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh waymax_recovery200_split
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh analyze_split
+cd COWP_v16_8_29_RECURSIVE_VIABILITY
+
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh sanity
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh make_ids
+
+# 仅脚本提示 index 缺失时执行
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh build_tfindex
+
+# 推荐先跑：快速机制 gate
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh viability_diag64_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh analyze_diag64
 ```
 
-**不要 parallel2 和 split 都跑。**
+把 `viability_dev64_cowp_base_equivalence.json`、`viability_dev64_physical_compare.json`、`viability_dev64_mechanism_summary.json` 上传回来即可先决定是否值得跑 200。
 
-下一轮不要：retrain、dataset/cache rebuild、BCOT budget sweep、outcome-weight sweep、CTU、PCHR、universal all-critical hard veto、MCFC promotion、accepted-path execution shield。先让 RVB 这个单因素 probe 回答 dominant collision bottleneck。
+只有 dev64 支持机制时：
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh confirm200_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh analyze_confirm200
+```
+
+需要量服务器加速效果时单独：
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh profile_parallel2
+```
+
+如果 parallel2 co-location OOM 或实测变慢：
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh confirm200_split
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh analyze_confirm200_split
+```

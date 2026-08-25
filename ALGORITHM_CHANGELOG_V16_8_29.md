@@ -2,160 +2,192 @@
 
 ## Scope
 
-v16.8.29 is the first algorithmic probe after the v16.8.26 conventional-safety repair and v16.8.28 no-valid execution repair restored clean strict-Waymax attribution. It makes **one preregistered planning change only**: a recovery-viability bridge used exclusively when the full-horizon conventional-safe set is empty while dynamically valid candidates still exist.
+v16.8.29 is the first algorithmic branch authorized after the v16.8.27/v16.8.28 integrity repairs. It is based on the clean v16.8.28 exact-200 physical attribution. It **does not** rebuild the dataset/cache, retrain the checkpoint, alter natural roots, RCOT, BCOT, the protected-priority certificate, the set-preservation frontier, or the full-horizon conventional-safe definition.
 
-The dataset, cached labels, checkpoint, natural-root construction, RCOT, BCOT, protected-priority certificate, all-critical diagnostic, main COWP certificate-compatible frontier, candidate families, and learned heads are unchanged. No retraining or cache/data rebuild is authorized.
+The release has two separable changes:
 
-A separate engineering-only optimization caches candidate-invariant conventional-screen state once per replanning step. Regression requires bit-exact candidate-bank equality relative to v16.8.28 semantics.
+1. an execution-equivalent CPU acceleration of the online causal collision audit; and
+2. an opt-in `cowp_recursive_viability` method that changes selection **only when the full conventional-safe set is empty**.
 
-## Triggering evidence: v16.8.28 exact-200 is attribution-clean
+## v16.8.28 result integrity
 
-The repaired parallel2 run passes the execution-integrity audit:
+Independent audit of the uploaded parallel-2 result package found:
 
-- exact manifest: 200 unique IDs, logical SHA256 `3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f`;
-- four methods use exactly the same scenario-ID set and checkpoint;
-- each pair of 100-scene shards is disjoint and covers the exact manifest;
-- merged standard metrics reproduce exactly from per-scenario rows;
-- physical attribution regenerates from the merged files;
-- v16.8.28 bounded-stop provenance is explicit and PAD execution is absent.
+- exact manifest: 200/200 unique IDs, logical SHA256 `3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f`;
+- every method has two disjoint 100-ID shards whose union is exactly the manifest;
+- all four merged result files contain the same exact scenario set;
+- CR/collision/offroad/kinematics/EP recompute exactly from the 200 scenario rows (`max_abs_diff=0`);
+- EP is finite on the same 196 scenes for all four methods;
+- on every scenario row, `emergency_action_step_rate == zero_valid_candidate_step_rate == no_valid_step_rate`, confirming the v16.8.28 no-valid repair semantics;
+- first-event indexing remains action-consistent: policy action is emitted, Waymax steps, then the 1-indexed first-positive metric is mapped back to the action at index `first_step-1`.
 
-Split-mode outputs are not present in the uploaded result package. This is not a scientific blocker because the successful parallel2 run already contains the complete paired exact-200 evidence. `parallel2` and `split` are alternate execution modes, not two required experiments.
+The uploaded archive does **not** contain the user's separately requested single-process `split` rerun outputs or runtime profile JSONs. Therefore parallel-2 vs split numerical replication and a fresh v16.8.28 wall-time comparison cannot be verified from this archive. This does not invalidate the internally consistent parallel-2 exact-200 attribution.
 
-## What the preregistered branch test resolved
+## Clean pre-registered branch decision
 
-v16.8.28 COWP:
+The previous integrity versions pre-registered three interpretations:
 
-- CR = 19.5%, collision = 17.0%, offroad = 3.0%, kinematics infeasible = 12.5%, EP = 1.0461;
-- fallback step rate = 71.675%;
-- zero-conventional-candidate step rate = 55.69375%;
-- zero-valid-candidate step rate = 2.65625%;
-- mean valid candidates ≈ 33.27, mean full-horizon conventional candidates ≈ 6.64.
+1. failure from `fallback=true && selected_conventional_safe=true` → Recovery Certificate;
+2. failure from `accepted_priority_ncf` → accepted-path execution viability;
+3. comparable failure in common baselines → common online proposal/action interface.
 
-For all 34 collision episodes, the immediately preceding action is fallback. Crucially:
+v16.8.28 selects the third branch for collision, more specifically **online conventional-feasible support collapse**.
 
-- 32/34 are `no_conventional_use_least_coercive_valid`;
-- 2/34 are the explicit no-valid bounded emergency stop;
-- 0/34 preceding selected candidates are conventional-safe;
-- 0/34 collisions are immediately preceded by an accepted protected-priority COWP candidate.
+For COWP, 34 collision episodes localize as:
 
-The same structural failure exists in the shared baselines. Conventional-safety has 44 collision episodes, 43 immediately preceded by `baseline_use_stop_like` after its full-horizon conventional set has collapsed. Planner-score-only has 49 collisions, with 47 accepted dynamic-valid candidates and 0/49 immediately preceding candidates conventional-safe.
+- 32/34: `no_conventional_use_least_coercive_valid` immediately before first collision;
+- 2/34: `no_valid_candidate` emergency bounded stop;
+- 0/34: conventional-safe fallback;
+- 0/34: accepted certified path.
 
-Thus the preregistered decision does **not** support “the certified COWP path is the dominant collision source” and does **not** support “a truly conventional-safe recovery selector is choosing the wrong candidate.” It supports the common lower-layer branch:
+For the conventional baseline, 44 collision episodes localize as:
 
-> the online physical-feasibility/proposal interface loses full-horizon conventional support during receding-horizon closed-loop operation, then falls through to candidates that are dynamically valid but not physically certified over the full primitive.
+- 43/44: `baseline_use_stop_like` after the conventional pool is empty;
+- 1/44: no-valid emergency;
+- 0/44: a conventional-safe action immediately before first collision.
 
-## Negative result archived: fallback-only OutcomeHead
+COWP collision episodes spend on average `0.80993` of their policy steps in zero-conventional states versus `0.50512` for non-collision episodes. All 34 COWP collision episodes encounter a zero-conventional state no later than the action preceding first collision. The first collision is not an immediate execution artifact: median first-positive overlap step is 50.5 (mean 53.35, range 32--78).
 
-`cowp_fallback_outcome` does not earn promotion:
+Zero-conventional exposure is also highly correlated across methods (`r≈0.87--0.97` pairwise), establishing that this is primarily a common online feasibility-support property rather than a COWP-only certificate pathology.
 
-- collision changes only 17.0% → 16.5% (paired McNemar p = 1.0);
-- CR changes 19.5% → 18.5% (p ≈ 0.774);
-- kinematics slightly worsens 12.5% → 13.0%;
-- EP decreases by ≈ 0.0222 with paired bootstrap 95% CI approximately [-0.0390, -0.0073].
+## What is frozen
 
-This is now a clean negative probe rather than a result contaminated by the v16.8.26/27 execution bugs. Do not tune the outcome weight or promote the current outcome head to a hard physical certificate.
+The following components remain protected from opportunistic retuning:
 
-## Existing core mechanisms remain frozen
+- current dataset/labels/cache and checkpoint;
+- typed natural roots and natural basis;
+- RCOT same-root transport;
+- BCOT structured protected-priority certificate;
+- protected-priority hard feasibility with all-critical diagnostic;
+- certificate-compatible set-preservation frontier (CTU remains a negative ablation);
+- outcome head as diagnostic/probe only.
 
-The historical learned-offline evidence remains stronger for RCOT/BCOT than for generic candidate classifiers. CTU also remains a negative ablation: replacing the certificate-compatible set-preservation frontier with planner-score argmin reduces progress and NCF retention. Therefore v16.8.29 does not change RCOT, BCOT, protected-priority semantics, or the post-certificate robustness frontier.
-
-## New mechanism: Receding-Horizon Recovery-Viability Bridge (RVB)
-
-### Motivation
-
-The current online conventional screen asks whether an entire ~8 s primitive passes the causal collision and drivable-road audit. Waymax, however, executes only one 0.1 s action before replanning. In v16.8.28 the full-horizon conventional set is empty on ~55.7% of COWP policy steps even though the dynamic-valid set is empty on only ~2.7% of steps. This is a structural discontinuity, not raw candidate-count starvation.
-
-### Definition
-
-The main full-horizon COWP certificate is unchanged. RVB is evaluated only when:
-
-1. no protected-priority certified candidate is selected;
-2. the full-horizon conventional-safe set is empty; and
-3. at least one dynamically valid candidate exists.
-
-For each dynamic-valid, non-conventional candidate, RVB:
-
-1. takes a short executable prefix using `online_recovery_commit_steps` (default 8 = 0.8 s, intentionally aligned with the existing action-risk horizon);
-2. constructs a bounded smooth-stop continuation from the prefix endpoint with the existing `fallback_decel_mps2` primitive;
-3. splices prefix + stopping continuation over the original horizon;
-4. requires the spliced trajectory to pass the **same** roadgraph-drivability and causal constant-velocity/logged collision screens;
-5. also requires the existing hard action-risk and rule-risk shields at selection time.
-
-Only candidates satisfying this hard recourse test enter the recovery bridge set. Within the set, the existing fallback score is retained. No learned outcome score, no new scalar ranking weight, and no macro-name privilege can promote a candidate.
-
-Fallback order becomes:
-
-`certified COWP -> full-horizon conventional fallback -> recovery-viability bridge -> unrestricted dynamic-valid fallback -> bounded no-valid emergency stop`.
-
-The original unrestricted-valid branch is deliberately retained after RVB. It is needed both as an emergency fallback and as a clean diagnostic: if RVB availability is low, the result should reveal proposal/geometry support failure rather than silently changing coverage.
-
-## Why this is not “just another stopping trick”
-
-The contribution being tested is not the smooth-stop primitive. That primitive already existed. The scientific object is an explicit **recourse set** that bridges two different feasibility horizons without weakening the social certificate:
-
-- full-horizon protected non-coercive feasibility for other road users;
-- short-horizon ego execution conditioned on preserving an explicitly audited physical recovery continuation.
-
-Generic contingency/fallback planning already exists in the literature, so RVB is not to be claimed as novel merely because it carries a backup trajectory. Promotion requires evidence that the dual-feasibility decomposition explains and fixes the specific COWP closed-loop support collapse.
-
-## Preregistered interpretation of v16.8.29
-
-Only COWP and `cowp_recovery_bridge` need the next exact-200 comparison.
-
-1. **RVB available/used frequently and collision falls with comparable EP:** promote the bridge as a candidate paper-level dual-feasibility component; then run multi-seed/publication-scale validation.
-2. **RVB availability is near zero:** the dominant root is physical proposal/geometry support; redesign online physical proposal support rather than tuning selection weights.
-3. **RVB is available but collision does not improve:** the common causal screen or candidate-to-action projection is mismatched to closed-loop physics; audit that interface rather than adding another fallback score/head.
-4. **Kinematics remains concentrated on accepted protected-priority actions:** treat this as an orthogonal Execution-Viability Certificate branch in a later version; do not mix it into the collision experiment now.
+The clean fallback-outcome rerun now makes the last item stronger: relative to COWP it changes collision `0.170→0.165` (McNemar `p=1.0`) and CR `0.195→0.185` (`p=0.774`) while reducing paired EP by `-0.02218`, bootstrap 95% CI `[-0.03896,-0.00726]`. It is not promoted to recovery or hard physical certification.
 
 ## Secondary bottleneck retained for later
 
-Kinematics is not the dominant collision source, but it is not solved. In COWP, 16/25 first kinematics violations occur immediately after `accepted_priority_ncf`; 17/25 preceding candidates are conventional-safe. This is evidence that the social/non-coercive certificate is not an execution-dynamics certificate. v16.8.29 intentionally does not solve this second problem, to preserve attribution.
+Kinematics is not localized the same way as collision. Of 25 COWP kinematics-infeasible episodes, 16 first events follow `accepted_priority_ncf`, and 17/25 preceding candidates are conventional-safe. This is evidence for a secondary accepted-path/action-projection execution-viability issue. It is deliberately **not** mixed into the collision-recovery change in v16.8.29. Once the dominant collision bottleneck is resolved, this should receive its own orthogonal probe.
 
-## Engineering-only acceleration
+## Remaining ambiguity inside zero-conventional states
 
-v16.8.27 profiling showed CPU candidate construction consumed roughly 88% of policy time. v16.8.29 therefore caches, once per replanning step:
+`conventional_safe` is currently the intersection of a local roadgraph screen and an 8-second causal constant-velocity collision screen. Therefore an empty conventional set can mean different things:
 
-- lane-centerline mask;
-- nearby-agent priority/nearest ranking;
-- logged-causal / constant-velocity future arrays;
-- collision radii and fixed collision-screen indices.
+- no candidate survives the collision screen (`collision_empty`);
+- no candidate survives the roadgraph screen (`roadgraph_empty`);
+- neither side has any survivor (`road_and_collision_empty`);
+- both sides have survivors but no same candidate passes both (`intersection_empty`).
 
-Each candidate then reuses this context. The equations, thresholds, agent ordering, and candidate screen results are unchanged. A regression compares cached and uncached candidate-bank outputs bit-exactly.
+This is scientifically important. A long open-loop constant-velocity screen can be conservative relative to a controller that replans every 0.1 s; alternatively the candidate bank may genuinely lack a useful safe action. Direct proposal expansion or direct horizon shortening before distinguishing these cases would be confounded.
 
-A local 32-agent + lane-map microbenchmark including cache construction measured about 0.282 s -> 0.254 s per synthetic candidate build (~9.9% reduction). This is a local CPU microbenchmark only, not a server wall-clock guarantee.
+v16.8.29 records the two screen components and their decomposition without changing the full conventional-safe boolean.
 
-The recommended Waymax execution remains two independent scenario shards: one Torch+JAX process per A30. The next experiment evaluates only two methods instead of the four already needed for v16.8.28 attribution, so do not rerun fallback-outcome/conventional/planner-only.
+## New algorithm probe: Recursive Viability Recovery (RVR)
 
-## Regression contract
+New opt-in method: `cowp_recursive_viability`.
 
-New focused tests require:
+The certified path and conventional-safe fallback path are identical to COWP. RVR activates only when:
 
-1. cached and uncached conventional-screen candidate banks are bit-exact;
-2. a candidate rejected only for a far-horizon collision can enter RVB only when its short prefix + bounded-stop recourse passes the unchanged physical audit;
-3. invalid or already-conventional candidates are not falsely promoted into RVB;
-4. recovery-bridge usage/availability and first-event provenance reach scenario diagnostics;
-5. selector ordering keeps RVB strictly after full-horizon conventional fallback and before unrestricted-valid fallback.
+```text
+certificate empty
+AND conventional-safe pool empty
+AND at least one dynamically valid candidate exists
+```
 
-Packaged `sanity`: **20/20 passed**.
+For each dynamically valid candidate, the planner evaluates the first violation time under the **same causal collision model and same horizon/stride/buffers** already used by the conventional screen. Let `h_k` be the collision-safe prefix length.
 
-Full repository: **270 passed / 5 skipped / 8 historical failures**. The eight failures are unchanged from v16.8.28: six tests reference legacy launcher scripts absent from the supplied archive and two tests hard-code an old label-semantic fingerprint. No v16.8.29 functional regression is present.
+Recovery is lexicographic:
+
+1. if any dynamically valid candidate passes the roadgraph screen, restrict recovery to that set; otherwise do not invent road safety and retain the valid emergency pool;
+2. retain only candidates attaining the maximum `h_k` in that pool;
+3. use the existing COWP fallback score only as a tie-break inside the maximal-prefix set.
+
+No new scalar weight, learned head, threshold, certificate relaxation, or candidate primitive is introduced. A candidate selected by RVR remains explicitly **uncertified**. It is never counted as conventional-safe or NCF.
+
+The purpose is falsifiable: determine whether many closed-loop failures are caused by binary full-horizon feasibility collapse even though some candidates preserve substantially more causal time-to-violation for the next replanning step. If not, the next move should be proposal support / map-topology generation rather than another recovery ranker.
+
+## New decomposition diagnostics
+
+Per policy step and first physical event, v16.8.29 records:
+
+- valid / roadgraph-safe / collision-safe / conventional candidate counts;
+- maximum collision-safe prefix and selected prefix;
+- selected roadgraph-safe and collision-safe flags;
+- minimum selected collision-clearance margin;
+- zero-conventional reason (`collision_empty`, `roadgraph_empty`, `road_and_collision_empty`, `intersection_empty`);
+- RVR recovery step rate.
+
+`81_summarize_recursive_viability.py` produces paired screen-decomposition summaries. `80_compare_waymax_physical_methods.py` now accepts `--recursive`.
+
+## Exact-equivalent online speed optimization
+
+v16.8.28 rebuilt nearby-agent ranking and constant-velocity futures for every candidate although they depend only on the current simulator state. v16.8.29:
+
+1. builds the causal collision context once per policy step;
+2. stacks the same nearby-agent futures and thresholds;
+3. evaluates all agents for a candidate using a NumPy broadcast rather than a Python agent loop.
+
+The conventional boolean remains the exact v16.8.28 inequality on the same sampled indices. A randomized reference regression compares the cached path against a literal v16.8.28 implementation over 64 random scenes/candidates. Focused sanity passes.
+
+A local synthetic 64-agent/48-candidate microbenchmark shows about `7.3x` acceleration of the collision-audit component. This is **not** claimed as whole-Waymax speedup; the server-side 12-scene profiler remains the source of wall-time evidence.
+
+## Faster experiment policy
+
+Repeated 4-method × 200-scene runs are no longer required during mechanism maturation.
+
+A deterministic development-only 64-ID panel contains:
+
+- all 34 v16.8.28 COWP collision scenes;
+- 30 non-collision scenes with the highest zero-conventional exposure.
+
+Logical SHA256: `0b271cb30febe3feac3a35bb08bb8b9506b048cd6559d5d49bc046bc80c91567`.
+
+This panel is **outcome-selected and therefore forbidden as publication evidence**. It is only a high-information debugging/promotion screen. Running COWP + RVR on it requires 128 scene-method rollouts versus the previous 800, a 6.25x experiment-level reduction before any runtime acceleration.
+
+`analyze_diag64` first compares the newly run unmodified `cowp` path to a bundled v16.8.28 64-scene reference. Any mismatch aborts before RVR interpretation.
+
+Only after a favorable mechanism signal should exact-200 COWP + RVR be run (400 scene-method rollouts, 2x fewer than the previous four-method panel).
+
+## Novelty guard
+
+RVR/maximal survival prefix by itself is **not** promoted as a CCF-A-level contribution. Recursive feasibility, predictive safety filters, reachability, and backup-set ideas are established fields. If RVR succeeds, the paper-level direction should be formalized as an orthogonal two-feasibility architecture:
+
+```text
+social feasibility: protected-priority same-root non-coercion (RCOT/BCOT)
+×
+physical recursive viability: causal recoverability under closed-loop replanning
+```
+
+A publishable extension should define a model-relative recursive viability/recovery condition, prove or calibrate the relevant guarantee under explicit assumptions, and show that it improves physical safety without weakening the non-coercive certificate. If the RVR probe fails, do not polish it; use the decomposition to move to proposal-space refinement or roadgraph/action-interface repair.
+
+## Regression status
+
+- new v16.8.29 tests: `5/5 passed`;
+- packaged focused v16.8.25--v16.8.29 sanity: `20/20 passed`;
+- the randomized v16.8.28 collision-boolean reference equivalence is included in the test set;
+- a full-repository run was attempted in this environment but exceeds the available per-command execution window, so no new full-suite count is claimed here. The uploaded v16.8.28 baseline recorded `265 passed / 5 skipped / 8 historical failures` before these localized changes.
 
 ## Required next run
 
-No retraining. No dataset/cache/label rebuild. No BCOT/frontier/outcome retuning.
-
-Recommended:
+Run:
 
 ```bash
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh sanity
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh make_ids
-# only if the existing TFExample index is missing:
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh build_tfindex
-# optional 12-scene performance check:
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh profile_parallel2
-# exact 200, two A30s, only COWP + RVB:
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh waymax_recovery200_parallel2
-bash NEXT_RUN_COMMANDS_V16_8_29_RECOVERY_VIABILITY_CN.sh analyze_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh sanity
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh make_ids
+
+# only if the TFExample index is absent
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh build_tfindex
+
+# fast development gate; not paper evidence
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh viability_diag64_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh analyze_diag64
+
+# only after the dev64 mechanism signal is favorable
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh confirm200_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh analyze_confirm200
 ```
 
-Only if two-process co-location OOMs, use `waymax_recovery200_split` + `analyze_split` instead. Do **not** run both modes after one succeeds.
+Optional server-side speed measurement:
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_29_RECURSIVE_VIABILITY_CN.sh profile_parallel2
+```

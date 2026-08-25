@@ -226,7 +226,7 @@ def policy_diagnostic_summary(rollouts: list[dict]) -> dict[str, float]:
     # Extra online-health diagnostics.  They make it obvious whether failures are
     # caused by candidate starvation, witness over-rejection, missing critical
     # agents, or missing conflict/map tokens.
-    for key in ("accepted_candidates", "valid_candidates", "conventional_candidates", "recovery_bridge_candidates", "critical_agents", "conflict_tokens"):
+    for key in ("accepted_candidates", "valid_candidates", "conventional_candidates", "critical_agents", "conflict_tokens"):
         vals = np.asarray([float(r.get(key, 0.0)) for r in rows], dtype=np.float32)
         out[f"ClosedLoopMean/{key}"] = float(np.mean(vals)) if vals.size else 0.0
     for key in (
@@ -419,8 +419,9 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
         reasons = [str(r.get("fallback_reason", "none")) for r in rows]
         valid_counts = np.asarray([int(r.get("valid_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
         conventional_counts = np.asarray([int(r.get("conventional_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
-        recovery_counts = np.asarray([int(r.get("recovery_bridge_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
-        recovery_selected = np.asarray([str(r.get("fallback_reason", "none")) == "no_conventional_use_recovery_bridge" for r in rows], dtype=bool) if n else np.asarray([], dtype=bool)
+        roadgraph_counts = np.asarray([int(r.get("roadgraph_safe_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
+        collision_counts = np.asarray([int(r.get("collision_safe_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
+        zero_conv_reasons = [str(r.get("zero_conventional_reason", "none")) for r in rows]
 
         def _mean(key: str, *, mask: np.ndarray | None = None) -> float | None:
             if not rows:
@@ -449,14 +450,20 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_recovery_bridge", "no_conventional_use_least_coercive_valid"} for x in reasons) / max(n, 1)),
-            "recovery_bridge_step_rate": float(recovery_selected.mean()) if recovery_selected.size else 0.0,
-            "recovery_bridge_available_step_rate": float((recovery_counts > 0).mean()) if recovery_counts.size else 0.0,
-            "mean_recovery_bridge_candidates": float(recovery_counts.mean()) if recovery_counts.size else 0.0,
+            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability"} for x in reasons) / max(n, 1)),
+            "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
+            "zero_conventional_collision_empty_step_rate": float(sum(x == "collision_empty" for x in zero_conv_reasons) / max(n, 1)),
+            "zero_conventional_roadgraph_empty_step_rate": float(sum(x == "roadgraph_empty" for x in zero_conv_reasons) / max(n, 1)),
+            "zero_conventional_both_empty_step_rate": float(sum(x == "road_and_collision_empty" for x in zero_conv_reasons) / max(n, 1)),
+            "zero_conventional_intersection_empty_step_rate": float(sum(x == "intersection_empty" for x in zero_conv_reasons) / max(n, 1)),
             "no_valid_step_rate": float(sum(x in {"no_valid_candidate", "baseline_no_valid_emergency_stop"} for x in reasons) / max(n, 1)),
             "accepted_priority_ncf_step_rate": float(sum(x == "accepted_priority_ncf" for x in reasons) / max(n, 1)),
             "mean_accepted_candidates": _mean("accepted_candidates"),
             "mean_conventional_candidates": _mean("conventional_candidates"),
+            "mean_roadgraph_safe_candidates": _mean("roadgraph_safe_candidates"),
+            "mean_collision_safe_candidates": _mean("collision_safe_candidates"),
+            "mean_max_collision_safe_prefix_steps": _mean("max_collision_safe_prefix_steps"),
+            "mean_selected_collision_safe_prefix_steps": _mean("selected_collision_safe_prefix_steps"),
             "mean_valid_candidates": _mean("valid_candidates"),
             "mean_selected_action_risk": _mean("selected_candidate_action_risk"),
             "mean_selected_rule_risk": _mean("selected_candidate_rule_risk"),
@@ -493,7 +500,11 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 rec[f"execution_trajectory_source_at_action_before_first_{name}"] = str(action_row.get("execution_trajectory_source", "candidate"))
                 rec[f"selected_candidate_valid_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_valid", False))
                 rec[f"selected_conventional_safe_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_conventional_safe", False))
-                rec[f"selected_recovery_bridge_at_action_before_first_{name}"] = bool(action_row.get("selected_recovery_bridge_viable", False))
+                rec[f"selected_roadgraph_safe_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_roadgraph_safe", False))
+                rec[f"selected_collision_safe_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_collision_safe", False))
+                rec[f"selected_collision_safe_prefix_steps_at_action_before_first_{name}"] = int(action_row.get("selected_collision_safe_prefix_steps", 0))
+                rec[f"selected_collision_min_clearance_margin_m_at_action_before_first_{name}"] = float(action_row.get("selected_collision_min_clearance_margin_m", 0.0))
+                rec[f"zero_conventional_reason_at_action_before_first_{name}"] = str(action_row.get("zero_conventional_reason", "none"))
                 rec[f"selected_macro_type_at_action_before_first_{name}"] = int(action_row.get("selected_macro_type", -1))
                 rec[f"selected_macro_name_at_action_before_first_{name}"] = str(action_row.get("selected_macro_name", "unknown"))
                 rec[f"fallback_reason_at_action_before_first_{name}"] = str(action_row.get("fallback_reason", "none"))

@@ -51,7 +51,7 @@ def _failure_localization(p:dict)->dict:
     for label,key in mapping.items():
         pos=[r for r in rows if float(r.get('standard_metrics',{}).get(key,0))>0]
         if not pos: continue
-        vals=[]; at=[]; emergency=[]; conv=[]; valid=[]; macros={}; reasons={}; sources={}
+        vals=[]; at=[]; emergency=[]; conv=[]; valid=[]; road=[]; coll=[]; prefixes=[]; margins=[]; macros={}; reasons={}; sources={}; zero_reasons={}
         suffix=label.lower()
         for r in pos:
             d=r.get('diagnostics',{}) or {}
@@ -67,6 +67,16 @@ def _failure_localization(p:dict)->dict:
             if c is not None: conv.append(bool(c))
             vv=d.get(f'selected_candidate_valid_at_action_before_first_{suffix}')
             if vv is not None: valid.append(bool(vv))
+            rr=d.get(f'selected_roadgraph_safe_at_action_before_first_{suffix}')
+            if rr is not None: road.append(bool(rr))
+            cc=d.get(f'selected_collision_safe_at_action_before_first_{suffix}')
+            if cc is not None: coll.append(bool(cc))
+            pp=d.get(f'selected_collision_safe_prefix_steps_at_action_before_first_{suffix}')
+            if pp is not None: prefixes.append(float(pp))
+            mm=d.get(f'selected_collision_min_clearance_margin_m_at_action_before_first_{suffix}')
+            if mm is not None and np.isfinite(float(mm)): margins.append(float(mm))
+            zr=str(d.get(f'zero_conventional_reason_at_action_before_first_{suffix}','none'))
+            zero_reasons[zr]=zero_reasons.get(zr,0)+1
             macro=str(d.get(f'selected_macro_name_at_action_before_first_{suffix}','unknown'))
             macros[macro]=macros.get(macro,0)+1
             reason=str(d.get(f'fallback_reason_at_action_before_first_{suffix}','none'))
@@ -81,6 +91,11 @@ def _failure_localization(p:dict)->dict:
             'conventional_safe_action_immediately_before_first_event_rate':float(np.mean(conv)) if conv else None,
             'fallback_and_conventional_safe_immediately_before_first_event_rate':float(np.mean(both)) if both else None,
             'valid_action_immediately_before_first_event_rate':float(np.mean(valid)) if valid else None,
+            'roadgraph_safe_action_immediately_before_first_event_rate':float(np.mean(road)) if road else None,
+            'collision_safe_action_immediately_before_first_event_rate':float(np.mean(coll)) if coll else None,
+            'mean_collision_safe_prefix_steps_before_first_event':float(np.mean(prefixes)) if prefixes else None,
+            'mean_collision_clearance_margin_m_before_first_event':float(np.mean(margins)) if margins else None,
+            'zero_conventional_reason_histogram_before_first_event':dict(sorted(zero_reasons.items())),
             'selected_macro_histogram_before_first_event':dict(sorted(macros.items())),
             'fallback_reason_histogram_before_first_event':dict(sorted(reasons.items())),
         }
@@ -93,10 +108,11 @@ def main():
     ap.add_argument('--guard')
     ap.add_argument('--conventional')
     ap.add_argument('--planner')
+    ap.add_argument('--recursive')
     ap.add_argument('--output',required=True)
     a=ap.parse_args(); base=_load(a.cowp)
-    out={'schema_version':'cowp_v16_8_28_waymax_physical_compare_v3','cowp_failure_localization':_failure_localization(base)}
-    for name,path in [('fallback_outcome',a.guard),('conventional_safety',a.conventional),('planner_score_only',a.planner)]:
+    out={'schema_version':'cowp_v16_8_29_waymax_physical_compare_v4','cowp_failure_localization':_failure_localization(base)}
+    for name,path in [('fallback_outcome',a.guard),('conventional_safety',a.conventional),('planner_score_only',a.planner),('recursive_viability',a.recursive)]:
         if path:
             obj=_load(path); out[f'cowp_vs_{name}']=_paired(base,obj); out[f'{name}_failure_localization']=_failure_localization(obj)
     Path(a.output).parent.mkdir(parents=True,exist_ok=True); Path(a.output).write_text(json.dumps(out,indent=2),encoding='utf-8'); print(json.dumps(out,indent=2))
