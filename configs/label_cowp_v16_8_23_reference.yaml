@@ -572,6 +572,10 @@ planning:
   candidate_action_projection_risk_mix: 0.75
   action_projection_error_scale_m: 1.25
   online_action_risk_horizon_steps: 8
+  # v16.8.29 recovery viability uses the same receding-horizon commit window.
+  online_recovery_commit_steps: 8
+  # Exact-equivalent CPU optimization: cache candidate-invariant conventional screen state.
+  online_cache_conventional_context: true
   candidate_hard_max_action_risk: 0.45
   candidate_hard_max_rule_risk: 0.7
   set_transport_conflict_mass_floor: 0.1
