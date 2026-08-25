@@ -1983,6 +1983,41 @@ def _plan_continuity_risk_np(
     return out
 
 
+def _resolve_execution_trajectory(
+    candidate_trajectories: np.ndarray,
+    selected: int,
+    has_valid_candidate: bool,
+    current_ego_state: np.ndarray,
+    cfg: dict,
+) -> tuple[np.ndarray, bool, str]:
+    """Resolve the trajectory that is actually sent to Waymax.
+
+    Candidate tensors are zero padded.  A no-valid-candidate state therefore must
+    never execute a padded slot as if it were a real trajectory.  In that state we
+    synthesize a bounded smooth-stop trajectory from the *current ego state*.  This
+    is an execution-integrity fallback, not a selectable proposal and not a safety
+    certificate.
+    """
+    cands = np.asarray(candidate_trajectories, dtype=np.float32)
+    if bool(has_valid_candidate):
+        return np.asarray(cands[int(selected)], dtype=np.float32), False, "candidate"
+
+    if cands.ndim != 3 or cands.shape[1] <= 0:
+        raise RuntimeError(f"Invalid candidate trajectory tensor shape for emergency execution: {cands.shape!r}")
+    horizon = int(cands.shape[1])
+    dt = float(cfg.get("time", {}).get("dt", 0.1))
+    decel = float(cfg.get("planning", {}).get("fallback_decel_mps2", -2.0))
+    emergency = smooth_stop_trajectory(
+        np.asarray(current_ego_state, dtype=np.float32), horizon, dt, decel=decel
+    )
+    if emergency.shape != cands.shape[1:] or not np.isfinite(emergency).all():
+        raise RuntimeError(
+            "Emergency no-valid execution trajectory is malformed; refusing to execute padding. "
+            f"shape={emergency.shape!r}, expected={cands.shape[1:]!r}"
+        )
+    return np.asarray(emergency, dtype=np.float32), True, "bounded_smooth_stop"
+
+
 @dataclass
 class COWPWaymaxPolicy:
     checkpoint: str
@@ -2205,10 +2240,12 @@ class COWPWaymaxPolicy:
                         fallback_reason = "baseline_use_stop_like"
                     else:
                         select_mask = cand_valid
-                        fallback_reason = "baseline_use_valid"
+                        fallback_reason = "baseline_use_valid" if has_valid else "baseline_no_valid_emergency_stop"
                     has_select = has_valid
                 selected = int(self.torch.argmin(self.torch.where(select_mask, adjusted_scores, self.torch.full_like(adjusted_scores, float("inf")))).item()) if has_select else 0
-                selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.PAD)
+                selected_report = int(selected) if has_valid else -1
+                selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.NEUTRAL_EGO)
+                selected_macro_name = _macro_name(selected_macro_type) if has_valid else "EMERGENCY_BOUNDED_STOP"
                 selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
                 selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
                 baseline_host = self.torch.stack([
@@ -2217,14 +2254,14 @@ class COWPWaymaxPolicy:
                     (cand_valid & conventional).sum().float(),
                     batch["cowp/critical/valid"][0].bool().sum().float(),
                     batch["map/conflict_region_valid"][0].bool().sum().float(),
-                    scores[selected].float(),
+                    scores[selected] if has_valid else scores.new_tensor(0.0),
                 ]).detach().cpu().tolist()
                 diag = {
                     "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                     "step": int(step) if step is not None else -1,
-                    "selected_candidate": int(selected),
+                    "selected_candidate": int(selected_report),
                     "selected_macro_type": int(selected_macro_type),
-                    "selected_macro_name": _macro_name(selected_macro_type),
+                    "selected_macro_name": str(selected_macro_name),
                     "selected_candidate_valid": bool(selected_candidate_valid),
                     "selected_candidate_conventional_safe": bool(selected_candidate_conventional_safe),
                     "accepted_candidates": int(baseline_host[0]),
@@ -2272,10 +2309,14 @@ class COWPWaymaxPolicy:
                     "mean_candidate_action_risk": 0.0,
                     "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
                 }
-                diag["selected_plan_continuity_risk"] = float(continuity_np[selected])
+                diag["selected_plan_continuity_risk"] = float(continuity_np[selected]) if has_valid else 0.0
+                traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
+                    batch_np["cowp/candidates/trajectory"][0], selected, has_valid, agent_state[sdc_index], self.cfg
+                )
+                diag["emergency_action_used"] = bool(emergency_action_used)
+                diag["execution_trajectory_source"] = str(execution_source)
                 self._last_diagnostics = diag
                 self._diagnostics_log.append(diag)
-                traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
                 self._previous_selected_traj = np.array(traj, copy=True)
                 if profile_enabled:
                     profile_t_selection = self._profile_stamp()
@@ -2678,10 +2719,11 @@ class COWPWaymaxPolicy:
             # after hard feasibility/frontier construction and therefore cannot
             # make a rejected candidate feasible.
             adjusted_scores = adjusted_scores + continuity_weight * continuity_risk
-            # Conservative fallback hierarchy: first accepted P-NCF/NCF; then a
-            # neutral/stop-like conventional candidate; finally the guaranteed
-            # neutral candidate.  Avoid falling back to an arbitrary conventional
-            # false-safe plan, which hid the effect of NCF rejection in the smoke test.
+            # Conservative fallback hierarchy: first accepted P-NCF/NCF, then
+            # conventionally screened candidates, then any dynamically valid
+            # candidate.  If the valid pool itself is empty, selection remains
+            # explicitly uncertified and execution uses a bounded current-state
+            # smooth stop; zero-padded proposal slots are never executable.
             macro_t = batch["cowp/candidates/macro_type"][0].long()
             stop_ids = self.torch.as_tensor(
                 [int(MacroType.STOP_BEFORE_CONFLICT), int(MacroType.YIELD), int(MacroType.CREEP), int(MacroType.NEUTRAL_EGO)],
@@ -2689,11 +2731,12 @@ class COWPWaymaxPolicy:
                 dtype=macro_t.dtype,
             )
             stop_like = (macro_t[:, None] == stop_ids[None, :]).any(dim=-1)
+            # The candidate-valid branch subsumes every valid stop-like candidate.
+            # Do not keep a dead "emergency_stop_like" branch after cand_valid.any().
             fallback_flags = self.torch.stack([
                 selection_mask.any(),
                 (cand_valid & conventional).any(),
                 cand_valid.any(),
-                (cand_valid & stop_like).any(),
             ]).detach().cpu().tolist()
             fallback_transport_ucb = (
                 transport_risk
@@ -2723,18 +2766,18 @@ class COWPWaymaxPolicy:
                 select_score = fallback_score
                 fallback_used = True
                 fallback_reason = "no_conventional_use_least_coercive_valid"
-            elif bool(fallback_flags[3]):
-                select_mask = cand_valid & stop_like
-                select_score = fallback_score
-                fallback_used = True
-                fallback_reason = "emergency_stop_like"
             else:
+                # No selectable candidate exists.  Selection diagnostics remain
+                # explicitly uncertified; execution is resolved later from the
+                # current ego state and must never consume a zero-padded slot.
                 select_mask = cand_valid
                 select_score = fallback_score
                 fallback_used = True
                 fallback_reason = "no_valid_candidate"
             selected = int(self.torch.argmin(self.torch.where(select_mask, select_score, self.torch.full_like(select_score, float("inf")))).item()) if has_valid else 0
-            selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.PAD)
+            selected_report = int(selected) if has_valid else -1
+            selected_macro_type = int(macro_t[selected].detach().cpu().item()) if has_valid else int(MacroType.NEUTRAL_EGO)
+            selected_macro_name = _macro_name(selected_macro_type) if has_valid else "EMERGENCY_BOUNDED_STOP"
             selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
             selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
             if fallback_reason == "no_certificate_use_least_coercive_conventional" and not selected_candidate_conventional_safe:
@@ -2742,8 +2785,8 @@ class COWPWaymaxPolicy:
                     "Conventional fallback integrity violation: selected candidate did not pass the "
                     "online conventional-safety audit. This indicates candidate-pool semantic corruption."
                 )
-            selected_witness = witness[selected]
-            selected_opr = opr[selected]
+            selected_witness = witness[selected] if has_valid else witness[:0]
+            selected_opr = opr[selected] if has_valid else opr[:0]
             has_crit = bool(crit_mask.any().detach().cpu().item())
             zero = scores.new_tensor(0.0)
             one = scores.new_tensor(1.0)
@@ -2752,8 +2795,8 @@ class COWPWaymaxPolicy:
             valid_pressure = pressure_prior[cand_valid] if has_valid else pressure_prior[:0]
             valid_rule = rule_risk[cand_valid] if has_valid else rule_risk[:0]
             valid_action = action_risk[cand_valid] if has_valid else action_risk[:0]
-            bsel = self.torch.nan_to_num(burden[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if burden is not None else None
-            csel = self.torch.nan_to_num(c_i[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if c_i is not None else None
+            bsel = self.torch.nan_to_num(burden[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if burden is not None and has_valid else None
+            csel = self.torch.nan_to_num(c_i[0, selected].float(), nan=0.0, posinf=2.0, neginf=0.0) if c_i is not None and has_valid else None
             diagnostic_tensors = [
                 certificate_accepted.sum().float(),
                 selection_mask.sum().float(),
@@ -2763,25 +2806,25 @@ class COWPWaymaxPolicy:
                 batch["map/conflict_region_valid"][0].bool().sum().float(),
                 selected_witness.max() if selected_witness.numel() else zero,
                 selected_witness.mean() if selected_witness.numel() else zero,
-                uncertainty[selected].mean() if uncertainty[selected].numel() else zero,
-                witness_cert[selected].max() if witness_cert[selected].numel() else zero,
+                (uncertainty[selected].mean() if uncertainty[selected].numel() else zero) if has_valid else zero,
+                (witness_cert[selected].max() if witness_cert[selected].numel() else zero) if has_valid else zero,
                 selected_opr.min() if selected_opr.numel() else one,
                 selected_opr.mean() if selected_opr.numel() else one,
-                scores[selected],
+                scores[selected] if has_valid else zero,
                 primary_bad.sum().float() if primary_bad.numel() else zero,
                 severe_bad.sum().float() if severe_bad.numel() else zero,
                 option_bad.sum().float() if option_bad.numel() else zero,
-                priority[selected].max() if priority.numel() else zero,
-                priority[selected].mean() if priority.numel() else zero,
-                outcome_risk[selected] if outcome_risk.numel() else zero,
-                outcome_decision_risk[selected] if outcome_decision_risk.numel() else zero,
-                cand_ncf_prob[selected] if cand_ncf_prob.numel() else zero,
-                cand_false_safe_prob[selected] if cand_false_safe_prob.numel() else zero,
-                cand_quality_prob[selected] if cand_quality_prob.numel() else zero,
-                candidate_cert_risk[selected] if candidate_cert_risk.numel() else zero,
-                pressure_prior[selected] if pressure_prior.numel() else zero,
-                rule_risk[selected] if rule_risk.numel() else zero,
-                action_risk[selected] if action_risk.numel() else zero,
+                (priority[selected].max() if priority.numel() else zero) if has_valid else zero,
+                (priority[selected].mean() if priority.numel() else zero) if has_valid else zero,
+                (outcome_risk[selected] if outcome_risk.numel() else zero) if has_valid else zero,
+                (outcome_decision_risk[selected] if outcome_decision_risk.numel() else zero) if has_valid else zero,
+                (cand_ncf_prob[selected] if cand_ncf_prob.numel() else zero) if has_valid else zero,
+                (cand_false_safe_prob[selected] if cand_false_safe_prob.numel() else zero) if has_valid else zero,
+                (cand_quality_prob[selected] if cand_quality_prob.numel() else zero) if has_valid else zero,
+                (candidate_cert_risk[selected] if candidate_cert_risk.numel() else zero) if has_valid else zero,
+                (pressure_prior[selected] if pressure_prior.numel() else zero) if has_valid else zero,
+                (rule_risk[selected] if rule_risk.numel() else zero) if has_valid else zero,
+                (action_risk[selected] if action_risk.numel() else zero) if has_valid else zero,
                 valid_cert.min() if valid_cert.numel() else zero,
                 valid_cert.mean() if valid_cert.numel() else zero,
                 valid_pressure.mean() if valid_pressure.numel() else zero,
@@ -2794,9 +2837,9 @@ class COWPWaymaxPolicy:
             diag = {
                 "scenario_index": int(scenario_index) if scenario_index is not None else -1,
                 "step": int(step) if step is not None else -1,
-                "selected_candidate": int(selected),
+                "selected_candidate": int(selected_report),
                 "selected_macro_type": int(selected_macro_type),
-                "selected_macro_name": _macro_name(selected_macro_type),
+                "selected_macro_name": str(selected_macro_name),
                 "selected_candidate_valid": bool(selected_candidate_valid),
                 "selected_candidate_conventional_safe": bool(selected_candidate_conventional_safe),
                 "certificate_accepted_candidates": int(host[0]),
@@ -2845,10 +2888,14 @@ class COWPWaymaxPolicy:
                 diag["max_predicted_burden"] = float(host[32])
             if c_i is not None:
                 diag["max_predicted_c_i"] = float(host[33])
-            diag["selected_plan_continuity_risk"] = float(continuity_np[selected])
+            diag["selected_plan_continuity_risk"] = float(continuity_np[selected]) if has_valid else 0.0
+        traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
+            batch_np["cowp/candidates/trajectory"][0], selected, has_valid, agent_state[sdc_index], self.cfg
+        )
+        diag["emergency_action_used"] = bool(emergency_action_used)
+        diag["execution_trajectory_source"] = str(execution_source)
         self._last_diagnostics = diag
         self._diagnostics_log.append(diag)
-        traj = np.asarray(batch_np["cowp/candidates/trajectory"][0, selected], dtype=np.float32)
         self._previous_selected_traj = np.array(traj, copy=True)
         if profile_enabled:
             profile_t_selection = self._profile_stamp()
@@ -2857,8 +2904,8 @@ class COWPWaymaxPolicy:
                 agent_state,
                 sdc_index,
                 traj,
-                precomputed_target=action_targets_np[selected],
-                precomputed_accel=float(action_accels_np[selected]),
+                precomputed_target=None if emergency_action_used else action_targets_np[selected],
+                precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
             )
             profile_t_action = self._profile_stamp()
             diag.update({
@@ -2878,8 +2925,8 @@ class COWPWaymaxPolicy:
             agent_state,
             sdc_index,
             traj,
-            precomputed_target=action_targets_np[selected],
-            precomputed_accel=float(action_accels_np[selected]),
+            precomputed_target=None if emergency_action_used else action_targets_np[selected],
+            precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
         )
 
     def consume_diagnostics(self) -> dict[str, Any] | None:

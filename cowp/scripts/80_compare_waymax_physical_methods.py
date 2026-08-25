@@ -51,7 +51,7 @@ def _failure_localization(p:dict)->dict:
     for label,key in mapping.items():
         pos=[r for r in rows if float(r.get('standard_metrics',{}).get(key,0))>0]
         if not pos: continue
-        vals=[]; at=[]; conv=[]; valid=[]; macros={}; reasons={}
+        vals=[]; at=[]; emergency=[]; conv=[]; valid=[]; macros={}; reasons={}; sources={}
         suffix=label.lower()
         for r in pos:
             d=r.get('diagnostics',{}) or {}
@@ -59,6 +59,10 @@ def _failure_localization(p:dict)->dict:
             if v is not None: vals.append(float(v))
             a=d.get(f'fallback_at_action_before_first_{suffix}')
             if a is not None: at.append(bool(a))
+            e=d.get(f'emergency_action_at_action_before_first_{suffix}')
+            if e is not None: emergency.append(bool(e))
+            source=str(d.get(f'execution_trajectory_source_at_action_before_first_{suffix}','candidate'))
+            sources[source]=sources.get(source,0)+1
             c=d.get(f'selected_conventional_safe_at_action_before_first_{suffix}')
             if c is not None: conv.append(bool(c))
             vv=d.get(f'selected_candidate_valid_at_action_before_first_{suffix}')
@@ -72,6 +76,8 @@ def _failure_localization(p:dict)->dict:
             'positive_episodes':len(pos),
             'mean_fallback_rate_before_first_event':float(np.mean(vals)) if vals else None,
             'fallback_action_immediately_before_first_event_rate':float(np.mean(at)) if at else None,
+            'emergency_action_immediately_before_first_event_rate':float(np.mean(emergency)) if emergency else None,
+            'execution_trajectory_source_histogram_before_first_event':dict(sorted(sources.items())),
             'conventional_safe_action_immediately_before_first_event_rate':float(np.mean(conv)) if conv else None,
             'fallback_and_conventional_safe_immediately_before_first_event_rate':float(np.mean(both)) if both else None,
             'valid_action_immediately_before_first_event_rate':float(np.mean(valid)) if valid else None,
@@ -89,7 +95,7 @@ def main():
     ap.add_argument('--planner')
     ap.add_argument('--output',required=True)
     a=ap.parse_args(); base=_load(a.cowp)
-    out={'schema_version':'cowp_v16_8_27_waymax_physical_compare_v2','cowp_failure_localization':_failure_localization(base)}
+    out={'schema_version':'cowp_v16_8_28_waymax_physical_compare_v3','cowp_failure_localization':_failure_localization(base)}
     for name,path in [('fallback_outcome',a.guard),('conventional_safety',a.conventional),('planner_score_only',a.planner)]:
         if path:
             obj=_load(path); out[f'cowp_vs_{name}']=_paired(base,obj); out[f'{name}_failure_localization']=_failure_localization(obj)

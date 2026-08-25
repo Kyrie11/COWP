@@ -415,7 +415,10 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
         std = item.get("standard_metrics", {}) or {}
         n = len(rows)
         fallback = np.asarray([bool(r.get("fallback_used", False)) for r in rows], dtype=bool) if n else np.asarray([], dtype=bool)
+        emergency = np.asarray([bool(r.get("emergency_action_used", False)) for r in rows], dtype=bool) if n else np.asarray([], dtype=bool)
         reasons = [str(r.get("fallback_reason", "none")) for r in rows]
+        valid_counts = np.asarray([int(r.get("valid_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
+        conventional_counts = np.asarray([int(r.get("conventional_candidates", 0)) for r in rows], dtype=np.int64) if n else np.asarray([], dtype=np.int64)
 
         def _mean(key: str, *, mask: np.ndarray | None = None) -> float | None:
             if not rows:
@@ -427,15 +430,25 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             return float(vals[valid].mean()) if valid.any() else None
 
         first_fallback = next((j for j, r in enumerate(rows) if bool(r.get("fallback_used", False))), None)
+        first_emergency = next((j for j, r in enumerate(rows) if bool(r.get("emergency_action_used", False))), None)
+        first_zero_valid = next((j for j, count in enumerate(valid_counts) if int(count) <= 0), None)
+        first_zero_conventional = next((j for j, count in enumerate(conventional_counts) if int(count) <= 0), None)
         rec: dict[str, object] = {
             "scenario_id": str(item.get("scenario_id", idx)),
             "steps": int(item.get("steps", n)),
             "fallback_step_rate": float(fallback.mean()) if fallback.size else 0.0,
             "fallback_episode": bool(fallback.any()) if fallback.size else False,
             "first_fallback_policy_step": int(first_fallback) if first_fallback is not None else None,
+            "emergency_action_step_rate": float(emergency.mean()) if emergency.size else 0.0,
+            "emergency_action_episode": bool(emergency.any()) if emergency.size else False,
+            "first_emergency_policy_step": int(first_emergency) if first_emergency is not None else None,
+            "zero_valid_candidate_step_rate": float((valid_counts <= 0).mean()) if valid_counts.size else 0.0,
+            "zero_conventional_candidate_step_rate": float((conventional_counts <= 0).mean()) if conventional_counts.size else 0.0,
+            "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
+            "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
             "no_conventional_step_rate": float(sum(x == "no_conventional_use_least_coercive_valid" for x in reasons) / max(n, 1)),
-            "no_valid_step_rate": float(sum(x == "no_valid_candidate" for x in reasons) / max(n, 1)),
+            "no_valid_step_rate": float(sum(x in {"no_valid_candidate", "baseline_no_valid_emergency_stop"} for x in reasons) / max(n, 1)),
             "accepted_priority_ncf_step_rate": float(sum(x == "accepted_priority_ncf" for x in reasons) / max(n, 1)),
             "mean_accepted_candidates": _mean("accepted_candidates"),
             "mean_conventional_candidates": _mean("conventional_candidates"),
@@ -471,6 +484,8 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 action_row = rows[action_idx] if action_idx < len(rows) else {}
                 rec[f"fallback_rate_before_first_{name}"] = float(prefix.mean()) if prefix.size else 0.0
                 rec[f"fallback_at_action_before_first_{name}"] = bool(fallback[action_idx])
+                rec[f"emergency_action_at_action_before_first_{name}"] = bool(action_row.get("emergency_action_used", False))
+                rec[f"execution_trajectory_source_at_action_before_first_{name}"] = str(action_row.get("execution_trajectory_source", "candidate"))
                 rec[f"selected_candidate_valid_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_valid", False))
                 rec[f"selected_conventional_safe_at_action_before_first_{name}"] = bool(action_row.get("selected_candidate_conventional_safe", False))
                 rec[f"selected_macro_type_at_action_before_first_{name}"] = int(action_row.get("selected_macro_type", -1))
@@ -496,6 +511,12 @@ def physical_failure_attribution_summary(rollouts: list[dict]) -> dict[str, floa
     cert = np.asarray([float(r.get("mean_selected_cert_risk") or 0.0) for r in rows], dtype=np.float64)
     out["MeanFallbackStepRate"] = float(fb.mean())
     out["EpisodesFallbackMajorityRate"] = float((fb >= 0.5).mean())
+    emergency = np.asarray([float(r.get("emergency_action_step_rate", 0.0)) for r in rows], dtype=np.float64)
+    zero_valid = np.asarray([float(r.get("zero_valid_candidate_step_rate", 0.0)) for r in rows], dtype=np.float64)
+    zero_conv = np.asarray([float(r.get("zero_conventional_candidate_step_rate", 0.0)) for r in rows], dtype=np.float64)
+    out["MeanEmergencyActionStepRate"] = float(emergency.mean())
+    out["MeanZeroValidCandidateStepRate"] = float(zero_valid.mean())
+    out["MeanZeroConventionalCandidateStepRate"] = float(zero_conv.mean())
 
     event_keys = {
         "CR": "CR",
@@ -521,6 +542,9 @@ def physical_failure_attribution_summary(rollouts: list[dict]) -> dict[str, floa
                 vals = vals[event & np.isfinite(vals)]
                 if vals.size:
                     out[f"{label}/MeanFallbackRateBeforeFirstEvent"] = float(vals.mean())
+                suffix = label.lower()
+                emergency_before = np.asarray([bool(r.get(f"emergency_action_at_action_before_first_{suffix}", False)) for r in rows], dtype=bool)
+                out[f"{label}/EmergencyActionImmediatelyBeforeFirstEventRate"] = float(emergency_before[event].mean())
         if (~event).any():
             out[f"{label}/MeanFallbackStepRate_Neg"] = float(fb[~event].mean())
             out[f"{label}/MeanNoCertificateStepRate_Neg"] = float(no_cert[~event].mean())
