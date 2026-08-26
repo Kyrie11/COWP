@@ -432,24 +432,6 @@ def make_config_from_cowp_config(data_config, split: str | None = None, path_ove
         return _maybe_copy_and_update(data_config, path=path_override)
     womd_cfg = _womd_subconfig(data_config)
     config_name = str(womd_cfg.get("waymax_config_name", "WOD_1_1_0_TRAINING"))
-    # Keep the named Waymax split consistent with the raw stream.  WOMD 1.3.1
-    # TRAINING/VALIDATION currently share the same tensor-shape contract, but
-    # selecting the proper named config is safer across Waymax releases and makes
-    # the closed-loop provenance unambiguous in experiment logs.
-    if split == "validation":
-        explicit_validation = womd_cfg.get("validation_waymax_config_name")
-        if explicit_validation:
-            config_name = str(explicit_validation)
-        elif config_name.endswith("_TRAINING"):
-            candidate = config_name[: -len("_TRAINING")] + "_VALIDATION"
-            try:
-                _config, _, _ = require_waymax()
-                if hasattr(_config, candidate):
-                    config_name = candidate
-            except Exception:
-                # require_waymax() will raise a clearer error later when the
-                # dataloader is actually instantiated.
-                pass
     path = path_override or _tfexample_path_from_cowp_config(data_config, split=split)
     max_num_objects = int(womd_cfg.get("max_num_objects", data_config.get("limits", {}).get("max_agents", 128)))
     include_sdc_paths = bool(womd_cfg.get("include_sdc_paths", True))

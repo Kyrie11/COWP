@@ -1,0 +1,34 @@
+{
+  "schema_version": "v16.8.34-development-manifests-v1",
+  "exact200": {
+    "count": 200,
+    "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+    "role": "historical development confirmation only"
+  },
+  "equivalence16": {
+    "count": 16,
+    "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+    "role": "common-path equivalence"
+  },
+  "counterfactual48": {
+    "count": 48,
+    "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+    "role": "mechanism-selected Stage-1 gate; not publication evidence",
+    "v16_8_34_methods": [
+      "cowp_transition_guarded_rosh",
+      "cowp_executable_option_spectrum_hysteresis"
+    ]
+  },
+  "fresh37": {
+    "count": 37,
+    "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+    "role": "result-unseen-for-V33/V34 Stage-2 development generalization gate; still inside historical exact200 universe"
+  },
+  "promotion_discipline": {
+    "counterfactual48_gate_unchanged_from_v16_8_33": true,
+    "fresh37_requires_stage1_pass": true,
+    "exact200_requires_fresh37_pass": true,
+    "launcher_fail_closed": true,
+    "publication_holdout": false
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "schema_version": "v16.8.24-compact5k-characterization-v1",
+  "split_manifest": {
+    "seed": "cowp-v16.8.24-compact-5k",
+    "train": 5000,
+    "val": 1000,
+    "heldout_test": 1200,
+    "train_selection_source": "historical_promoted_cache",
+    "validation_selection_source": "historical_promoted_cache",
+    "historical_train_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train",
+    "historical_validation_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val",
+    "test_definition": "held-out subset of official WOMD validation; official WOMD test future is hidden"
+  },
+  "splits": {
+    "train": {
+      "unique_scenarios": 5000,
+      "critical_agent_count": {
+        "mean": 5.3846,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "audit_relevance": {
+        "profiled_scenes": 5000,
+        "valid_pair_count": 1419053,
+        "relevant_pair_count": 609762,
+        "relevant_pair_rate": 0.42969642430550514,
+        "mean_scene_mean_relevance_mass": 0.3316135632896214
+      },
+      "candidate_acceptance_rate_selected_sources": {
+        "TERMINAL": 0.5414834541905825,
+        "PRIORITY_SMOOTH_YIELD": 0.20354708925199114,
+        "JOINT_ROUTE_NCF": 0.9548634619724667,
+        "ROBUST_BCTE": 0.9801122790253225
+      },
+      "critical_agents_selected": 26923,
+      "mechanism_auditable_critical_agents": 25828,
+      "mechanism_unauditable_rate": 0.040671544775842214,
+      "protected_prio_root_coverage": 0.9945328517036025,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.14894687935573797
+    },
+    "val": {
+      "unique_scenarios": 1000,
+      "critical_agent_count": {
+        "mean": 5.387,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "audit_relevance": {
+        "profiled_scenes": 1000,
+        "valid_pair_count": 285260,
+        "relevant_pair_count": 122271,
+        "relevant_pair_rate": 0.42863002173455794,
+        "mean_scene_mean_relevance_mass": 0.3260818223154929
+      },
+      "candidate_acceptance_rate_selected_sources": {
+        "TERMINAL": 0.5454565514806479,
+        "PRIORITY_SMOOTH_YIELD": 0.2064995628096765,
+        "JOINT_ROUTE_NCF": 0.9387755102040817,
+        "ROBUST_BCTE": 0.9843125192248539
+      },
+      "critical_agents_selected": 5387,
+      "mechanism_auditable_critical_agents": 5153,
+      "mechanism_unauditable_rate": 0.043437906070168925,
+      "protected_prio_root_coverage": 0.9936321332353661,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.14923345623908402
+    },
+    "heldout_test": {
+      "unique_scenarios": 1200,
+      "critical_agent_count": {
+        "mean": 5.338333333333333,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "audit_relevance": {
+        "profiled_scenes": 1200,
+        "valid_pair_count": 339813,
+        "relevant_pair_count": 145947,
+        "relevant_pair_rate": 0.42949210300959645,
+        "mean_scene_mean_relevance_mass": 0.3297856443154524
+      },
+      "candidate_acceptance_rate_selected_sources": {
+        "TERMINAL": 0.5509600903614458,
+        "PRIORITY_SMOOTH_YIELD": 0.21865260129465355,
+        "JOINT_ROUTE_NCF": 0.9760888129803587,
+        "ROBUST_BCTE": 0.9819947879649372
+      },
+      "critical_agents_selected": 6406,
+      "mechanism_auditable_critical_agents": 6120,
+      "mechanism_unauditable_rate": 0.04464564470808617,
+      "protected_prio_root_coverage": 0.994651306315573,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.15049019607843137
+    }
+  },
+  "train_cache_integrity_verifier": {
+    "reported_pass": false,
+    "reasons": [
+      "irrelevant pair blockers=58243"
+    ],
+    "files": 5000,
+    "inspected": 5000,
+    "missing_required_key_counts": {},
+    "read_error_count": 0,
+    "scenario_id_mismatch_examples": [],
+    "affected_root_mismatch_count": 0,
+    "conflict_root_mismatch_count": 0,
+    "retained_root_mismatch_count": 0,
+    "canonical_root_weight_mismatch_count": 0,
+    "irrelevant_blocker_count": 58243,
+    "interpretation": "Historical verifier reports pass=false solely because irrelevant-pair blockers are counted as a failure reason; no missing-key/read/scenario/root-contract mismatch was observed. This characterization does not authorize rebuilding the dataset."
+  }
+}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -17,7 +16,6 @@ from cowp.core.config import load_config
 from cowp.data.dataset import collate_torch
 from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_batch_item, make_external_batch
 from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
-from cowp.external_baselines.reference_metadata import baseline_reference_metadata
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
@@ -59,60 +57,6 @@ def _json_safe(obj):
         return obj.tolist()
     return str(obj)
 
-def _external_policy_runtime_summary(rollouts: list[dict]) -> dict[str, float]:
-    """Aggregate only diagnostics actually produced by an external policy.
-
-    External baselines do not emit COWP witness/OPR/burden predictions online.
-    Reporting the generic COWP diagnostic adapter would silently turn missing
-    fields into FSR=0/OPR=1, so we intentionally expose only execution/runtime
-    quantities and mark mechanism evidence unavailable.
-    """
-    rows: list[dict] = []
-    for item in rollouts:
-        rows.extend(item.get("policy_diagnostics", []) or [])
-    if not rows:
-        return {
-            "ClosedLoopMechanismGroundTruthAvailable": 0.0,
-            "ClosedLoopMechanismProxyAvailable": 0.0,
-            "ClosedLoopPolicySteps": 0.0,
-        }
-    out: dict[str, float] = {
-        "ClosedLoopMechanismGroundTruthAvailable": 0.0,
-        "ClosedLoopMechanismProxyAvailable": 0.0,
-        "ClosedLoopPolicySteps": float(len(rows)),
-        "ClosedLoopFallbackStepRate": float(np.mean([bool(r.get("fallback", r.get("fallback_used", False))) for r in rows])),
-    }
-    for key in ("valid_candidates", "conventional_candidates", "selected_score"):
-        vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float64)
-        vals = vals[np.isfinite(vals)]
-        if vals.size:
-            out[f"ClosedLoopMean/{key}"] = float(vals.mean())
-    timing_keys = sorted({str(k) for r in rows for k in r if str(k).startswith("timing_ms/")})
-    for key in timing_keys:
-        vals = np.asarray([float(r.get(key, np.nan)) for r in rows], dtype=np.float64)
-        vals = vals[np.isfinite(vals)]
-        if vals.size:
-            out[f"ClosedLoopMean/{key}"] = float(vals.mean())
-            out[f"ClosedLoopP95/{key}"] = float(np.quantile(vals, 0.95))
-    direct = np.asarray([str(r.get("execution_mode", "candidate")) == "direct" for r in rows], dtype=bool)
-    out["ClosedLoopDirectExecutionStepRate"] = float(direct.mean())
-    return out
-
-
-
-def _external_scenario_rows(rollouts: list[dict]) -> list[dict[str, float]]:
-    rows_out: list[dict[str, float]] = []
-    for item in rollouts:
-        rows = item.get("policy_diagnostics", []) or []
-        steps = int(item.get("steps", len(rows)) or len(rows))
-        fallback = [bool(r.get("fallback", r.get("fallback_used", False))) for r in rows]
-        direct = [str(r.get("execution_mode", "candidate")) == "direct" for r in rows]
-        rows_out.append({
-            "steps": float(steps),
-            "fallback_step_rate": float(np.mean(fallback)) if fallback else 0.0,
-            "direct_execution_step_rate": float(np.mean(direct)) if direct else 0.0,
-        })
-    return rows_out
 
 def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
     _log(f"loading checkpoint {args.checkpoint}")
@@ -122,7 +66,7 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
     future_len = int(args.future_len or ckpt_args.get("future_len", cfg.get("time", {}).get("future_steps", 80)))
     _log(f"checkpoint ready baseline={baseline} device={device} max_neighbors={max_neighbors} max_candidates={max_candidates} future_len={future_len}")
     _log(f"loading learned-offline dataset from {args.cache_dir}")
-    ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=True, baseline=baseline, purpose="audit")
+    ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=True)
     _log(f"learned-offline dataset ready scenes={len(ds)}")
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_torch, pin_memory=False)
     total_batches = _safe_len(loader)
@@ -135,18 +79,11 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
     t0 = time.time()
     with torch.inference_mode():
         for batch_idx, batch in enumerate(iterator, start=1):
-            ext = make_external_batch(
-                batch, model_cfg, device=device, max_neighbors=max_neighbors, max_candidates=max_candidates,
-                horizon=future_len, baseline=baseline, require_candidates=True, require_future=False,
-            )
+            ext = make_external_batch(batch, model_cfg, device=device, max_neighbors=max_neighbors, max_candidates=max_candidates, horizon=future_len)
             if baseline == "gameformer":
                 scores = model.score_candidates(ext.gameformer_inputs, ext.candidates, ext.candidate_valid)
-            elif baseline == "dtpp":
-                scores = model.score_candidates(ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, timesteps=future_len)
-            elif baseline in {"pluto", "plant2"}:
-                scores = model.score_candidates(ext.planner_inputs, ext.candidates, ext.candidate_valid)
             else:
-                raise ValueError(baseline)
+                scores = model.score_candidates(ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, timesteps=future_len)
             accept = ext.candidate_valid
             if args.require_conventional_safe:
                 accept2 = accept & ext.conventional_safe
@@ -175,7 +112,6 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
         "max_candidates": max_candidates,
         "future_len": future_len,
         "require_conventional_safe": bool(args.require_conventional_safe),
-        "reference_metadata": baseline_reference_metadata(baseline),
     })
     _log(f"learned_offline {baseline} done samples={seen}")
     return {"mode": "learned_offline", baseline: metrics, "selections_preview": selected_rows}
@@ -189,8 +125,6 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         device=args.device,
         action_mode=args.waymax_action_mode,
         require_conventional_safe=args.require_conventional_safe,
-        execution_mode=args.execution_mode,
-        profile_timing=args.profile_policy_timing,
     )
     horizon = int(args.rollout_horizon_steps or cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
     _log(
@@ -212,31 +146,18 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         tfexample_glob=args.tfexample_glob,
         shard_index=args.shard_index,
         num_shards=args.num_shards,
-        scenario_ids=(Path(args.scenario_ids_file).read_text(encoding="utf-8").splitlines() if args.scenario_ids_file else None),
-        tfexample_index_jsonl=args.tfexample_index_jsonl,
-        standard_metric_names=({x.strip() for x in args.waymax_standard_metric_names.split(",") if x.strip()} if args.waymax_standard_metric_names else None),
     )
     _log(f"waymax {policy.baseline} rollout done episodes={len(rollouts)} seconds={time.time()-t0:.1f}")
     payload: dict[str, Any] = {
         "mode": "waymax",
         "baseline": policy.baseline,
-        "method": f"external_{policy.baseline}",
-        "reference_metadata": baseline_reference_metadata(policy.baseline),
         "checkpoint": args.checkpoint,
-        "execution_mode": policy.execution_mode,
         "waymax_split": args.waymax_split,
-        "scenario_ids_sha256": hashlib.sha256("\n".join(Path(args.scenario_ids_file).read_text(encoding="utf-8").splitlines()).encode("utf-8")).hexdigest() if args.scenario_ids_file else None,
-        "scenario_ids_resolved": [str(x.get("scenario_id")) for x in rollouts if x.get("scenario_id") is not None],
-        "scenario_diagnostics": _external_scenario_rows(rollouts),
         "tfexample_glob": args.tfexample_glob,
         "num_rollouts": len(rollouts),
         "steps": [int(x.get("steps", 0)) for x in rollouts],
-        "external_policy_runtime_summary": _external_policy_runtime_summary(rollouts),
-        "policy_diagnostic_summary": _external_policy_runtime_summary(rollouts),
-        "closed_loop_mechanism_metric_status": {
-            "available": False,
-            "reason": "External planner rollout has no frozen counterfactual COWP auditor; run learned_offline audit for PBTR/FSR/OPR/BTE on cached labels.",
-        },
+        "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
+        "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
     }
     if args.waymax_standard_metrics:
         payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]
@@ -245,7 +166,7 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Evaluate learned external planning baselines on COWP learned-offline or real Waymax closed loop.")
+    ap = argparse.ArgumentParser(description="Evaluate GameFormer/DTPP external baselines on COWP learned-offline or real Waymax closed loop.")
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--eval-config", default="configs/eval.yaml")
@@ -259,15 +180,11 @@ def main() -> None:
     ap.add_argument("--max-neighbors", type=int, default=None)
     ap.add_argument("--max-candidates", type=int, default=None)
     ap.add_argument("--future-len", type=int, default=None)
-    ap.add_argument("--require-conventional-safe", action="store_true", help="Candidate-mode only: restrict scoring to COWP conventional-safe proposals when available.")
-    ap.add_argument("--execution-mode", choices=["auto", "direct", "candidate"], default="auto", help="Waymax only. auto executes native direct heads for GameFormer/PLUTO/PlanT2 and candidate-tree scoring for DTPP.")
-    ap.add_argument("--profile-policy-timing", action="store_true", help="Synchronize accelerator stages and write per-step planner timing diagnostics. Use for short profiling runs only.")
+    ap.add_argument("--require-conventional-safe", action="store_true")
     ap.add_argument("--dump-selections", action="store_true")
     ap.add_argument("--max-dump-rows", type=int, default=50)
     ap.add_argument("--waymax-split", choices=["training", "validation", "testing"], default="validation")
     ap.add_argument("--tfexample-glob", default=None)
-    ap.add_argument("--tfexample-index-jsonl", default=None, help="Optional exact scenario-id to TFExample shard index.")
-    ap.add_argument("--scenario-ids-file", default=None, help="Exact scenario-ID manifest; every requested ID must resolve.")
     ap.add_argument("--num-scenarios", type=int, default=None)
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--shard-index", type=int, default=0)
@@ -278,7 +195,6 @@ def main() -> None:
     ap.add_argument("--jax-preallocate", choices=["true", "false"], default="false")
     ap.add_argument("--jax-mem-fraction", type=float, default=None)
     ap.add_argument("--waymax-standard-metrics", action="store_true")
-    ap.add_argument("--waymax-standard-metric-names", default="OverlapMetric,OffroadMetric,WrongWayMetric,ProgressionMetric,OffRouteMetric,KinematicsInfeasibilityMetric,LogDivergenceMetric")
     ap.add_argument("--keep-rollout-state", action="store_true")
     ap.add_argument("--clear-accelerator-cache", action="store_true")
     ap.add_argument("--output", required=True)

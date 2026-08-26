@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# v16.8.33: Recovery Option Spectrum + Dominance Hysteresis (ROSH)
-# Main probe: Recovery Option-Spectrum Hysteresis (ROSH)
-# Diagnostic: legacy-SOV Dominance Hysteresis (SDH)
+# v16.8.34: Execution-Consistent Recovery Option Spectrum
+# Main probe: Executable Option-Spectrum Hysteresis (EOSH)
+# Diagnostic: Transition-Guarded ROSH (TG-ROSH)
 #
 # Frozen: data/labels/checkpoint, natural roots, RCOT, BCOT, protected-priority
 # certificate, set-preservation frontier, outcome settings, candidate families,
@@ -17,7 +17,7 @@ cd "$SCRIPT_DIR"
 COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
 BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
 BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
-OUT_ROOT="${OUT_ROOT:-outputs/v16_8_33_recovery_option_spectrum}"
+OUT_ROOT="${OUT_ROOT:-outputs/v16_8_34_executable_option_spectrum}"
 TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
 BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
 
@@ -33,6 +33,7 @@ REF_CF48_SOV="$SCRIPT_DIR/reference_results/v16_8_30_counterfactual48_sov_refere
 REF_CF48_BHOV="$SCRIPT_DIR/reference_results/v16_8_31_counterfactual48_bhov_reference.json"
 REF_CF48_THOP="$SCRIPT_DIR/reference_results/v16_8_32_counterfactual48_thop_reference.json"
 REF_CF48_COMMIT="$SCRIPT_DIR/reference_results/v16_8_32_counterfactual48_commitment_reference.json"
+REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
 REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
 REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
 REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
@@ -91,14 +92,14 @@ import json,sys
 p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
 d=json.load(open(p,encoding='utf-8'))
 map_key={
-    'cowp_sov_dominance_hysteresis':'sov_hysteresis',
-    'cowp_recovery_option_spectrum_hysteresis':'spectrum_hysteresis',
+    'cowp_transition_guarded_rosh':'transition_guarded',
+    'cowp_executable_option_spectrum_hysteresis':'executable_spectrum',
 }
 gates=d.get('preregistered_gate',{})
 for method in [x.strip() for x in methods.split(',') if x.strip()]:
     key=map_key.get(method)
     if key is None:
-        raise SystemExit(f'ERROR: {method} is not a v16.8.33 promotion candidate')
+        raise SystemExit(f'ERROR: {method} is not a v16.8.34 promotion candidate')
     g=gates.get(key)
     if not g or g.get('pass') is not True:
         checks=(g or {}).get('checks',{})
@@ -158,16 +159,15 @@ run_parallel_methods() {
 analyze_new_set() {
   local stage="$1" tag="$2" cowp="$3" rvr="$4"
   local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
-    --output "$OUT_ROOT/${tag}_recovery_option_spectrum_analysis.json")
+    --output "$OUT_ROOT/${tag}_executable_option_spectrum_analysis.json")
   if [[ "$stage" == "counterfactual48" ]]; then
-    args+=(--sov "$REF_CF48_SOV" --bihorizon "$REF_CF48_BHOV" \
-      --trihorizon "$REF_CF48_THOP" --commitment "$REF_CF48_COMMIT")
+    args+=(--v33-rosh "$REF_CF48_V33_ROSH")
   fi
-  [[ -s "$OUT_ROOT/${tag}_cowp_sov_dominance_hysteresis_merged.json" ]] && \
-    args+=(--sov-hysteresis "$OUT_ROOT/${tag}_cowp_sov_dominance_hysteresis_merged.json")
-  [[ -s "$OUT_ROOT/${tag}_cowp_recovery_option_spectrum_hysteresis_merged.json" ]] && \
-    args+=(--spectrum-hysteresis "$OUT_ROOT/${tag}_cowp_recovery_option_spectrum_hysteresis_merged.json")
-  python -m cowp.scripts.86_analyze_recovery_option_spectrum "${args[@]}"
+  [[ -s "$OUT_ROOT/${tag}_cowp_transition_guarded_rosh_merged.json" ]] && \
+    args+=(--transition-guarded "$OUT_ROOT/${tag}_cowp_transition_guarded_rosh_merged.json")
+  [[ -s "$OUT_ROOT/${tag}_cowp_executable_option_spectrum_hysteresis_merged.json" ]] && \
+    args+=(--executable-spectrum "$OUT_ROOT/${tag}_cowp_executable_option_spectrum_hysteresis_merged.json")
+  python -m cowp.scripts.87_analyze_executable_option_spectrum "${args[@]}"
 }
 
 case "$MODE" in
@@ -175,8 +175,10 @@ case "$MODE" in
     python -m py_compile \
       cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
       cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
-      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/86_analyze_recovery_option_spectrum.py
+      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/86_analyze_recovery_option_spectrum.py \
+      cowp/scripts/87_analyze_executable_option_spectrum.py
     python -m pytest -q \
+      tests/test_v16_8_34_executable_option_spectrum.py \
       tests/test_v16_8_33_recovery_option_spectrum.py \
       tests/test_v16_8_32_temporal_option_persistence.py \
       tests/test_v16_8_31_bihorizon_option_viability.py \
@@ -190,7 +192,7 @@ case "$MODE" in
       echo "ERROR: conventional-safety bypass exists" >&2; exit 3
     fi
     ensure_ids
-    echo "v16.8.33 focused semantic/integrity sanity passed"
+    echo "v16.8.34 focused semantic/integrity sanity passed"
     ;;
 
   make_ids)
@@ -212,46 +214,46 @@ case "$MODE" in
 
   counterfactual48_parallel2)
     ensure_ids
-    run_parallel_methods "counterfactual48_v33" "$CF48_IDS" \
-      "${METHODS:-cowp_sov_dominance_hysteresis,cowp_recovery_option_spectrum_hysteresis}"
+    run_parallel_methods "counterfactual48_v34" "$CF48_IDS" \
+      "${METHODS:-cowp_transition_guarded_rosh,cowp_executable_option_spectrum_hysteresis}"
     ;;
 
   analyze_counterfactual48)
-    analyze_new_set "counterfactual48" "counterfactual48_v33" "$REF_CF48_COWP" "$REF_CF48_RVR"
+    analyze_new_set "counterfactual48" "counterfactual48_v34" "$REF_CF48_COWP" "$REF_CF48_RVR"
     ;;
 
   fresh37_parallel2)
     ensure_ids
-    promoted="${PROMOTED_METHODS:-cowp_recovery_option_spectrum_hysteresis}"
-    require_gate_pass "$OUT_ROOT/counterfactual48_v33_recovery_option_spectrum_analysis.json" "$promoted" "counterfactual48"
-    run_parallel_methods "fresh37_v33" "$FRESH37_IDS" "$promoted"
+    promoted="${PROMOTED_METHODS:-cowp_executable_option_spectrum_hysteresis}"
+    require_gate_pass "$OUT_ROOT/counterfactual48_v34_executable_option_spectrum_analysis.json" "$promoted" "counterfactual48"
+    run_parallel_methods "fresh37_v34" "$FRESH37_IDS" "$promoted"
     ;;
 
   analyze_fresh37)
-    analyze_new_set "fresh37" "fresh37_v33" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR"
+    analyze_new_set "fresh37" "fresh37_v34" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR"
     ;;
 
   confirm200_parallel2)
     ensure_ids
-    promoted="${PROMOTED_METHODS:-cowp_recovery_option_spectrum_hysteresis}"
-    require_gate_pass "$OUT_ROOT/fresh37_v33_recovery_option_spectrum_analysis.json" "$promoted" "fresh37"
+    promoted="${PROMOTED_METHODS:-cowp_executable_option_spectrum_hysteresis}"
+    require_gate_pass "$OUT_ROOT/fresh37_v34_executable_option_spectrum_analysis.json" "$promoted" "fresh37"
     # Development confirmation only. Never rerun COWP/RVR: immutable exact200 references are bundled.
     run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted"
     ;;
 
   analyze_confirm200)
     local_args=(--cowp "$REF_EXACT_COWP" --rvr "$REF_EXACT_RVR" --stage exact200 \
-      --output "$OUT_ROOT/confirm_exact200_recovery_option_spectrum_analysis.json")
-    [[ -s "$OUT_ROOT/confirm_exact200_cowp_sov_dominance_hysteresis_merged.json" ]] && \
-      local_args+=(--sov-hysteresis "$OUT_ROOT/confirm_exact200_cowp_sov_dominance_hysteresis_merged.json")
-    [[ -s "$OUT_ROOT/confirm_exact200_cowp_recovery_option_spectrum_hysteresis_merged.json" ]] && \
-      local_args+=(--spectrum-hysteresis "$OUT_ROOT/confirm_exact200_cowp_recovery_option_spectrum_hysteresis_merged.json")
-    python -m cowp.scripts.86_analyze_recovery_option_spectrum "${local_args[@]}"
+      --output "$OUT_ROOT/confirm_exact200_executable_option_spectrum_analysis.json")
+    [[ -s "$OUT_ROOT/confirm_exact200_cowp_transition_guarded_rosh_merged.json" ]] && \
+      local_args+=(--transition-guarded "$OUT_ROOT/confirm_exact200_cowp_transition_guarded_rosh_merged.json")
+    [[ -s "$OUT_ROOT/confirm_exact200_cowp_executable_option_spectrum_hysteresis_merged.json" ]] && \
+      local_args+=(--executable-spectrum "$OUT_ROOT/confirm_exact200_cowp_executable_option_spectrum_hysteresis_merged.json")
+    python -m cowp.scripts.87_analyze_executable_option_spectrum "${local_args[@]}"
     ;;
 
   help|*)
     cat <<EOF
-v16.8.33 recommended order
+v16.8.34 recommended order
 
 0) Reuse the existing v16.8.24 checkpoint. Do NOT retrain/rebuild data/cache.
 
@@ -266,15 +268,15 @@ v16.8.33 recommended order
    $0 counterfactual48_parallel2
    $0 analyze_counterfactual48
 
-   SDH  = strict SOV entry, equality-preserving continuation, dominance-loss exit.
-   ROSH = the same state machine using a full semantic recovery-option persistence profile.
+   TG-ROSH = v16.8.33 semantic spectrum plus current controller-transition non-regression.
+   EOSH    = TG-ROSH plus controller-state-conditioned executable successor spectrum.
 
 4) ONLY method(s) whose JSON preregistered_gate.pass == true:
-   PROMOTED_METHODS=cowp_recovery_option_spectrum_hysteresis $0 fresh37_parallel2
+   PROMOTED_METHODS=cowp_executable_option_spectrum_hysteresis $0 fresh37_parallel2
    $0 analyze_fresh37
 
    fresh37 is disjoint from ALL v16.8.30 panels and the v16.8.31 holdout64.
-   It was selected by ID only, not by v16.8.33 outcomes.  It is still development evidence.
+   It was selected by ID only, not by v16.8.34 outcomes.  It is still development evidence.
 
 5) ONLY if fresh37 is non-harmful and directionally favorable:
    PROMOTED_METHODS=<passed_method> $0 confirm200_parallel2

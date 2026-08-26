@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import time
 from typing import Any
 
 import numpy as np
@@ -10,12 +9,10 @@ import torch
 from cowp.external_baselines.adapters import make_external_batch
 from cowp.external_baselines.dtpp_cowp import COWPDTPP
 from cowp.external_baselines.gameformer_cowp import COWPGameFormer
-from cowp.external_baselines.pluto_cowp import COWPPLUTO
-from cowp.external_baselines.plant2_cowp import COWPPlanT2
 from cowp.waymax_eval.policy_wrapper import (
     _consistent_one_step_target,
+    _extract_logged_future_agent_trajs,
     _extract_roadgraph_tokens,
-    _extract_sdc_path_tokens,
     _wrap_angle,
     build_online_batch,
     extract_agent_history_model_state,
@@ -51,71 +48,11 @@ def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str
             max_branch=int(args.get("max_candidates", model_cfg.get("limits", {}).get("max_candidates", 30))),
             variable_cost=not bool(args.get("dtpp_fixed_cost", False)),
         )
-    elif baseline == "pluto":
-        model = COWPPLUTO(
-            future_len=int(args.get("future_len", model_cfg.get("time", {}).get("future_steps", 80))),
-            d_model=int(args.get("vector_d_model", 128)), num_heads=int(args.get("vector_heads", 8)),
-            encoder_layers=int(args.get("vector_layers", 4)),
-            lateral_queries=int(args.get("pluto_lateral_queries", 4)),
-            longitudinal_queries=int(args.get("pluto_longitudinal_queries", 6)),
-            dropout=float(args.get("vector_dropout", 0.1)),
-        )
-    elif baseline == "plant2":
-        model = COWPPlanT2(
-            future_len=int(args.get("future_len", model_cfg.get("time", {}).get("future_steps", 80))),
-            d_model=int(args.get("vector_d_model", 128)), num_heads=int(args.get("vector_heads", 8)),
-            layers=int(args.get("vector_layers", 4)), dropout=float(args.get("vector_dropout", 0.1)),
-        )
     else:
         raise ValueError(f"Unsupported external baseline checkpoint: {baseline}")
     model.load_state_dict(ckpt["model"], strict=False)
     model.to(dev).eval()
     return model, baseline, model_cfg, args, dev
-
-
-def _minimal_external_online_batch(
-    history: np.ndarray,
-    agent_state: np.ndarray,
-    sdc_index: int,
-    roadgraph: dict[str, np.ndarray],
-    sdc_paths: dict[str, np.ndarray] | None,
-    cfg: dict,
-) -> dict[str, np.ndarray]:
-    """Build only causal observation tensors required by direct external planners.
-
-    This deliberately does *not* generate the COWP proposal bank, critical-agent
-    ranking, witness/conflict tokens, or any logged-future tensors.
-    """
-    max_agents = int(cfg.get("limits", {}).get("max_agents", cfg.get("model", {}).get("max_agents", 128)))
-    n = min(int(agent_state.shape[0]), max_agents)
-    mask = np.zeros(max_agents, dtype=bool)
-    mask[:n] = agent_state[:n, 10] > 0.5
-    if 0 <= int(sdc_index) < max_agents:
-        mask[int(sdc_index)] = True
-    is_sdc = np.zeros(max_agents, dtype=bool)
-    if 0 <= int(sdc_index) < max_agents:
-        is_sdc[int(sdc_index)] = True
-    batch: dict[str, np.ndarray] = {
-        "state/history": np.asarray(history, dtype=np.float32)[None],
-        "state/agent_valid": mask[None],
-        "state/is_sdc": is_sdc[None],
-    }
-    xy = np.asarray(roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
-    valid = np.asarray(roadgraph.get("valid", np.zeros(len(xy), dtype=bool)), dtype=bool)
-    if len(xy):
-        xyz = np.zeros((len(xy), 3), dtype=np.float32)
-        xyz[:, :2] = xy
-        batch["roadgraph_samples/xyz"] = xyz[None]
-        batch["roadgraph_samples/valid"] = valid[None]
-    if sdc_paths is not None:
-        pxyz = np.asarray(sdc_paths.get("xyz", np.zeros((0, 0, 3), dtype=np.float32)), dtype=np.float32)
-        pvalid = np.asarray(sdc_paths.get("valid", np.zeros(pxyz.shape[:2], dtype=bool)), dtype=bool)
-        pon = np.asarray(sdc_paths.get("on_route", np.zeros((pxyz.shape[0], 1), dtype=bool)), dtype=bool)
-        if pxyz.ndim == 3 and pxyz.shape[0] > 0:
-            batch["path_samples/xyz"] = pxyz[None]
-            batch["path_samples/valid"] = pvalid[None]
-            batch["path_samples/on_route"] = pon[None]
-    return batch
 
 
 @dataclass
@@ -125,66 +62,12 @@ class ExternalWaymaxPolicy:
     device: str = "auto"
     action_mode: str = "delta_xy_yaw"
     require_conventional_safe: bool = False
-    execution_mode: str = "auto"
-    profile_timing: bool = False
 
     def __post_init__(self) -> None:
         self.model, self.baseline, self.model_cfg, self.args, self.dev = build_external_model_from_checkpoint(self.checkpoint, self.cfg, self.device)
         self._last_diagnostics: dict[str, Any] | None = None
         self._previous_longitudinal_accel = 0.0
         self._previous_scenario_index: int | None = None
-        # Roadgraph and WOMD 1.3.1 SDC paths are scenario-static.  Cache their
-        # host representations so a closed-loop rollout does not copy tens of
-        # thousands of JAX values to NumPy again at every 100 ms step.
-        self._cached_roadgraph: dict[str, np.ndarray] | None = None
-        self._cached_sdc_paths: dict[str, np.ndarray] | None = None
-        if self.execution_mode not in {"auto", "direct", "candidate"}:
-            raise ValueError(f"Unsupported external execution_mode={self.execution_mode!r}")
-
-    @staticmethod
-    def _local_xy_to_global_traj(local_xy: np.ndarray, origin: np.ndarray, yaw0: float, dt: float = 0.1) -> np.ndarray:
-        """Convert an ego-frame waypoint sequence to the global 7-D trajectory contract."""
-        xy = np.asarray(local_xy, dtype=np.float32)
-        if xy.ndim != 2 or xy.shape[-1] != 2:
-            raise ValueError(f"Expected local_xy [T,2], got {xy.shape}")
-        c, s = float(np.cos(yaw0)), float(np.sin(yaw0))
-        gx = origin[0] + c * xy[:, 0] - s * xy[:, 1]
-        gy = origin[1] + s * xy[:, 0] + c * xy[:, 1]
-        gxy = np.stack([gx, gy], axis=-1).astype(np.float32)
-        prev = np.concatenate([np.asarray(origin, dtype=np.float32)[None, :2], gxy[:-1]], axis=0)
-        vel = (gxy - prev) / max(float(dt), 1.0e-6)
-        speed = np.linalg.norm(vel, axis=-1)
-        yaw = np.full((gxy.shape[0],), float(yaw0), dtype=np.float32)
-        moving = speed > 1.0e-3
-        yaw[moving] = np.arctan2(vel[moving, 1], vel[moving, 0]).astype(np.float32)
-        # Hold the last meaningful heading through predicted stops.
-        for t in range(1, len(yaw)):
-            if not moving[t]:
-                yaw[t] = yaw[t - 1]
-        out = np.zeros((gxy.shape[0], 7), dtype=np.float32)
-        out[:, :2] = gxy
-        out[:, 2] = yaw
-        out[:, 3:5] = vel
-        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
-
-    def _direct_local_xy(self, ext) -> tuple[np.ndarray | None, float | None, str]:
-        """Return the source planner's own direct ego trajectory when it has one."""
-        if self.baseline == "gameformer":
-            outputs = self.model(ext.gameformer_inputs)
-            trajs, scores = self.model.final_level(outputs)
-            mode = int(torch.argmax(scores[0, 0]).detach().cpu())
-            xy = trajs[0, 0, mode, :, :2].detach().float().cpu().numpy()
-            return xy, float(scores[0, 0, mode].detach().cpu()), f"mode_{mode}"
-        if self.baseline == "pluto":
-            outputs = self.model(ext.planner_inputs)
-            mode = int(torch.argmax(outputs["scores"][0]).detach().cpu())
-            xy = outputs["trajectories"][0, mode].detach().float().cpu().numpy()
-            return xy, float(outputs["scores"][0, mode].detach().cpu()), f"mode_{mode}"
-        if self.baseline == "plant2":
-            outputs = self.model(ext.planner_inputs)
-            xy = outputs["trajectory"][0].detach().float().cpu().numpy()
-            return xy, None, "autoregressive_waypoints"
-        return None, None, "candidate_tree_required"
 
     def _trajectory_to_action(self, agent_state: np.ndarray, sdc_index: int, traj: np.ndarray) -> Any:
         try:
@@ -215,156 +98,44 @@ class ExternalWaymaxPolicy:
         except Exception:
             return datatypes.Action(data=data, valid=valid)
 
-    def _timing_sync(self) -> None:
-        if self.profile_timing and self.dev.type == "cuda":
-            torch.cuda.synchronize(self.dev)
-
     def __call__(self, state: Any, *, step: int | None = None, scenario_index: int | None = None) -> Any:
-        if self.profile_timing:
-            self._timing_sync()
-            _t_total0 = time.perf_counter()
-        new_scenario = bool(step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index))
-        if new_scenario:
+        if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
             self._previous_longitudinal_accel = 0.0
-            self._cached_roadgraph = None
-            self._cached_sdc_paths = None
         self._previous_scenario_index = scenario_index
         history, agent_state, sdc_index = extract_agent_history_model_state(state, self.cfg)
-        if self.profile_timing:
-            _t_after_obs = time.perf_counter()
-            _t_map0 = _t_after_obs
-        if self._cached_roadgraph is None:
-            self._cached_roadgraph = _extract_roadgraph_tokens(state, self.cfg)
-        roadgraph = self._cached_roadgraph
-        if self.profile_timing:
-            _t_after_map = time.perf_counter()
+        roadgraph = _extract_roadgraph_tokens(state, self.cfg)
+        other_future_trajs = _extract_logged_future_agent_trajs(state, sdc_index, self.cfg)
+        batch_np = build_online_batch(agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph, other_future_trajs=other_future_trajs)
+        batch = {k: torch.as_tensor(v, device=self.dev) for k, v in batch_np.items() if isinstance(v, np.ndarray)}
         max_neighbors = int(self.args.get("max_neighbors", 10))
         max_candidates = int(self.args.get("max_candidates", self.cfg.get("limits", {}).get("max_candidates", 30)))
         future_len = int(self.args.get("future_len", self.cfg.get("time", {}).get("future_steps", 80)))
-        resolved_mode = self.execution_mode
-        if resolved_mode == "auto":
-            resolved_mode = "direct" if self.baseline in {"gameformer", "pluto", "plant2"} else "candidate"
-
-        # Direct trajectory planners do not need COWP proposal generation.  Use
-        # WOMD 1.3.1 SDC paths directly for route conditioning instead.
-        if resolved_mode == "direct":
-            if self._cached_sdc_paths is None:
-                self._cached_sdc_paths = _extract_sdc_path_tokens(state, self.cfg)
-            sdc_paths = self._cached_sdc_paths
-            if self.profile_timing:
-                _t_direct0 = time.perf_counter()
-                self._timing_sync()
-            batch_np = _minimal_external_online_batch(history, agent_state, sdc_index, roadgraph, sdc_paths, self.cfg)
-            batch = {k: torch.as_tensor(v) for k, v in batch_np.items() if isinstance(v, np.ndarray)}
-            with torch.inference_mode():
-                ext = make_external_batch(
-                    batch, self.model_cfg, device=self.dev, max_neighbors=max_neighbors,
-                    max_candidates=max_candidates, horizon=future_len, baseline=self.baseline,
-                    require_candidates=False, require_future=False,
-                )
-                direct_xy, direct_score, direct_source = self._direct_local_xy(ext)
-            if self.profile_timing:
-                self._timing_sync()
-                _t_after_direct = time.perf_counter()
-            if direct_xy is not None:
-                traj = self._local_xy_to_global_traj(
-                    direct_xy,
-                    ext.origin[0].detach().float().cpu().numpy(),
-                    float(ext.yaw0[0].detach().cpu()),
-                    dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
-                )
-                self._last_diagnostics = {
-                    "baseline": self.baseline,
-                    "execution_mode": "direct",
-                    "direct_source": direct_source,
-                    "selected_idx": -1,
-                    "valid_candidates": 0,
-                    "conventional_candidates": 0,
-                    "selected_score": direct_score,
-                    "fallback": False,
-                    "cowp_candidate_filter_applied": False,
-                    "uses_waymax_sdc_paths": bool("path_samples/xyz" in batch_np),
-                    "optimized_direct_observation_path": True,
-                    "scenario_static_map_cache": True,
-                    "causal_no_logged_future": True,
-                }
-                if self.profile_timing:
-                    self._last_diagnostics.update({
-                        "timing_ms/observation": 1000.0 * (_t_after_obs - _t_total0),
-                        "timing_ms/static_map_host": 1000.0 * (_t_after_map - _t_map0),
-                        "timing_ms/adapter_and_model": 1000.0 * (_t_after_direct - _t_direct0),
-                        "timing_ms/total_before_action": 1000.0 * (time.perf_counter() - _t_total0),
-                    })
-                return self._trajectory_to_action(agent_state, sdc_index, traj)
-            # Only DTPP should arrive here; preserve candidate-tree fallback.
-            resolved_mode = "candidate"
-
-        # Closed-loop planners must not read the future portion of Waymax's
-        # logged trajectory.  ``other_future_trajs=None`` makes the shared
-        # proposal generator use causal current-state/history extrapolation.
-        if self.profile_timing:
-            _t_prop0 = time.perf_counter()
-        batch_np = build_online_batch(
-            agent_state, sdc_index, self.cfg, history_model_state=history, roadgraph=roadgraph,
-            other_future_trajs=None, compute_rule_risk=False,
-            include_interaction_tokens=False,
-        )
-        if self.profile_timing:
-            _t_after_prop = time.perf_counter()
-            self._timing_sync()
-            _t_model0 = time.perf_counter()
-        batch = {k: torch.as_tensor(v) for k, v in batch_np.items() if isinstance(v, np.ndarray)}
         with torch.inference_mode():
-            ext = make_external_batch(
-                batch, self.model_cfg, device=self.dev, max_neighbors=max_neighbors, max_candidates=max_candidates,
-                horizon=future_len, baseline=self.baseline, require_candidates=True, require_future=False,
-            )
+            ext = make_external_batch(batch, self.model_cfg, device=self.dev, max_neighbors=max_neighbors, max_candidates=max_candidates, horizon=future_len)
             if self.baseline == "gameformer":
                 scores = self.model.score_candidates(ext.gameformer_inputs, ext.candidates, ext.candidate_valid)[0]
-            elif self.baseline == "dtpp":
-                scores = self.model.score_candidates(ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, timesteps=future_len)[0]
-            elif self.baseline in {"pluto", "plant2"}:
-                scores = self.model.score_candidates(ext.planner_inputs, ext.candidates, ext.candidate_valid)[0]
             else:
-                raise ValueError(self.baseline)
+                scores = self.model.score_candidates(ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, timesteps=future_len)[0]
             mask = ext.candidate_valid[0]
             if self.require_conventional_safe:
-                mask2 = mask & ext.conventional_safe[0]
-                if bool(mask2.any()):
-                    mask = mask2
+                mask = mask & ext.conventional_safe[0]
+                if not bool(mask.any()):
+                    mask = ext.candidate_valid[0]
             masked_scores = torch.where(mask, scores, torch.full_like(scores, -1e9))
             selected = int(torch.argmax(masked_scores).detach().cpu()) if bool(mask.any()) else -1
-        if self.profile_timing:
-            self._timing_sync()
-            _t_after_model = time.perf_counter()
-
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
-        conv_np = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool)
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)
             selected = int(valid_idx[0]) if valid_idx.size else 0
         self._last_diagnostics = {
             "baseline": self.baseline,
-            "execution_mode": "candidate",
             "selected_idx": selected,
             "valid_candidates": int(valid.sum()),
-            "conventional_candidates": int(conv_np.sum()),
+            "conventional_candidates": int(np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool).sum()) if "cowp/candidates/conventional_safe" in batch_np else int(valid.sum()),
             "selected_score": float(scores[selected].detach().cpu()) if selected >= 0 else float("nan"),
-            "fallback": False,
-            "cowp_candidate_filter_applied": bool(self.require_conventional_safe),
-            "optimized_candidate_observation_path": True,
-            "scenario_static_map_cache": True,
-            "causal_no_logged_future": True,
+            "fallback": bool(selected < 0),
         }
-        if self.profile_timing:
-            self._last_diagnostics.update({
-                "timing_ms/observation": 1000.0 * (_t_after_obs - _t_total0),
-                "timing_ms/static_map_host": 1000.0 * (_t_after_map - _t_map0),
-                "timing_ms/proposal_generation": 1000.0 * (_t_after_prop - _t_prop0),
-                "timing_ms/adapter_and_model": 1000.0 * (_t_after_model - _t_model0),
-                "timing_ms/total_before_action": 1000.0 * (time.perf_counter() - _t_total0),
-            })
         return self._trajectory_to_action(agent_state, sdc_index, cand[selected])
 
     def consume_diagnostics(self) -> dict[str, Any] | None:
@@ -373,11 +144,5 @@ class ExternalWaymaxPolicy:
         return row
 
 
-def make_external_waymax_policy(
-    checkpoint: str, cfg: dict, *, device: str = "auto", action_mode: str = "delta_xy_yaw",
-    require_conventional_safe: bool = False, execution_mode: str = "auto", profile_timing: bool = False,
-):
-    return ExternalWaymaxPolicy(
-        checkpoint=checkpoint, cfg=cfg, device=device, action_mode=action_mode,
-        require_conventional_safe=require_conventional_safe, execution_mode=execution_mode, profile_timing=profile_timing,
-    )
+def make_external_waymax_policy(checkpoint: str, cfg: dict, *, device: str = "auto", action_mode: str = "delta_xy_yaw", require_conventional_safe: bool = False):
+    return ExternalWaymaxPolicy(checkpoint=checkpoint, cfg=cfg, device=device, action_mode=action_mode, require_conventional_safe=require_conventional_safe)
