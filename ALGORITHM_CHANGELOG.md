@@ -3571,3 +3571,18 @@ V16.8.32 新增两个 opt-in 分支：
 当前主线继续收紧为 Orthogonal Option-Set Feasibility：social axis 保护其他关键 actor 的 natural low-burden option set；physical-temporal axis 保护 ego 在实际 emitted recovery action 下的 future executable option-set persistence。当前 P0 bottleneck 为 temporal option persistence + recovery-mode consistency；proposal support 为长期 ceiling，accepted-path kinematics 保持独立 secondary problem。
 
 详细记录见 `ALGORITHM_CHANGELOG_V16_8_32.md` 与 `CURRENT_ANALYSIS_V16_8_32_CN.md`。
+
+# V16.8.33 — Recovery Option Spectrum + Dominance Hysteresis
+
+V16.8.32 结果通过完整性审计，但 THOP 与 unconditional SOV Recovery Commitment 均未通过 counterfactual48 预注册 promotion gate，因此没有运行 fresh37/exact200，也不对失败机制做 threshold rescue。THOP 保留 9/10 old RVR rescues 但只避免 4/9 old induced，新增 3 个 kinematics scenes，paired EP delta≈-0.1507；多堆一个 successor horizon 不成立。Commitment 保留 7/10 rescues、避免 6/9 induced、net -5 collision、kinematics +1、EP delta≈-0.023，说明 mode continuity 有真实信号但 unconditional continuation 过度粘滞。
+
+进一步 paired 分解显示：commitment 相比 strict SOV 新救回 6 个 SOV collision scenes，却新诱发 `3919ccd73c0fabd7` 与 `c34fe8e79cdf1161` 两个 SOV 原本安全 scene；因此 V16.8.33 不使用固定 dwell/hysteresis margin，而新增 `cowp_sov_dominance_hysteresis`：strict SOV dominance entry、weak/equality continuation、dominance-loss exit。与此同时，SOV 对 old RVR-induced 的唯一 false positive `7721ff4800156886` 最终进入 no-valid emergency，暴露原 successor signature 在 conventional 为空时几乎退化成 max-prefix。主分支 `cowp_recovery_option_spectrum_hysteresis` 因此用 causal successor 上“每个安全 horizon 仍存活的 distinct recovery macro 数”构成完整 option-persistence profile，并用 pointwise strict/weak dominance驱动同一状态机。profile area/权重不参与 selection。
+
+继续冻结 data/natural roots/RCOT/BCOT/protected-priority certificate/set-preservation frontier/8s conventional contract/outcome settings。新增禁止 V3+ horizon stacking、unconditional commitment promotion、固定 dwell、hysteresis epsilon/margin 搜索、option-profile AUC/加权 scalarization，以及在 analytic target 验证前训练新的 viability head。实验顺序保持 equivalence16 -> counterfactual48 -> 从未被 V16.8.32 新方法运行过的 fresh37 -> exact200；Stage-1 仍使用 retain>=5/10、avoid>=7/9、net collision>=3、kinematics regression<=1、EP delta>=-0.05 的预注册 gate。
+
+详细记录见 `ALGORITHM_CHANGELOG_V16_8_33.md` 与 `CURRENT_ANALYSIS_V16_8_33_CN.md`。
+
+
+### V16.8.33 promotion-integrity (delivery hardening)
+
+The v16.8.33 launcher now enforces the counterfactual48 -> fresh37 -> exact200 preregistered gates at runtime. Later stages fail closed unless the requested method has `preregistered_gate.pass=true` in the immediately preceding analyzer JSON. This is experiment-protocol hardening only; planning semantics are unchanged. Final focused sanity remains 39/39 passed.

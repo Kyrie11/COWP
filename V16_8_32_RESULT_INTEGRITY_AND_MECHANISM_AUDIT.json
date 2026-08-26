@@ -1,0 +1,1312 @@
+{
+  "schema_version": "cowp_v16_8_32_result_integrity_and_mechanism_audit_v1",
+  "reliability": {
+    "passed": true,
+    "blocking_issue_found": false,
+    "focused_sanity": "34/34 passed on uploaded v16.8.32 code",
+    "equivalence16": {
+      "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+      "scenarios": 16,
+      "fields_checked": 1120,
+      "atol": 1e-07,
+      "passed": true,
+      "mismatch_count_capped": 0,
+      "mismatches": []
+    },
+    "manifest_and_shard_audit": {
+      "cowp_trihorizon_option_persistence": {
+        "shards": [
+          {
+            "n": 24,
+            "shard_index": 0,
+            "requested": 24,
+            "resolved": [
+              "da52a87b046e4a0a",
+              "a25edfa42510bdb4",
+              "a525f87ac454a88c",
+              "ad7d72d8adca3e25",
+              "e1d2184327703edd",
+              "1c03d20597561d94",
+              "2fa07f444b825370",
+              "f8d5d2f0f7cf5825",
+              "fe51445d725b8b8b",
+              "f8d4c735825e5d81",
+              "e6f70b30f414022e",
+              "9ccf60966ec93c20",
+              "f55df4ea9e688069",
+              "29cd2aca8ae5e222",
+              "9d79c94d87d1dfac",
+              "ff41aa2be7fa7a56",
+              "4201b435eda16cf2",
+              "a6f8b2b348015743",
+              "a30bd30a45665244",
+              "2c2395ec28c6a158",
+              "3919ccd73c0fabd7",
+              "a27f6f60dd683a66",
+              "b64cecb971b095c3",
+              "eeab096e35093acf"
+            ],
+            "hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+            "checkpoint": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+            "method": "cowp_trihorizon_option_persistence",
+            "gt_online": false
+          },
+          {
+            "n": 24,
+            "shard_index": 1,
+            "requested": 24,
+            "resolved": [
+              "4525d99a628819af",
+              "fccd9a25a2a57a73",
+              "d632f1919fe4bab",
+              "d59a8c97c0980d2a",
+              "4c332861792a91e7",
+              "72a34ea361a39c22",
+              "9e3e5f19ee38f2e3",
+              "57f3f03f7e7967f9",
+              "fb9d8277036a53f3",
+              "40f2d8b336a3dafc",
+              "7721ff4800156886",
+              "c9b1c562b6ff31e5",
+              "da87744bcf7613db",
+              "f6a7fc811128c6ef",
+              "51a742674d23f1e3",
+              "6418b0c9e2e4b093",
+              "7c6ac47c0deee2af",
+              "ae01b0e36aaa41b4",
+              "89806e50f692c453",
+              "1e015170763b9002",
+              "c34fe8e79cdf1161",
+              "6992366c5c998d00",
+              "84196f1d9198b616",
+              "b85168f48c8c9970"
+            ],
+            "hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+            "checkpoint": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+            "method": "cowp_trihorizon_option_persistence",
+            "gt_online": false
+          }
+        ],
+        "shard_overlap": 0,
+        "union_n": 48,
+        "duplicates": 0,
+        "union_equals_manifest": true,
+        "merged_n": 48,
+        "merged_unique": 48,
+        "merged_equals_manifest": true,
+        "merged_hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "recomputed": {
+          "CR": 0.625,
+          "Collision": 0.625,
+          "Offroad": 0.020833333333333332,
+          "Kinematics": 0.1875,
+          "EP": 0.8518072490890821
+        },
+        "reported": {
+          "CR": 0.625,
+          "CollisionRate": 0.625,
+          "EP": 0.8518072490890821,
+          "FirstPositiveStep/KinematicsInfeasibilityMetric": 38.333333333333336,
+          "FirstPositiveStep/OffroadMetric": 69.0,
+          "FirstPositiveStep/OverlapMetric": 57.8,
+          "KinematicsInfeasibilityRate": 0.1875,
+          "MetricSteps": 80.0,
+          "OffroadRate": 0.020833333333333332,
+          "WaymaxAny/KinematicsInfeasibilityMetric": 0.1875,
+          "WaymaxAny/OffroadMetric": 0.020833333333333332,
+          "WaymaxAny/OverlapMetric": 0.625,
+          "WaymaxFinal/KinematicsInfeasibilityMetric": 0.0,
+          "WaymaxFinal/OffroadMetric": 0.020833333333333332,
+          "WaymaxFinal/OverlapMetric": 0.4166666666666667,
+          "WaymaxFinal/ProgressionMetric": 0.8518072490890821
+        }
+      },
+      "cowp_sov_recovery_commitment": {
+        "shards": [
+          {
+            "n": 24,
+            "shard_index": 0,
+            "requested": 24,
+            "resolved": [
+              "da52a87b046e4a0a",
+              "a25edfa42510bdb4",
+              "a525f87ac454a88c",
+              "ad7d72d8adca3e25",
+              "e1d2184327703edd",
+              "1c03d20597561d94",
+              "2fa07f444b825370",
+              "f8d5d2f0f7cf5825",
+              "fe51445d725b8b8b",
+              "f8d4c735825e5d81",
+              "e6f70b30f414022e",
+              "9ccf60966ec93c20",
+              "f55df4ea9e688069",
+              "29cd2aca8ae5e222",
+              "9d79c94d87d1dfac",
+              "ff41aa2be7fa7a56",
+              "4201b435eda16cf2",
+              "a6f8b2b348015743",
+              "a30bd30a45665244",
+              "2c2395ec28c6a158",
+              "3919ccd73c0fabd7",
+              "a27f6f60dd683a66",
+              "b64cecb971b095c3",
+              "eeab096e35093acf"
+            ],
+            "hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+            "checkpoint": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+            "method": "cowp_sov_recovery_commitment",
+            "gt_online": false
+          },
+          {
+            "n": 24,
+            "shard_index": 1,
+            "requested": 24,
+            "resolved": [
+              "4525d99a628819af",
+              "fccd9a25a2a57a73",
+              "d632f1919fe4bab",
+              "d59a8c97c0980d2a",
+              "4c332861792a91e7",
+              "72a34ea361a39c22",
+              "9e3e5f19ee38f2e3",
+              "57f3f03f7e7967f9",
+              "fb9d8277036a53f3",
+              "40f2d8b336a3dafc",
+              "7721ff4800156886",
+              "c9b1c562b6ff31e5",
+              "da87744bcf7613db",
+              "f6a7fc811128c6ef",
+              "51a742674d23f1e3",
+              "6418b0c9e2e4b093",
+              "7c6ac47c0deee2af",
+              "ae01b0e36aaa41b4",
+              "89806e50f692c453",
+              "1e015170763b9002",
+              "c34fe8e79cdf1161",
+              "6992366c5c998d00",
+              "84196f1d9198b616",
+              "b85168f48c8c9970"
+            ],
+            "hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+            "checkpoint": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+            "method": "cowp_sov_recovery_commitment",
+            "gt_online": false
+          }
+        ],
+        "shard_overlap": 0,
+        "union_n": 48,
+        "duplicates": 0,
+        "union_equals_manifest": true,
+        "merged_n": 48,
+        "merged_unique": 48,
+        "merged_equals_manifest": true,
+        "merged_hash": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "recomputed": {
+          "CR": 0.6041666666666666,
+          "Collision": 0.6041666666666666,
+          "Offroad": 0.020833333333333332,
+          "Kinematics": 0.14583333333333334,
+          "EP": 0.9795066180328528
+        },
+        "reported": {
+          "CR": 0.6041666666666666,
+          "CollisionRate": 0.6041666666666666,
+          "EP": 0.9795066180328528,
+          "FirstPositiveStep/KinematicsInfeasibilityMetric": 39.142857142857146,
+          "FirstPositiveStep/OffroadMetric": 45.0,
+          "FirstPositiveStep/OverlapMetric": 57.37931034482759,
+          "KinematicsInfeasibilityRate": 0.14583333333333334,
+          "MetricSteps": 80.0,
+          "OffroadRate": 0.020833333333333332,
+          "WaymaxAny/KinematicsInfeasibilityMetric": 0.14583333333333334,
+          "WaymaxAny/OffroadMetric": 0.020833333333333332,
+          "WaymaxAny/OverlapMetric": 0.6041666666666666,
+          "WaymaxFinal/KinematicsInfeasibilityMetric": 0.0,
+          "WaymaxFinal/OffroadMetric": 0.020833333333333332,
+          "WaymaxFinal/OverlapMetric": 0.3958333333333333,
+          "WaymaxFinal/ProgressionMetric": 0.9795066180328528
+        }
+      }
+    },
+    "fresh37_outputs_present": false,
+    "confirm200_outputs_present": false,
+    "why_missing_later_stages_is_correct": "Both preregistered counterfactual48 gates failed; fresh37/exact200 should not be run."
+  },
+  "counterfactual48_analysis": {
+    "schema_version": "cowp_temporal_option_persistence_analysis_v1",
+    "development_selected": true,
+    "paper_evidence": false,
+    "scenario_count": 48,
+    "stage": "counterfactual48",
+    "methods": {
+      "cowp": {
+        "n": 48,
+        "CR": 0.7083333333333334,
+        "Collision": 0.7083333333333334,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.125,
+        "EP": 1.0025120492403705,
+        "fallback_step_rate": 0.8361979166666668,
+        "zero_conventional_candidate_step_rate": 0.7377604166666668,
+        "mean_conventional_candidates": 3.578645833333333,
+        "mean_max_collision_safe_prefix_steps": 26.074479166666666,
+        "mean_selected_collision_safe_prefix_steps": 24.248437499999998,
+        "recovery_switch_step_rate": null,
+        "successor_option_probe_step_rate": null,
+        "second_successor_option_probe_step_rate": null,
+        "mean_successor_signature_compare_on_probes": null,
+        "mean_second_successor_signature_compare_on_probes": null,
+        "recovery_commitment_active_step_rate": null,
+        "recovery_commitment_entry_step_rate": null,
+        "recovery_commitment_continue_step_rate": null,
+        "recovery_commitment_clear_step_rate": null,
+        "mean_recovery_prefix_gain_steps": null,
+        "mean_recovery_action_risk_delta": null,
+        "mean_recovery_rule_risk_delta": null,
+        "mean_recovery_pressure_risk_delta": null
+      },
+      "rvr": {
+        "n": 48,
+        "CR": 0.6875,
+        "Collision": 0.6875,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.1875,
+        "EP": 0.8236185433343053,
+        "fallback_step_rate": 0.8528645833333334,
+        "zero_conventional_candidate_step_rate": 0.7497395833333332,
+        "mean_conventional_candidates": 3.224479166666667,
+        "mean_max_collision_safe_prefix_steps": 26.53697916666667,
+        "mean_selected_collision_safe_prefix_steps": 26.428645833333334,
+        "recovery_switch_step_rate": null,
+        "successor_option_probe_step_rate": null,
+        "second_successor_option_probe_step_rate": null,
+        "mean_successor_signature_compare_on_probes": null,
+        "mean_second_successor_signature_compare_on_probes": null,
+        "recovery_commitment_active_step_rate": null,
+        "recovery_commitment_entry_step_rate": null,
+        "recovery_commitment_continue_step_rate": null,
+        "recovery_commitment_clear_step_rate": null,
+        "mean_recovery_prefix_gain_steps": null,
+        "mean_recovery_action_risk_delta": null,
+        "mean_recovery_rule_risk_delta": null,
+        "mean_recovery_pressure_risk_delta": null
+      },
+      "sov": {
+        "n": 48,
+        "CR": 0.6875,
+        "Collision": 0.6875,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.125,
+        "EP": 0.998628576596578,
+        "fallback_step_rate": 0.8427083333333334,
+        "zero_conventional_candidate_step_rate": 0.7325520833333332,
+        "mean_conventional_candidates": 3.390104166666667,
+        "mean_max_collision_safe_prefix_steps": 26.6484375,
+        "mean_selected_collision_safe_prefix_steps": 25.129166666666666,
+        "recovery_switch_step_rate": 0.019270833333333334,
+        "successor_option_probe_step_rate": 0.1434895833333333,
+        "second_successor_option_probe_step_rate": null,
+        "mean_successor_signature_compare_on_probes": 0.02461242490981862,
+        "mean_second_successor_signature_compare_on_probes": null,
+        "recovery_commitment_active_step_rate": null,
+        "recovery_commitment_entry_step_rate": null,
+        "recovery_commitment_continue_step_rate": null,
+        "recovery_commitment_clear_step_rate": null,
+        "mean_recovery_prefix_gain_steps": 3.2855563523295723,
+        "mean_recovery_action_risk_delta": 0.06861503487461268,
+        "mean_recovery_rule_risk_delta": 0.14521780085038322,
+        "mean_recovery_pressure_risk_delta": 0.007673225653699294
+      },
+      "bihorizon": {
+        "n": 48,
+        "CR": 0.6041666666666666,
+        "Collision": 0.6041666666666666,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.1875,
+        "EP": 0.8524647811427712,
+        "fallback_step_rate": 0.8471354166666666,
+        "zero_conventional_candidate_step_rate": 0.74453125,
+        "mean_conventional_candidates": 3.257291666666667,
+        "mean_max_collision_safe_prefix_steps": 26.798437499999995,
+        "mean_selected_collision_safe_prefix_steps": 26.440104166666668,
+        "recovery_switch_step_rate": 0.13515625,
+        "successor_option_probe_step_rate": 0.15651041666666668,
+        "second_successor_option_probe_step_rate": null,
+        "mean_successor_signature_compare_on_probes": 0.027958306848644154,
+        "mean_second_successor_signature_compare_on_probes": null,
+        "recovery_commitment_active_step_rate": null,
+        "recovery_commitment_entry_step_rate": null,
+        "recovery_commitment_continue_step_rate": null,
+        "recovery_commitment_clear_step_rate": null,
+        "mean_recovery_prefix_gain_steps": 3.7030006265069235,
+        "mean_recovery_action_risk_delta": 0.020211592174596442,
+        "mean_recovery_rule_risk_delta": 0.15618801329864954,
+        "mean_recovery_pressure_risk_delta": 0.005348573911543239
+      },
+      "trihorizon": {
+        "n": 48,
+        "CR": 0.625,
+        "Collision": 0.625,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.1875,
+        "EP": 0.8518072490890821,
+        "fallback_step_rate": 0.8447916666666666,
+        "zero_conventional_candidate_step_rate": 0.740625,
+        "mean_conventional_candidates": 3.27109375,
+        "mean_max_collision_safe_prefix_steps": 27.024479166666666,
+        "mean_selected_collision_safe_prefix_steps": 26.392187499999995,
+        "recovery_switch_step_rate": 0.1203125,
+        "successor_option_probe_step_rate": 0.15494791666666666,
+        "second_successor_option_probe_step_rate": 0.13359374999999998,
+        "mean_successor_signature_compare_on_probes": 0.018088503642095178,
+        "mean_second_successor_signature_compare_on_probes": 0.0319952888373941,
+        "recovery_commitment_active_step_rate": 0.0,
+        "recovery_commitment_entry_step_rate": 0.0,
+        "recovery_commitment_continue_step_rate": 0.0,
+        "recovery_commitment_clear_step_rate": 0.0,
+        "mean_recovery_prefix_gain_steps": 3.7301906337616275,
+        "mean_recovery_action_risk_delta": 0.019011991297425812,
+        "mean_recovery_rule_risk_delta": 0.15261582083252026,
+        "mean_recovery_pressure_risk_delta": 0.0030938463985001477
+      },
+      "commitment": {
+        "n": 48,
+        "CR": 0.6041666666666666,
+        "Collision": 0.6041666666666666,
+        "Offroad": 0.020833333333333332,
+        "Kinematics": 0.14583333333333334,
+        "EP": 0.9795066180328528,
+        "fallback_step_rate": 0.8466145833333334,
+        "zero_conventional_candidate_step_rate": 0.7372395833333333,
+        "mean_conventional_candidates": 3.368229166666667,
+        "mean_max_collision_safe_prefix_steps": 27.420312500000005,
+        "mean_selected_collision_safe_prefix_steps": 26.41302083333333,
+        "recovery_switch_step_rate": 0.08854166666666667,
+        "successor_option_probe_step_rate": 0.08229166666666667,
+        "second_successor_option_probe_step_rate": 0.0,
+        "mean_successor_signature_compare_on_probes": 0.0488142339641969,
+        "mean_second_successor_signature_compare_on_probes": null,
+        "recovery_commitment_active_step_rate": 0.23124999999999998,
+        "recovery_commitment_entry_step_rate": 0.007552083333333334,
+        "recovery_commitment_continue_step_rate": 0.2236979166666667,
+        "recovery_commitment_clear_step_rate": 0.005208333333333333,
+        "mean_recovery_prefix_gain_steps": 3.7827895339807216,
+        "mean_recovery_action_risk_delta": 0.042936377490900346,
+        "mean_recovery_rule_risk_delta": 0.16361675706588846,
+        "mean_recovery_pressure_risk_delta": -0.000792624795047689
+      }
+    },
+    "paired_vs_cowp": {
+      "rvr": {
+        "CR": {
+          "rescued": 10,
+          "induced": 9,
+          "shared_failure": 24,
+          "net_failures_removed": 1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "fb9d8277036a53f3",
+            "d632f1919fe4bab",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093",
+            "1e015170763b9002"
+          ]
+        },
+        "Collision": {
+          "rescued": 10,
+          "induced": 9,
+          "shared_failure": 24,
+          "net_failures_removed": 1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "fb9d8277036a53f3",
+            "d632f1919fe4bab",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093",
+            "1e015170763b9002"
+          ]
+        },
+        "Offroad": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 0,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fccd9a25a2a57a73"
+          ],
+          "induced_ids": [
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 3,
+          "shared_failure": 6,
+          "net_failures_removed": -3,
+          "mcnemar_exact_p": 0.25,
+          "rescued_ids": [],
+          "induced_ids": [
+            "d632f1919fe4bab",
+            "6992366c5c998d00",
+            "29cd2aca8ae5e222"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.17889350590606531,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.3789226077729836,
+            -0.02516441177576786
+          ]
+        }
+      },
+      "sov": {
+        "CR": {
+          "rescued": 2,
+          "induced": 1,
+          "shared_failure": 32,
+          "net_failures_removed": 1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "7721ff4800156886"
+          ]
+        },
+        "Collision": {
+          "rescued": 2,
+          "induced": 1,
+          "shared_failure": 32,
+          "net_failures_removed": 1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "7721ff4800156886"
+          ]
+        },
+        "Offroad": {
+          "rescued": 0,
+          "induced": 0,
+          "shared_failure": 1,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": []
+        },
+        "Kinematics": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 5,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fb9d8277036a53f3"
+          ],
+          "induced_ids": [
+            "29cd2aca8ae5e222"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.0038834726437926292,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.01650727695475022,
+            0.009241671472166965
+          ]
+        }
+      },
+      "bihorizon": {
+        "CR": {
+          "rescued": 11,
+          "induced": 6,
+          "shared_failure": 23,
+          "net_failures_removed": 5,
+          "mcnemar_exact_p": 0.332305908203125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Collision": {
+          "rescued": 11,
+          "induced": 6,
+          "shared_failure": 23,
+          "net_failures_removed": 5,
+          "mcnemar_exact_p": 0.332305908203125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Offroad": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 0,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fccd9a25a2a57a73"
+          ],
+          "induced_ids": [
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 3,
+          "shared_failure": 6,
+          "net_failures_removed": -3,
+          "mcnemar_exact_p": 0.25,
+          "rescued_ids": [],
+          "induced_ids": [
+            "fccd9a25a2a57a73",
+            "6992366c5c998d00",
+            "29cd2aca8ae5e222"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.15004726809759936,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.32230181772417077,
+            -0.02055774689652033
+          ]
+        }
+      },
+      "trihorizon": {
+        "CR": {
+          "rescued": 9,
+          "induced": 5,
+          "shared_failure": 25,
+          "net_failures_removed": 4,
+          "mcnemar_exact_p": 0.4239501953125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Collision": {
+          "rescued": 9,
+          "induced": 5,
+          "shared_failure": 25,
+          "net_failures_removed": 4,
+          "mcnemar_exact_p": 0.4239501953125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "7721ff4800156886",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Offroad": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 0,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fccd9a25a2a57a73"
+          ],
+          "induced_ids": [
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 3,
+          "shared_failure": 6,
+          "net_failures_removed": -3,
+          "mcnemar_exact_p": 0.25,
+          "rescued_ids": [],
+          "induced_ids": [
+            "fccd9a25a2a57a73",
+            "6992366c5c998d00",
+            "29cd2aca8ae5e222"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.1507048001512885,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.32304246060860653,
+            -0.02093895139793555
+          ]
+        }
+      },
+      "commitment": {
+        "CR": {
+          "rescued": 8,
+          "induced": 3,
+          "shared_failure": 26,
+          "net_failures_removed": 5,
+          "mcnemar_exact_p": 0.2265625,
+          "rescued_ids": [
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886"
+          ]
+        },
+        "Collision": {
+          "rescued": 8,
+          "induced": 3,
+          "shared_failure": 26,
+          "net_failures_removed": 5,
+          "mcnemar_exact_p": 0.2265625,
+          "rescued_ids": [
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616",
+            "f8d5d2f0f7cf5825",
+            "40f2d8b336a3dafc"
+          ],
+          "induced_ids": [
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161",
+            "7721ff4800156886"
+          ]
+        },
+        "Offroad": {
+          "rescued": 0,
+          "induced": 0,
+          "shared_failure": 1,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": []
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 1,
+          "shared_failure": 6,
+          "net_failures_removed": -1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": [
+            "29cd2aca8ae5e222"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.023005431207517784,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.06001728561241179,
+            0.006189659268905716
+          ]
+        }
+      }
+    },
+    "rvr_counterexample_retention": {
+      "sov": {
+        "old_rvr_rescues_total": 10,
+        "old_rvr_rescues_retained": 2,
+        "old_rvr_induced_total": 9,
+        "old_rvr_induced_avoided": 8
+      },
+      "bihorizon": {
+        "old_rvr_rescues_total": 10,
+        "old_rvr_rescues_retained": 10,
+        "old_rvr_induced_total": 9,
+        "old_rvr_induced_avoided": 3
+      },
+      "trihorizon": {
+        "old_rvr_rescues_total": 10,
+        "old_rvr_rescues_retained": 9,
+        "old_rvr_induced_total": 9,
+        "old_rvr_induced_avoided": 4
+      },
+      "commitment": {
+        "old_rvr_rescues_total": 10,
+        "old_rvr_rescues_retained": 7,
+        "old_rvr_induced_total": 9,
+        "old_rvr_induced_avoided": 6
+      }
+    },
+    "hybrid_only_vs_pure_endpoints": {
+      "sov": {
+        "Collision": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Offroad": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Kinematics": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": [
+            "fb9d8277036a53f3"
+          ]
+        }
+      },
+      "bihorizon": {
+        "Collision": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": [
+            "84196f1d9198b616"
+          ]
+        },
+        "Offroad": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Kinematics": {
+          "hybrid_only_induced": [
+            "fccd9a25a2a57a73"
+          ],
+          "hybrid_only_rescued": []
+        }
+      },
+      "trihorizon": {
+        "Collision": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Offroad": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Kinematics": {
+          "hybrid_only_induced": [
+            "fccd9a25a2a57a73"
+          ],
+          "hybrid_only_rescued": []
+        }
+      },
+      "commitment": {
+        "Collision": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": [
+            "84196f1d9198b616"
+          ]
+        },
+        "Offroad": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        },
+        "Kinematics": {
+          "hybrid_only_induced": [],
+          "hybrid_only_rescued": []
+        }
+      }
+    },
+    "paired_vs_sov": {
+      "trihorizon": {
+        "CR": {
+          "rescued": 7,
+          "induced": 4,
+          "shared_failure": 26,
+          "net_failures_removed": 3,
+          "mcnemar_exact_p": 0.548828125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Collision": {
+          "rescued": 7,
+          "induced": 4,
+          "shared_failure": 26,
+          "net_failures_removed": 3,
+          "mcnemar_exact_p": 0.548828125,
+          "rescued_ids": [
+            "c9b1c562b6ff31e5",
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "fccd9a25a2a57a73",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af"
+          ],
+          "induced_ids": [
+            "fe51445d725b8b8b",
+            "3919ccd73c0fabd7",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Offroad": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 0,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fccd9a25a2a57a73"
+          ],
+          "induced_ids": [
+            "6418b0c9e2e4b093"
+          ]
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 3,
+          "shared_failure": 6,
+          "net_failures_removed": -3,
+          "mcnemar_exact_p": 0.25,
+          "rescued_ids": [],
+          "induced_ids": [
+            "fb9d8277036a53f3",
+            "fccd9a25a2a57a73",
+            "6992366c5c998d00"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.14682132750749588,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.31908756848424674,
+            -0.019510194969673957
+          ]
+        }
+      },
+      "commitment": {
+        "CR": {
+          "rescued": 6,
+          "induced": 2,
+          "shared_failure": 27,
+          "net_failures_removed": 4,
+          "mcnemar_exact_p": 0.2890625,
+          "rescued_ids": [
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616"
+          ],
+          "induced_ids": [
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161"
+          ]
+        },
+        "Collision": {
+          "rescued": 6,
+          "induced": 2,
+          "shared_failure": 27,
+          "net_failures_removed": 4,
+          "mcnemar_exact_p": 0.2890625,
+          "rescued_ids": [
+            "9e3e5f19ee38f2e3",
+            "ad7d72d8adca3e25",
+            "9ccf60966ec93c20",
+            "2c2395ec28c6a158",
+            "7c6ac47c0deee2af",
+            "84196f1d9198b616"
+          ],
+          "induced_ids": [
+            "3919ccd73c0fabd7",
+            "c34fe8e79cdf1161"
+          ]
+        },
+        "Offroad": {
+          "rescued": 0,
+          "induced": 0,
+          "shared_failure": 1,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": []
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 1,
+          "shared_failure": 6,
+          "net_failures_removed": -1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": [
+            "fb9d8277036a53f3"
+          ]
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.019121958563725155,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.05285843547123174,
+            0.0028299229374776206
+          ]
+        }
+      }
+    },
+    "paired_vs_bihorizon": {
+      "trihorizon": {
+        "CR": {
+          "rescued": 1,
+          "induced": 2,
+          "shared_failure": 28,
+          "net_failures_removed": -1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "c34fe8e79cdf1161"
+          ],
+          "induced_ids": [
+            "b85168f48c8c9970",
+            "84196f1d9198b616"
+          ]
+        },
+        "Collision": {
+          "rescued": 1,
+          "induced": 2,
+          "shared_failure": 28,
+          "net_failures_removed": -1,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "c34fe8e79cdf1161"
+          ],
+          "induced_ids": [
+            "b85168f48c8c9970",
+            "84196f1d9198b616"
+          ]
+        },
+        "Offroad": {
+          "rescued": 0,
+          "induced": 0,
+          "shared_failure": 1,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": []
+        },
+        "Kinematics": {
+          "rescued": 0,
+          "induced": 0,
+          "shared_failure": 9,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [],
+          "induced_ids": []
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": -0.0006575320536891619,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            -0.011347558659811815,
+            0.007730585383251306
+          ]
+        }
+      },
+      "commitment": {
+        "CR": {
+          "rescued": 3,
+          "induced": 3,
+          "shared_failure": 26,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fe51445d725b8b8b",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ],
+          "induced_ids": [
+            "c9b1c562b6ff31e5",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970"
+          ]
+        },
+        "Collision": {
+          "rescued": 3,
+          "induced": 3,
+          "shared_failure": 26,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "fe51445d725b8b8b",
+            "f8d4c735825e5d81",
+            "6418b0c9e2e4b093"
+          ],
+          "induced_ids": [
+            "c9b1c562b6ff31e5",
+            "fccd9a25a2a57a73",
+            "b85168f48c8c9970"
+          ]
+        },
+        "Offroad": {
+          "rescued": 1,
+          "induced": 1,
+          "shared_failure": 0,
+          "net_failures_removed": 0,
+          "mcnemar_exact_p": 1.0,
+          "rescued_ids": [
+            "6418b0c9e2e4b093"
+          ],
+          "induced_ids": [
+            "fccd9a25a2a57a73"
+          ]
+        },
+        "Kinematics": {
+          "rescued": 2,
+          "induced": 0,
+          "shared_failure": 7,
+          "net_failures_removed": 2,
+          "mcnemar_exact_p": 0.5,
+          "rescued_ids": [
+            "fccd9a25a2a57a73",
+            "6992366c5c998d00"
+          ],
+          "induced_ids": []
+        },
+        "EP": {
+          "paired_n": 48,
+          "delta_mean": 0.12704183689008156,
+          "delta_median": 0.0,
+          "bootstrap95": [
+            0.005827008707759286,
+            0.29715834856809414
+          ]
+        }
+      }
+    },
+    "preregistered_gate": {
+      "trihorizon": {
+        "checks": {
+          "retain_at_least_5_of_10_old_rvr_rescues": true,
+          "avoid_at_least_7_of_9_old_rvr_induced": false,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": false,
+          "mean_ep_delta_not_below_minus_0_05": false,
+          "nonzero_intervention": true
+        },
+        "pass": false,
+        "paper_evidence": false
+      },
+      "commitment": {
+        "checks": {
+          "retain_at_least_5_of_10_old_rvr_rescues": true,
+          "avoid_at_least_7_of_9_old_rvr_induced": false,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        },
+        "pass": false,
+        "paper_evidence": false
+      }
+    }
+  },
+  "key_mechanistic_transitions": {
+    "old_rvr_rescue_ids": [
+      "c9b1c562b6ff31e5",
+      "9e3e5f19ee38f2e3",
+      "ad7d72d8adca3e25",
+      "fccd9a25a2a57a73",
+      "b85168f48c8c9970",
+      "9ccf60966ec93c20",
+      "2c2395ec28c6a158",
+      "7c6ac47c0deee2af",
+      "f8d5d2f0f7cf5825",
+      "40f2d8b336a3dafc"
+    ],
+    "old_rvr_induced_ids": [
+      "fe51445d725b8b8b",
+      "3919ccd73c0fabd7",
+      "fb9d8277036a53f3",
+      "d632f1919fe4bab",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886",
+      "f8d4c735825e5d81",
+      "6418b0c9e2e4b093",
+      "1e015170763b9002"
+    ],
+    "sov_only_old_rvr_induced_false_positive_ids": [
+      "7721ff4800156886"
+    ],
+    "commitment_old_rvr_induced_failure_ids": [
+      "3919ccd73c0fabd7",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886"
+    ],
+    "sov_to_commitment": {
+      "sov_safe_commit_collision": [
+        "3919ccd73c0fabd7",
+        "c34fe8e79cdf1161"
+      ],
+      "sov_collision_commit_safe": [
+        "9e3e5f19ee38f2e3",
+        "ad7d72d8adca3e25",
+        "9ccf60966ec93c20",
+        "2c2395ec28c6a158",
+        "7c6ac47c0deee2af",
+        "84196f1d9198b616"
+      ]
+    },
+    "commitment_induced_details": {
+      "3919ccd73c0fabd7": {
+        "first_collision_step": 53,
+        "recovery_switch_step_rate": 0.1625,
+        "commitment_active_step_rate": 0.1875,
+        "commitment_entry_step_rate": 0.0125,
+        "commitment_continue_step_rate": 0.175,
+        "zero_conventional_step_rate": 0.9875,
+        "no_valid_step_rate": 0.0125,
+        "fallback_reason_before_first_collision": "no_conventional_use_sov_recovery_commitment",
+        "macro_before_first_collision": "STOP_BEFORE_CONFLICT",
+        "emergency_before_first_collision": false
+      },
+      "c34fe8e79cdf1161": {
+        "first_collision_step": 61,
+        "recovery_switch_step_rate": 0.2875,
+        "commitment_active_step_rate": 0.7,
+        "commitment_entry_step_rate": 0.0125,
+        "commitment_continue_step_rate": 0.6875,
+        "zero_conventional_step_rate": 0.7375,
+        "no_valid_step_rate": 0.0,
+        "fallback_reason_before_first_collision": "no_conventional_use_sov_recovery_commitment",
+        "macro_before_first_collision": "MERGE_AHEAD",
+        "emergency_before_first_collision": false
+      },
+      "7721ff4800156886": {
+        "first_collision_step": 78,
+        "recovery_switch_step_rate": 0.05,
+        "commitment_active_step_rate": 0.4375,
+        "commitment_entry_step_rate": 0.0125,
+        "commitment_continue_step_rate": 0.425,
+        "zero_conventional_step_rate": 0.575,
+        "no_valid_step_rate": 0.025,
+        "fallback_reason_before_first_collision": "no_valid_candidate",
+        "macro_before_first_collision": "EMERGENCY_BOUNDED_STOP",
+        "emergency_before_first_collision": true
+      }
+    },
+    "interpretation": [
+      "THOP failing multiple gates rejects more-horizon stacking as the next abstraction.",
+      "Commitment recovers six SOV-collision scenes but creates two new collisions relative to SOV, isolating unconditional over-commitment.",
+      "SOV has exactly one old-RVR-induced false positive (7721...), which later reaches no-valid emergency; the conventional-first successor signature is structurally undercomplete in zero-conventional states."
+    ]
+  },
+  "wall_seconds": {
+    "equivalence16_cowp": 312,
+    "thop_counterfactual48": 1243,
+    "commitment_counterfactual48": 975
+  }
+}
