@@ -19,6 +19,9 @@ from cowp.data.dataset import collate_torch
 from cowp.external_baselines.adapters import ExternalCOWPDataset, best_candidate_to_logged_ego, make_external_batch
 from cowp.external_baselines.dtpp_cowp import COWPDTPP, dtpp_loss
 from cowp.external_baselines.gameformer_cowp import COWPGameFormer, gameformer_loss
+from cowp.external_baselines.pluto_cowp import COWPPLUTO, pluto_loss
+from cowp.external_baselines.plant2_cowp import COWPPlanT2, plant2_loss
+from cowp.external_baselines.reference_metadata import baseline_reference_metadata
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
@@ -68,6 +71,17 @@ def _build_model(args: argparse.Namespace):
         )
     if args.baseline == "dtpp":
         return COWPDTPP(neighbors=args.max_neighbors, max_branch=args.max_candidates, variable_cost=not args.dtpp_fixed_cost)
+    if args.baseline == "pluto":
+        return COWPPLUTO(
+            future_len=args.future_len, d_model=args.vector_d_model, num_heads=args.vector_heads,
+            encoder_layers=args.vector_layers, lateral_queries=args.pluto_lateral_queries,
+            longitudinal_queries=args.pluto_longitudinal_queries, dropout=args.vector_dropout,
+        )
+    if args.baseline == "plant2":
+        return COWPPlanT2(
+            future_len=args.future_len, d_model=args.vector_d_model, num_heads=args.vector_heads,
+            layers=args.vector_layers, dropout=args.vector_dropout,
+        )
     raise ValueError(args.baseline)
 
 
@@ -82,6 +96,20 @@ def _num_parameters(model: torch.nn.Module) -> tuple[int, int]:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
 
+
+
+
+def _build_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace):
+    """Use public-source LR schedules where the reference implementation specifies one."""
+    if args.baseline == "gameformer":
+        # MCZhi/GameFormer open_loop_planning/train.py
+        return torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 12, 14, 16, 18], gamma=0.5)
+    if args.baseline == "dtpp":
+        # MCZhi/DTPP train.py
+        return torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+    # PLUTO/PlanT2 are cross-domain adapters here.  Do not invent a scheduler
+    # that is not unambiguously specified by the public source contract.
+    return None
 
 def _make_grad_scaler(enabled: bool):
     if not enabled:
@@ -136,14 +164,27 @@ def _run_epoch(
     last_log = t0
     for batch_idx, batch in enumerate(iterator, start=1):
         try:
-            ext = make_external_batch(batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates, horizon=args.future_len)
+            ext = make_external_batch(
+                batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates,
+                horizon=args.future_len, baseline=args.baseline,
+                require_candidates=(args.baseline == "dtpp"), require_future=True,
+            )
             with _autocast(device, amp_enabled, amp_dtype):
                 if args.baseline == "gameformer":
                     outputs = model(ext.gameformer_inputs)
                     loss, metrics = gameformer_loss(outputs, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid)
-                else:
+                elif args.baseline == "dtpp":
                     best_idx = best_candidate_to_logged_ego(ext.candidates, ext.candidate_valid, ext.ego_future_xy, ext.ego_future_valid)
                     loss, metrics = dtpp_loss(model, ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, best_idx, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid, timesteps=args.future_len)
+                elif args.baseline == "pluto":
+                    loss, metrics = pluto_loss(
+                        model, ext.planner_inputs, ext.ego_future_xy, ext.ego_future_valid,
+                        contrast_weight=args.pluto_contrast_weight, aux_weight=args.pluto_aux_weight,
+                    )
+                elif args.baseline == "plant2":
+                    loss, metrics = plant2_loss(model, ext.planner_inputs, ext.ego_future_xy, ext.ego_future_valid)
+                else:
+                    raise ValueError(args.baseline)
             if not torch.isfinite(loss):
                 skipped += 1
                 if skipped <= 5 or (log_every and skipped % max(log_every, 1) == 0):
@@ -164,7 +205,7 @@ def _run_epoch(
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                     optimizer.step()
-            bs = int(ext.candidate_valid.shape[0])
+            bs = int(ext.ego_future_xy.shape[0])
             n += bs
             sums["loss"] = sums.get("loss", 0.0) + float(loss.detach().cpu()) * bs
             for k, v in metrics.items():
@@ -222,8 +263,8 @@ def _run_epoch(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Train GameFormer/DTPP external baselines on COWP tensor-cache data.")
-    ap.add_argument("--baseline", choices=["gameformer", "dtpp"], required=True)
+    ap = argparse.ArgumentParser(description="Train source-faithful external planning adaptations on COWP/WOMD tensor-cache data.")
+    ap.add_argument("--baseline", choices=["gameformer", "dtpp", "pluto", "plant2"], required=True)
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--train-config", default="configs/train.yaml")
@@ -245,12 +286,21 @@ def main() -> None:
     ap.add_argument("--gameformer-encoder-layers", type=int, default=6)
     ap.add_argument("--gameformer-decoder-levels", type=int, default=4)
     ap.add_argument("--dtpp-fixed-cost", action="store_true")
+    ap.add_argument("--vector-d-model", type=int, default=128)
+    ap.add_argument("--vector-heads", type=int, default=8)
+    ap.add_argument("--vector-layers", type=int, default=4)
+    ap.add_argument("--vector-dropout", type=float, default=0.1)
+    ap.add_argument("--pluto-lateral-queries", type=int, default=4)
+    ap.add_argument("--pluto-longitudinal-queries", type=int, default=6)
+    ap.add_argument("--pluto-contrast-weight", type=float, default=0.05)
+    ap.add_argument("--pluto-aux-weight", type=float, default=0.20)
     ap.add_argument("--grad-clip", type=float, default=5.0)
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
     ap.add_argument("--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto", help="AMP dtype; auto prefers BF16 to avoid FP16 overflow in trajectory/GMM losses.")
     ap.add_argument("--max-skip-fraction", type=float, default=0.02, help="Fail an epoch when non-finite/malformed batches exceed this fraction.")
     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
-    ap.add_argument("--val-prefetch-factor", type=int, default=1)
+    ap.add_argument("--val-prefetch-factor", type=int, default=2)
+    ap.add_argument("--checkpoint-every", type=int, default=1, help="Save numbered epoch checkpoints every N epochs (best/final are always saved). Set >1 to reduce filesystem I/O without changing optimization.")
     ap.add_argument("--sharing-strategy", choices=["auto", "current", "file_descriptor", "file_system"], default=None)
     ap.add_argument("--no-persistent-workers", action="store_true")
     ap.add_argument("--strict", action="store_true")
@@ -270,7 +320,7 @@ def main() -> None:
     _log(f"device={device} cuda_available={torch.cuda.is_available()} output_dir={out_dir}")
 
     _log(f"loading train dataset from {args.cache_dir}")
-    train_ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=False)
+    train_ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=False, baseline=args.baseline, purpose="train")
     _log(f"train dataset ready scenes={len(train_ds)}")
     loader_kwargs = {
         "num_workers": args.num_workers,
@@ -291,14 +341,16 @@ def main() -> None:
     val_loader = None
     if args.val_cache_dir:
         _log(f"loading val dataset from {args.val_cache_dir}")
-        val_ds = ExternalCOWPDataset(args.val_cache_dir, include_waymax_outcomes=True)
+        val_ds = ExternalCOWPDataset(args.val_cache_dir, include_waymax_outcomes=False, baseline=args.baseline, purpose="train")
         _log(f"val dataset ready scenes={len(val_ds)}")
         val_loader_kwargs = dict(loader_kwargs)
         val_workers = max(int(args.val_num_workers), 0)
         val_loader_kwargs["num_workers"] = val_workers
-        val_loader_kwargs["pin_memory"] = False
+        val_loader_kwargs["pin_memory"] = (device.type == "cuda" and val_workers > 0)
         if val_workers > 0:
-            val_loader_kwargs["persistent_workers"] = False
+            # Validation is repeated every epoch; keeping workers alive avoids
+            # process/spawn + NPZ-reader warmup while preserving exact samples.
+            val_loader_kwargs["persistent_workers"] = not args.no_persistent_workers
             val_loader_kwargs["prefetch_factor"] = max(int(args.val_prefetch_factor), 1)
         else:
             val_loader_kwargs.pop("persistent_workers", None)
@@ -310,6 +362,7 @@ def main() -> None:
     total_params, trainable_params = _num_parameters(model)
     _log(f"model built baseline={args.baseline} total_params={total_params} trainable_params={trainable_params}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = _build_scheduler(optimizer, args)
     scaler = _make_grad_scaler(bool(args.amp and device.type == "cuda"))
     if scaler is not None:
         _log("AMP GradScaler enabled")
@@ -332,16 +385,22 @@ def main() -> None:
             "args": vars(args),
             "epoch": epoch,
             "metrics": record,
+            "reference_metadata": baseline_reference_metadata(args.baseline),
         }
-        epoch_path = out_dir / f"external_{args.baseline}_epoch{epoch}.pt"
-        torch.save(ckpt, epoch_path)
-        _log(f"saved checkpoint {epoch_path}")
+        save_numbered = bool(epoch == args.epochs or args.checkpoint_every <= 1 or epoch % max(int(args.checkpoint_every), 1) == 0)
+        if save_numbered:
+            epoch_path = out_dir / f"external_{args.baseline}_epoch{epoch}.pt"
+            torch.save(ckpt, epoch_path)
+            _log(f"saved checkpoint {epoch_path}")
         if metric < best_metric:
             best_metric = metric
             torch.save(ckpt, best_path)
             _log(f"updated best checkpoint {best_path} best_metric={best_metric:.6f}")
         with (out_dir / f"external_{args.baseline}_history.json").open("w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+        if scheduler is not None:
+            scheduler.step()
+            _log(f"scheduler step baseline={args.baseline} lr={optimizer.param_groups[0]['lr']:.8g}")
     _log(json.dumps({"best_checkpoint": str(best_path), "best_metric": best_metric}, indent=2))
 
 

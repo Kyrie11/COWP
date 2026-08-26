@@ -129,20 +129,28 @@ class ScoreDecoder(nn.Module):
         return self.interaction_feature_decoder(features)
 
     def forward(self, ego_traj: torch.Tensor, ego_encoding: torch.Tensor, agents_traj: torch.Tensor, agents_states: torch.Tensor, timesteps: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Vectorized branch scoring.
+
+        The public DTPP formulation scores each tree branch independently with
+        the same learned/hard-coded feature functions.  The earlier adapter used
+        a Python loop over K branches; flattening BxK performs the exact same
+        tensor operations in one GPU launch family and removes a major K=30
+        inference/training bottleneck.
+        """
         ego_traj_features = self.get_hardcoded_features(ego_traj, timesteps)
         if not self.variable_cost:
             ego_encoding = torch.ones_like(ego_encoding)
         weights = self.weights_decoder(ego_encoding)
         ego_mask = torch.ne(ego_traj.sum(-1).sum(-1), 0)
-        scores = []
-        for i in range(agents_traj.shape[1]):
-            hard = ego_traj_features[:, i]
-            latent = self.get_latent_interaction_features(ego_traj[:, i], agents_traj[:, i], agents_states, timesteps)
-            feat = torch.cat((hard, latent), dim=-1)
-            score = -torch.sum(feat * weights, dim=-1)
-            score += -10.0 * self.calculate_collision(ego_traj[:, i], agents_traj[:, i], agents_states, timesteps)
-            scores.append(score)
-        scores = torch.stack(scores, dim=1)
+        B, K = ego_traj.shape[:2]
+        T = min(int(timesteps), int(ego_traj.shape[2]), int(agents_traj.shape[3]))
+        ego_flat = ego_traj[:, :, :T].reshape(B * K, T, ego_traj.shape[-1])
+        agents_flat = agents_traj[:, :, :, :T].reshape(B * K, agents_traj.shape[2], T, agents_traj.shape[-1])
+        states_flat = agents_states[:, None].expand(B, K, *agents_states.shape[1:]).reshape(B * K, *agents_states.shape[1:])
+        latent = self.get_latent_interaction_features(ego_flat, agents_flat, states_flat, T).reshape(B, K, -1)
+        collision = self.calculate_collision(ego_flat, agents_flat, states_flat, T).reshape(B, K)
+        feat = torch.cat((ego_traj_features, latent), dim=-1)
+        scores = -torch.sum(feat * weights[:, None, :], dim=-1) - 10.0 * collision
         scores = torch.where(ego_mask, scores, torch.full_like(scores, -1e9))
         return scores, weights
 

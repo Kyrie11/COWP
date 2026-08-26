@@ -1,0 +1,16 @@
+{
+  "note": "Synthetic CPU score-decoder-only benchmark; B=2,K=30,A=10,T=80. GPU speedup not measured; numerical equivalence asserted at rtol=1e-5/atol=1e-5.",
+  "results": {
+    "legacy_python_branch_loop": {
+      "mean_ms": 54.333274666714715,
+      "p50_ms": 58.83573699975386,
+      "p95_ms": 69.83211199985817
+    },
+    "vectorized_bxk": {
+      "mean_ms": 46.171820533406084,
+      "p50_ms": 49.53753300014796,
+      "p95_ms": 60.82716499986418
+    },
+    "mean_speedup": 1.1767626669042361
+  }
+}

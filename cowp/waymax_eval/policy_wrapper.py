@@ -800,6 +800,59 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
     return {"xy": xy, "heading": heading, "valid": valid, "types": types}
 
 
+def _extract_sdc_path_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
+    """Extract WOMD 1.3.1 Waymax ``SimulatorState.sdc_paths`` on host.
+
+    Waymax ``Paths`` stores [num_paths,num_points] x/y/z/valid and an
+    [num_paths,1] on_route flag.  The result uses the same ``path_samples/*``
+    tensor contract consumed by the external planner adapter.
+    """
+    paths = _get_field(state, ("sdc_paths",))
+    if paths is None:
+        return {
+            "xyz": np.zeros((0, 0, 3), dtype=np.float32),
+            "valid": np.zeros((0, 0), dtype=bool),
+            "on_route": np.zeros((0, 1), dtype=bool),
+        }
+    x_f = _get_field(paths, ("x",))
+    y_f = _get_field(paths, ("y",))
+    z_f = _get_field(paths, ("z",))
+    valid_f = _get_field(paths, ("valid",))
+    on_route_f = _get_field(paths, ("on_route",))
+    if x_f is None or y_f is None or valid_f is None:
+        return {
+            "xyz": np.zeros((0, 0, 3), dtype=np.float32),
+            "valid": np.zeros((0, 0), dtype=bool),
+            "on_route": np.zeros((0, 1), dtype=bool),
+        }
+    x = _to_numpy(x_f)
+    y = _to_numpy(y_f)
+    z = _to_numpy(z_f) if z_f is not None else np.zeros_like(x)
+    valid = _to_numpy(valid_f).astype(bool, copy=False)
+    on_route = _to_numpy(on_route_f).astype(bool, copy=False) if on_route_f is not None else None
+    # Remove leading singleton batch/device axes while preserving [P,Q].
+    while x.ndim > 2 and x.shape[0] == 1:
+        x, y, z, valid = x[0], y[0], z[0], valid[0]
+        if on_route is not None and on_route.ndim > 2 and on_route.shape[0] == 1:
+            on_route = on_route[0]
+    if x.ndim != 2:
+        x = x.reshape(-1, x.shape[-1])
+        y = y.reshape(x.shape)
+        z = z.reshape(x.shape)
+        valid = valid.reshape(x.shape)
+    P = int(x.shape[0])
+    if on_route is None:
+        on_route = np.zeros((P, 1), dtype=bool)
+    else:
+        while on_route.ndim > 2 and on_route.shape[0] == 1:
+            on_route = on_route[0]
+        on_route = on_route.reshape(P, -1)[:, :1]
+    xyz = np.stack([x, y, z], axis=-1).astype(np.float32, copy=False)
+    finite = np.isfinite(xyz).all(axis=-1)
+    valid = valid.astype(bool, copy=False) & finite
+    return {"xyz": np.nan_to_num(xyz).astype(np.float32), "valid": valid, "on_route": on_route.astype(bool)}
+
+
 def _lane_centerline_mask(roadgraph: dict[str, np.ndarray]) -> np.ndarray:
     """Waymax/WOMD lane centerline points only (exclude edges/crosswalks)."""
     valid = roadgraph.get("valid", np.zeros(0, dtype=bool)).astype(bool, copy=False)
@@ -2241,6 +2294,7 @@ def build_online_batch(
     roadgraph: dict[str, np.ndarray] | None = None,
     other_future_trajs: np.ndarray | None = None,
     compute_rule_risk: bool = True,
+    include_interaction_tokens: bool = True,
     include_training_targets: bool = False,
 ) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
@@ -2275,7 +2329,11 @@ def build_online_batch(
     ) = _route_lane_aware_candidates(
         agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
     )
-    crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
+    if include_interaction_tokens or compute_rule_risk:
+        crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
+    else:
+        crit_idx = np.zeros(A, dtype=np.int64)
+        crit_valid = np.zeros(A, dtype=bool)
     if compute_rule_risk:
         rule_risk = _candidate_rule_risk_np(
             agent_state, sdc_index, cand_traj, cand_valid, conventional_safe, crit_idx, crit_valid, cfg,
@@ -2283,7 +2341,10 @@ def build_online_batch(
         )
     else:
         rule_risk = np.zeros(K, dtype=np.float32)
-    conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
+    if include_interaction_tokens:
+        conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
+    else:
+        conflict = conflict_valid = None
     batch = {
         "state/history": hist[None],
         "state/agent_valid": agent_mask[None],
@@ -2298,12 +2359,15 @@ def build_online_batch(
         "cowp/candidates/collision_safe_prefix_steps": collision_safe_prefix_steps[None],
         "cowp/candidates/collision_min_clearance_margin_m": collision_min_clearance_margin_m[None],
         "cowp/candidates/rule_risk": rule_risk[None],
-        "cowp/critical/track_index": crit_idx[None],
-        "cowp/critical/input_index": crit_idx[None],
-        "cowp/critical/valid": crit_valid[None],
-        "map/conflict_regions": conflict[None],
-        "map/conflict_region_valid": conflict_valid[None],
     }
+    if include_interaction_tokens:
+        batch.update({
+            "cowp/critical/track_index": crit_idx[None],
+            "cowp/critical/input_index": crit_idx[None],
+            "cowp/critical/valid": crit_valid[None],
+            "map/conflict_regions": conflict[None],
+            "map/conflict_region_valid": conflict_valid[None],
+        })
     if include_training_targets:
         # Compatibility/debug-only targets.  They are intentionally omitted in the
         # default online path because the model inference keys above do not consume

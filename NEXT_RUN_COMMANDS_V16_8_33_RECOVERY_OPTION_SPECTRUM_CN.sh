@@ -25,6 +25,7 @@ EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
 EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
 CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
 FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
+HELDOUT1200_IDS="$SCRIPT_DIR/reference_manifests/formal_v16_8_24_compact5k_heldout1200_ids.txt"
 
 REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
 REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
@@ -42,6 +43,8 @@ EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1
 EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
 EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
 EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+EXPECTED_HELDOUT1200_SHA="134fa919582e64bf2b315be474890456be36af0be81a6d24364033e24456494f"
+WAYMAX_STANDARD_METRIC_NAMES="${WAYMAX_STANDARD_METRIC_NAMES:-OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric}"
 mkdir -p "$OUT_ROOT"
 
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
@@ -70,10 +73,12 @@ ensure_ids() {
   validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
   validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
   validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
+  validate_manifest "$HELDOUT1200_IDS" 1200 "$EXPECTED_HELDOUT1200_SHA"
   cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
   cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
   cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
   cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
+  cp "$HELDOUT1200_IDS" "$OUT_ROOT/formal_v16_8_24_compact5k_heldout1200_ids.txt"
 }
 
 # Promotion is deliberately fail-closed: later stages cannot be launched unless
@@ -124,7 +129,7 @@ common_waymax=(
   --rollout-horizon-steps 80 --waymax-action-mode absolute_xy_yaw
   --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
   --outcome-risk-penalty 0 --waymax-standard-metrics
-  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
+  --waymax-standard-metric-names "$WAYMAX_STANDARD_METRIC_NAMES"
   --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
 )
 
@@ -231,6 +236,14 @@ case "$MODE" in
     analyze_new_set "fresh37" "fresh37_v33" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR"
     ;;
 
+  heldout1200_parallel2)
+    ensure_ids
+    promoted="${PROMOTED_METHODS:-cowp_recovery_option_spectrum_hysteresis}"
+    # Publication-style held-out execution is fail-closed behind the fresh37 preregistered gate.
+    require_gate_pass "$OUT_ROOT/fresh37_v33_recovery_option_spectrum_analysis.json" "$promoted" "fresh37"
+    run_parallel_methods "heldout1200_v33" "$HELDOUT1200_IDS" "$promoted"
+    ;;
+
   confirm200_parallel2)
     ensure_ids
     promoted="${PROMOTED_METHODS:-cowp_recovery_option_spectrum_hysteresis}"
@@ -276,11 +289,16 @@ v16.8.33 recommended order
    fresh37 is disjoint from ALL v16.8.30 panels and the v16.8.31 holdout64.
    It was selected by ID only, not by v16.8.33 outcomes.  It is still development evidence.
 
-5) ONLY if fresh37 is non-harmful and directionally favorable:
+5) Held-out 1200 validation-derived test IDs (publication-style comparison; same IDs as external baselines):
+   WAYMAX_STANDARD_METRIC_NAMES=OverlapMetric,OffroadMetric,WrongWayMetric,ProgressionMetric,OffRouteMetric,KinematicsInfeasibilityMetric,LogDivergenceMetric \
+   PROMOTED_METHODS=cowp_recovery_option_spectrum_hysteresis $0 heldout1200_parallel2
+
+6) Optional historical exact200 development confirmation, ONLY if fresh37 is non-harmful and directionally favorable:
    PROMOTED_METHODS=<passed_method> $0 confirm200_parallel2
    $0 analyze_confirm200
 
-Do NOT run exact200 if the earlier gate fails. Do NOT tune thresholds/weights to rescue a failed branch.
+heldout1200 and exact200 are fail-closed behind the fresh37 preregistered gate.
+Do NOT tune thresholds/weights to rescue a failed branch.
 EOF
     ;;
 esac

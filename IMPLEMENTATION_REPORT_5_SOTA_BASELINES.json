@@ -1,0 +1,116 @@
+{
+  "schema_version": "cowp_sota5_implementation_report_v1",
+  "created_for": "COWP v16.8.33 WOMD/Waymax external baseline comparison",
+  "heldout_manifest": {
+    "path": "reference_manifests/formal_v16_8_24_compact5k_heldout1200_ids.txt",
+    "num_scenarios": 1200,
+    "logical_sha256": "134fa919582e64bf2b315be474890456be36af0be81a6d24364033e24456494f",
+    "definition": "held-out subset of official WOMD validation; official WOMD test future is hidden"
+  },
+  "common_closed_loop_contract": {
+    "history_steps": 11,
+    "future_steps": 80,
+    "action_mode": "absolute_xy_yaw",
+    "non_ego_protocol": "Waymax logged replay",
+    "standard_metrics": [
+      "OverlapMetric",
+      "OffroadMetric",
+      "WrongWayMetric",
+      "ProgressionMetric",
+      "OffRouteMetric",
+      "KinematicsInfeasibilityMetric",
+      "LogDivergenceMetric"
+    ]
+  },
+  "baseline_training_prohibition": "COWP witness/false_safe/OPR/burden/NCF labels are excluded from external planner_inputs",
+  "baselines": [
+    {
+      "name": "GameFormer",
+      "key": "gameformer",
+      "paper": "https://arxiv.org/abs/2303.05760",
+      "official_source": "https://github.com/MCZhi/GameFormer",
+      "native_domain": "WOMD interaction/open-loop; nuPlan planner variants",
+      "important_native_gap": "official repository explicitly does not release WOMD closed-loop code",
+      "womd_execution": "direct final hierarchical ego trajectory head",
+      "fidelity": "source-faithful WOMD closed-loop adapter, not author-released WOMD closed-loop exact reproduction"
+    },
+    {
+      "name": "DTPP",
+      "key": "dtpp",
+      "paper": "https://arxiv.org/abs/2310.05885",
+      "official_source": "https://github.com/MCZhi/DTPP",
+      "native_domain": "nuPlan",
+      "womd_execution": "ego-conditioned prediction + learned context cost over tree/proposal adapter",
+      "fidelity": "source-faithful cross-domain adaptation"
+    },
+    {
+      "name": "PLUTO",
+      "key": "pluto",
+      "paper": "https://arxiv.org/abs/2404.14327",
+      "official_source": "https://github.com/jchengai/pluto",
+      "native_domain": "nuPlan",
+      "womd_execution": "direct multimodal longitudinal-lateral-aware trajectory head",
+      "fidelity": "paper/source-faithful architecture/loss adaptation; native nuPlan augmentation/post-processing is not byte-identical"
+    },
+    {
+      "name": "PlanT 2.0",
+      "key": "plant2",
+      "paper": "https://arxiv.org/abs/2511.07292",
+      "official_source": "https://github.com/autonomousvision/plant2",
+      "native_domain": "CARLA",
+      "womd_execution": "direct object-centric autoregressive waypoint trajectory",
+      "fidelity": "cross-domain object-centric planning adaptation; CARLA-specific expert/data pipeline is not reused"
+    },
+    {
+      "name": "PDM-Closed",
+      "key": "pdm_closed",
+      "paper": "https://arxiv.org/abs/2306.07962",
+      "official_source": "https://github.com/autonomousvision/tuplan_garage",
+      "native_domain": "nuPlan",
+      "training": "none",
+      "womd_execution": "predictive rule proposal scoring over WOMD/COWP route-aware proposal adapter",
+      "fidelity": "planning-principle/source-faithful cross-domain adapter; native nuPlan BatchIDM/centerline constructor is not byte-identical"
+    }
+  ],
+  "metric_protocol": {
+    "closed_loop_directly_comparable": [
+      "CollisionRate",
+      "OffroadRate",
+      "CUR",
+      "WrongWayRate",
+      "OffRouteRate",
+      "EgoProgress",
+      "KinematicsInfeasibilityRate",
+      "LogDivergence"
+    ],
+    "external_mechanism_audit_not_counterfactual_ground_truth": [
+      "PBTR",
+      "FSR",
+      "OPR",
+      "BTE-CVaR25",
+      "NCF-Ret",
+      "NPR"
+    ],
+    "external_mechanism_protocol": "cached_label_candidate_projection",
+    "causal_claim_requirement": "separate reactive-agent protocol plus held-out human-audited false-safe stress set"
+  },
+  "current_numeric_status": {
+    "new_external_baseline_heldout1200": "not executed in the uploaded sandbox because raw WOMD TFRecords and /data0 tensor/label caches are not included in the upload",
+    "do_not_fabricate_results": true,
+    "existing_fresh37_cowp_reference": {
+      "num_rollouts": 37,
+      "CollisionRate": 0.0,
+      "OffroadRate": 0.08108108108108109,
+      "CUR": 0.08108108108108109,
+      "EgoProgress": 1.201145538213578,
+      "KinematicsInfeasibilityRate": 0.21621621621621623,
+      "ClosedLoopFallbackStepRate": 0.5300675675675676,
+      "comparability_note": "development reference only; not scenario-matched to heldout1200"
+    }
+  },
+  "main_entrypoints": {
+    "external_runner": "RUN_5_SOTA_BASELINES_COWP.sh",
+    "cowp_runner": "NEXT_RUN_COMMANDS_V16_8_33_RECOVERY_OPTION_SPECTRUM_CN.sh",
+    "summary": "cowp/scripts/24_summarize_sota_closed_loop.py"
+  }
+}

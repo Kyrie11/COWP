@@ -1,0 +1,57 @@
+{
+  "note": "Synthetic CPU adapter-only benchmark; excludes NPZ I/O, model forward, GPU, TensorFlow/Waymax. B=4,N=64,H=11,T=80,K=30,R=30000, 45x800 sdc paths.",
+  "results": {
+    "gameformer": {
+      "legacy_full_adapter": {
+        "mean_ms": 7.964286374999574,
+        "p50_ms": 4.555603500193683,
+        "p95_ms": 28.358126000057382
+      },
+      "baseline_specific_adapter": {
+        "mean_ms": 1.4944088499078134,
+        "p50_ms": 0.9643684998081881,
+        "p95_ms": 1.285166999878129
+      },
+      "mean_speedup": 5.329389193252484
+    },
+    "dtpp": {
+      "legacy_full_adapter": {
+        "mean_ms": 6.8007907500259535,
+        "p50_ms": 4.379758499908348,
+        "p95_ms": 22.85546900020563
+      },
+      "baseline_specific_adapter": {
+        "mean_ms": 3.1529291749166077,
+        "p50_ms": 2.470439999797236,
+        "p95_ms": 3.364302000591124
+      },
+      "mean_speedup": 2.156975425940492
+    },
+    "pluto": {
+      "legacy_full_adapter": {
+        "mean_ms": 7.84790592497302,
+        "p50_ms": 4.364650500519929,
+        "p95_ms": 30.544663000000583
+      },
+      "baseline_specific_adapter": {
+        "mean_ms": 2.9673714500177084,
+        "p50_ms": 2.238675499938836,
+        "p95_ms": 4.453886000192142
+      },
+      "mean_speedup": 2.644733245285549
+    },
+    "plant2": {
+      "legacy_full_adapter": {
+        "mean_ms": 6.268118749972018,
+        "p50_ms": 3.9989340002648532,
+        "p95_ms": 25.11355399929016
+      },
+      "baseline_specific_adapter": {
+        "mean_ms": 3.1760362499426265,
+        "p50_ms": 2.357499000027019,
+        "p95_ms": 4.789871999491879
+      },
+      "mean_speedup": 1.9735665013537704
+    }
+  }
+}

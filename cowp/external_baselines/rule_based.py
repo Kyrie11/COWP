@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover
     MacroType = None  # type: ignore
 
 
-RULE_BASELINES = {"idm_lattice", "frenet_optimal", "state_lattice"}
+RULE_BASELINES = {"pdm_closed", "idm_lattice", "frenet_optimal", "state_lattice"}
 
 
 @dataclass(frozen=True)
@@ -344,6 +344,49 @@ def _state_lattice_cost_for_scene(candidates: np.ndarray, cur: np.ndarray, sdc_i
     return edge_cost.astype(np.float32)
 
 
+
+def _pdm_closed_cost_for_scene(candidates: np.ndarray, cur: np.ndarray, sdc_idx: int, p: RulePlannerParams) -> np.ndarray:
+    """PDM-Closed-style proposal score on the COWP local proposal lattice.
+
+    PDM-Closed is rule based: a centerline/local-lateral proposal family is
+    rolled against a simple predictive observation and ranked by safety,
+    progress and comfort.  COWP already materializes a richer route-aware local
+    proposal family, so this adaptation preserves the PDM scoring/prediction
+    logic while replacing only nuPlan's proposal constructor.
+    """
+    K, H = candidates.shape[:2]
+    ego = cur[sdc_idx] if 0 <= sdc_idx < cur.shape[0] else np.zeros(11, dtype=np.float32)
+    sp = _speed(candidates)
+    acc = _accel_from_speed(sp, p.dt)
+    jerk = _jerk_from_accel(acc, p.dt)
+    curv = _curvature_like(candidates, p.dt)
+    rel = candidates[..., :2] - ego[:2]
+    heading = float(ego[6]) if ego.shape[0] > 6 else 0.0
+    e_s = np.asarray([np.cos(heading), np.sin(heading)], dtype=np.float32)
+    e_d = np.asarray([-np.sin(heading), np.cos(heading)], dtype=np.float32)
+    progress = rel[:, -1] @ e_s
+    lateral_terminal = np.abs(rel[:, -1] @ e_d)
+
+    # Predict non-ego vehicles with the constant-velocity observation model that
+    # underlies the lightweight PDM proposal scorer.  This stays independent of
+    # COWP witness/burden labels.
+    t = (np.arange(H, dtype=np.float32) + 1.0) * float(p.dt)
+    min_clear = np.full(K, 1e3, dtype=np.float32)
+    ego_radius = max(float(ego[3] if ego.shape[0] > 3 else 4.5), float(ego[4] if ego.shape[0] > 4 else 2.0)) * 0.45
+    for j, other in enumerate(cur):
+        if j == sdc_idx or other.shape[0] < 11 or other[10] <= 0.5:
+            continue
+        op = other[:2][None, :] + t[:, None] * other[7:9][None, :]
+        d = np.linalg.norm(candidates[:, :, :2] - op[None, :, :], axis=-1)
+        other_radius = max(float(other[3]), float(other[4])) * 0.45
+        min_clear = np.minimum(min_clear, d.min(axis=-1) - ego_radius - other_radius)
+    safety_pen = np.square(np.maximum(0.0, 2.0 - min_clear)) * 5.0
+    comfort = 0.10 * np.mean(np.abs(acc), axis=-1) + 0.03 * np.mean(np.abs(jerk), axis=-1) + 0.20 * np.mean(np.abs(curv), axis=-1)
+    centerline = 0.08 * lateral_terminal
+    target_speed = min(max(float(ego[9]) + 2.0, 5.0), p.idm_desired_speed_mps)
+    speed_cost = 0.05 * np.square(sp[:, -1] - target_speed)
+    return (safety_pen + comfort + centerline + speed_cost - 0.18 * progress).astype(np.float32)
+
 def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None, method: str, *, require_conventional_safe: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return ``(cost, accept_mask, valid_mask)`` for a rule method.
 
@@ -370,7 +413,9 @@ def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None
         sdc_b = int(np.clip(sdc[b], 0, max(cur_b.shape[0] - 1, 0)))
         macro_b = macro[b, :K] if macro is not None and macro.ndim >= 2 else None
         utility_b = utility[b, :K] if utility is not None and utility.ndim >= 2 else None
-        if method == "idm_lattice":
+        if method == "pdm_closed":
+            c = _pdm_closed_cost_for_scene(cand_b, cur_b, sdc_b, p)
+        elif method == "idm_lattice":
             c = _idm_cost_for_scene(cand_b, cur_b, sdc_b, p)
         elif method == "frenet_optimal":
             c = _frenet_cost_for_scene(cand_b, cur_b, sdc_b, p)
