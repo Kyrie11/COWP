@@ -113,7 +113,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -139,6 +139,123 @@ def _recursive_viability_recovery_mask(cand_valid, roadgraph_safe, collision_pre
         return cand_valid
     max_prefix = collision_prefix_steps[pool].max()
     return pool & (collision_prefix_steps >= max_prefix)
+
+
+def _counterfactual_successor_agent_state(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    emitted_target: np.ndarray,
+    cfg: dict,
+) -> np.ndarray:
+    """Causal one-step successor surrogate used by the v16.8.30 mechanism probe.
+
+    Other valid agents advance with the same constant-velocity assumption used by
+    the online conventional collision screen.  Ego is advanced with the *actual
+    jerk/yaw-rate-limited target* that would be emitted to Waymax, rather than the
+    raw candidate waypoint.  This is deliberately a model-relative successor, not
+    a claim of formal controlled invariance.
+    """
+    nxt = np.array(agent_state, dtype=np.float32, copy=True)
+    if nxt.ndim != 2 or not (0 <= int(sdc_index) < int(nxt.shape[0])):
+        return nxt
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    valid = nxt[:, 10] > 0.5 if nxt.shape[1] > 10 else np.ones(nxt.shape[0], dtype=bool)
+    other = valid.copy()
+    other[int(sdc_index)] = False
+    if nxt.shape[1] >= 5:
+        nxt[other, 0:2] = nxt[other, 0:2] + nxt[other, 3:5] * dt
+    target = np.asarray(emitted_target, dtype=np.float32).reshape(-1)
+    if target.size >= 5:
+        ego = nxt[int(sdc_index)]
+        ego[0:2] = target[0:2]
+        ego[6] = target[2]
+        ego[3:5] = target[3:5]
+        if ego.shape[0] > 5:
+            ego[5] = float(np.linalg.norm(target[3:5]))
+        nxt[int(sdc_index)] = ego
+    return nxt
+
+
+def _successor_option_signature(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    emitted_target: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[tuple[int, int, int, int], dict[str, int]]:
+    """Evaluate option-set richness at the next replanning state.
+
+    The lexicographic signature is intentionally parameter-free:
+      1) any full conventional option exists;
+      2) number of distinct conventional macro types;
+      3) number of conventional candidates;
+      4) best causal collision-safe prefix among drivable valid candidates.
+
+    Counts are *diagnostic support statistics* over the fixed online proposal
+    generator.  They are not relabeled as a safety certificate.
+    """
+    nxt = _counterfactual_successor_agent_state(agent_state, sdc_index, emitted_target, cfg)
+    (
+        _traj, valid, conventional, macro, _utility, road_safe, _collision_safe,
+        prefix, _margin,
+    ) = _route_lane_aware_candidates(
+        nxt, int(sdc_index), roadgraph, cfg, other_future_trajs=None
+    )
+    valid = np.asarray(valid, dtype=bool)
+    conventional = np.asarray(conventional, dtype=bool) & valid
+    road_valid = np.asarray(road_safe, dtype=bool) & valid
+    macro = np.asarray(macro, dtype=np.int64)
+    prefix = np.asarray(prefix, dtype=np.int32)
+    conv_count = int(conventional.sum())
+    conv_macro_count = int(np.unique(macro[conventional]).size) if conv_count else 0
+    if bool(road_valid.any()):
+        max_prefix = int(prefix[road_valid].max())
+    elif bool(valid.any()):
+        max_prefix = int(prefix[valid].max())
+    else:
+        max_prefix = 0
+    sig = (int(conv_count > 0), conv_macro_count, conv_count, max_prefix)
+    detail = {
+        "conventional_exists": int(conv_count > 0),
+        "conventional_macro_types": conv_macro_count,
+        "conventional_candidates": conv_count,
+        "max_collision_safe_prefix_steps": max_prefix,
+        "valid_candidates": int(valid.sum()),
+        "roadgraph_safe_candidates": int(road_valid.sum()),
+    }
+    return sig, detail
+
+
+def _strict_no_regret_rvr_switch(
+    base_idx: int,
+    rvr_idx: int,
+    collision_prefix_steps,
+    fallback_transport_ucb,
+    rule_decision_risk,
+    action_decision_risk,
+    pressure_decision_risk,
+    *,
+    eps: float = 1.0e-7,
+) -> bool:
+    """Parameter-free diagnostic: permit RVR only under strict Pareto no-regret.
+
+    This branch is not the proposed paper mechanism.  It tests whether v16.8.29
+    failed mainly because max-prefix lexicography overrode already-available
+    transport/rule/action/pressure evidence.
+    """
+    if int(base_idx) == int(rvr_idx):
+        return False
+    bp = float(collision_prefix_steps[int(base_idx)].detach().cpu().item())
+    rp = float(collision_prefix_steps[int(rvr_idx)].detach().cpu().item())
+    if rp <= bp + eps:
+        return False
+    tensors = (fallback_transport_ucb, rule_decision_risk, action_decision_risk, pressure_decision_risk)
+    for t in tensors:
+        b = float(t[int(base_idx)].detach().cpu().item())
+        r = float(t[int(rvr_idx)].detach().cpu().item())
+        if r > b + eps:
+            return False
+    return True
 
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
@@ -2908,7 +3025,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -2999,6 +3116,14 @@ class COWPWaymaxPolicy:
                 + float(pcfg_runtime.get("fallback_utility_weight", 0.05)) * score_decision_risk
                 - float(pcfg_runtime.get("fallback_stop_like_bonus", 0.05)) * stop_like.float()
             )
+            recovery_base_candidate = -1
+            recovery_rvr_candidate = -1
+            recovery_switch_applied = False
+            recovery_action_target_equal = False
+            successor_probe_used = False
+            successor_base_detail = {}
+            successor_rvr_detail = {}
+            successor_signature_cmp = 0
             if bool(fallback_flags[0]):
                 select_mask = selection_mask
                 select_score = adjusted_scores
@@ -3011,21 +3136,62 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method == "cowp_recursive_viability":
-                    # Recursive Viability Recovery (RVR): the full-horizon
-                    # conventional set is empty, so no candidate may be called
-                    # safe.  Instead of scalar-risk ranking over all failed
-                    # candidates, first preserve drivable candidates when any
-                    # exist, then retain only those with the longest causal
-                    # collision-free prefix under the *same* conventional screen.
-                    # The existing COWP fallback score is only a tie-break inside
-                    # that maximal-prefix set.  This is lexicographic and adds no
-                    # tuned risk weight or softened certificate threshold.
-                    select_mask = _recursive_viability_recovery_mask(
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"}:
+                    # All three branches share the exact v16.8.29 RVR proposal,
+                    # but only the original RVR unconditionally follows it.
+                    rvr_mask = _recursive_viability_recovery_mask(
                         cand_valid, roadgraph_safe, collision_prefix_steps
                     )
-                    select_score = fallback_score
-                    fallback_reason = "no_conventional_use_recursive_viability"
+                    recovery_base_candidate = int(self.torch.argmin(
+                        self.torch.where(cand_valid, fallback_score, self.torch.full_like(fallback_score, float("inf")))
+                    ).item())
+                    recovery_rvr_candidate = int(self.torch.argmin(
+                        self.torch.where(rvr_mask, fallback_score, self.torch.full_like(fallback_score, float("inf")))
+                    ).item())
+                    if method == "cowp_recursive_viability":
+                        select_mask = rvr_mask
+                        select_score = fallback_score
+                        recovery_switch_applied = bool(recovery_rvr_candidate != recovery_base_candidate)
+                        fallback_reason = "no_conventional_use_recursive_viability"
+                    elif method == "cowp_rvr_pareto_guard":
+                        recovery_switch_applied = _strict_no_regret_rvr_switch(
+                            recovery_base_candidate, recovery_rvr_candidate,
+                            collision_prefix_steps, fallback_transport_ucb,
+                            rule_decision_risk, action_decision_risk, pressure_decision_risk,
+                        )
+                        chosen = recovery_rvr_candidate if recovery_switch_applied else recovery_base_candidate
+                        select_mask = self.torch.zeros_like(cand_valid)
+                        select_mask[chosen] = True
+                        select_score = fallback_score
+                        fallback_reason = "no_conventional_use_rvr_pareto_guard"
+                    else:
+                        # Successor Option Viability Recovery (SOVR).  v16.8.29
+                        # optimized the current open-loop survival prefix.  This
+                        # probe instead asks whether executing the alternative
+                        # leaves a *better option set at the next replanning state*.
+                        # Only baseline-vs-RVR is probed, keeping the causal test
+                        # focused and avoiding K successor candidate generations.
+                        chosen = recovery_base_candidate
+                        if recovery_rvr_candidate != recovery_base_candidate:
+                            bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
+                            rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
+                            recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
+                            if not recovery_action_target_equal:
+                                successor_probe_used = True
+                                base_sig, successor_base_detail = _successor_option_signature(
+                                    agent_state, sdc_index, bt, roadgraph, self.cfg
+                                )
+                                rvr_sig, successor_rvr_detail = _successor_option_signature(
+                                    agent_state, sdc_index, rt, roadgraph, self.cfg
+                                )
+                                successor_signature_cmp = 1 if rvr_sig > base_sig else (-1 if rvr_sig < base_sig else 0)
+                                if successor_signature_cmp > 0:
+                                    chosen = recovery_rvr_candidate
+                                    recovery_switch_applied = True
+                        select_mask = self.torch.zeros_like(cand_valid)
+                        select_mask[chosen] = True
+                        select_score = fallback_score
+                        fallback_reason = "no_conventional_use_successor_option_viability"
                 else:
                     select_mask = cand_valid
                     select_score = fallback_score
@@ -3174,6 +3340,41 @@ class COWPWaymaxPolicy:
                 "mean_candidate_action_risk": float(host[31]),
                 "beta_threshold": float(self.cfg.get("burden", {}).get("beta0_vehicle", 0.65)),
             }
+            diag.update({
+                "recovery_base_candidate": int(recovery_base_candidate),
+                "recovery_rvr_candidate": int(recovery_rvr_candidate),
+                "recovery_switch_applied": bool(recovery_switch_applied),
+                "recovery_action_target_equal": bool(recovery_action_target_equal),
+                "successor_option_probe_used": bool(successor_probe_used),
+                "successor_signature_compare": int(successor_signature_cmp),
+                "successor_base_conventional_exists": int(successor_base_detail.get("conventional_exists", -1)),
+                "successor_base_conventional_macro_types": int(successor_base_detail.get("conventional_macro_types", -1)),
+                "successor_base_conventional_candidates": int(successor_base_detail.get("conventional_candidates", -1)),
+                "successor_base_max_collision_safe_prefix_steps": int(successor_base_detail.get("max_collision_safe_prefix_steps", -1)),
+                "successor_rvr_conventional_exists": int(successor_rvr_detail.get("conventional_exists", -1)),
+                "successor_rvr_conventional_macro_types": int(successor_rvr_detail.get("conventional_macro_types", -1)),
+                "successor_rvr_conventional_candidates": int(successor_rvr_detail.get("conventional_candidates", -1)),
+                "successor_rvr_max_collision_safe_prefix_steps": int(successor_rvr_detail.get("max_collision_safe_prefix_steps", -1)),
+            })
+            if recovery_base_candidate >= 0 and recovery_rvr_candidate >= 0:
+                diag.update({
+                    "recovery_prefix_gain_steps": int(round(float(
+                        collision_prefix_steps[recovery_rvr_candidate].detach().cpu().item()
+                        - collision_prefix_steps[recovery_base_candidate].detach().cpu().item()
+                    ))),
+                    "recovery_action_risk_delta": float(
+                        action_decision_risk[recovery_rvr_candidate].detach().cpu().item()
+                        - action_decision_risk[recovery_base_candidate].detach().cpu().item()
+                    ),
+                    "recovery_rule_risk_delta": float(
+                        rule_decision_risk[recovery_rvr_candidate].detach().cpu().item()
+                        - rule_decision_risk[recovery_base_candidate].detach().cpu().item()
+                    ),
+                    "recovery_pressure_risk_delta": float(
+                        pressure_decision_risk[recovery_rvr_candidate].detach().cpu().item()
+                        - pressure_decision_risk[recovery_base_candidate].detach().cpu().item()
+                    ),
+                })
             if burden is not None:
                 diag["max_predicted_burden"] = float(host[32])
             if c_i is not None:

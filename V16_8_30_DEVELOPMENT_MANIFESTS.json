@@ -1,0 +1,29 @@
+{
+  "counterfactual48": {
+    "n": 48,
+    "sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+    "composition": {
+      "rescued": 10,
+      "induced": 9,
+      "shared_collision": 24,
+      "stable_safe_controls": 5
+    },
+    "paper_evidence": false
+  },
+  "balanced_dev96": {
+    "n": 96,
+    "sha256": "8ca509bd1263aec10e31fbd4a4ff2df21ae22b83287efce61b072897de8e7783",
+    "composition": {
+      "old_dev64": 64,
+      "induced_outside_old_dev64": 9,
+      "additional_stable_controls": 23
+    },
+    "paper_evidence": false
+  },
+  "exact200": {
+    "n": 200,
+    "sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+    "paper_evidence": false,
+    "reason": "iteratively reused for mechanism selection; development strict set"
+  }
+}

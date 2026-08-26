@@ -1,0 +1,373 @@
+{
+  "version": "v16.8.29",
+  "integrity": {
+    "manifest_n": 200,
+    "manifest_unique": 200,
+    "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+    "base_num_rollouts": 200,
+    "rvr_num_rollouts": 200,
+    "base_scenario_set_matches_manifest": true,
+    "rvr_scenario_set_matches_manifest": true,
+    "dev64_n": 64,
+    "dev64_subset_exact200": true,
+    "dev64_base_row_mismatches_vs_confirm200": 0,
+    "dev64_rvr_row_mismatches_vs_confirm200": 0,
+    "dev64_equivalence_file": {
+      "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+      "scenarios": 64,
+      "fields_checked": 3384,
+      "atol": 1e-07,
+      "passed": true,
+      "mismatch_count_capped": 0,
+      "mismatches": []
+    },
+    "note": "Uploaded zip omitted analyze_confirm200 derived JSONs; they were reproducibly regenerated from merged exact200 outputs using shipped scripts."
+  },
+  "exact200": {
+    "cowp": {
+      "CR": 0.195,
+      "CollisionRate": 0.17,
+      "OffroadRate": 0.03,
+      "KinematicsInfeasibilityRate": 0.125,
+      "EP": 1.046071912162006,
+      "ClosedLoopFallbackStepRate": 0.71675
+    },
+    "rvr": {
+      "CR": 0.195,
+      "CollisionRate": 0.165,
+      "OffroadRate": 0.035,
+      "KinematicsInfeasibilityRate": 0.145,
+      "EP": 1.004700348294359,
+      "ClosedLoopFallbackStepRate": 0.7255
+    },
+    "collision_pairing": {
+      "rescued_ids": [
+        "c9b1c562b6ff31e5",
+        "9e3e5f19ee38f2e3",
+        "ad7d72d8adca3e25",
+        "fccd9a25a2a57a73",
+        "b85168f48c8c9970",
+        "9ccf60966ec93c20",
+        "2c2395ec28c6a158",
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ],
+      "induced_ids": [
+        "fe51445d725b8b8b",
+        "3919ccd73c0fabd7",
+        "fb9d8277036a53f3",
+        "d632f1919fe4bab",
+        "c34fe8e79cdf1161",
+        "7721ff4800156886",
+        "f8d4c735825e5d81",
+        "6418b0c9e2e4b093",
+        "1e015170763b9002"
+      ],
+      "shared_collision_ids": [
+        "4c332861792a91e7",
+        "57f3f03f7e7967f9",
+        "f55df4ea9e688069",
+        "4525d99a628819af",
+        "a6f8b2b348015743",
+        "b64cecb971b095c3",
+        "89806e50f692c453",
+        "1c03d20597561d94",
+        "6992366c5c998d00",
+        "29cd2aca8ae5e222",
+        "ff41aa2be7fa7a56",
+        "da87744bcf7613db",
+        "e6f70b30f414022e",
+        "84196f1d9198b616",
+        "e1d2184327703edd",
+        "f6a7fc811128c6ef",
+        "da52a87b046e4a0a",
+        "a525f87ac454a88c",
+        "a30bd30a45665244",
+        "72a34ea361a39c22",
+        "a25edfa42510bdb4",
+        "d59a8c97c0980d2a",
+        "2fa07f444b825370",
+        "4201b435eda16cf2"
+      ],
+      "stable_safe_n": 157
+    },
+    "groups": {
+      "rescued": {
+        "n": 10,
+        "zero_conventional_candidate_step_rate": {
+          "cowp": 0.85625,
+          "rvr": 0.715,
+          "delta": -0.14125
+        },
+        "mean_conventional_candidates": {
+          "cowp": 1.4425000000000001,
+          "rvr": 3.5650000000000004,
+          "delta": 2.1225000000000005
+        },
+        "mean_max_collision_safe_prefix_steps": {
+          "cowp": 19.335,
+          "rvr": 35.6675,
+          "delta": 16.332499999999996
+        },
+        "mean_selected_collision_safe_prefix_steps": {
+          "cowp": 15.6375,
+          "rvr": 35.6625,
+          "delta": 20.025000000000002
+        },
+        "accepted_priority_ncf_step_rate": {
+          "cowp": 0.04875,
+          "rvr": 0.12875,
+          "delta": 0.08
+        },
+        "fallback_step_rate": {
+          "cowp": 0.9512499999999999,
+          "rvr": 0.8712500000000001,
+          "delta": -0.07999999999999985
+        },
+        "mean_selected_action_risk": {
+          "cowp": 0.04041725657962977,
+          "rvr": 0.061499009499881976,
+          "delta": 0.021081752920252203
+        },
+        "mean_selected_rule_risk": {
+          "cowp": 0.5315835189222525,
+          "rvr": 0.5200185608097673,
+          "delta": -0.011564958112485257
+        },
+        "paired_EP_delta_mean": -0.7734853535890579,
+        "first_collision_step_cowp": [
+          40,
+          43,
+          35,
+          67,
+          40,
+          32,
+          33,
+          57,
+          64,
+          75
+        ],
+        "first_collision_step_rvr": []
+      },
+      "induced": {
+        "n": 9,
+        "zero_conventional_candidate_step_rate": {
+          "cowp": 0.5888888888888889,
+          "rvr": 0.8138888888888889,
+          "delta": 0.22499999999999998
+        },
+        "mean_conventional_candidates": {
+          "cowp": 5.918055555555555,
+          "rvr": 1.7638888888888888,
+          "delta": -4.154166666666667
+        },
+        "mean_max_collision_safe_prefix_steps": {
+          "cowp": 40.37777777777777,
+          "rvr": 24.266666666666666,
+          "delta": -16.111111111111107
+        },
+        "mean_selected_collision_safe_prefix_steps": {
+          "cowp": 38.105555555555554,
+          "rvr": 23.78333333333333,
+          "delta": -14.322222222222223
+        },
+        "accepted_priority_ncf_step_rate": {
+          "cowp": 0.2486111111111111,
+          "rvr": 0.11527777777777778,
+          "delta": -0.1333333333333333
+        },
+        "fallback_step_rate": {
+          "cowp": 0.7513888888888888,
+          "rvr": 0.8847222222222223,
+          "delta": 0.13333333333333353
+        },
+        "mean_selected_action_risk": {
+          "cowp": 0.04101895473366033,
+          "rvr": 0.11247617746664759,
+          "delta": 0.07145722273298727
+        },
+        "mean_selected_rule_risk": {
+          "cowp": 0.4104118160858181,
+          "rvr": 0.5382030912131691,
+          "delta": 0.127791275127351
+        },
+        "paired_EP_delta_mean": -0.06497811277707417,
+        "first_collision_step_cowp": [],
+        "first_collision_step_rvr": [
+          70,
+          41,
+          70,
+          37,
+          61,
+          78,
+          18,
+          58,
+          65
+        ]
+      },
+      "shared_collision": {
+        "n": 24,
+        "zero_conventional_candidate_step_rate": {
+          "cowp": 0.790625,
+          "rvr": 0.7890625,
+          "delta": -0.0015625000000000222
+        },
+        "mean_conventional_candidates": {
+          "cowp": 2.542708333333333,
+          "rvr": 2.5192708333333336,
+          "delta": -0.023437499999999556
+        },
+        "mean_max_collision_safe_prefix_steps": {
+          "cowp": 20.766666666666666,
+          "rvr": 20.875,
+          "delta": 0.10833333333333428
+        },
+        "mean_selected_collision_safe_prefix_steps": {
+          "cowp": 19.556250000000002,
+          "rvr": 20.842708333333334,
+          "delta": 1.2864583333333321
+        },
+        "accepted_priority_ncf_step_rate": {
+          "cowp": 0.12083333333333335,
+          "rvr": 0.11302083333333333,
+          "delta": -0.007812500000000014
+        },
+        "fallback_step_rate": {
+          "cowp": 0.8791666666666665,
+          "rvr": 0.8869791666666668,
+          "delta": 0.007812500000000222
+        },
+        "mean_selected_action_risk": {
+          "cowp": 0.03285540056978197,
+          "rvr": 0.036034862328862195,
+          "delta": 0.0031794617590802238
+        },
+        "mean_selected_rule_risk": {
+          "cowp": 0.5176965291981656,
+          "rvr": 0.5228539264335211,
+          "delta": 0.005157397235355576
+        },
+        "paired_EP_delta_mean": -0.012485085676113764,
+        "first_collision_step_cowp": [
+          74,
+          41,
+          66,
+          69,
+          60,
+          32,
+          63,
+          73,
+          78,
+          45,
+          53,
+          48,
+          41,
+          50,
+          50,
+          48,
+          75,
+          76,
+          36,
+          69,
+          41,
+          54,
+          51,
+          35
+        ],
+        "first_collision_step_rvr": [
+          73,
+          42,
+          66,
+          69,
+          64,
+          32,
+          62,
+          75,
+          78,
+          45,
+          63,
+          50,
+          41,
+          66,
+          41,
+          48,
+          75,
+          76,
+          36,
+          70,
+          75,
+          54,
+          51,
+          35
+        ]
+      },
+      "stable_safe": {
+        "n": 157,
+        "zero_conventional_candidate_step_rate": {
+          "cowp": 0.5003184713375796,
+          "rvr": 0.5021496815286625,
+          "delta": 0.0018312101910828993
+        },
+        "mean_conventional_candidates": {
+          "cowp": 7.641799363057326,
+          "rvr": 7.45485668789809,
+          "delta": -0.18694267515923624
+        },
+        "mean_max_collision_safe_prefix_steps": {
+          "cowp": 44.94474522292993,
+          "rvr": 45.383757961783445,
+          "delta": 0.43901273885351344
+        },
+        "mean_selected_collision_safe_prefix_steps": {
+          "cowp": 43.80222929936305,
+          "rvr": 45.03057324840764,
+          "delta": 1.2283439490445929
+        },
+        "accepted_priority_ncf_step_rate": {
+          "cowp": 0.325,
+          "rvr": 0.3175955414012739,
+          "delta": -0.007404458598726127
+        },
+        "fallback_step_rate": {
+          "cowp": 0.6749999999999999,
+          "rvr": 0.6824044585987261,
+          "delta": 0.007404458598726182
+        },
+        "mean_selected_action_risk": {
+          "cowp": 0.01922155286895238,
+          "rvr": 0.030661025815014578,
+          "delta": 0.011439472946062196
+        },
+        "mean_selected_rule_risk": {
+          "cowp": 0.3480341125397721,
+          "rvr": 0.3600022765098989,
+          "delta": 0.011968163970126788
+        },
+        "paired_EP_delta_mean": 0.0032514145799503206,
+        "first_collision_step_cowp": [],
+        "first_collision_step_rvr": []
+      }
+    }
+  },
+  "mechanism": {
+    "base_zero_conventional_mean": 0.5569375,
+    "base_collision_empty_mean": 0.5253125,
+    "base_roadgraph_empty_mean": 0.0011250000000000001,
+    "base_both_empty_mean": 0.0265625,
+    "base_intersection_empty_mean": 0.0039375,
+    "rvr_zero_conventional_mean": 0.56125,
+    "rvr_collision_empty_mean": 0.5313125,
+    "rvr_recovery_step_rate": 0.5368125,
+    "base_mean_max_prefix": 40.557375,
+    "rvr_mean_max_prefix": 41.00662500000001,
+    "base_mean_selected_prefix": 39.228125,
+    "rvr_mean_selected_prefix": 40.7035
+  },
+  "wall_seconds": {
+    "dev64_cowp": 1213,
+    "dev64_rvr": 1239,
+    "confirm200_cowp": 3209,
+    "confirm200_rvr": 3678
+  }
+}
