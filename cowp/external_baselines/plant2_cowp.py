@@ -119,7 +119,8 @@ def plant2_loss(model: COWPPlanT2, inputs: Mapping[str, torch.Tensor], ego_futur
     ade = d.sum() / valid.sum().clamp_min(1.0)
     rows = torch.arange(gt.shape[0], device=gt.device)
     last = valid.sum(dim=-1).long().clamp_min(1) - 1
-    fde = d[rows, last].mean()
+    sample_valid = valid.bool().any(dim=-1)
+    fde = d[rows[sample_valid], last[sample_valid]].mean() if bool(sample_valid.any()) else d.sum() * 0.0
     return loss, {
         "plannerADE": float(ade.detach().cpu()),
         "plannerFDE": float(fde.detach().cpu()),

@@ -41,6 +41,13 @@ GPU0="${GPU0:-0}"
 GPU1="${GPU1:-1}"
 PROFILE_POLICY_TIMING="${PROFILE_POLICY_TIMING:-0}"
 PROFILE_NUM_SCENARIOS="${PROFILE_NUM_SCENARIOS:-24}"
+# DTPP public-source defaults favor stability/fidelity: FP32 and global cost
+# weights.  These can be explicitly overridden for an ablation after a stable
+# reference checkpoint has been established.
+DTPP_AMP="${DTPP_AMP:-0}"
+DTPP_VARIABLE_COST="${DTPP_VARIABLE_COST:-0}"
+SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
+WEIGHT_DECAY_OVERRIDE="${WEIGHT_DECAY:-}"
 
 LEARNED=(gameformer dtpp pluto plant2)
 ALL_METHODS=(gameformer dtpp pluto plant2 pdm_closed)
@@ -75,25 +82,71 @@ ensure_index() {
 train_one() {
   local m="$1"
   contains_method "$m" "${LEARNED[@]}" || { echo "$m has no learned training stage"; return 0; }
-  local epochs batch lr
+  local epochs batch lr wd
   case "$m" in
-    gameformer) epochs=20; batch=32; lr=1e-4 ;;   # official open-loop defaults
-    dtpp)       epochs=30; batch=16; lr=2e-4 ;;   # official DTPP defaults
-    pluto)      epochs=25; batch=32; lr=1e-3 ;;   # official README full-data recipe
-    plant2)     epochs=30; batch=16; lr=1e-4 ;;   # WOMD adapter budget; native CARLA config is domain-specific
+    gameformer) epochs=20; batch=32; lr=1e-4; wd=1e-4 ;;   # official open-loop defaults + existing adapter WD
+    dtpp)       epochs=30; batch=16; lr=2e-4; wd=1e-2 ;;   # official DTPP AdamW default weight_decay=0.01
+    pluto)      epochs=25; batch=32; lr=1e-3; wd=1e-4 ;;   # official README full-data recipe + existing adapter WD
+    plant2)     epochs=30; batch=16; lr=1e-4; wd=1e-4 ;;   # WOMD adapter budget; native CARLA config is domain-specific
   esac
   [[ -n "$EPOCHS_OVERRIDE" ]] && epochs="$EPOCHS_OVERRIDE"
   [[ -n "$BATCH_SIZE_OVERRIDE" ]] && batch="$BATCH_SIZE_OVERRIDE"
   [[ -n "$LR_OVERRIDE" ]] && lr="$LR_OVERRIDE"
+  [[ -n "$WEIGHT_DECAY_OVERRIDE" ]] && wd="$WEIGHT_DECAY_OVERRIDE"
   require_path "$TRAIN_CACHE" "train tensor cache"
   require_path "$VAL_CACHE" "val tensor cache"
   mkdir -p "$OUT_ROOT/$m"
-  echo "[train] $m"
+  local history="$OUT_ROOT/$m/external_${m}_history.json"
+  local best="$OUT_ROOT/$m/external_${m}_best.pt"
+  local complete="$OUT_ROOT/$m/external_${m}_training_complete.json"
+  if [[ "$SKIP_COMPLETED" == "1" ]] && python - "$m" "$history" "$best" "$complete" "$epochs" <<'PY_DONE'
+import json, pathlib, sys
+m, hp, bp, cp, target = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), int(sys.argv[5])
+if not hp.is_file() or not bp.is_file():
+    raise SystemExit(1)
+try:
+    rows = json.loads(hp.read_text())
+    last = int(rows[-1].get("epoch", 0)) if rows else 0
+except Exception:
+    raise SystemExit(1)
+if last < target:
+    raise SystemExit(1)
+# DTPP V2 checkpoints used the now-invalid default (variable cost + BF16) and
+# have no V3 completion marker.  Never silently reuse them.
+if m == "dtpp":
+    if not cp.is_file():
+        raise SystemExit(1)
+    try:
+        done = json.loads(cp.read_text())
+        sig = done.get("training_signature", {})
+        if not done.get("completed", False) or bool(sig.get("dtpp_variable_cost", True)):
+            raise SystemExit(1)
+        if bool(sig.get("amp", True)):
+            raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception:
+        raise SystemExit(1)
+raise SystemExit(0)
+PY_DONE
+  then
+    echo "[train] $m already completed >=${epochs} epochs; SKIP_COMPLETED=1, reusing $best"
+    return 0
+  fi
+  local amp_args=(--amp --amp-dtype bfloat16)
+  local dtpp_cost_args=()
+  if [[ "$m" == "dtpp" ]]; then
+    # Official DTPP public training is FP32 and variable_weights defaults false.
+    [[ "$DTPP_AMP" == "1" ]] || amp_args=()
+    [[ "$DTPP_VARIABLE_COST" == "1" ]] && dtpp_cost_args=(--dtpp-variable-cost)
+  fi
+  echo "[train] $m epochs=$epochs batch=$batch lr=$lr wd=$wd amp=${amp_args[*]:-fp32}"
   python -m cowp.scripts.20_train_external_baseline \
     --baseline "$m" \
     --cache-dir "$TRAIN_CACHE" \
     --val-cache-dir "$VAL_CACHE" \
     --output-dir "$OUT_ROOT/$m" \
+    --device "$DEVICE" \
     --epochs "$epochs" \
     --batch-size "$batch" \
     --num-workers "$NUM_WORKERS" \
@@ -102,11 +155,13 @@ train_one() {
     --val-prefetch-factor "$VAL_PREFETCH_FACTOR" \
     --checkpoint-every "$CHECKPOINT_EVERY" \
     --lr "$lr" \
+    --weight-decay "$wd" \
     --seed "$SEED" \
     --max-neighbors 10 \
     --max-candidates 30 \
     --future-len 80 \
-    --amp --amp-dtype bfloat16
+    "${amp_args[@]}" \
+    "${dtpp_cost_args[@]}"
 }
 
 ckpt_for() {
@@ -211,8 +266,14 @@ waymax_one() {
   echo "[Waymax parallel2] $m GPUs=$GPU0,$GPU1"
   (CUDA_VISIBLE_DEVICES="$GPU0" JAX_VISIBLE_DEVICES=0 DEVICE=cuda:0 waymax_one_single "$m" 0 2 "$s0") & p0=$!
   (CUDA_VISIBLE_DEVICES="$GPU1" JAX_VISIBLE_DEVICES=0 DEVICE=cuda:0 waymax_one_single "$m" 1 2 "$s1") & p1=$!
-  wait "$p0"
-  wait "$p1"
+  set +e
+  wait "$p0"; s0_status=$?
+  wait "$p1"; s1_status=$?
+  set -e
+  if [[ $s0_status -ne 0 || $s1_status -ne 0 ]]; then
+    echo "ERROR: Waymax shards failed: shard0=$s0_status shard1=$s1_status" >&2
+    return 1
+  fi
   python -m cowp.scripts.79_merge_waymax_exact_shards \
     --inputs "$s0" "$s1" \
     --output "$OUT_ROOT/$m/waymax.json"
@@ -232,7 +293,16 @@ train_parallel2() {
     (CUDA_VISIBLE_DEVICES="$GPU0" DEVICE=cuda:0 train_one "$m0") & p0=$!
     if [[ -n "$m1" ]]; then
       (CUDA_VISIBLE_DEVICES="$GPU1" DEVICE=cuda:0 train_one "$m1") & p1=$!
-      wait "$p0"; wait "$p1"
+      # Always reap both workers.  With `set -e`, `wait p0; wait p1` could exit
+      # after the first failure and leave the peer run orphaned/unreported.
+      set +e
+      wait "$p0"; s0=$?
+      wait "$p1"; s1=$?
+      set -e
+      if [[ $s0 -ne 0 || $s1 -ne 0 ]]; then
+        echo "ERROR: parallel training pair failed: $m0 status=$s0 $m1 status=$s1" >&2
+        return 1
+      fi
     else
       wait "$p0"
     fi
@@ -303,7 +373,8 @@ Usage:
 Key environment overrides:
   WOMD_ROOT WOMD_VALIDATION_TFEXAMPLE_DIR TRAIN_CACHE VAL_CACHE HELDOUT_CACHE OUT_ROOT
   SCENARIO_IDS_FILE TFEXAMPLE_GLOB TFEXAMPLE_INDEX_JSONL DEVICE EPOCHS BATCH_SIZE LR
-  NUM_WORKERS VAL_NUM_WORKERS PREFETCH_FACTOR CHECKPOINT_EVERY SEED COWP_JSON
+  NUM_WORKERS VAL_NUM_WORKERS PREFETCH_FACTOR CHECKPOINT_EVERY SEED COWP_JSON WEIGHT_DECAY
+  DTPP_AMP=0 DTPP_VARIABLE_COST=0 SKIP_COMPLETED=1
   PARALLEL2=1 GPU0=0 GPU1=1   # default: match your two-GPU Waymax workflow
   PROFILE_NUM_SCENARIOS=24     # short exact-ID raw-WOMD timing run
 

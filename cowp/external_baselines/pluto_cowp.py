@@ -189,6 +189,11 @@ def pluto_loss(
             keep = (torch.rand(agents.shape[:2], device=agents.device) > 0.15)
             keep[:, 0] = True
             agents = agents * keep[:, :, None, None]
+            if "agent_valid" in inputs:
+                # A dropped actor must be dropped from the transformer padding
+                # mask as well.  Previously only its features were zeroed, so
+                # MLP biases still created an apparently valid actor token.
+                aug["agent_valid"] = inputs["agent_valid"] & keep[:, :, None]
         aug["agents"] = agents
         _, z2 = model.encode_scene(aug)
         z1 = F.normalize(model.proj(out["scene_embedding"].float()), dim=-1)
@@ -202,7 +207,8 @@ def pluto_loss(
     d = torch.linalg.norm(pred_best - gt, dim=-1) * v
     ade = d.sum() / v.sum().clamp_min(1.0)
     last = v.sum(dim=-1).long().clamp_min(1) - 1
-    fde = d[rows, last].mean()
+    sample_valid = valid.any(dim=-1)
+    fde = d[rows[sample_valid], last[sample_valid]].mean() if bool(sample_valid.any()) else d.sum() * 0.0
     return loss, {
         "plannerADE": float(ade.detach().cpu()),
         "plannerFDE": float(fde.detach().cpu()),

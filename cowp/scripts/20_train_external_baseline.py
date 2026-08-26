@@ -70,7 +70,13 @@ def _build_model(args: argparse.Namespace):
             decoder_levels=args.gameformer_decoder_levels,
         )
     if args.baseline == "dtpp":
-        return COWPDTPP(neighbors=args.max_neighbors, max_branch=args.max_candidates, variable_cost=not args.dtpp_fixed_cost)
+        return COWPDTPP(
+            neighbors=args.max_neighbors,
+            max_branch=args.max_candidates,
+            # Official DTPP defaults to non-variable/global cost weights.
+            # --dtpp-variable-cost is an explicit opt-in for the ablation.
+            variable_cost=bool(getattr(args, "dtpp_variable_cost", False)),
+        )
     if args.baseline == "pluto":
         return COWPPLUTO(
             future_len=args.future_len, d_model=args.vector_d_model, num_heads=args.vector_heads,
@@ -112,6 +118,9 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace)
     return None
 
 def _make_grad_scaler(enabled: bool):
+    # GradScaler is useful for FP16.  BF16 has FP32-like exponent range and
+    # does not need loss scaling; keeping a scaler there only adds another
+    # state machine around numerical failures.
     if not enabled:
         return None
     try:
@@ -132,6 +141,48 @@ def _autocast(device: torch.device, enabled: bool, dtype_name: str = "auto"):
         return torch.cuda.amp.autocast(enabled=enabled, dtype=dtype)
 
 
+
+class _FatalModelStateError(RuntimeError):
+    pass
+
+
+def _resolved_amp_dtype(device: torch.device, enabled: bool, dtype_name: str) -> torch.dtype | None:
+    if not enabled or device.type != "cuda":
+        return None
+    if dtype_name == "bfloat16":
+        return torch.bfloat16
+    if dtype_name == "float16":
+        return torch.float16
+    use_bf16 = bool(torch.cuda.is_available() and getattr(torch.cuda, "is_bf16_supported", lambda: False)())
+    return torch.bfloat16 if use_bf16 else torch.float16
+
+
+def _first_nonfinite_parameter(model: torch.nn.Module) -> str | None:
+    for name, p in model.named_parameters():
+        if p.numel() and not bool(torch.isfinite(p.detach()).all()):
+            return name
+    return None
+
+
+
+
+def _first_nonfinite_gradient(model: torch.nn.Module) -> str | None:
+    for name, p in model.named_parameters():
+        if p.grad is not None and p.grad.numel() and not bool(torch.isfinite(p.grad.detach()).all()):
+            return name
+    return None
+
+def _metrics_preview(metrics: dict[str, float]) -> str:
+    parts = []
+    for key in ("plannerADE", "score_ce", "neighbor_cmp", "ego_reg", "weight_reg", "score_abs_max", "weight_max", "valid_samples"):
+        if key in metrics:
+            try:
+                parts.append(f"{key}={float(metrics[key]):.6g}")
+            except Exception:
+                pass
+    return " ".join(parts)
+
+
 def _run_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -146,13 +197,23 @@ def _run_epoch(
     phase = "train" if train else "val"
     model.train(train)
     sums: dict[str, float] = {}
+    metric_counts: dict[str, float] = {}
     n = 0
     skipped = 0
+    numerical_skipped = 0
+    malformed_skipped = 0
+    empty_supervision_skipped = 0
+    consecutive_numerical = 0
     total_batches = _safe_len(loader)
     log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
     amp_enabled = bool(getattr(args, "amp", False) and device.type == "cuda")
     amp_dtype = str(getattr(args, "amp_dtype", "auto"))
-    _log(f"{phase} {args.baseline} epoch={epoch} start batches={total_batches if total_batches is not None else 'unknown'} batch_size={args.batch_size} workers={args.num_workers} amp={amp_enabled}")
+    resolved_amp_dtype = _resolved_amp_dtype(device, amp_enabled, amp_dtype)
+    _log(
+        f"{phase} {args.baseline} epoch={epoch} start batches={total_batches if total_batches is not None else 'unknown'} "
+        f"batch_size={args.batch_size} workers={args.num_workers} amp={amp_enabled} "
+        f"amp_dtype={str(resolved_amp_dtype).replace('torch.', '') if resolved_amp_dtype is not None else 'fp32'}"
+    )
     iterator = tqdm_iter(
         loader,
         enabled=not args.no_progress,
@@ -163,6 +224,8 @@ def _run_epoch(
     t0 = time.time()
     last_log = t0
     for batch_idx, batch in enumerate(iterator, start=1):
+        if train:
+            optimizer.zero_grad(set_to_none=True)
         try:
             ext = make_external_batch(
                 batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates,
@@ -185,31 +248,113 @@ def _run_epoch(
                     loss, metrics = plant2_loss(model, ext.planner_inputs, ext.ego_future_xy, ext.ego_future_valid)
                 else:
                     raise ValueError(args.baseline)
-            if not torch.isfinite(loss):
+            bs = int(ext.ego_future_xy.shape[0])
+            # A completely unsupervised batch should never update the optimizer.
+            # In particular DTPP can return a differentiable zero when no scene
+            # has a valid candidate/future pair; counting its NaN ADE used to
+            # contaminate epoch metrics.
+            valid_samples = float(metrics.get("valid_samples", bs))
+            if args.baseline == "dtpp" and valid_samples <= 0:
                 skipped += 1
-                if skipped <= 5 or (log_every and skipped % max(log_every, 1) == 0):
-                    _log(
-                        f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite loss "
-                        f"amp={amp_enabled} amp_dtype={amp_dtype}"
+                empty_supervision_skipped += 1
+                consecutive_numerical = 0
+                if hasattr(iterator, "set_postfix"):
+                    iterator.set_postfix(loss="--", samples=n, skipped=skipped, refresh=False)
+                if train:
+                    optimizer.zero_grad(set_to_none=True)
+                continue
+            if not bool(torch.isfinite(loss)):
+                skipped += 1
+                numerical_skipped += 1
+                consecutive_numerical += 1
+                if train:
+                    optimizer.zero_grad(set_to_none=True)
+                preview = _metrics_preview(metrics)
+                _log(
+                    f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite loss "
+                    f"consecutive={consecutive_numerical} amp={amp_enabled} amp_dtype={amp_dtype} {preview}"
+                )
+                if hasattr(iterator, "set_postfix"):
+                    iterator.set_postfix(loss="nonfinite", samples=n, skipped=skipped, refresh=False)
+                if consecutive_numerical >= int(args.max_consecutive_numerical_skips):
+                    bad_param = _first_nonfinite_parameter(model)
+                    raise _FatalModelStateError(
+                        f"{args.baseline} produced {consecutive_numerical} consecutive non-finite losses at "
+                        f"{phase} epoch={epoch} batch={batch_idx}; first_nonfinite_parameter={bad_param}. "
+                        "Failing immediately instead of silently skipping the rest of the epoch."
                     )
                 continue
             if train:
-                optimizer.zero_grad(set_to_none=True)
-                if scaler is not None and amp_enabled:
-                    scaler.scale(loss).backward()
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-                    optimizer.step()
-            bs = int(ext.ego_future_xy.shape[0])
+                try:
+                    if scaler is not None and amp_enabled:
+                        scaler.scale(loss).backward()
+                        scaler.unscale_(optimizer)
+                    else:
+                        loss.backward()
+                    if args.baseline == "dtpp" and hasattr(model, "encoder") and hasattr(model, "decoder"):
+                        # Public DTPP clips encoder and decoder independently at
+                        # 5.0.  Keep that behavior instead of clipping the union,
+                        # which changes the effective update when one side has a
+                        # much larger norm.
+                        enc_norm = torch.nn.utils.clip_grad_norm_(
+                            model.encoder.parameters(), args.grad_clip, error_if_nonfinite=True
+                        )
+                        dec_norm = torch.nn.utils.clip_grad_norm_(
+                            model.decoder.parameters(), args.grad_clip, error_if_nonfinite=True
+                        )
+                        grad_norm = torch.maximum(enc_norm.float(), dec_norm.float())
+                    else:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            model.parameters(), args.grad_clip, error_if_nonfinite=True
+                        )
+                    if not bool(torch.isfinite(grad_norm)):
+                        raise FloatingPointError(f"non-finite gradient norm={grad_norm}")
+                    if scaler is not None and amp_enabled:
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                except (FloatingPointError, RuntimeError) as grad_exc:
+                    msg = str(grad_exc).lower()
+                    if "non-finite" not in msg and "nonfinite" not in msg and "nan" not in msg and "inf" not in msg:
+                        raise
+                    skipped += 1
+                    numerical_skipped += 1
+                    consecutive_numerical += 1
+                    optimizer.zero_grad(set_to_none=True)
+                    bad_grad = _first_nonfinite_gradient(model)
+                    _log(
+                        f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite gradients: "
+                        f"{type(grad_exc).__name__}: {grad_exc}; first_nonfinite_gradient={bad_grad}; {_metrics_preview(metrics)}"
+                    )
+                    if hasattr(iterator, "set_postfix"):
+                        iterator.set_postfix(loss="bad_grad", samples=n, skipped=skipped, refresh=False)
+                    if consecutive_numerical >= int(args.max_consecutive_numerical_skips):
+                        raise _FatalModelStateError(
+                            f"{args.baseline} hit {consecutive_numerical} consecutive numerical-gradient failures at "
+                            f"{phase} epoch={epoch} batch={batch_idx}."
+                        ) from grad_exc
+                    continue
+                bad_param = _first_nonfinite_parameter(model)
+                if bad_param is not None:
+                    raise _FatalModelStateError(
+                        f"Optimizer step created a non-finite parameter {bad_param} at {phase} epoch={epoch} batch={batch_idx}."
+                    )
+                consecutive_numerical = 0
+            else:
+                consecutive_numerical = 0
             n += bs
             sums["loss"] = sums.get("loss", 0.0) + float(loss.detach().cpu()) * bs
+            metric_counts["loss"] = metric_counts.get("loss", 0.0) + bs
+            metric_weight = valid_samples if args.baseline == "dtpp" else float(bs)
             for k, v in metrics.items():
-                sums[k] = sums.get(k, 0.0) + float(v) * bs
+                try:
+                    vf = float(v)
+                except Exception:
+                    continue
+                if math.isfinite(vf):
+                    sums[k] = sums.get(k, 0.0) + vf * metric_weight
+                    metric_counts[k] = metric_counts.get(k, 0.0) + metric_weight
             mean_loss = sums["loss"] / max(n, 1)
             if hasattr(iterator, "set_postfix"):
                 postfix = {"loss": f"{mean_loss:.4f}", "samples": n, "skipped": skipped}
@@ -238,12 +383,28 @@ def _run_epoch(
                 last_log = now
         except KeyboardInterrupt:
             raise
+        except _FatalModelStateError:
+            if train:
+                optimizer.zero_grad(set_to_none=True)
+            raise
         except Exception as exc:
-            skipped += 1
-            if args.strict:
+            if train:
+                optimizer.zero_grad(set_to_none=True)
+            # Do not turn arbitrary model/CUDA/programming failures into a
+            # "malformed batch".  The V2 loop caught every Exception, which can
+            # hide shape bugs or device errors until max_skip_fraction fires much
+            # later and obscures the first real traceback.  Only adapter-level
+            # data-contract exceptions are eligible for bounded skipping.
+            skippable_data_error = isinstance(exc, (KeyError, ValueError, IndexError))
+            if args.strict or not skippable_data_error:
                 raise
+            skipped += 1
+            malformed_skipped += 1
+            consecutive_numerical = 0
             if skipped <= 5 or (log_every and skipped % max(log_every, 1) == 0):
                 _log(f"Warning: skipped malformed batch phase={phase} baseline={args.baseline} epoch={epoch} batch={batch_idx}: {type(exc).__name__}: {exc}")
+            if hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(samples=n, skipped=skipped, refresh=False)
             continue
     elapsed = max(time.time() - t0, 1e-6)
     if n == 0:
@@ -257,7 +418,12 @@ def _run_epoch(
             "Do not publish or continue training a checkpoint learned from a tiny surviving subset. "
             "Use ego-frame inputs and BF16/FP32 loss computation; rerun with --strict to expose malformed batches."
         )
-    out = {k: v / max(n, 1) for k, v in sums.items()} | {"num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped), "skip_fraction": skip_fraction, "seconds": float(elapsed)}
+    out = {k: v / max(metric_counts.get(k, float(n)), 1.0) for k, v in sums.items()} | {
+        "num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped),
+        "numerical_skipped_batches": float(numerical_skipped), "malformed_skipped_batches": float(malformed_skipped),
+        "empty_supervision_skipped_batches": float(empty_supervision_skipped),
+        "skip_fraction": skip_fraction, "seconds": float(elapsed),
+    }
     _log(f"{phase} {args.baseline} epoch={epoch} done samples={n} skipped={skipped} seconds={elapsed:.1f} loss={out.get('loss', float('nan')):.6f}")
     return out
 
@@ -285,7 +451,15 @@ def main() -> None:
     ap.add_argument("--gameformer-modalities", type=int, default=6)
     ap.add_argument("--gameformer-encoder-layers", type=int, default=6)
     ap.add_argument("--gameformer-decoder-levels", type=int, default=4)
-    ap.add_argument("--dtpp-fixed-cost", action="store_true")
+    cost_group = ap.add_mutually_exclusive_group()
+    cost_group.add_argument(
+        "--dtpp-variable-cost", action="store_true",
+        help="Opt in to DTPP scene-conditioned cost weights. Official/public DTPP training defaults to global/fixed cost weights.",
+    )
+    cost_group.add_argument(
+        "--dtpp-fixed-cost", action="store_true",
+        help="Deprecated compatibility flag; fixed/global cost is now the default.",
+    )
     ap.add_argument("--vector-d-model", type=int, default=128)
     ap.add_argument("--vector-heads", type=int, default=8)
     ap.add_argument("--vector-layers", type=int, default=4)
@@ -298,6 +472,7 @@ def main() -> None:
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
     ap.add_argument("--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto", help="AMP dtype; auto prefers BF16 to avoid FP16 overflow in trajectory/GMM losses.")
     ap.add_argument("--max-skip-fraction", type=float, default=0.02, help="Fail an epoch when non-finite/malformed batches exceed this fraction.")
+    ap.add_argument("--max-consecutive-numerical-skips", type=int, default=3, help="Fail fast after this many consecutive non-finite loss/gradient batches instead of poisoning/skipping the rest of an epoch.")
     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
     ap.add_argument("--val-prefetch-factor", type=int, default=2)
     ap.add_argument("--checkpoint-every", type=int, default=1, help="Save numbered epoch checkpoints every N epochs (best/final are always saved). Set >1 to reduce filesystem I/O without changing optimization.")
@@ -363,7 +538,8 @@ def main() -> None:
     _log(f"model built baseline={args.baseline} total_params={total_params} trainable_params={trainable_params}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = _build_scheduler(optimizer, args)
-    scaler = _make_grad_scaler(bool(args.amp and device.type == "cuda"))
+    resolved_amp_dtype = _resolved_amp_dtype(device, bool(args.amp), str(args.amp_dtype))
+    scaler = _make_grad_scaler(bool(args.amp and device.type == "cuda" and resolved_amp_dtype == torch.float16))
     if scaler is not None:
         _log("AMP GradScaler enabled")
     best_metric = math.inf
@@ -374,7 +550,25 @@ def main() -> None:
         _log(f"epoch {epoch}/{args.epochs} begin baseline={args.baseline}")
         train_metrics = _run_epoch(model, train_loader, cfg, args, device, optimizer, epoch, scaler=scaler)
         val_metrics = _run_epoch(model, val_loader, cfg, args, device, None, epoch, scaler=None) if val_loader is not None else {}
-        metric = float(val_metrics.get("plannerADE", val_metrics.get("loss", train_metrics.get("loss", math.inf))))
+        # Select a finite validation metric.  A sparse/empty metric must never
+        # make best-checkpoint selection silently stop for the rest of training.
+        metric_candidates = [
+            val_metrics.get("plannerADE"), val_metrics.get("loss"),
+            train_metrics.get("plannerADE"), train_metrics.get("loss"),
+        ]
+        metric = math.inf
+        for candidate_metric in metric_candidates:
+            if candidate_metric is None:
+                continue
+            try:
+                candidate_metric = float(candidate_metric)
+            except Exception:
+                continue
+            if math.isfinite(candidate_metric):
+                metric = candidate_metric
+                break
+        if not math.isfinite(metric):
+            raise RuntimeError(f"No finite checkpoint-selection metric at epoch={epoch}: train={train_metrics} val={val_metrics}")
         record = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         history.append(record)
         _log("epoch summary " + json.dumps(record, sort_keys=True))
@@ -401,7 +595,20 @@ def main() -> None:
         if scheduler is not None:
             scheduler.step()
             _log(f"scheduler step baseline={args.baseline} lr={optimizer.param_groups[0]['lr']:.8g}")
-    _log(json.dumps({"best_checkpoint": str(best_path), "best_metric": best_metric}, indent=2))
+    completion = {
+        "baseline": args.baseline, "epochs": int(args.epochs),
+        "best_checkpoint": str(best_path), "best_metric": float(best_metric),
+        "completed": True,
+        "training_signature": {
+            "lr": float(args.lr), "weight_decay": float(args.weight_decay),
+            "amp": bool(args.amp), "amp_dtype": str(args.amp_dtype),
+            "grad_clip": float(args.grad_clip),
+            "dtpp_variable_cost": bool(getattr(args, "dtpp_variable_cost", False)),
+        },
+    }
+    with (out_dir / f"external_{args.baseline}_training_complete.json").open("w", encoding="utf-8") as f:
+        json.dump(completion, f, indent=2)
+    _log(json.dumps(completion, indent=2))
 
 
 if __name__ == "__main__":

@@ -46,10 +46,19 @@ def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str
             decoder_levels=int(args.get("gameformer_decoder_levels", 4)),
         )
     elif baseline == "dtpp":
+        # New checkpoints record the explicit opt-in.  For pre-V3 checkpoints,
+        # preserve their historical --dtpp-fixed-cost semantics so loading is
+        # backward compatible and never silently changes a stored experiment.
+        if "dtpp_variable_cost" in args:
+            variable_cost = bool(args.get("dtpp_variable_cost", False))
+        elif "dtpp_fixed_cost" in args:
+            variable_cost = not bool(args.get("dtpp_fixed_cost", False))
+        else:
+            variable_cost = False
         model = COWPDTPP(
             neighbors=int(args.get("max_neighbors", 10)),
             max_branch=int(args.get("max_candidates", model_cfg.get("limits", {}).get("max_candidates", 30))),
-            variable_cost=not bool(args.get("dtpp_fixed_cost", False)),
+            variable_cost=variable_cost,
         )
     elif baseline == "pluto":
         model = COWPPLUTO(
@@ -68,7 +77,10 @@ def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str
         )
     else:
         raise ValueError(f"Unsupported external baseline checkpoint: {baseline}")
-    model.load_state_dict(ckpt["model"], strict=False)
+    # A baseline benchmark must never run with silently missing/random weights.
+    # All V2/V3 architecture changes below are parameter-shape compatible, so
+    # strict loading is both safe and preferable for publication experiments.
+    model.load_state_dict(ckpt["model"], strict=True)
     model.to(dev).eval()
     return model, baseline, model_cfg, args, dev
 
@@ -147,6 +159,8 @@ class ExternalWaymaxPolicy:
         xy = np.asarray(local_xy, dtype=np.float32)
         if xy.ndim != 2 or xy.shape[-1] != 2:
             raise ValueError(f"Expected local_xy [T,2], got {xy.shape}")
+        if not np.isfinite(xy).all():
+            raise FloatingPointError("External planner produced non-finite local waypoints")
         c, s = float(np.cos(yaw0)), float(np.sin(yaw0))
         gx = origin[0] + c * xy[:, 0] - s * xy[:, 1]
         gy = origin[1] + s * xy[:, 0] + c * xy[:, 1]
@@ -165,24 +179,45 @@ class ExternalWaymaxPolicy:
         out[:, :2] = gxy
         out[:, 2] = yaw
         out[:, 3:5] = vel
-        return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+        if not np.isfinite(out).all():
+            raise FloatingPointError("Globalized external-planner trajectory became non-finite")
+        return out
 
     def _direct_local_xy(self, ext) -> tuple[np.ndarray | None, float | None, str]:
         """Return the source planner's own direct ego trajectory when it has one."""
         if self.baseline == "gameformer":
             outputs = self.model(ext.gameformer_inputs)
             trajs, scores = self.model.final_level(outputs)
-            mode = int(torch.argmax(scores[0, 0]).detach().cpu())
-            xy = trajs[0, 0, mode, :, :2].detach().float().cpu().numpy()
-            return xy, float(scores[0, 0, mode].detach().cpu()), f"mode_{mode}"
+            row = scores[0, 0].float()
+            finite = torch.isfinite(row)
+            if not bool(finite.any()):
+                return None, None, "no_finite_mode_score"
+            safe_row = torch.where(finite, row, torch.full_like(row, -torch.inf))
+            mode = int(torch.argmax(safe_row).detach().cpu())
+            xy_t = trajs[0, 0, mode, :, :2].float()
+            if not bool(torch.isfinite(xy_t).all()):
+                return None, float(row[mode].detach().cpu()), "nonfinite_mode_trajectory"
+            xy = xy_t.detach().cpu().numpy()
+            return xy, float(row[mode].detach().cpu()), f"mode_{mode}"
         if self.baseline == "pluto":
             outputs = self.model(ext.planner_inputs)
-            mode = int(torch.argmax(outputs["scores"][0]).detach().cpu())
-            xy = outputs["trajectories"][0, mode].detach().float().cpu().numpy()
-            return xy, float(outputs["scores"][0, mode].detach().cpu()), f"mode_{mode}"
+            row = outputs["scores"][0].float()
+            finite = torch.isfinite(row)
+            if not bool(finite.any()):
+                return None, None, "no_finite_mode_score"
+            safe_row = torch.where(finite, row, torch.full_like(row, -torch.inf))
+            mode = int(torch.argmax(safe_row).detach().cpu())
+            xy_t = outputs["trajectories"][0, mode].float()
+            if not bool(torch.isfinite(xy_t).all()):
+                return None, float(row[mode].detach().cpu()), "nonfinite_mode_trajectory"
+            xy = xy_t.detach().cpu().numpy()
+            return xy, float(row[mode].detach().cpu()), f"mode_{mode}"
         if self.baseline == "plant2":
             outputs = self.model(ext.planner_inputs)
-            xy = outputs["trajectory"][0].detach().float().cpu().numpy()
+            xy_t = outputs["trajectory"][0].float()
+            if not bool(torch.isfinite(xy_t).all()):
+                return None, None, "nonfinite_autoregressive_waypoints"
+            xy = xy_t.detach().cpu().numpy()
             return xy, None, "autoregressive_waypoints"
         return None, None, "candidate_tree_required"
 
@@ -328,6 +363,8 @@ class ExternalWaymaxPolicy:
             else:
                 raise ValueError(self.baseline)
             mask = ext.candidate_valid[0]
+            finite_scores = torch.isfinite(scores)
+            mask = mask & finite_scores
             if self.require_conventional_safe:
                 mask2 = mask & ext.conventional_safe[0]
                 if bool(mask2.any()):
@@ -341,17 +378,25 @@ class ExternalWaymaxPolicy:
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
         conv_np = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool)
+        fallback_reason = None
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)
             selected = int(valid_idx[0]) if valid_idx.size else 0
+            fallback_reason = "no_finite_candidate_score" if valid_idx.size else "no_valid_candidate"
+        selected_score_value = float(scores[selected].detach().cpu()) if selected >= 0 else float("nan")
+        if not np.isfinite(selected_score_value):
+            selected_score_value = None
+        finite_valid_candidates = int((ext.candidate_valid[0] & torch.isfinite(scores)).sum().detach().cpu())
         self._last_diagnostics = {
             "baseline": self.baseline,
             "execution_mode": "candidate",
             "selected_idx": selected,
             "valid_candidates": int(valid.sum()),
             "conventional_candidates": int(conv_np.sum()),
-            "selected_score": float(scores[selected].detach().cpu()) if selected >= 0 else float("nan"),
-            "fallback": False,
+            "selected_score": selected_score_value,
+            "fallback": bool(fallback_reason is not None),
+            "fallback_reason": fallback_reason,
+            "finite_scored_candidates": finite_valid_candidates,
             "cowp_candidate_filter_applied": bool(self.require_conventional_safe),
             "optimized_candidate_observation_path": True,
             "scenario_static_map_cache": True,

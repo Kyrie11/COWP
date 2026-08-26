@@ -147,7 +147,8 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
                 scores = model.score_candidates(ext.planner_inputs, ext.candidates, ext.candidate_valid)
             else:
                 raise ValueError(baseline)
-            accept = ext.candidate_valid
+            # Never let NaN/Inf logits win argmax in an offline benchmark.
+            accept = ext.candidate_valid & torch.isfinite(scores)
             if args.require_conventional_safe:
                 accept2 = accept & ext.conventional_safe
                 accept = torch.where(accept2.any(dim=1, keepdim=True), accept2, accept)

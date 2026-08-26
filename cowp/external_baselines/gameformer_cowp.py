@@ -363,8 +363,9 @@ def gameformer_loss(outputs: Mapping[str, torch.Tensor], ego_future_xy: torch.Te
         valid_f = ego_future_valid.float()
         ego_dist = torch.linalg.norm((future[:, 0] - ego_future_xy) * valid_f[..., None], dim=-1)
         metrics["plannerADE"] = float((ego_dist.sum() / valid_f.sum().clamp_min(1.0)).detach().cpu())
-        if ego_future_valid.any():
+        sample_valid = ego_future_valid.any(dim=1)
+        if bool(sample_valid.any()):
             last_idx = valid_f.sum(dim=1).long().clamp_min(1) - 1
             rows = torch.arange(ego_dist.shape[0], device=ego_dist.device)
-            metrics["plannerFDE"] = float(ego_dist[rows, last_idx].mean().detach().cpu())
+            metrics["plannerFDE"] = float(ego_dist[rows[sample_valid], last_idx[sample_valid]].mean().detach().cpu())
     return total, metrics
