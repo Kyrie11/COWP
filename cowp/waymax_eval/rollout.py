@@ -66,7 +66,7 @@ def _method_gate_defaults(method: str, gate_mode: str) -> tuple[str, str]:
         "no_ncf": "planner_score_only",
     }
     m = aliases.get(m, m)
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and g == "hard":
         # The paper/code treats the primary COWP certificate as priority-aware NCF.
         # ``cowp_cert_utility`` shares the exact same certificate and changes only
         # the post-certificate selector, so it must inherit the same gate semantics.
@@ -866,7 +866,7 @@ def _select_from_learned(
         selection_mask = torch.where(has_shielded, shielded, certificate_accepted)
         adjusted_scores = scores
 
-    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and gate_mode in {"priority", "soft"}:
+    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and gate_mode in {"priority", "soft"}:
         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
         # explanatory evidence, but selection is anchored by a candidate-level NCF
         # certificate trained from the dataset's noncoercive_feasible/false_safe

@@ -113,7 +113,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -256,6 +256,36 @@ def _strict_no_regret_rvr_switch(
         if r > b + eps:
             return False
     return True
+
+
+def _bihorizon_option_dominates(
+    base_sig: tuple[int, int, int, int],
+    alt_sig: tuple[int, int, int, int],
+    base_prefix: int,
+    alt_prefix: int,
+) -> bool:
+    """Parameter-free two-horizon viability dominance.
+
+    The alternative must not reduce either the current causal survival prefix or
+    the lexicographic successor option-set signature, and must strictly improve at
+    least one.  This is intentionally a product partial order rather than a weighted
+    scalarization.
+    """
+    return bool(
+        alt_sig >= base_sig
+        and int(alt_prefix) >= int(base_prefix)
+        and (alt_sig > base_sig or int(alt_prefix) > int(base_prefix))
+    )
+
+
+def _successor_restoration_dominates(
+    base_detail: dict[str, int], alt_detail: dict[str, int]
+) -> bool:
+    """Diagnostic 0->1 restoration test for a full conventional successor option."""
+    return bool(
+        int(alt_detail.get("conventional_exists", 0))
+        > int(base_detail.get("conventional_exists", 0))
+    )
 
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
@@ -3025,7 +3055,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -3136,7 +3166,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"}:
                     # All three branches share the exact v16.8.29 RVR proposal,
                     # but only the original RVR unconditionally follows it.
                     rvr_mask = _recursive_viability_recovery_mask(
@@ -3165,13 +3195,14 @@ class COWPWaymaxPolicy:
                         select_score = fallback_score
                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
                     else:
-                        # Successor Option Viability Recovery (SOVR).  v16.8.29
-                        # optimized the current open-loop survival prefix.  This
-                        # probe instead asks whether executing the alternative
-                        # leaves a *better option set at the next replanning state*.
-                        # Only baseline-vs-RVR is probed, keeping the causal test
-                        # focused and avoiding K successor candidate generations.
+                        # v16.8.30/31 successor-option family.  The base COWP
+                        # fallback and the v16.8.29 max-prefix RVR action are kept
+                        # as the same controlled pair so attribution remains clean.
+                        # v16.8.31 changes only the *acceptance relation* between
+                        # current survival and successor option-set preservation.
                         chosen = recovery_base_candidate
+                        base_sig = None
+                        rvr_sig = None
                         if recovery_rvr_candidate != recovery_base_candidate:
                             bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
                             rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
@@ -3185,13 +3216,42 @@ class COWPWaymaxPolicy:
                                     agent_state, sdc_index, rt, roadgraph, self.cfg
                                 )
                                 successor_signature_cmp = 1 if rvr_sig > base_sig else (-1 if rvr_sig < base_sig else 0)
-                                if successor_signature_cmp > 0:
+                                bp = int(round(float(collision_prefix_steps[recovery_base_candidate].detach().cpu().item())))
+                                rp = int(round(float(collision_prefix_steps[recovery_rvr_candidate].detach().cpu().item())))
+                                if method == "cowp_successor_option_viability":
+                                    # v16.8.30 strict successor-improvement gate.
+                                    recovery_switch_applied = bool(rvr_sig > base_sig)
+                                elif method == "cowp_bihorizon_option_viability":
+                                    # Bi-Horizon Option Viability (BHOV): preserve
+                                    # both the current causal survival horizon and
+                                    # the next-state feasible option set.  This is a
+                                    # parameter-free product partial order, not a
+                                    # scalar risk/prefix mixture.  Equal successor
+                                    # support may therefore accept a strict current
+                                    # prefix gain; any successor regression blocks it.
+                                    recovery_switch_applied = _bihorizon_option_dominates(
+                                        base_sig, rvr_sig, bp, rp
+                                    )
+                                else:
+                                    # Diagnostic restoration-only branch: accept
+                                    # only a discrete 0->1 restoration of any full
+                                    # conventional successor option.  It isolates
+                                    # whether macro/count/prefix components of the
+                                    # richer successor signature are reliable.
+                                    recovery_switch_applied = _successor_restoration_dominates(
+                                        successor_base_detail, successor_rvr_detail
+                                    )
+                                if recovery_switch_applied:
                                     chosen = recovery_rvr_candidate
-                                    recovery_switch_applied = True
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[chosen] = True
                         select_score = fallback_score
-                        fallback_reason = "no_conventional_use_successor_option_viability"
+                        if method == "cowp_successor_option_viability":
+                            fallback_reason = "no_conventional_use_successor_option_viability"
+                        elif method == "cowp_bihorizon_option_viability":
+                            fallback_reason = "no_conventional_use_bihorizon_option_viability"
+                        else:
+                            fallback_reason = "no_conventional_use_successor_restore_only"
                 else:
                     select_mask = cand_valid
                     select_score = fallback_score
