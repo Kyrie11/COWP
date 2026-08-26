@@ -113,7 +113,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -285,6 +285,83 @@ def _successor_restoration_dominates(
     return bool(
         int(alt_detail.get("conventional_exists", 0))
         > int(base_detail.get("conventional_exists", 0))
+    )
+
+
+def _second_successor_option_signature(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    first_emitted_target: np.ndarray,
+    first_emitted_accel: float,
+    candidate_traj: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[tuple[int, int, int, int], dict[str, int]]:
+    """Evaluate option support after two *causal emitted* control intervals.
+
+    The first transition is exactly the emitted action already used by the
+    one-step successor probe.  The second transition follows waypoint 1 of the
+    same selected recovery trajectory, but is projected again through the same
+    jerk/yaw-rate-limited controller using the first-step acceleration as state.
+    Other agents advance with the unchanged constant-velocity causal model.
+
+    This is a deliberately minimal persistence probe.  It uses no logged future
+    and does not claim a formal viability-kernel guarantee.
+    """
+    traj = np.asarray(candidate_traj, dtype=np.float32)
+    if traj.ndim != 2 or traj.shape[0] < 2:
+        # Degenerate trajectory: a second causal horizon cannot be evaluated.
+        return (0, 0, 0, 0), {
+            "conventional_exists": 0,
+            "conventional_macro_types": 0,
+            "conventional_candidates": 0,
+            "max_collision_safe_prefix_steps": 0,
+            "valid_candidates": 0,
+            "roadgraph_safe_candidates": 0,
+        }
+    s1 = _counterfactual_successor_agent_state(
+        agent_state, sdc_index, first_emitted_target, cfg
+    )
+    second_target, _second_accel = _consistent_one_step_target(
+        s1[int(sdc_index)], traj[1], cfg, float(first_emitted_accel)
+    )
+    return _successor_option_signature(
+        s1, int(sdc_index), second_target, roadgraph, cfg
+    )
+
+
+def _trihorizon_option_persistence_dominates(
+    base_sig1: tuple[int, int, int, int],
+    alt_sig1: tuple[int, int, int, int],
+    base_sig2: tuple[int, int, int, int],
+    alt_sig2: tuple[int, int, int, int],
+    base_prefix: int,
+    alt_prefix: int,
+) -> bool:
+    """Three-horizon product-order gate for temporal option persistence.
+
+    v16.8.31 BHOV established high recovery recall but failed the disjoint
+    non-harmfulness gate.  The minimal next hypothesis is that a one-successor
+    option comparison is too myopic.  The RVR alternative is therefore accepted
+    only when it is non-worse at all three causal horizons:
+
+      H0: current collision-safe prefix,
+      V1: option-set signature after the first emitted action,
+      V2: option-set signature after a second emitted action along the same
+          recovery trajectory.
+
+    At least one horizon must improve strictly.  No weights/tolerances are
+    introduced, so the test remains a set-preservation partial order.
+    """
+    return bool(
+        int(alt_prefix) >= int(base_prefix)
+        and alt_sig1 >= base_sig1
+        and alt_sig2 >= base_sig2
+        and (
+            int(alt_prefix) > int(base_prefix)
+            or alt_sig1 > base_sig1
+            or alt_sig2 > base_sig2
+        )
     )
 
 
@@ -2417,6 +2494,9 @@ class COWPWaymaxPolicy:
         self._previous_longitudinal_accel: float = 0.0
         self._previous_scenario_index: int | None = None
         self._previous_selected_traj: np.ndarray | None = None
+        # v16.8.32 diagnostic state.  Only the explicit SOV-triggered commitment
+        # method reads this flag; all other methods remain memoryless here.
+        self._recovery_commitment_active: bool = False
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
         self._cached_sdc_scenario_index: int | None = None
@@ -2485,6 +2565,7 @@ class COWPWaymaxPolicy:
         if step == 0 or (scenario_index is not None and scenario_index != self._previous_scenario_index):
             self._previous_longitudinal_accel = 0.0
             self._previous_selected_traj = None
+            self._recovery_commitment_active = False
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
@@ -3055,7 +3136,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -3151,24 +3232,41 @@ class COWPWaymaxPolicy:
             recovery_switch_applied = False
             recovery_action_target_equal = False
             successor_probe_used = False
+            second_successor_probe_used = False
             successor_base_detail = {}
             successor_rvr_detail = {}
+            second_successor_base_detail = {}
+            second_successor_rvr_detail = {}
             successor_signature_cmp = 0
+            second_successor_signature_cmp = 0
+            recovery_commitment_active_before = bool(self._recovery_commitment_active) if method == "cowp_sov_recovery_commitment" else False
+            recovery_commitment_entered = False
+            recovery_commitment_continued = False
+            recovery_commitment_cleared = False
             if bool(fallback_flags[0]):
+                if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
+                    self._recovery_commitment_active = False
+                    recovery_commitment_cleared = True
                 select_mask = selection_mask
                 select_score = adjusted_scores
                 fallback_used = False
                 fallback_reason = "accepted_ncf" if gate_mode == "hard" else ("accepted_baseline" if gate_mode in {"none", "off"} else "accepted_priority_ncf")
             elif bool(fallback_flags[1]):
+                if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
+                    # Recovery terminates by *state restoration*, not by a fixed
+                    # dwell time: once any full conventional option exists, hand
+                    # control back to the unchanged COWP path.
+                    self._recovery_commitment_active = False
+                    recovery_commitment_cleared = True
                 select_mask = cand_valid & conventional
                 select_score = fallback_score
                 fallback_used = True
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only"}:
-                    # All three branches share the exact v16.8.29 RVR proposal,
-                    # but only the original RVR unconditionally follows it.
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment"}:
+                    # Every recovery probe uses the exact same controlled pair:
+                    # original COWP least-coercive-valid vs v16.8.29 max-prefix RVR.
                     rvr_mask = _recursive_viability_recovery_mask(
                         cand_valid, roadgraph_safe, collision_prefix_steps
                     )
@@ -3195,15 +3293,28 @@ class COWPWaymaxPolicy:
                         select_score = fallback_score
                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
                     else:
-                        # v16.8.30/31 successor-option family.  The base COWP
-                        # fallback and the v16.8.29 max-prefix RVR action are kept
-                        # as the same controlled pair so attribution remains clean.
-                        # v16.8.31 changes only the *acceptance relation* between
-                        # current survival and successor option-set preservation.
                         chosen = recovery_base_candidate
                         base_sig = None
                         rvr_sig = None
-                        if recovery_rvr_candidate != recovery_base_candidate:
+                        bp = int(round(float(collision_prefix_steps[recovery_base_candidate].detach().cpu().item())))
+                        rp = int(round(float(collision_prefix_steps[recovery_rvr_candidate].detach().cpu().item())))
+
+                        # v16.8.32 commitment diagnostic: a strict SOV improvement
+                        # is used only as the *entry certificate*.  Once entered,
+                        # the policy keeps the unchanged RVR recovery action while
+                        # the controller remains in zero-conventional state.  This
+                        # directly tests whether sparse COWP/RVR hybrid switching,
+                        # rather than the RVR recovery mode itself, creates delayed
+                        # closed-loop failures.
+                        commitment_already_active = bool(
+                            method == "cowp_sov_recovery_commitment"
+                            and self._recovery_commitment_active
+                        )
+                        if commitment_already_active:
+                            recovery_switch_applied = bool(recovery_rvr_candidate != recovery_base_candidate)
+                            recovery_commitment_continued = True
+                            chosen = recovery_rvr_candidate
+                        elif recovery_rvr_candidate != recovery_base_candidate:
                             bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
                             rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
                             recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
@@ -3216,31 +3327,46 @@ class COWPWaymaxPolicy:
                                     agent_state, sdc_index, rt, roadgraph, self.cfg
                                 )
                                 successor_signature_cmp = 1 if rvr_sig > base_sig else (-1 if rvr_sig < base_sig else 0)
-                                bp = int(round(float(collision_prefix_steps[recovery_base_candidate].detach().cpu().item())))
-                                rp = int(round(float(collision_prefix_steps[recovery_rvr_candidate].detach().cpu().item())))
                                 if method == "cowp_successor_option_viability":
-                                    # v16.8.30 strict successor-improvement gate.
                                     recovery_switch_applied = bool(rvr_sig > base_sig)
                                 elif method == "cowp_bihorizon_option_viability":
-                                    # Bi-Horizon Option Viability (BHOV): preserve
-                                    # both the current causal survival horizon and
-                                    # the next-state feasible option set.  This is a
-                                    # parameter-free product partial order, not a
-                                    # scalar risk/prefix mixture.  Equal successor
-                                    # support may therefore accept a strict current
-                                    # prefix gain; any successor regression blocks it.
                                     recovery_switch_applied = _bihorizon_option_dominates(
                                         base_sig, rvr_sig, bp, rp
                                     )
-                                else:
-                                    # Diagnostic restoration-only branch: accept
-                                    # only a discrete 0->1 restoration of any full
-                                    # conventional successor option.  It isolates
-                                    # whether macro/count/prefix components of the
-                                    # richer successor signature are reliable.
+                                elif method == "cowp_successor_restore_only":
                                     recovery_switch_applied = _successor_restoration_dominates(
                                         successor_base_detail, successor_rvr_detail
                                     )
+                                elif method == "cowp_trihorizon_option_persistence":
+                                    # First apply the v16.8.31 high-recall BHOV
+                                    # pre-gate.  Only its accepted alternatives pay
+                                    # for the extra second-successor audit.
+                                    bhov_pre = _bihorizon_option_dominates(
+                                        base_sig, rvr_sig, bp, rp
+                                    )
+                                    if bhov_pre:
+                                        second_successor_probe_used = True
+                                        traj_np = np.asarray(batch_np["cowp/candidates/trajectory"][0])
+                                        base_sig2, second_successor_base_detail = _second_successor_option_signature(
+                                            agent_state, sdc_index, bt,
+                                            float(action_accels_np[recovery_base_candidate]),
+                                            traj_np[recovery_base_candidate], roadgraph, self.cfg
+                                        )
+                                        rvr_sig2, second_successor_rvr_detail = _second_successor_option_signature(
+                                            agent_state, sdc_index, rt,
+                                            float(action_accels_np[recovery_rvr_candidate]),
+                                            traj_np[recovery_rvr_candidate], roadgraph, self.cfg
+                                        )
+                                        second_successor_signature_cmp = 1 if rvr_sig2 > base_sig2 else (-1 if rvr_sig2 < base_sig2 else 0)
+                                        recovery_switch_applied = _trihorizon_option_persistence_dominates(
+                                            base_sig, rvr_sig, base_sig2, rvr_sig2, bp, rp
+                                        )
+                                else:
+                                    # SOV-triggered recovery commitment entry.
+                                    recovery_switch_applied = bool(rvr_sig > base_sig)
+                                    if recovery_switch_applied:
+                                        self._recovery_commitment_active = True
+                                        recovery_commitment_entered = True
                                 if recovery_switch_applied:
                                     chosen = recovery_rvr_candidate
                         select_mask = self.torch.zeros_like(cand_valid)
@@ -3250,8 +3376,12 @@ class COWPWaymaxPolicy:
                             fallback_reason = "no_conventional_use_successor_option_viability"
                         elif method == "cowp_bihorizon_option_viability":
                             fallback_reason = "no_conventional_use_bihorizon_option_viability"
-                        else:
+                        elif method == "cowp_successor_restore_only":
                             fallback_reason = "no_conventional_use_successor_restore_only"
+                        elif method == "cowp_trihorizon_option_persistence":
+                            fallback_reason = "no_conventional_use_trihorizon_option_persistence"
+                        else:
+                            fallback_reason = "no_conventional_use_sov_recovery_commitment"
                 else:
                     select_mask = cand_valid
                     select_score = fallback_score
@@ -3260,6 +3390,9 @@ class COWPWaymaxPolicy:
                 # No selectable candidate exists.  Selection diagnostics remain
                 # explicitly uncertified; execution is resolved later from the
                 # current ego state and must never consume a zero-padded slot.
+                if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
+                    self._recovery_commitment_active = False
+                    recovery_commitment_cleared = True
                 select_mask = cand_valid
                 select_score = fallback_score
                 fallback_used = True
@@ -3415,6 +3548,21 @@ class COWPWaymaxPolicy:
                 "successor_rvr_conventional_macro_types": int(successor_rvr_detail.get("conventional_macro_types", -1)),
                 "successor_rvr_conventional_candidates": int(successor_rvr_detail.get("conventional_candidates", -1)),
                 "successor_rvr_max_collision_safe_prefix_steps": int(successor_rvr_detail.get("max_collision_safe_prefix_steps", -1)),
+                "second_successor_option_probe_used": bool(second_successor_probe_used),
+                "second_successor_signature_compare": int(second_successor_signature_cmp),
+                "second_successor_base_conventional_exists": int(second_successor_base_detail.get("conventional_exists", -1)),
+                "second_successor_base_conventional_macro_types": int(second_successor_base_detail.get("conventional_macro_types", -1)),
+                "second_successor_base_conventional_candidates": int(second_successor_base_detail.get("conventional_candidates", -1)),
+                "second_successor_base_max_collision_safe_prefix_steps": int(second_successor_base_detail.get("max_collision_safe_prefix_steps", -1)),
+                "second_successor_rvr_conventional_exists": int(second_successor_rvr_detail.get("conventional_exists", -1)),
+                "second_successor_rvr_conventional_macro_types": int(second_successor_rvr_detail.get("conventional_macro_types", -1)),
+                "second_successor_rvr_conventional_candidates": int(second_successor_rvr_detail.get("conventional_candidates", -1)),
+                "second_successor_rvr_max_collision_safe_prefix_steps": int(second_successor_rvr_detail.get("max_collision_safe_prefix_steps", -1)),
+                "recovery_commitment_active_before": bool(recovery_commitment_active_before),
+                "recovery_commitment_active_after": bool(self._recovery_commitment_active) if method == "cowp_sov_recovery_commitment" else False,
+                "recovery_commitment_entered": bool(recovery_commitment_entered),
+                "recovery_commitment_continued": bool(recovery_commitment_continued),
+                "recovery_commitment_cleared": bool(recovery_commitment_cleared),
             })
             if recovery_base_candidate >= 0 and recovery_rvr_candidate >= 0:
                 diag.update({

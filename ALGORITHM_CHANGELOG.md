@@ -3552,3 +3552,22 @@ See `ALGORITHM_CHANGELOG_V16_8_28.md`. v16.8.27 exact-200 attribution was blocke
 See `ALGORITHM_CHANGELOG_V16_8_29.md` and `CURRENT_ANALYSIS_V16_8_29_CN.md`. The clean v16.8.28 exact-200 result localizes collision to online zero-conventional states rather than conventional-safe fallback or accepted COWP paths. v16.8.29 therefore freezes RCOT/BCOT/protected-priority/frontier/outcome settings and adds an opt-in `cowp_recursive_viability` recovery that acts only when the full conventional pool is empty: preserve roadgraph-safe candidates when available, maximize the collision-safe prefix under the unchanged causal screen, then use the existing fallback score only as a tie-break. The branch remains explicitly uncertified.
 
 The release also decomposes zero-conventional states into collision/roadgraph/intersection failure modes and accelerates the causal collision screen by caching candidate-invariant agent futures once per replanning step and vectorizing the per-agent distance audit. A development-only outcome-enriched 64-ID panel is provided to avoid repeated 4×200 runs; it is forbidden as publication evidence. Generic recursive feasibility is not claimed as novel by itself; promotion to a paper-level physical-viability contribution requires evidence for an orthogonal social-noncoercive × physical-recursive-feasibility formulation.
+
+# V16.8.32 — Temporal Option Persistence
+
+V16.8.31 结果通过完整性审计，但 BHOV 未通过预注册 holdout64 non-harmful gate：counterfactual48 上虽然保留 10/10 RVR rescue，却仅避免 3/9 RVR-induced collisions，并带来 +3 kinematics scenes 与显著 EP regression；在与 V16.8.30 panels 完全不重叠的 holdout64 上，COWP 与 pure RVR 均 collision-free，而 BHOV 新诱发 1 个 collision。因此 BHOV 不 promotion、不开 exact200。
+
+该 holdout induced scene 说明两个耦合根因需要拆开：one-step successor option signature 可能无法发现 delayed option collapse；同时 stateless BHOV 在 COWP/RVR 之间的间歇切换会形成第三种 hybrid closed-loop policy，缺乏 recovery commitment 本身可能有害。
+
+V16.8.32 新增两个 opt-in 分支：
+
+1. `cowp_trihorizon_option_persistence`：只在 zero-conventional+valid recovery state 比较原 COWP fallback 与原 RVR candidate，以 current prefix H0、actual emitted action 后 successor option signature V1、第二个受同一 controller 约束 emitted step 后的 V2 构成 parameter-free product-order，要求 H0/V1/V2 均不退化且至少一项严格改善。
+2. `cowp_sov_recovery_commitment`：使用 V16.8.30 strict SOV 作为高精度 recovery entry；进入后在 zero-conventional+valid regime 内持续执行原 RVR，直到 certificate/conventional option 恢复或 no-valid emergency，专门诊断 stateless hybrid switching。
+
+没有改变 dataset、natural roots、RCOT、BCOT、protected-priority certificate、set-preservation frontier、8 s conventional contract、outcome head 或 proposal bank。明确禁止通过 BHOV epsilon/tolerance、prefix/risk scalar weighting、缩短 conventional horizon、增加 proposal primitive 或训练新 successor head 来救本轮结果。
+
+实验协议：equivalence16 → preregistered counterfactual48 → fresh37 → exact200。counterfactual48 要求 retain>=5/10 old RVR rescues、avoid>=7/9 old induced、net collision reduction>=3、kinematics regression<=1、mean EP delta>=-0.05。fresh37 是从 exact200 中剔除 V16.8.30/31 所有 mechanism-selection panels 后剩余的 37 IDs，hash `ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481`；只允许 counterfactual48 通过的方法进入 fresh37，再通过后才运行 exact200。
+
+当前主线继续收紧为 Orthogonal Option-Set Feasibility：social axis 保护其他关键 actor 的 natural low-burden option set；physical-temporal axis 保护 ego 在实际 emitted recovery action 下的 future executable option-set persistence。当前 P0 bottleneck 为 temporal option persistence + recovery-mode consistency；proposal support 为长期 ceiling，accepted-path kinematics 保持独立 secondary problem。
+
+详细记录见 `ALGORITHM_CHANGELOG_V16_8_32.md` 与 `CURRENT_ANALYSIS_V16_8_32_CN.md`。
