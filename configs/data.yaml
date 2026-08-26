@@ -11,6 +11,7 @@ womd:
 
   include_sdc_paths: true
   waymax_config_name: WOD_1_3_1_TRAINING
+  validation_waymax_config_name: WOD_1_3_1_VALIDATION
 outputs:
   root: outputs/cowp
   index_jsonl: outputs/cowp/cowp_index.jsonl

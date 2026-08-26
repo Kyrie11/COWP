@@ -39,3 +39,7 @@ MODE=full BASELINES="gameformer dtpp" RUN_TRAIN=1 RUN_OFFLINE_EVAL=1 RUN_ONLINE_
 - The learned-offline evaluation uses the same candidate labels and attached Waymax candidate outcomes as COWP.
 - The online evaluation calls the real Waymax closed-loop rollout path and generates candidates at every step using COWP's existing online candidate generator, then scores them with the external model.
 - The COWP cache diagnostics show log-divergence labels are missing/degenerate in the current safety-only replay, so this patch does not train or report log-divergence as a main external-baseline objective.
+
+## V2 raw-WOMD / performance note
+
+For the causal closed-loop data boundary, speed profiler, fidelity labels and current commands, see the repository-root file `README_5_SOTA_BASELINES_COWP_V2_RAW_WOMD_SPEED_CN.md`.  In particular, final Waymax rollout uses raw WOMD 1.3.1 validation TFExamples; NPZ files remain training/mechanism caches, and external policies must not consume logged future states.

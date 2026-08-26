@@ -42,6 +42,10 @@ EXTERNAL_WANTED_PREFIXES = {
     "womd/state/",
     "roadgraph_samples/",
     "womd/roadgraph_samples/",
+    "path_samples/",
+    "womd/path_samples/",
+    "traffic_light_state/",
+    "womd/traffic_light_state/",
     "map/",
     "scenario/",
     "dataset/",
@@ -56,6 +60,41 @@ EXTERNAL_WANTED_PREFIXES = {
 }
 
 
+# Training does not need COWP witness/transport tensors for direct planners.
+# Keeping the whitelist narrow materially reduces NPZ decompression and IPC cost.
+EXTERNAL_TRAIN_COMMON_PREFIXES = {
+    "state/",
+    "womd/state/",
+    "roadgraph_samples/",
+    "womd/roadgraph_samples/",
+    "path_samples/",
+    "womd/path_samples/",
+}
+
+EXTERNAL_TRAIN_DTPP_PREFIXES = EXTERNAL_TRAIN_COMMON_PREFIXES | {
+    "cowp/candidates/trajectory",
+    "cowp/candidates/valid",
+}
+
+
+def external_wanted_prefixes(*, baseline: str | None = None, purpose: str = "audit", include_waymax_outcomes: bool = True) -> set[str]:
+    """Return the smallest key set needed by an external-baseline phase.
+
+    ``purpose='train'`` intentionally excludes COWP mechanism labels.  DTPP keeps
+    only the proposal trajectory/valid tensors because its current WOMD adapter is
+    a proposal-tree scorer.  ``purpose='audit'`` preserves the old broad contract.
+    """
+    purpose = str(purpose).lower()
+    baseline = str(baseline).lower() if baseline is not None else None
+    if purpose == "train":
+        wanted = set(EXTERNAL_TRAIN_DTPP_PREFIXES if baseline == "dtpp" else EXTERNAL_TRAIN_COMMON_PREFIXES)
+    else:
+        wanted = set(EXTERNAL_WANTED_PREFIXES)
+    if not include_waymax_outcomes:
+        wanted = {x for x in wanted if not x.startswith("waymax/")}
+    return wanted
+
+
 class ExternalCOWPDataset(Dataset):
     """COWP npz dataset for GameFormer/DTPP adapters.
 
@@ -65,11 +104,21 @@ class ExternalCOWPDataset(Dataset):
     preserving the same NPZ loading/canonicalization path as COWP.
     """
 
-    def __init__(self, cache_dir: str | Path, pattern: str = "*.npz", include_waymax_outcomes: bool = True):
+    def __init__(
+        self,
+        cache_dir: str | Path,
+        pattern: str = "*.npz",
+        include_waymax_outcomes: bool = True,
+        *,
+        baseline: str | None = None,
+        purpose: str = "audit",
+    ):
         self.base = COWPNpzDataset(cache_dir, pattern)
-        self._wanted = set(EXTERNAL_WANTED_PREFIXES)
-        if not include_waymax_outcomes:
-            self._wanted = {x for x in self._wanted if not x.startswith("waymax/")}
+        self.baseline = str(baseline).lower() if baseline is not None else None
+        self.purpose = str(purpose).lower()
+        self._wanted = external_wanted_prefixes(
+            baseline=self.baseline, purpose=self.purpose, include_waymax_outcomes=include_waymax_outcomes
+        )
 
     def __len__(self) -> int:
         return len(self.base)
@@ -261,34 +310,49 @@ def _future_xy_for_selected(batch: Mapping[str, torch.Tensor], selected_idx: tor
     return gather_rows(xy, selected_idx), gather_rows(valid.float().unsqueeze(-1), selected_idx).squeeze(-1).bool()
 
 
-def _roadgraph_xy(batch: Mapping[str, torch.Tensor], device: torch.device, origin: torch.Tensor | None = None, yaw0: torch.Tensor | None = None) -> torch.Tensor | None:
+def _roadgraph_xy(
+    batch: Mapping[str, torch.Tensor],
+    device: torch.device,
+    origin: torch.Tensor | None = None,
+    yaw0: torch.Tensor | None = None,
+    *,
+    max_points: int | None = None,
+) -> torch.Tensor | None:
     xyz = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
     if xyz is not None:
-        arr = xyz.float().to(device)
+        arr = xyz.float()
         if arr.ndim == 2:
             arr = arr.unsqueeze(0)
         arr = arr[..., :2].reshape(arr.shape[0], -1, 2)
+        if max_points is not None and arr.shape[1] > int(max_points):
+            arr = arr[:, : int(max_points)]
+        arr = arr.to(device, non_blocking=True)
     else:
         x = first_tensor(batch, ("roadgraph_samples/x", "womd/roadgraph_samples/x"))
         y = first_tensor(batch, ("roadgraph_samples/y", "womd/roadgraph_samples/y"))
         if x is None or y is None:
             return None
-        x = x.float().to(device)
-        y = y.float().to(device)
+        x = x.float()
+        y = y.float()
         if x.ndim == 1:
             x = x.unsqueeze(0)
             y = y.unsqueeze(0)
-        arr = torch.stack([x.reshape(x.shape[0], -1), y.reshape(y.shape[0], -1)], dim=-1)
+        x = x.reshape(x.shape[0], -1)
+        y = y.reshape(y.shape[0], -1)
+        if max_points is not None and x.shape[1] > int(max_points):
+            x = x[:, : int(max_points)]
+            y = y[:, : int(max_points)]
+        arr = torch.stack([x, y], dim=-1).to(device, non_blocking=True)
 
     # Preserve padded/invalid roadgraph tokens.  Translating a zero-padding point
     # by -ego_origin turns it into a huge fake map point and was another source of
     # unstable external-baseline inputs.
     valid_t = first_tensor(batch, ("roadgraph_samples/valid", "womd/roadgraph_samples/valid"))
     if valid_t is not None:
-        valid = valid_t.bool().to(device)
+        valid = valid_t.bool()
         if valid.ndim == 1:
             valid = valid.unsqueeze(0)
-        valid = valid.reshape(valid.shape[0], -1)[:, : arr.shape[1]]
+        valid = valid.reshape(valid.shape[0], -1)[:, : arr.shape[1]].to(device, non_blocking=True)
     else:
         valid = torch.isfinite(arr).all(dim=-1) & (torch.linalg.norm(arr, dim=-1) > 1.0e-6)
     arr = torch.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
@@ -298,11 +362,108 @@ def _roadgraph_xy(batch: Mapping[str, torch.Tensor], device: torch.device, origi
     return arr
 
 
+
+def build_route_centerline(
+    batch: Mapping[str, torch.Tensor],
+    device: torch.device,
+    *,
+    origin: torch.Tensor,
+    yaw0: torch.Tensor,
+    points: int = 160,
+) -> torch.Tensor:
+    """Return ego-frame route samples [B,points,4]=(x,y,heading,valid).
+
+    WOMD 1.3.1 stores 45 SDC paths with 800 points/path when
+    ``include_sdc_paths=True``.  We prefer a valid ``on_route`` path.  Older
+    caches without SDC paths fall back to nearby forward roadgraph samples.
+    """
+    B = origin.shape[0]
+    out = torch.zeros(B, points, 4, device=device, dtype=torch.float32)
+    xyz = first_tensor(batch, ("path_samples/xyz", "womd/path_samples/xyz"))
+    valid_t = first_tensor(batch, ("path_samples/valid", "womd/path_samples/valid"))
+    on_route_t = first_tensor(batch, ("path_samples/on_route", "womd/path_samples/on_route"))
+    if xyz is not None and valid_t is not None:
+        xyz = xyz.float().to(device)
+        valid = valid_t.bool().to(device)
+        if xyz.ndim == 2:
+            xyz = xyz.unsqueeze(0)
+        if valid.ndim == 1:
+            valid = valid.unsqueeze(0)
+        # Canonicalize to [B,P,Q,*].
+        if xyz.ndim >= 4:
+            paths_xy = xyz[..., :2]
+            paths_valid = valid.reshape(B, xyz.shape[1], -1)[..., : xyz.shape[2]]
+        else:
+            flat_xy = xyz.reshape(B, -1, 3)[..., :2] if xyz.shape[-1] != 2 else xyz.reshape(B, -1, 2)
+            flat_valid = valid.reshape(B, -1)
+            if on_route_t is not None:
+                onr = on_route_t.to(device).reshape(B, -1)
+                n_paths = max(int(onr.shape[1]), 1)
+            else:
+                n_paths = 45 if flat_xy.shape[1] % 45 == 0 else 1
+                onr = torch.zeros(B, n_paths, device=device)
+            q = max(flat_xy.shape[1] // n_paths, 1)
+            paths_xy = flat_xy[:, : n_paths * q].reshape(B, n_paths, q, 2)
+            paths_valid = flat_valid[:, : n_paths * q].reshape(B, n_paths, q)
+        P = paths_xy.shape[1]
+        if on_route_t is not None:
+            onr = on_route_t.to(device).reshape(B, -1)[:, :P]
+        else:
+            onr = torch.zeros(B, P, device=device)
+        for b in range(B):
+            usable = paths_valid[b].sum(dim=-1)
+            preference = (onr[b] > 0.5).float() * 1e6 + usable.float()
+            pi = int(preference.argmax().item()) if P else 0
+            mask = paths_valid[b, pi]
+            pts = paths_xy[b, pi][mask]
+            if pts.numel() == 0:
+                continue
+            pts = _xy_to_ego_frame(pts[None], origin[b:b+1], yaw0[b:b+1])[0]
+            # Keep the path segment nearest the ego, then uniformly sample ahead.
+            start = int(torch.linalg.norm(pts, dim=-1).argmin().item())
+            pts = pts[start:]
+            if pts.shape[0] > points:
+                idx = torch.linspace(0, pts.shape[0] - 1, points, device=device).round().long()
+                pts = pts[idx]
+            n = min(points, pts.shape[0])
+            out[b, :n, :2] = pts[:n]
+            if n > 1:
+                d = torch.zeros(n, 2, device=device)
+                d[:-1] = pts[1:n] - pts[:n-1]
+                d[-1] = d[-2]
+                out[b, :n, 2] = torch.atan2(d[:, 1], d[:, 0])
+            out[b, :n, 3] = 1.0
+    missing = out[..., 3].sum(dim=-1) < 2
+    if bool(missing.any()):
+        rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0)
+        if rg is not None:
+            for b in torch.where(missing)[0].tolist():
+                pts = rg[b]
+                finite = torch.isfinite(pts).all(dim=-1) & (torch.linalg.norm(pts, dim=-1) > 1e-4)
+                pts = pts[finite]
+                if pts.numel() == 0:
+                    continue
+                # Approximate a route from roadgraph samples in front of the ego.
+                pts = pts[(pts[:, 0] > -5.0) & (pts[:, 0] < 150.0) & (pts[:, 1].abs() < 15.0)]
+                if pts.numel() == 0:
+                    continue
+                order = torch.argsort(pts[:, 0] + 0.05 * pts[:, 1].abs())
+                pts = pts[order][:points]
+                n = pts.shape[0]
+                out[b, :n, :2] = pts
+                if n > 1:
+                    d = torch.zeros(n, 2, device=device)
+                    d[:-1] = pts[1:] - pts[:-1]
+                    d[-1] = d[-2]
+                    out[b, :n, 2] = torch.atan2(d[:, 1], d[:, 0])
+                out[b, :n, 3] = 1.0
+    return out
+
 def build_gameformer_map(batch: Mapping[str, torch.Tensor], num_agents_to_predict: int, device: torch.device, n_lanes: int = 6, lane_points: int = 100, n_crosswalks: int = 4, *, origin: torch.Tensor | None = None, yaw0: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
     B = next(v for v in batch.values() if torch.is_tensor(v)).shape[0]
     lanes = torch.zeros(B, num_agents_to_predict, n_lanes, lane_points, 16, device=device)
     cross = torch.zeros(B, num_agents_to_predict, n_crosswalks, lane_points, 3, device=device)
-    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0)
+    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=lane_points)
     if rg is not None and rg.shape[1] > 1:
         P = min(lane_points, rg.shape[1])
         xy = rg[:, :P]
@@ -318,7 +479,7 @@ def build_dtpp_map(batch: Mapping[str, torch.Tensor], device: torch.device, n_la
     B = next(v for v in batch.values() if torch.is_tensor(v)).shape[0]
     lanes = torch.zeros(B, n_lanes, lane_points, 7, device=device)
     cross = torch.zeros(B, n_crosswalks, cross_points, 3, device=device)
-    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0)
+    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=n_lanes * lane_points)
     if rg is not None and rg.shape[1] > 1:
         total = min(n_lanes * lane_points, rg.shape[1])
         xy = rg[:, :total]
@@ -407,11 +568,25 @@ class ExternalBatch:
     candidate_valid: torch.Tensor
     conventional_safe: torch.Tensor
     dtpp_candidate_tree: torch.Tensor
+    planner_inputs: dict[str, torch.Tensor]
     neighbor_indices: torch.Tensor
     sdc_indices: torch.Tensor
+    origin: torch.Tensor
+    yaw0: torch.Tensor
 
 
-def make_external_batch(batch: Mapping[str, torch.Tensor], cfg: dict, *, device: torch.device, max_neighbors: int = 10, max_candidates: int = 30, horizon: int | None = None) -> ExternalBatch:
+def make_external_batch(
+    batch: Mapping[str, torch.Tensor],
+    cfg: dict,
+    *,
+    device: torch.device,
+    max_neighbors: int = 10,
+    max_candidates: int = 30,
+    horizon: int | None = None,
+    baseline: str | None = None,
+    require_candidates: bool = True,
+    require_future: bool = True,
+) -> ExternalBatch:
     # Build canonical COWP history [B,N,Th,11].
     hist = first_tensor(batch, ("state/history", "womd/state/history"))
     if hist is not None:
@@ -437,53 +612,97 @@ def make_external_batch(batch: Mapping[str, torch.Tensor], cfg: dict, *, device:
     origin = agent_history[rows, sdc_safe, -1, :2].clone()
     yaw0 = agent_history[rows, sdc_safe, -1, 6].clone()
 
+    baseline_l = str(baseline).lower() if baseline is not None else None
+    need_gf = baseline_l in {None, "gameformer"}
+    need_dtpp = baseline_l in {None, "dtpp"}
+    need_planner = baseline_l in {None, "pluto", "plant2"}
+
     typ = _agent_type(batch, N, device)
-    selected_types = gather_rows(typ.unsqueeze(-1), all_pred_idx).squeeze(-1) if typ is not None else None
-    selected_hist = _history_to_ego_frame(gather_rows(agent_history, all_pred_idx), origin, yaw0)
-    gf_state = history_to_gameformer_state(selected_hist, selected_types)
-    gf_ego = gf_state[:, 0]
-    gf_neighbors = gf_state[:, 1:]
-    gf_lanes, gf_cross = build_gameformer_map(batch, max_neighbors + 1, device, origin=origin, yaw0=yaw0)
+    # Build only the representation family consumed by this baseline.  The old
+    # adapter eagerly constructed both GameFormer-style and DTPP-style histories
+    # for every method, even though only one was used.
+    need_gf_state = bool(need_gf or need_planner)
+    if need_gf_state:
+        selected_types = gather_rows(typ.unsqueeze(-1), all_pred_idx).squeeze(-1) if typ is not None else None
+        selected_hist = _history_to_ego_frame(gather_rows(agent_history, all_pred_idx), origin, yaw0)
+        gf_state = history_to_gameformer_state(selected_hist, selected_types)
+        gf_ego = gf_state[:, 0]
+        gf_neighbors = gf_state[:, 1:]
+    else:
+        selected_hist = torch.empty(B, 0, Th, agent_history.shape[-1], device=device)
+        gf_state = torch.empty(B, 0, Th, 11, device=device)
+        gf_ego = torch.empty(B, Th, 11, device=device)
+        gf_neighbors = torch.empty(B, 0, Th, 11, device=device)
+    if need_gf:
+        gf_lanes, gf_cross = build_gameformer_map(batch, max_neighbors + 1, device, origin=origin, yaw0=yaw0)
+    else:
+        gf_lanes = torch.empty(B, 0, 0, 0, 16, device=device)
+        gf_cross = torch.empty(B, 0, 0, 0, 3, device=device)
 
-    ego_hist = _history_to_ego_frame(gather_rows(agent_history, ego_idx), origin, yaw0).squeeze(1)
-    neigh_hist = _history_to_ego_frame(gather_rows(agent_history, neighbors_idx), origin, yaw0)
-    neigh_types = gather_rows(typ.unsqueeze(-1), neighbors_idx).squeeze(-1) if typ is not None else None
-    dtpp_ego = history_to_dtpp_ego(ego_hist)
-    dtpp_neighbors = history_to_dtpp_neighbors(neigh_hist, neigh_types)
-    dtpp_lanes, dtpp_cross = build_dtpp_map(batch, device, origin=origin, yaw0=yaw0)
+    if need_dtpp:
+        ego_hist = _history_to_ego_frame(gather_rows(agent_history, ego_idx), origin, yaw0).squeeze(1)
+        neigh_hist = _history_to_ego_frame(gather_rows(agent_history, neighbors_idx), origin, yaw0)
+        neigh_types = gather_rows(typ.unsqueeze(-1), neighbors_idx).squeeze(-1) if typ is not None else None
+        dtpp_ego = history_to_dtpp_ego(ego_hist)
+        dtpp_neighbors = history_to_dtpp_neighbors(neigh_hist, neigh_types)
+    else:
+        dtpp_ego = torch.empty(B, Th, 7, device=device)
+        dtpp_neighbors = torch.empty(B, max_neighbors, Th, 11, device=device)
+    if need_dtpp or need_planner:
+        dtpp_lanes, dtpp_cross = build_dtpp_map(batch, device, origin=origin, yaw0=yaw0)
+    else:
+        dtpp_lanes = torch.empty(B, 0, 0, 7, device=device)
+        dtpp_cross = torch.empty(B, 0, 0, 3, device=device)
+    route = build_route_centerline(batch, device, origin=origin, yaw0=yaw0) if need_planner else torch.empty(B, 0, 4, device=device)
 
-    future_xy, future_valid = _future_xy_for_selected(batch, all_pred_idx, N, horizon, device)
-    future_xy = _xy_to_ego_frame(future_xy, origin, yaw0)
-    ego_future_xy = future_xy[:, 0]
-    ego_future_valid = future_valid[:, 0]
-    neighbors_future_xy = future_xy[:, 1:]
-    neighbors_future_valid = future_valid[:, 1:]
+    if require_future:
+        future_xy, future_valid = _future_xy_for_selected(batch, all_pred_idx, N, horizon, device)
+        future_xy = _xy_to_ego_frame(future_xy, origin, yaw0)
+        ego_future_xy = future_xy[:, 0]
+        ego_future_valid = future_valid[:, 0]
+        neighbors_future_xy = future_xy[:, 1:]
+        neighbors_future_valid = future_valid[:, 1:]
+    else:
+        ego_future_xy = torch.empty(B, 0, 2, device=device)
+        ego_future_valid = torch.empty(B, 0, dtype=torch.bool, device=device)
+        neighbors_future_xy = torch.empty(B, max_neighbors, 0, 2, device=device)
+        neighbors_future_valid = torch.empty(B, max_neighbors, 0, dtype=torch.bool, device=device)
 
-    cand = _candidate_to_ego_frame(batch["cowp/candidates/trajectory"].float().to(device), origin, yaw0)
-    cand_valid = batch["cowp/candidates/valid"].bool().to(device)
-    if cand.shape[1] > max_candidates:
-        cand = cand[:, :max_candidates]
-        cand_valid = cand_valid[:, :max_candidates]
-    elif cand.shape[1] < max_candidates:
-        pad_k = max_candidates - cand.shape[1]
-        cand = torch.cat([cand, torch.zeros(B, pad_k, cand.shape[2], cand.shape[3], device=device, dtype=cand.dtype)], dim=1)
-        cand_valid = torch.cat([cand_valid, torch.zeros(B, pad_k, device=device, dtype=torch.bool)], dim=1)
-    if cand.shape[2] > horizon:
-        cand = cand[:, :, :horizon]
-    elif cand.shape[2] < horizon:
-        pad_t = horizon - cand.shape[2]
-        cand = torch.cat([cand, torch.zeros(B, cand.shape[1], pad_t, cand.shape[3], device=device, dtype=cand.dtype)], dim=2)
-    conventional = batch.get("cowp/candidates/conventional_safe")
-    if conventional is not None:
-        conventional = conventional.bool().to(device)
-        conventional = conventional[:, : cand_valid.shape[1]] if conventional.shape[1] >= cand_valid.shape[1] else torch.cat([conventional, torch.zeros(B, cand_valid.shape[1] - conventional.shape[1], device=device, dtype=torch.bool)], dim=1)
+    if require_candidates:
+        if "cowp/candidates/trajectory" not in batch or "cowp/candidates/valid" not in batch:
+            raise KeyError("require_candidates=True but COWP candidate tensors are absent")
+        cand = _candidate_to_ego_frame(batch["cowp/candidates/trajectory"].float().to(device, non_blocking=True), origin, yaw0)
+        cand_valid = batch["cowp/candidates/valid"].bool().to(device, non_blocking=True)
+    else:
+        cand = torch.empty(B, 0, horizon, 7, device=device)
+        cand_valid = torch.empty(B, 0, dtype=torch.bool, device=device)
+    if require_candidates:
+        if cand.shape[1] > max_candidates:
+            cand = cand[:, :max_candidates]
+            cand_valid = cand_valid[:, :max_candidates]
+        elif cand.shape[1] < max_candidates:
+            pad_k = max_candidates - cand.shape[1]
+            cand = torch.cat([cand, torch.zeros(B, pad_k, cand.shape[2], cand.shape[3], device=device, dtype=cand.dtype)], dim=1)
+            cand_valid = torch.cat([cand_valid, torch.zeros(B, pad_k, device=device, dtype=torch.bool)], dim=1)
+        if cand.shape[2] > horizon:
+            cand = cand[:, :, :horizon]
+        elif cand.shape[2] < horizon:
+            pad_t = horizon - cand.shape[2]
+            cand = torch.cat([cand, torch.zeros(B, cand.shape[1], pad_t, cand.shape[3], device=device, dtype=cand.dtype)], dim=2)
+        conventional = batch.get("cowp/candidates/conventional_safe")
+        if conventional is not None:
+            conventional = conventional.bool().to(device, non_blocking=True)
+            conventional = conventional[:, : cand_valid.shape[1]] if conventional.shape[1] >= cand_valid.shape[1] else torch.cat([conventional, torch.zeros(B, cand_valid.shape[1] - conventional.shape[1], device=device, dtype=torch.bool)], dim=1)
+        else:
+            conventional = cand_valid
+        dtpp_tree = candidates_to_dtpp_tree(cand)
     else:
         conventional = cand_valid
-    dtpp_tree = candidates_to_dtpp_tree(cand)
+        dtpp_tree = torch.empty(B, 0, horizon, 6, device=device)
 
     return ExternalBatch(
-        gameformer_inputs={"ego_state": gf_ego, "neighbors_state": gf_neighbors, "map_lanes": gf_lanes, "map_crosswalks": gf_cross},
-        dtpp_inputs={"ego_agent_past": dtpp_ego, "neighbor_agents_past": dtpp_neighbors, "map_lanes": dtpp_lanes, "map_crosswalks": dtpp_cross},
+        gameformer_inputs=({"ego_state": gf_ego, "neighbors_state": gf_neighbors, "map_lanes": gf_lanes, "map_crosswalks": gf_cross} if need_gf else {}),
+        dtpp_inputs=({"ego_agent_past": dtpp_ego, "neighbor_agents_past": dtpp_neighbors, "map_lanes": dtpp_lanes, "map_crosswalks": dtpp_cross} if need_dtpp else {}),
         ego_future_xy=ego_future_xy,
         ego_future_valid=ego_future_valid,
         neighbors_future_xy=neighbors_future_xy,
@@ -492,8 +711,18 @@ def make_external_batch(batch: Mapping[str, torch.Tensor], cfg: dict, *, device:
         candidate_valid=cand_valid,
         conventional_safe=conventional,
         dtpp_candidate_tree=dtpp_tree,
+        planner_inputs=({
+            "agents": gf_state,
+            "agent_valid": (selected_hist[..., 10] > 0.5),
+            "map_lanes": dtpp_lanes,
+            "route": route,
+            "neighbors_future_xy": neighbors_future_xy,
+            "neighbors_future_valid": neighbors_future_valid,
+        } if need_planner else {}),
         neighbor_indices=neighbors_idx,
         sdc_indices=sdc,
+        origin=origin,
+        yaw0=yaw0,
     )
 
 
