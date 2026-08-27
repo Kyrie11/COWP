@@ -88,7 +88,7 @@ class FutureEncoder(nn.Module):
         xy = torch.cat([current_states[:, :, :, None, :2], trajs], dim=-2)
         dxy = torch.diff(xy, dim=-2)
         v = dxy / 0.1
-        theta = torch.atan2(dxy[..., 1], dxy[..., 0]).unsqueeze(-1)
+        theta = torch.atan2(dxy[..., 1], dxy[..., 0].clamp(min=1.0e-3)).unsqueeze(-1)
         T = trajs.shape[3]
         size = current_states[:, :, :, None, 5:8].expand(-1, -1, -1, T, -1)
         return torch.cat([trajs, theta, v, size], dim=-1)
@@ -138,7 +138,12 @@ class CrossTransformer(nn.Module):
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         y, _ = self.cross_attention(query, key, value, key_padding_mask=mask)
-        y = self.norm_1(y + query)
+        # Match the public GameFormer CrossTransformer: cross-attention is
+        # normalized directly here (there is no query residual before norm_1).
+        # The previous COWP adapter added ``+ query``, which changes the source
+        # architecture and lets the recursive interaction decoder repeatedly
+        # amplify its own query state.
+        y = self.norm_1(y)
         return self.norm_2(self.ffn(y) + y)
 
 
@@ -174,7 +179,11 @@ class InteractionDecoder(nn.Module):
     def forward(self, idx: int, current_states: torch.Tensor, actors: torch.Tensor, scores: torch.Tensor, last_content: torch.Tensor, encoding: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, N, M, T, _ = actors.shape
         multi_futures = self.future_encoder(actors[..., :2], current_states)
-        futures = (multi_futures * scores.softmax(-1).unsqueeze(-1)).sum(dim=2)
+        # Source GameFormer averages the probability-weighted modal features over
+        # the modality axis.  The V5 adapter used ``sum`` instead of ``mean``;
+        # with M=6 this changes the recursive interaction-feature scale by 6x
+        # relative to the published implementation and compounds instability.
+        futures = (multi_futures * scores.softmax(-1).unsqueeze(-1)).mean(dim=2)
         interaction = self.interaction_encoder(futures, mask[:, :N])
         encoding2 = torch.cat([interaction, encoding], dim=1)
         mask2 = torch.cat([mask[:, :N], mask], dim=1).clone()

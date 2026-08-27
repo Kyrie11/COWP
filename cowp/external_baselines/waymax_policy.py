@@ -18,6 +18,7 @@ from cowp.waymax_eval.policy_wrapper import (
     _resolve_execution_trajectory,
     _extract_roadgraph_tokens,
     _extract_sdc_path_tokens,
+    _roadgraph_womd_batch_fields,
     _wrap_angle,
     build_online_batch,
     extract_agent_history_model_state,
@@ -125,13 +126,10 @@ def _minimal_external_online_batch(
         "state/agent_valid": mask[None],
         "state/is_sdc": is_sdc[None],
     }
-    xy = np.asarray(roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
-    valid = np.asarray(roadgraph.get("valid", np.zeros(len(xy), dtype=bool)), dtype=bool)
-    if len(xy):
-        xyz = np.zeros((len(xy), 3), dtype=np.float32)
-        xyz[:, :2] = xy
-        batch["roadgraph_samples/xyz"] = xyz[None]
-        batch["roadgraph_samples/valid"] = valid[None]
+    # Reuse the exact WOMD-style map fields used by offline train/eval.  V5
+    # propagated only xy+valid and therefore discarded feature ids/types/dir at
+    # the Waymax boundary, recreating flat fake polylines during closed loop.
+    batch.update(_roadgraph_womd_batch_fields(roadgraph))
     if sdc_paths is not None:
         pxyz = np.asarray(sdc_paths.get("xyz", np.zeros((0, 0, 3), dtype=np.float32)), dtype=np.float32)
         pvalid = np.asarray(sdc_paths.get("valid", np.zeros(pxyz.shape[:2], dtype=bool)), dtype=bool)

@@ -15,7 +15,13 @@ from torch.utils.data import DataLoader
 
 from cowp.core.config import load_config
 from cowp.data.dataset import collate_torch
-from cowp.external_baselines.adapters import ExternalCOWPDataset, candidate_geometry_finite, label_from_batch_item, make_external_batch
+from cowp.external_baselines.adapters import (
+    ExternalCOWPDataset,
+    candidate_geometry_finite,
+    external_map_topology_report,
+    label_from_batch_item,
+    make_external_batch,
+)
 from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
 from cowp.external_baselines.reference_metadata import baseline_reference_metadata
 from cowp.utils.progress import tqdm_iter
@@ -38,6 +44,45 @@ def _safe_len(obj: Any) -> int | None:
         return int(len(obj))
     except Exception:
         return None
+
+
+def _validate_map_topology_contract(
+    dataset: ExternalCOWPDataset,
+    *,
+    baseline: str,
+    allow_legacy_flat_map: bool,
+) -> None:
+    """Ensure offline evaluation exercises the same V6 map contract as training."""
+    size = len(dataset)
+    if size <= 0:
+        raise RuntimeError(f"Empty learned-offline dataset for external baseline {baseline}.")
+    indices = sorted({0, size // 2, size - 1})
+    reports: list[dict[str, object]] = []
+    bad: list[tuple[int, dict[str, object]]] = []
+    for idx in indices:
+        report = external_map_topology_report(dataset[idx])
+        reports.append(report)
+        ready = bool(
+            report.get("has_xy")
+            and report.get("has_id")
+            and report.get("has_type")
+            and report.get("has_dir")
+            and report.get("has_valid")
+            and report.get("aligned")
+        )
+        if not ready:
+            bad.append((idx, report))
+    if bad and not allow_legacy_flat_map:
+        raise RuntimeError(
+            f"V6 learned-offline map-topology contract failed for baseline={baseline}: {bad}. "
+            "Evaluation must use aligned WOMD roadgraph xyz(or x,y), id, type, dir, and valid so "
+            "it cannot silently revert to the V5 flat-map representation."
+        )
+    mode = "legacy_flat_fallback_allowed" if bad else "womd_feature_id_topology"
+    _log(
+        f"map topology contract baseline={baseline} split=learned_offline mode={mode} "
+        f"sample_indices={indices} reports={json.dumps(reports, sort_keys=True)}"
+    )
 
 
 def _configure_waymax_runtime(args) -> None:
@@ -124,6 +169,11 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
     _log(f"loading learned-offline dataset from {args.cache_dir}")
     ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=True, baseline=baseline, purpose="audit")
     _log(f"learned-offline dataset ready scenes={len(ds)}")
+    _validate_map_topology_contract(
+        ds,
+        baseline=baseline,
+        allow_legacy_flat_map=bool(getattr(args, "allow_legacy_flat_map", False)),
+    )
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_torch, pin_memory=False)
     total_batches = _safe_len(loader)
     _log(f"learned-offline loader ready batches={total_batches} batch_size={args.batch_size} workers={args.num_workers}")
@@ -261,6 +311,11 @@ def main() -> None:
     ap.add_argument("--max-neighbors", type=int, default=None)
     ap.add_argument("--max-candidates", type=int, default=None)
     ap.add_argument("--future-len", type=int, default=None)
+    ap.add_argument(
+        "--allow-legacy-flat-map",
+        action="store_true",
+        help="Debug compatibility only: permit learned-offline evaluation on caches missing WOMD roadgraph id/type/dir. Formal V6 evaluation should leave this disabled.",
+    )
     ap.add_argument("--require-conventional-safe", action="store_true", help="Candidate-mode only: restrict scoring to COWP conventional-safe proposals when available.")
     ap.add_argument("--execution-mode", choices=["auto", "direct", "candidate"], default="auto", help="Waymax only. auto executes native direct heads for GameFormer/PLUTO/PlanT2 and candidate-tree scoring for DTPP.")
     ap.add_argument("--profile-policy-timing", action="store_true", help="Synchronize accelerator stages and write per-step planner timing diagnostics. Use for short profiling runs only.")

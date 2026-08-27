@@ -733,71 +733,182 @@ def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray
     return hist, cur11, sdc
 
 def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
-    """Return best-effort roadgraph point tokens from Waymax state.
+    """Return causal Waymax roadgraph tokens without destroying map-feature identity.
 
-    Public/local Waymax builds expose roadgraph fields with slightly different
-    names.  The policy should not fail if roadgraph is unavailable; it simply
-    falls back to ego-heading proposals.
+    Waymax ``RoadgraphPoints`` exposes x/y/z, dir_x/dir_y/dir_z, types, ids and
+    valid.  ``ids`` identify the contiguous vector-map feature that generated
+    each sampled point.  External vector-map baselines need those ids to rebuild
+    real polylines; dropping them (the V5 behaviour) silently reduced the online
+    map back to a flat point stream and reintroduced the same train/test topology
+    mismatch fixed in the offline WOMD adapter.
     """
+    empty = {
+        "xy": np.zeros((0, 2), dtype=np.float32),
+        "dir_xy": np.zeros((0, 2), dtype=np.float32),
+        "heading": np.zeros(0, dtype=np.float32),
+        "valid": np.zeros(0, dtype=bool),
+        "types": np.zeros(0, dtype=np.int32),
+        "ids": np.zeros(0, dtype=np.int64),
+    }
     rg = _get_field(state, ("roadgraph_points", "roadgraph", "roadgraph_static_points"))
     if rg is None:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
-    x_field = _get_field(rg, ("x", "center_x"))
-    y_field = _get_field(rg, ("y", "center_y"))
-    xy_field = _get_field(rg, ("xy", "points", "xyz"))
-    if x_field is not None and y_field is not None:
-        x = _to_numpy(x_field)
-        y = _to_numpy(y_field)
-        while x.ndim > 1:
-            x = x[0]
-            y = y[0]
-        xy = np.stack([x, y], axis=-1).astype(np.float32)
-    elif xy_field is not None:
+        return empty
+
+    def _flat_field(field: Any | None, dtype: Any) -> np.ndarray | None:
+        if field is None:
+            return None
+        arr = _to_numpy(field)
+        # SimulatorState may carry a leading batch/device dimension.  Roadgraph
+        # leaves themselves are one-dimensional over sampled points.
+        while arr.ndim > 1:
+            arr = arr[0]
+        return np.asarray(arr).reshape(-1).astype(dtype, copy=False)
+
+    x = _flat_field(_get_field(rg, ("x", "center_x")), np.float32)
+    y = _flat_field(_get_field(rg, ("y", "center_y")), np.float32)
+    if x is not None and y is not None:
+        nxy = min(len(x), len(y))
+        xy = np.stack([x[:nxy], y[:nxy]], axis=-1).astype(np.float32, copy=False)
+    else:
+        xy_field = _get_field(rg, ("xy", "points", "xyz"))
+        if xy_field is None:
+            return empty
         arr = _to_numpy(xy_field)
         while arr.ndim > 2:
             arr = arr[0]
-        xy = arr[..., :2].reshape(-1, 2).astype(np.float32)
+        if arr.ndim != 2 or arr.shape[-1] < 2:
+            return empty
+        xy = np.asarray(arr[..., :2], dtype=np.float32).reshape(-1, 2)
+    n = len(xy)
+    if n == 0:
+        return empty
+
+    ids_src = _flat_field(_get_field(rg, ("ids", "id", "feature_ids")), np.int64)
+    types_src = _flat_field(_get_field(rg, ("types", "type", "map_element_type")), np.int32)
+    valid_src = _flat_field(_get_field(rg, ("valid",)), bool)
+    dx = _flat_field(_get_field(rg, ("dir_x", "direction_x", "dx")), np.float32)
+    dy = _flat_field(_get_field(rg, ("dir_y", "direction_y", "dy")), np.float32)
+
+    def _aligned_or_default(arr: np.ndarray | None, *, dtype: Any, fill: Any) -> np.ndarray:
+        out = np.full(n, fill, dtype=dtype)
+        if arr is not None:
+            m = min(n, len(arr))
+            out[:m] = arr[:m]
+        return out
+
+    # Keep absence distinguishable from an actual id/type value.  Synthesizing
+    # id=-1 for every point would make the external adapter believe the entire
+    # flat roadgraph is one contiguous feature; synthesizing type=0 would filter
+    # every point out of the lane-center selection.
+    ids_work = _aligned_or_default(ids_src, dtype=np.int64, fill=-1) if ids_src is not None else np.full(n, -1, dtype=np.int64)
+    ids_out = ids_work if ids_src is not None else np.zeros(0, dtype=np.int64)
+    types_out = _aligned_or_default(types_src, dtype=np.int32, fill=0) if types_src is not None else np.zeros(0, dtype=np.int32)
+    valid = _aligned_or_default(valid_src, dtype=bool, fill=False) if valid_src is not None else np.ones(n, dtype=bool)
+
+    if dx is not None and dy is not None:
+        dir_xy = np.zeros((n, 2), dtype=np.float32)
+        m = min(n, len(dx), len(dy))
+        dir_xy[:m, 0] = dx[:m]
+        dir_xy[:m, 1] = dy[:m]
+        dir_valid = np.zeros(n, dtype=bool)
+        dir_valid[:m] = np.isfinite(dir_xy[:m]).all(axis=-1)
     else:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
-    dir_x = _get_field(rg, ("dir_x", "direction_x", "dx"))
-    dir_y = _get_field(rg, ("dir_y", "direction_y", "dy"))
-    if dir_x is not None and dir_y is not None:
-        dx = _to_numpy(dir_x)
-        dy = _to_numpy(dir_y)
-        while dx.ndim > 1:
-            dx = dx[0]
-            dy = dy[0]
-        heading = np.arctan2(dy.reshape(-1), dx.reshape(-1)).astype(np.float32)
-    else:
-        # Local finite-difference heading.  It is noisy across polyline breaks but
-        # still better than all-zero map tokens for conflict-query conditioning.
-        diff = np.gradient(xy, axis=0) if len(xy) > 1 else np.zeros_like(xy)
-        heading = np.arctan2(diff[:, 1], diff[:, 0]).astype(np.float32)
-    valid_field = _get_field(rg, ("valid",))
-    if valid_field is not None:
-        valid = _to_numpy(valid_field)
-        while valid.ndim > 1:
-            valid = valid[0]
-        valid = valid.reshape(-1).astype(bool)[: len(xy)]
-    else:
-        valid = np.isfinite(xy).all(axis=-1)
-    type_field = _get_field(rg, ("types", "type", "map_element_type"))
-    if type_field is not None:
-        types = _to_numpy(type_field)
-        while types.ndim > 1:
-            types = types[0]
-        types = types.reshape(-1).astype(np.int32)[: len(xy)]
-    else:
-        types = np.zeros(len(xy), dtype=np.int32)
-    finite = np.isfinite(xy).all(axis=-1) & np.isfinite(heading)
-    valid = valid & finite
+        # Legacy/local Waymax compatibility.  Estimate directions *within each
+        # feature id*.  V5's global np.gradient crossed feature boundaries and
+        # could create a fictitious long segment between unrelated map elements.
+        dir_xy = np.zeros((n, 2), dtype=np.float32)
+        dir_valid = np.zeros(n, dtype=bool)
+        finite_xy = np.isfinite(xy).all(axis=-1)
+        if ids_src is not None and np.any(ids_work >= 0):
+            for fid in np.unique(ids_work[(ids_work >= 0) & finite_xy]):
+                idx = np.flatnonzero((ids_work == fid) & finite_xy)
+                if len(idx) >= 2:
+                    delta = xy[idx[1:]] - xy[idx[:-1]]
+                    dir_xy[idx[:-1]] = delta
+                    dir_xy[idx[-1]] = delta[-1]
+                    dir_valid[idx] = np.isfinite(dir_xy[idx]).all(axis=-1)
+        elif n >= 2:
+            delta = xy[1:] - xy[:-1]
+            dir_xy[:-1] = delta
+            dir_xy[-1] = delta[-1]
+            dir_valid = np.isfinite(dir_xy).all(axis=-1)
+
+    finite_xy = np.isfinite(xy).all(axis=-1)
+    finite_dir = np.isfinite(dir_xy).all(axis=-1)
+    # A zero direction is allowed for map primitives where orientation is not
+    # meaningful; only non-finite direction values invalidate the point.
+    valid = valid & finite_xy & finite_dir
+    xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    dir_xy = np.nan_to_num(dir_xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    heading = np.arctan2(dir_xy[:, 1], dir_xy[:, 0]).astype(np.float32)
+    heading[~valid] = 0.0
+
     max_points = int(cfg.get("limits", {}).get("max_roadgraph_points", 20000))
-    if len(xy) > max_points:
-        # Keep a deterministic spread of points; local filtering below selects
-        # only points near ego, so this mostly protects pathological states.
-        idx = np.linspace(0, len(xy) - 1, max_points, dtype=np.int64)
-        xy, heading, valid, types = xy[idx], heading[idx], valid[idx], types[idx]
-    return {"xy": xy, "heading": heading, "valid": valid, "types": types}
+    if n > max_points:
+        # Keep a deterministic spread for pathological states and, critically,
+        # slice every roadgraph field with the *same* indices so ids/types/dir
+        # stay aligned with xy/valid.
+        idx = np.linspace(0, n - 1, max_points, dtype=np.int64)
+        xy, dir_xy, heading, valid = xy[idx], dir_xy[idx], heading[idx], valid[idx]
+        if len(types_out):
+            types_out = types_out[idx]
+        if len(ids_out):
+            ids_out = ids_out[idx]
+    return {
+        "xy": xy,
+        "dir_xy": dir_xy,
+        "heading": heading,
+        "valid": valid,
+        "types": types_out,
+        "ids": ids_out,
+    }
+
+
+def _roadgraph_womd_batch_fields(roadgraph: dict[str, np.ndarray] | None) -> dict[str, np.ndarray]:
+    """Convert extracted Waymax roadgraph tokens to WOMD tf.Example-style keys.
+
+    The returned tensors carry a leading batch dimension and are consumed by
+    the same external-baseline adapter used for offline train/eval.  This keeps
+    map semantics identical across training, offline evaluation and Waymax.
+    """
+    if not roadgraph:
+        return {}
+    xy = np.asarray(roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
+    if xy.ndim != 2 or xy.shape[-1] < 2 or len(xy) == 0:
+        return {}
+    n = len(xy)
+    valid = np.asarray(roadgraph.get("valid", np.ones(n, dtype=bool)), dtype=bool).reshape(-1)
+    if len(valid) != n:
+        vv = np.zeros(n, dtype=bool)
+        vv[: min(n, len(valid))] = valid[: min(n, len(valid))]
+        valid = vv
+    xyz = np.zeros((n, 3), dtype=np.float32)
+    xyz[:, :2] = np.nan_to_num(xy[:, :2], nan=0.0, posinf=0.0, neginf=0.0)
+    fields: dict[str, np.ndarray] = {
+        "roadgraph_samples/xyz": xyz[None],
+        "roadgraph_samples/valid": valid[None],
+    }
+
+    dir_xy = np.asarray(roadgraph.get("dir_xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
+    if dir_xy.ndim == 2 and dir_xy.shape[0] == n and dir_xy.shape[1] >= 2:
+        direction = np.zeros((n, 3), dtype=np.float32)
+        direction[:, :2] = np.nan_to_num(dir_xy[:, :2], nan=0.0, posinf=0.0, neginf=0.0)
+        fields["roadgraph_samples/dir"] = direction[None]
+    else:
+        heading = np.asarray(roadgraph.get("heading", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
+        if len(heading) == n:
+            direction = np.zeros((n, 3), dtype=np.float32)
+            direction[:, 0] = np.cos(heading)
+            direction[:, 1] = np.sin(heading)
+            fields["roadgraph_samples/dir"] = direction[None]
+
+    ids = np.asarray(roadgraph.get("ids", np.zeros(0, dtype=np.int64))).reshape(-1)
+    if len(ids) == n:
+        fields["roadgraph_samples/id"] = ids.astype(np.int64, copy=False)[None]
+    types = np.asarray(roadgraph.get("types", np.zeros(0, dtype=np.int32))).reshape(-1)
+    if len(types) == n:
+        fields["roadgraph_samples/type"] = types.astype(np.int64, copy=False)[None]
+    return fields
 
 
 def _extract_sdc_path_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
@@ -2360,6 +2471,7 @@ def build_online_batch(
         "cowp/candidates/collision_min_clearance_margin_m": collision_min_clearance_margin_m[None],
         "cowp/candidates/rule_risk": rule_risk[None],
     }
+    batch.update(_roadgraph_womd_batch_fields(roadgraph))
     if include_interaction_tokens:
         batch.update({
             "cowp/critical/track_index": crit_idx[None],

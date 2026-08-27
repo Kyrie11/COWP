@@ -154,6 +154,77 @@ class ExternalCOWPDataset(Dataset):
         return out
 
 
+def external_map_topology_report(sample: Mapping[str, torch.Tensor]) -> dict[str, object]:
+    """Summarize whether one cache sample preserves WOMD vector-map topology.
+
+    The V6 learned-map adapters require the original WOMD roadgraph feature
+    identity/type/direction fields.  V5 could silently accept a cache containing
+    only coordinates and then reconstruct fake polylines by point position.  A
+    lightweight report lets the train/eval entry points fail *before* a long run
+    if a production cache would fall back to that legacy behavior.
+
+    This function intentionally validates representation only; numerical map
+    validity remains the responsibility of :func:`_roadgraph_feature_bundle`.
+    """
+
+    def pick(*names: str) -> torch.Tensor | None:
+        for name in names:
+            value = sample.get(name)
+            if torch.is_tensor(value):
+                return value
+        return None
+
+    xyz = pick("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz")
+    x = pick("roadgraph_samples/x", "womd/roadgraph_samples/x")
+    y = pick("roadgraph_samples/y", "womd/roadgraph_samples/y")
+    ids = pick("roadgraph_samples/id", "womd/roadgraph_samples/id")
+    types = pick("roadgraph_samples/type", "womd/roadgraph_samples/type")
+    direction = pick("roadgraph_samples/dir", "womd/roadgraph_samples/dir")
+    valid = pick("roadgraph_samples/valid", "womd/roadgraph_samples/valid")
+
+    def scalar_points(value: torch.Tensor | None) -> int:
+        return int(value.numel()) if value is not None else 0
+
+    def vector_points(value: torch.Tensor | None, width: int) -> int:
+        if value is None:
+            return 0
+        if value.ndim >= 2 and int(value.shape[-1]) == int(width):
+            return int(value.numel() // width)
+        return int(value.numel() // width) if value.numel() % width == 0 else 0
+
+    xyz_points = vector_points(xyz, 3)
+    if xyz_points <= 0 and x is not None and y is not None:
+        xyz_points = min(scalar_points(x), scalar_points(y))
+    id_points = scalar_points(ids)
+    type_points = scalar_points(types)
+    valid_points = scalar_points(valid)
+    dir_points = vector_points(direction, 3)
+    point_count = max(xyz_points, id_points, type_points, valid_points, dir_points)
+
+    aligned = bool(
+        point_count > 0
+        and xyz_points == point_count
+        and id_points == point_count
+        and type_points == point_count
+        and valid_points == point_count
+        and dir_points == point_count
+    )
+    return {
+        "has_xy": bool(xyz_points > 0),
+        "has_id": ids is not None,
+        "has_type": types is not None,
+        "has_dir": direction is not None,
+        "has_valid": valid is not None,
+        "aligned": aligned,
+        "points": int(point_count),
+        "xyz_points": int(xyz_points),
+        "id_points": int(id_points),
+        "type_points": int(type_points),
+        "dir_points": int(dir_points),
+        "valid_points": int(valid_points),
+    }
+
+
 def first_tensor(batch: Mapping[str, torch.Tensor], names: Iterable[str]) -> torch.Tensor | None:
     for name in names:
         x = batch.get(name)
@@ -481,71 +552,393 @@ def build_route_centerline(
                 out[b, :n, 3] = 1.0
     return out
 
-def _roadgraph_valid_mask(batch: Mapping[str, torch.Tensor], device: torch.device, max_points: int) -> torch.Tensor | None:
-    """Return the source WOMD roadgraph validity mask without inferring it from local xy.
+def _reshape_roadgraph_scalar(x: torch.Tensor | None, batch_size: int, points: int, device: torch.device) -> torch.Tensor | None:
+    if x is None:
+        return None
+    y = x
+    if y.ndim == 0:
+        return None
+    if y.ndim == 1:
+        if batch_size != 1:
+            return None
+        y = y.unsqueeze(0)
+    if y.shape[0] != batch_size:
+        if batch_size == 1:
+            y = y.reshape(1, -1)
+        else:
+            return None
+    y = y.reshape(batch_size, -1)[:, :points]
+    return y.to(device, non_blocking=True)
 
-    A valid roadgraph point can legitimately be exactly at the SDC-frame origin or
-    cross x==0.  Geometry therefore cannot be used as the primary padding signal.
+
+def _reshape_roadgraph_vector(x: torch.Tensor | None, batch_size: int, points: int, device: torch.device) -> torch.Tensor | None:
+    """Canonicalize roadgraph xyz/dir to [B,P,3] without guessing feature topology."""
+    if x is None:
+        return None
+    y = x.float()
+    if y.ndim == 1:
+        if batch_size != 1 or y.numel() % 3:
+            return None
+        y = y.reshape(1, -1, 3)
+    elif y.ndim == 2:
+        if y.shape[0] == batch_size and y.shape[1] % 3 == 0:
+            y = y.reshape(batch_size, -1, 3)
+        elif batch_size == 1 and y.shape[-1] >= 3:
+            y = y.unsqueeze(0)
+        else:
+            return None
+    else:
+        if y.shape[0] != batch_size:
+            return None
+        if y.shape[-1] < 3:
+            flat = y.reshape(batch_size, -1)
+            if flat.shape[1] % 3:
+                return None
+            y = flat.reshape(batch_size, -1, 3)
+        else:
+            y = y.reshape(batch_size, -1, y.shape[-1])[..., :3]
+    return y[:, :points].to(device, non_blocking=True)
+
+
+def _roadgraph_valid_mask(batch: Mapping[str, torch.Tensor], device: torch.device, max_points: int) -> torch.Tensor | None:
+    """Return source validity AND *raw* finite geometry.
+
+    Do not derive finiteness from ``_roadgraph_xy``: that helper deliberately
+    ``nan_to_num`` sanitizes coordinates before transforming them, so checking it
+    afterwards would incorrectly resurrect a declared-valid NaN point.
     """
     valid_t = first_tensor(batch, ("roadgraph_samples/valid", "womd/roadgraph_samples/valid"))
-    if valid_t is not None:
-        valid = valid_t.bool()
-        if valid.ndim == 1:
-            valid = valid.unsqueeze(0)
-        valid = valid.reshape(valid.shape[0], -1)[:, : int(max_points)].to(device, non_blocking=True)
-        # Never trust a validity bit over non-finite source geometry.
-        xyz_t = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
-        if xyz_t is not None:
-            xy = xyz_t.float()
-            if xy.ndim == 2:
-                xy = xy.unsqueeze(0)
-            xy = xy.reshape(xy.shape[0], -1, xy.shape[-1])[..., :2][:, : valid.shape[1]].to(device, non_blocking=True)
-            valid = valid[:, : xy.shape[1]] & torch.isfinite(xy).all(dim=-1)
-        else:
-            x_t = first_tensor(batch, ("roadgraph_samples/x", "womd/roadgraph_samples/x"))
-            y_t = first_tensor(batch, ("roadgraph_samples/y", "womd/roadgraph_samples/y"))
-            if x_t is not None and y_t is not None:
-                x = x_t.float().reshape(x_t.shape[0] if x_t.ndim > 1 else 1, -1)[:, : valid.shape[1]].to(device, non_blocking=True)
-                y = y_t.float().reshape(y_t.shape[0] if y_t.ndim > 1 else 1, -1)[:, : valid.shape[1]].to(device, non_blocking=True)
-                n = min(valid.shape[1], x.shape[1], y.shape[1])
-                valid = valid[:, :n] & torch.isfinite(x[:, :n]) & torch.isfinite(y[:, :n])
-        return valid
-    xyz = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
-    if xyz is None:
+    xyz_t = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
+
+    # Infer batch size from whichever roadgraph tensor is present.
+    src = xyz_t if xyz_t is not None else valid_t
+    if src is None:
+        x_t = first_tensor(batch, ("roadgraph_samples/x", "womd/roadgraph_samples/x"))
+        src = x_t
+    if src is None:
         return None
-    xy = xyz.float()
-    if xy.ndim == 2:
-        xy = xy.unsqueeze(0)
-    xy = xy.reshape(xy.shape[0], -1, xy.shape[-1])[..., :2][:, : int(max_points)].to(device, non_blocking=True)
-    return torch.isfinite(xy).all(dim=-1) & (torch.linalg.norm(xy, dim=-1) > 1.0e-6)
+    B = int(src.shape[0]) if src.ndim > 1 else 1
+
+    finite = None
+    if xyz_t is not None:
+        raw_xyz = _reshape_roadgraph_vector(xyz_t, B, int(max_points), device)
+        if raw_xyz is not None:
+            finite = torch.isfinite(raw_xyz[..., :2]).all(dim=-1)
+    else:
+        x_t = first_tensor(batch, ("roadgraph_samples/x", "womd/roadgraph_samples/x"))
+        y_t = first_tensor(batch, ("roadgraph_samples/y", "womd/roadgraph_samples/y"))
+        if x_t is not None and y_t is not None:
+            x = _reshape_roadgraph_scalar(x_t, B, int(max_points), device)
+            y = _reshape_roadgraph_scalar(y_t, B, int(max_points), device)
+            if x is not None and y is not None:
+                n = min(x.shape[1], y.shape[1], int(max_points))
+                finite = torch.isfinite(x[:, :n]) & torch.isfinite(y[:, :n])
+    if finite is None:
+        return None
+
+    if valid_t is None:
+        return finite
+    valid = _reshape_roadgraph_scalar(valid_t, B, finite.shape[1], device)
+    if valid is None:
+        return finite
+    n = min(finite.shape[1], valid.shape[1])
+    return valid[:, :n].bool() & finite[:, :n]
+
+
+def _roadgraph_feature_bundle(
+    batch: Mapping[str, torch.Tensor], device: torch.device, *,
+    origin: torch.Tensor | None, yaw0: torch.Tensor | None,
+) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
+    """Return local roadgraph (xy, valid, id, type, heading) tensors.
+
+    WOMD explicitly provides ``roadgraph_samples/id`` as the vector-map feature id
+    and ``roadgraph_samples/dir`` as the direction to the next sample.  V5 ignored
+    both and sliced the flat roadgraph stream by point count, which can splice
+    unrelated lane centers/road lines/crosswalks into one fake polyline.  Learned
+    vector-map encoders are especially sensitive to that topology error.
+    """
+    xy = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=None)
+    if xy is None:
+        return None, None, None, None, None
+    B, P = xy.shape[:2]
+    valid = _roadgraph_valid_mask(batch, device, P)
+    if valid is None:
+        valid = torch.isfinite(xy).all(dim=-1)
+    if valid.shape[1] < P:
+        pad = torch.zeros(B, P - valid.shape[1], dtype=torch.bool, device=device)
+        valid = torch.cat([valid, pad], dim=1)
+    else:
+        valid = valid[:, :P]
+
+    ids = _reshape_roadgraph_scalar(
+        first_tensor(batch, ("roadgraph_samples/id", "womd/roadgraph_samples/id")), B, P, device
+    )
+    types = _reshape_roadgraph_scalar(
+        first_tensor(batch, ("roadgraph_samples/type", "womd/roadgraph_samples/type")), B, P, device
+    )
+    if ids is not None:
+        ids = ids.long()
+    if types is not None:
+        types = types.long()
+
+    direction = _reshape_roadgraph_vector(
+        first_tensor(batch, ("roadgraph_samples/dir", "womd/roadgraph_samples/dir")), B, P, device
+    )
+    heading = None
+    if direction is not None:
+        dxy = direction[..., :2]
+        finite_dir = torch.isfinite(dxy).all(dim=-1)
+        dxy = torch.nan_to_num(dxy, nan=0.0, posinf=0.0, neginf=0.0)
+        if yaw0 is not None:
+            dxy = _rotate_global_to_local(dxy, yaw0)
+        heading = torch.atan2(dxy[..., 1], dxy[..., 0])
+        heading = torch.where(finite_dir & valid, heading, torch.zeros_like(heading))
+    return xy, valid, ids, types, heading
+
+
+def _polyline_heading(xy: torch.Tensor, source_heading: torch.Tensor | None = None) -> torch.Tensor:
+    if source_heading is not None:
+        return source_heading
+    h = torch.zeros(xy.shape[0], device=xy.device, dtype=xy.dtype)
+    if xy.shape[0] > 1:
+        d = xy[1:] - xy[:-1]
+        hd = torch.atan2(d[:, 1], d[:, 0])
+        h[:-1] = hd
+        h[-1] = hd[-1]
+    return h
+
+
+def _sample_polyline_indices(indices: torch.Tensor, max_points: int) -> torch.Tensor:
+    """Keep source order and uniformly subsample a long WOMD map feature."""
+    n = int(indices.numel())
+    if n <= max_points:
+        return indices
+    pos = torch.linspace(0, n - 1, max_points, device=indices.device).round().long()
+    return indices[pos]
+
+
+def _nearest_feature_ids(
+    xy: torch.Tensor,
+    valid: torch.Tensor,
+    ids: torch.Tensor,
+    types: torch.Tensor | None,
+    anchors: torch.Tensor,
+    *,
+    allowed_types: tuple[int, ...] | None,
+    max_features: int,
+    radius_m: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Rank vector-map feature ids by minimum point-to-anchor distance.
+
+    Returns (feature_ids [A,K], feature_dist2 [A,K], selected_point_mask_source).
+    ``scatter_reduce_`` avoids a Python loop over hundreds of roadgraph ids.
+    """
+    mask = valid.clone()
+    if types is not None and allowed_types is not None:
+        type_mask = torch.zeros_like(mask)
+        for typ in allowed_types:
+            type_mask |= types == int(typ)
+        mask &= type_mask
+    point_idx = torch.nonzero(mask, as_tuple=False).flatten()
+    if point_idx.numel() == 0 or anchors.numel() == 0:
+        return (
+            torch.empty(anchors.shape[0], 0, dtype=ids.dtype, device=ids.device),
+            torch.empty(anchors.shape[0], 0, dtype=xy.dtype, device=xy.device),
+            point_idx,
+        )
+    point_ids = ids[point_idx]
+    unique_ids, inv = torch.unique(point_ids, sorted=False, return_inverse=True)
+    pts = xy[point_idx]
+    dist2 = ((pts[:, None, :] - anchors[None, :, :]) ** 2).sum(dim=-1)
+    feature_dist2 = torch.full(
+        (unique_ids.shape[0], anchors.shape[0]), float("inf"), device=xy.device, dtype=xy.dtype
+    )
+    # scatter_reduce_ exists in every PyTorch version supported by this project;
+    # it computes the min point distance for each map feature in one operation.
+    feature_dist2.scatter_reduce_(
+        0, inv[:, None].expand(-1, anchors.shape[0]), dist2, reduce="amin", include_self=True
+    )
+    k = min(int(max_features), int(unique_ids.shape[0]))
+    if k <= 0:
+        return (
+            torch.empty(anchors.shape[0], 0, dtype=ids.dtype, device=ids.device),
+            torch.empty(anchors.shape[0], 0, dtype=xy.dtype, device=xy.device),
+            point_idx,
+        )
+    vals, feat_idx = torch.topk(feature_dist2.transpose(0, 1), k=k, largest=False, dim=1)
+    selected_ids = unique_ids[feat_idx]
+    radius2 = float(radius_m) * float(radius_m)
+    selected_ids = torch.where(vals <= radius2, selected_ids, torch.full_like(selected_ids, torch.iinfo(selected_ids.dtype).min))
+    return selected_ids, vals, point_idx
+
+
+def _legacy_gameformer_flat_map(
+    batch: Mapping[str, torch.Tensor], device: torch.device, *, B: int, num_agents_to_predict: int,
+    n_lanes: int, lane_points: int, origin: torch.Tensor | None, yaw0: torch.Tensor | None,
+    lanes: torch.Tensor, lanes_valid: torch.Tensor,
+) -> None:
+    """Compatibility fallback for synthetic/legacy caches lacking roadgraph ids."""
+    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=lane_points)
+    rg_valid = _roadgraph_valid_mask(batch, device, lane_points)
+    if rg is None or rg.shape[1] == 0:
+        return
+    P = min(lane_points, rg.shape[1])
+    xy = rg[:, :P]
+    valid = rg_valid[:, :P] if rg_valid is not None else torch.isfinite(xy).all(dim=-1)
+    for b in range(B):
+        h = _polyline_heading(xy[b])
+        lanes[b, :, 0, :P, 0:2] = xy[b][None]
+        lanes[b, :, 0, :P, 2] = h[None]
+        lanes_valid[b, :, 0, :P] = valid[b][None]
 
 
 def build_gameformer_map(
     batch: Mapping[str, torch.Tensor], num_agents_to_predict: int, device: torch.device,
     n_lanes: int = 6, lane_points: int = 100, n_crosswalks: int = 4, *,
     origin: torch.Tensor | None = None, yaw0: torch.Tensor | None = None,
+    agent_xy: torch.Tensor | None = None, agent_valid: torch.Tensor | None = None,
     return_valid: bool = False,
 ):
+    """Build source-structured GameFormer map features from WOMD roadgraph ids.
+
+    The public GameFormer preprocessor selects nearby lane polylines separately
+    for each predicted actor.  WOMD tf.Example already exposes per-point feature
+    ids/types/directions, so retain those polylines instead of treating the flat
+    point array as a single lane.  Coordinates remain in the current SDC frame;
+    ``agent_xy`` is used only to choose each actor's nearby features.
+    """
     B = next(v for v in batch.values() if torch.is_tensor(v)).shape[0]
     lanes = torch.zeros(B, num_agents_to_predict, n_lanes, lane_points, 16, device=device)
     cross = torch.zeros(B, num_agents_to_predict, n_crosswalks, lane_points, 3, device=device)
     lanes_valid = torch.zeros(B, num_agents_to_predict, n_lanes, lane_points, device=device, dtype=torch.bool)
     cross_valid = torch.zeros(B, num_agents_to_predict, n_crosswalks, lane_points, device=device, dtype=torch.bool)
-    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=lane_points)
-    rg_valid = _roadgraph_valid_mask(batch, device, lane_points)
-    if rg is not None and rg.shape[1] > 0:
-        P = min(lane_points, rg.shape[1])
-        xy = rg[:, :P]
-        valid = rg_valid[:, :P] if rg_valid is not None else torch.isfinite(xy).all(dim=-1)
-        d = torch.zeros_like(xy)
-        d[:, 1:] = xy[:, 1:] - xy[:, :-1]
-        heading = torch.atan2(d[..., 1], d[..., 0])
-        lanes[:, :, 0, :P, 0:2] = xy[:, None, :, :]
-        lanes[:, :, 0, :P, 2] = heading[:, None, :]
-        lanes_valid[:, :, 0, :P] = valid[:, None, :]
+
+    xy, rg_valid, ids, types, source_heading = _roadgraph_feature_bundle(
+        batch, device, origin=origin, yaw0=yaw0
+    )
+    # Exact feature ids are required to reconstruct topology.  Legacy/synthetic
+    # caches without ids retain the old shape-preserving fallback for compatibility.
+    if xy is None or rg_valid is None:
+        if return_valid:
+            return lanes, cross, lanes_valid, cross_valid
+        return lanes, cross
+    if ids is None:
+        _legacy_gameformer_flat_map(
+            batch, device, B=B, num_agents_to_predict=num_agents_to_predict,
+            n_lanes=n_lanes, lane_points=lane_points, origin=origin, yaw0=yaw0,
+            lanes=lanes, lanes_valid=lanes_valid,
+        )
+        if return_valid:
+            return lanes, cross, lanes_valid, cross_valid
+        return lanes, cross
+
+    if agent_xy is None:
+        anchors = torch.zeros(B, num_agents_to_predict, 2, device=device, dtype=xy.dtype)
+    else:
+        anchors = torch.nan_to_num(agent_xy.to(device=device, dtype=xy.dtype), nan=0.0, posinf=0.0, neginf=0.0)
+        if anchors.shape[1] < num_agents_to_predict:
+            anchors = torch.cat([anchors, torch.zeros(B, num_agents_to_predict - anchors.shape[1], 2, device=device, dtype=xy.dtype)], dim=1)
+        anchors = anchors[:, :num_agents_to_predict]
+    if agent_valid is None:
+        anchor_valid = torch.ones(B, num_agents_to_predict, device=device, dtype=torch.bool)
+    else:
+        anchor_valid = agent_valid.to(device).bool()
+        if anchor_valid.ndim > 2:
+            anchor_valid = anchor_valid[..., -1]
+        if anchor_valid.shape[1] < num_agents_to_predict:
+            anchor_valid = torch.cat([anchor_valid, torch.zeros(B, num_agents_to_predict - anchor_valid.shape[1], device=device, dtype=torch.bool)], dim=1)
+        anchor_valid = anchor_valid[:, :num_agents_to_predict]
+
+    invalid_id = torch.iinfo(ids.dtype).min
+    for b in range(B):
+        lane_ids, _, _ = _nearest_feature_ids(
+            xy[b], rg_valid[b], ids[b], None if types is None else types[b], anchors[b],
+            allowed_types=(1, 2, 3) if types is not None else None,
+            max_features=n_lanes, radius_m=200.0,
+        )
+        cross_ids, _, _ = _nearest_feature_ids(
+            xy[b], rg_valid[b], ids[b], None if types is None else types[b], anchors[b],
+            allowed_types=(18,) if types is not None else None,
+            max_features=n_crosswalks, radius_m=200.0,
+        )
+        for a in range(num_agents_to_predict):
+            if not bool(anchor_valid[b, a]):
+                continue
+            for slot in range(lane_ids.shape[1]):
+                fid = lane_ids[a, slot]
+                if bool(fid == invalid_id):
+                    continue
+                idx = torch.nonzero(rg_valid[b] & (ids[b] == fid), as_tuple=False).flatten()
+                if types is not None:
+                    idx = idx[(types[b, idx] >= 1) & (types[b, idx] <= 3)]
+                if idx.numel() == 0:
+                    continue
+                idx = _sample_polyline_indices(idx, lane_points)
+                pts = xy[b, idx]
+                # Keep a bounded local context.  One nearby point should not drag
+                # an extremely long feature hundreds of metres through the MLP.
+                keep = torch.linalg.norm(pts - anchors[b, a], dim=-1) <= 250.0
+                idx = idx[keep]
+                pts = pts[keep]
+                if idx.numel() == 0:
+                    continue
+                n = int(idx.numel())
+                hsrc = None if source_heading is None else source_heading[b, idx]
+                h = _polyline_heading(pts, hsrc)
+                lanes[b, a, slot, :n, 0:2] = pts
+                lanes[b, a, slot, :n, 2] = h
+                if types is not None:
+                    lanes[b, a, slot, :n, 10] = types[b, idx].clamp(0, 3).to(lanes.dtype)
+                lanes_valid[b, a, slot, :n] = True
+            for slot in range(cross_ids.shape[1]):
+                fid = cross_ids[a, slot]
+                if bool(fid == invalid_id):
+                    continue
+                idx = torch.nonzero(rg_valid[b] & (ids[b] == fid), as_tuple=False).flatten()
+                if types is not None:
+                    idx = idx[types[b, idx] == 18]
+                if idx.numel() == 0:
+                    continue
+                idx = _sample_polyline_indices(idx, lane_points)
+                pts = xy[b, idx]
+                keep = torch.linalg.norm(pts - anchors[b, a], dim=-1) <= 250.0
+                idx = idx[keep]
+                pts = pts[keep]
+                if idx.numel() == 0:
+                    continue
+                n = int(idx.numel())
+                hsrc = None if source_heading is None else source_heading[b, idx]
+                cross[b, a, slot, :n, 0:2] = pts
+                cross[b, a, slot, :n, 2] = _polyline_heading(pts, hsrc)
+                cross_valid[b, a, slot, :n] = True
     if return_valid:
         return lanes, cross, lanes_valid, cross_valid
     return lanes, cross
+
+
+def _legacy_dtpp_flat_map(
+    batch: Mapping[str, torch.Tensor], device: torch.device, *, B: int, n_lanes: int,
+    lane_points: int, origin: torch.Tensor | None, yaw0: torch.Tensor | None,
+    lanes: torch.Tensor, lanes_valid: torch.Tensor,
+) -> None:
+    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=n_lanes * lane_points)
+    rg_valid = _roadgraph_valid_mask(batch, device, n_lanes * lane_points)
+    if rg is None or rg.shape[1] == 0:
+        return
+    total = min(n_lanes * lane_points, rg.shape[1])
+    xy = rg[:, :total]
+    valid = rg_valid[:, :total] if rg_valid is not None else torch.isfinite(xy).all(dim=-1)
+    for b in range(B):
+        for lane in range(n_lanes):
+            lo = lane * lane_points
+            hi = min(lo + lane_points, total)
+            if lo >= hi:
+                break
+            pts = xy[b, lo:hi]
+            n = int(pts.shape[0])
+            lanes[b, lane, :n, :2] = pts
+            lanes[b, lane, :n, 2] = _polyline_heading(pts)
+            lanes_valid[b, lane, :n] = valid[b, lo:hi]
 
 
 def build_dtpp_map(
@@ -554,31 +947,96 @@ def build_dtpp_map(
     origin: torch.Tensor | None = None, yaw0: torch.Tensor | None = None,
     return_valid: bool = False,
 ):
+    """Build DTPP vector-set inputs from intact nearby WOMD map features.
+
+    Public DTPP extracts nearby LANE/ROUTE_LANES/CROSSWALK elements within an
+    80 m ego radius and then resamples each element.  WOMD has no nuPlan route
+    lane layer in roadgraph_samples, so this adaptation uses the nearest 50 lane
+    center feature ids and keeps crosswalk polygons separate; it never chunks the
+    flat roadgraph stream into fake 50-point lanes.
+    """
     B = next(v for v in batch.values() if torch.is_tensor(v)).shape[0]
     lanes = torch.zeros(B, n_lanes, lane_points, 7, device=device)
     cross = torch.zeros(B, n_crosswalks, cross_points, 3, device=device)
     lanes_valid = torch.zeros(B, n_lanes, lane_points, device=device, dtype=torch.bool)
     cross_valid = torch.zeros(B, n_crosswalks, cross_points, device=device, dtype=torch.bool)
-    rg = _roadgraph_xy(batch, device, origin=origin, yaw0=yaw0, max_points=n_lanes * lane_points)
-    rg_valid = _roadgraph_valid_mask(batch, device, n_lanes * lane_points)
-    if rg is not None and rg.shape[1] > 0:
-        total = min(n_lanes * lane_points, rg.shape[1])
-        xy = rg[:, :total]
-        valid = rg_valid[:, :total] if rg_valid is not None else torch.isfinite(xy).all(dim=-1)
-        d = torch.zeros_like(xy)
-        d[:, 1:] = xy[:, 1:] - xy[:, :-1]
-        heading = torch.atan2(d[..., 1], d[..., 0])
-        flat = torch.zeros(B, n_lanes * lane_points, 7, device=device)
-        flat[:, :total, 0:2] = xy
-        flat[:, :total, 2] = heading
-        lanes = flat.reshape(B, n_lanes, lane_points, 7)
-        flat_valid = torch.zeros(B, n_lanes * lane_points, device=device, dtype=torch.bool)
-        flat_valid[:, :total] = valid
-        lanes_valid = flat_valid.reshape(B, n_lanes, lane_points)
+    xy, rg_valid, ids, types, source_heading = _roadgraph_feature_bundle(
+        batch, device, origin=origin, yaw0=yaw0
+    )
+    if xy is None or rg_valid is None:
+        if return_valid:
+            return lanes, cross, lanes_valid, cross_valid
+        return lanes, cross
+    if ids is None:
+        _legacy_dtpp_flat_map(
+            batch, device, B=B, n_lanes=n_lanes, lane_points=lane_points,
+            origin=origin, yaw0=yaw0, lanes=lanes, lanes_valid=lanes_valid,
+        )
+        if return_valid:
+            return lanes, cross, lanes_valid, cross_valid
+        return lanes, cross
+
+    invalid_id = torch.iinfo(ids.dtype).min
+    anchor = torch.zeros(1, 2, device=device, dtype=xy.dtype)
+    for b in range(B):
+        lane_ids, _, _ = _nearest_feature_ids(
+            xy[b], rg_valid[b], ids[b], None if types is None else types[b], anchor,
+            allowed_types=(1, 2, 3) if types is not None else None,
+            max_features=n_lanes, radius_m=80.0,
+        )
+        cross_ids, _, _ = _nearest_feature_ids(
+            xy[b], rg_valid[b], ids[b], None if types is None else types[b], anchor,
+            allowed_types=(18,) if types is not None else None,
+            max_features=n_crosswalks, radius_m=80.0,
+        )
+        for slot in range(lane_ids.shape[1]):
+            fid = lane_ids[0, slot]
+            if bool(fid == invalid_id):
+                continue
+            idx = torch.nonzero(rg_valid[b] & (ids[b] == fid), as_tuple=False).flatten()
+            if types is not None:
+                idx = idx[(types[b, idx] >= 1) & (types[b, idx] <= 3)]
+            if idx.numel() == 0:
+                continue
+            idx = _sample_polyline_indices(idx, lane_points)
+            pts = xy[b, idx]
+            keep = torch.linalg.norm(pts, dim=-1) <= 100.0
+            idx = idx[keep]
+            pts = pts[keep]
+            if idx.numel() == 0:
+                continue
+            n = int(idx.numel())
+            hsrc = None if source_heading is None else source_heading[b, idx]
+            lanes[b, slot, :n, :2] = pts
+            lanes[b, slot, :n, 2] = _polyline_heading(pts, hsrc)
+            # DTPP lane channels 3:7 are the four traffic-light one-hot values.
+            # WOMD traffic-light ids can be added when a lane-id association is
+            # retained in the cache; zero here represents unknown/no light.
+            lanes_valid[b, slot, :n] = True
+        for slot in range(cross_ids.shape[1]):
+            fid = cross_ids[0, slot]
+            if bool(fid == invalid_id):
+                continue
+            idx = torch.nonzero(rg_valid[b] & (ids[b] == fid), as_tuple=False).flatten()
+            if types is not None:
+                idx = idx[types[b, idx] == 18]
+            if idx.numel() == 0:
+                continue
+            idx = _sample_polyline_indices(idx, cross_points)
+            pts = xy[b, idx]
+            keep = torch.linalg.norm(pts, dim=-1) <= 100.0
+            idx = idx[keep]
+            pts = pts[keep]
+            if idx.numel() == 0:
+                continue
+            n = int(idx.numel())
+            hsrc = None if source_heading is None else source_heading[b, idx]
+            cross[b, slot, :n, :2] = pts
+            cross[b, slot, :n, 2] = _polyline_heading(pts, hsrc)
+            cross_valid[b, slot, :n] = True
     if return_valid:
         return lanes, cross, lanes_valid, cross_valid
     return lanes, cross
-
 
 def candidates_to_dtpp_tree(candidates: torch.Tensor) -> torch.Tensor:
     """COWP candidate [B,K,T,7] -> DTPP ego tree [B,K,T,6]."""
@@ -734,7 +1192,10 @@ def make_external_batch(
         gf_neighbors = torch.empty(B, 0, Th, 11, device=device)
     if need_gf:
         gf_lanes, gf_cross, gf_lanes_valid, gf_cross_valid = build_gameformer_map(
-            batch, max_neighbors + 1, device, origin=origin, yaw0=yaw0, return_valid=True
+            batch, max_neighbors + 1, device, origin=origin, yaw0=yaw0,
+            agent_xy=selected_hist[..., -1, :2],
+            agent_valid=(selected_hist[..., -1, 10] > 0.5),
+            return_valid=True,
         )
     else:
         gf_lanes = torch.empty(B, 0, 0, 0, 16, device=device)
