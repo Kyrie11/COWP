@@ -77,6 +77,21 @@ EXTERNAL_TRAIN_DTPP_PREFIXES = EXTERNAL_TRAIN_COMMON_PREFIXES | {
 }
 
 
+def candidate_geometry_finite(candidates: torch.Tensor) -> torch.Tensor:
+    """Return a [..candidate-prefix..] finite mask without tuple-dim reductions.
+
+    Some deployed COWP environments use a PyTorch build whose ``Tensor.all``
+    accepts only a single integer ``dim``.  In particular,
+    a multi-axis ``Tensor.all`` reduction raises ``TypeError`` before DTPP reaches its
+    forward pass.  Flattening the trajectory/state tail and reducing one axis
+    is equivalent and works across older and newer supported PyTorch builds.
+    """
+    if candidates.ndim < 2:
+        raise ValueError(f"candidate tensor must have at least 2 dims, got {tuple(candidates.shape)}")
+    finite = torch.isfinite(candidates)
+    return finite.reshape(*finite.shape[:-2], -1).all(dim=-1)
+
+
 def external_wanted_prefixes(*, baseline: str | None = None, purpose: str = "audit", include_waymax_outcomes: bool = True) -> set[str]:
     """Return the smallest key set needed by an external-baseline phase.
 
@@ -735,7 +750,7 @@ def make_external_batch(
         # One malformed proposal must never inject NaN/Inf into a whole-batch
         # transformer/loss.  Keep the proposal bank shape stable and invalidate
         # only the offending branch.
-        cand_valid = cand_valid & torch.isfinite(cand).all(dim=(-1, -2))
+        cand_valid = cand_valid & candidate_geometry_finite(cand)
         cand = torch.nan_to_num(cand, nan=0.0, posinf=0.0, neginf=0.0)
     else:
         cand = torch.empty(B, 0, horizon, 7, device=device)
@@ -803,7 +818,7 @@ def make_external_batch(
 def best_candidate_to_logged_ego(candidates: torch.Tensor, candidate_valid: torch.Tensor, ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor) -> torch.Tensor:
     valid_t = ego_future_valid[:, None, :, None].float()
     diff = (candidates[..., :2] - ego_future_xy[:, None]) * valid_t
-    denom = valid_t.sum(dim=(2, 3)).clamp_min(1.0)
+    denom = valid_t.sum(dim=-1).sum(dim=-1).clamp_min(1.0)
     ade = torch.linalg.norm(diff, dim=-1).sum(dim=-1) / denom
     ade = torch.where(candidate_valid, ade, torch.full_like(ade, 1e6))
     return torch.argmin(ade, dim=1)

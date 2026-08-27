@@ -115,7 +115,7 @@ def plant2_loss(model: COWPPlanT2, inputs: Mapping[str, torch.Tensor], ego_futur
         T = min(gt.shape[1], neigh.shape[2])
         d = torch.linalg.norm(gt[:, None, :T] - neigh[:, :, :T], dim=-1)
         d = torch.where(neigh_valid[:, :, :T].bool(), d, torch.full_like(d, 1e6))
-        target = (d.amin(dim=(1, 2)) < 3.0).float()
+        target = (d.amin(dim=-1).amin(dim=-1) < 3.0).float()
         hazard_loss = F.binary_cross_entropy_with_logits(out["hazard_logit"].float(), target)
     loss = reg + 0.05 * sp + 0.05 * hazard_loss
     d = torch.linalg.norm(pred - gt, dim=-1) * valid

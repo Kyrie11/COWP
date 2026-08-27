@@ -161,7 +161,7 @@ class ScoreDecoder(nn.Module):
         # way to distinguish an intentionally stationary stop trajectory (which
         # can be all zeros in the ego frame) from a padded branch.
         if candidate_valid is None:
-            ego_mask = ego_traj.abs().sum(dim=(-1, -2)) > 0
+            ego_mask = ego_traj.abs().sum(dim=-1).sum(dim=-1) > 0
         else:
             ego_mask = candidate_valid.bool()
         B, K = ego_traj.shape[:2]

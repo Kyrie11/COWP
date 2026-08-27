@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from cowp.core.config import load_config
 from cowp.data.dataset import collate_torch
-from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_batch_item, make_external_batch
+from cowp.external_baselines.adapters import ExternalCOWPDataset, candidate_geometry_finite, label_from_batch_item, make_external_batch
 from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
 from cowp.external_baselines.reference_metadata import baseline_reference_metadata
 from cowp.utils.progress import tqdm_iter
@@ -148,7 +148,7 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
             else:
                 raise ValueError(baseline)
             # Never let NaN/Inf logits or malformed proposal geometry win argmax.
-            candidate_finite = torch.isfinite(ext.candidates).all(dim=(-1, -2))
+            candidate_finite = candidate_geometry_finite(ext.candidates)
             accept = ext.candidate_valid & candidate_finite & torch.isfinite(scores)
             if args.require_conventional_safe:
                 accept2 = accept & ext.conventional_safe
