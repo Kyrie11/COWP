@@ -44,8 +44,13 @@ PROFILE_NUM_SCENARIOS="${PROFILE_NUM_SCENARIOS:-24}"
 # DTPP public-source defaults favor stability/fidelity: FP32 and global cost
 # weights.  These can be explicitly overridden for an ablation after a stable
 # reference checkpoint has been established.
+EXTERNAL_AMP_DTYPE="${EXTERNAL_AMP_DTYPE:-bfloat16}"
+GAMEFORMER_AMP="${GAMEFORMER_AMP:-0}"
 DTPP_AMP="${DTPP_AMP:-0}"
+PLUTO_AMP="${PLUTO_AMP:-0}"
+PLANT2_AMP="${PLANT2_AMP:-0}"
 DTPP_VARIABLE_COST="${DTPP_VARIABLE_COST:-0}"
+EXTERNAL_TRAINING_CONTRACT_VERSION="v4_explicit_validity_fp32_20260827"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 WEIGHT_DECAY_OVERRIDE="${WEIGHT_DECAY:-}"
 
@@ -99,9 +104,18 @@ train_one() {
   local history="$OUT_ROOT/$m/external_${m}_history.json"
   local best="$OUT_ROOT/$m/external_${m}_best.pt"
   local complete="$OUT_ROOT/$m/external_${m}_training_complete.json"
-  if [[ "$SKIP_COMPLETED" == "1" ]] && python - "$m" "$history" "$best" "$complete" "$epochs" <<'PY_DONE'
+  local requested_amp=0
+  case "$m" in
+    gameformer) requested_amp="$GAMEFORMER_AMP" ;;
+    dtpp) requested_amp="$DTPP_AMP" ;;
+    pluto) requested_amp="$PLUTO_AMP" ;;
+    plant2) requested_amp="$PLANT2_AMP" ;;
+  esac
+  if [[ "$SKIP_COMPLETED" == "1" ]] && python - "$m" "$history" "$best" "$complete" "$epochs" "$EXTERNAL_TRAINING_CONTRACT_VERSION" "$requested_amp" "$DTPP_VARIABLE_COST" "$batch" "$lr" "$wd" "$SEED" "$EXTERNAL_AMP_DTYPE" <<'PY_DONE'
 import json, pathlib, sys
 m, hp, bp, cp, target = sys.argv[1], pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]), int(sys.argv[5])
+contract, requested_amp, requested_dtpp_var = sys.argv[6], bool(int(sys.argv[7])), bool(int(sys.argv[8]))
+batch, lr, wd, seed, amp_dtype = int(sys.argv[9]), float(sys.argv[10]), float(sys.argv[11]), int(sys.argv[12]), sys.argv[13]
 if not hp.is_file() or not bp.is_file():
     raise SystemExit(1)
 try:
@@ -111,35 +125,47 @@ except Exception:
     raise SystemExit(1)
 if last < target:
     raise SystemExit(1)
-# DTPP V2 checkpoints used the now-invalid default (variable cost + BF16) and
-# have no V3 completion marker.  Never silently reuse them.
-if m == "dtpp":
-    if not cp.is_file():
+# V4 changes the numerical and validity-mask contract for every learned
+# baseline.  Never silently reuse V2/V3 checkpoints at the same paths.
+if not cp.is_file():
+    raise SystemExit(1)
+try:
+    done = json.loads(cp.read_text())
+    sig = done.get("training_signature", {})
+    if not done.get("completed", False) or sig.get("contract_version") != contract:
         raise SystemExit(1)
-    try:
-        done = json.loads(cp.read_text())
-        sig = done.get("training_signature", {})
-        if not done.get("completed", False) or bool(sig.get("dtpp_variable_cost", True)):
-            raise SystemExit(1)
-        if bool(sig.get("amp", True)):
-            raise SystemExit(1)
-    except SystemExit:
-        raise
-    except Exception:
+    if bool(sig.get("amp", False)) != requested_amp:
         raise SystemExit(1)
+    if int(sig.get("batch_size", -1)) != batch or int(sig.get("seed", -1)) != seed:
+        raise SystemExit(1)
+    if abs(float(sig.get("lr", float("nan"))) - lr) > 1e-15 or abs(float(sig.get("weight_decay", float("nan"))) - wd) > 1e-15:
+        raise SystemExit(1)
+    if requested_amp and str(sig.get("amp_dtype", "")) != amp_dtype:
+        raise SystemExit(1)
+    if m == "dtpp" and bool(sig.get("dtpp_variable_cost", False)) != requested_dtpp_var:
+        raise SystemExit(1)
+except SystemExit:
+    raise
+except Exception:
+    raise SystemExit(1)
 raise SystemExit(0)
 PY_DONE
   then
     echo "[train] $m already completed >=${epochs} epochs; SKIP_COMPLETED=1, reusing $best"
     return 0
   fi
-  local amp_args=(--amp --amp-dtype bfloat16)
+  local amp_args=()
   local dtpp_cost_args=()
+  if [[ "$requested_amp" == "1" ]]; then
+    amp_args=(--amp --amp-dtype "$EXTERNAL_AMP_DTYPE")
+  fi
   if [[ "$m" == "dtpp" ]]; then
     # Official DTPP public training is FP32 and variable_weights defaults false.
-    [[ "$DTPP_AMP" == "1" ]] || amp_args=()
     [[ "$DTPP_VARIABLE_COST" == "1" ]] && dtpp_cost_args=(--dtpp-variable-cost)
   fi
+  # A non-completed invocation is a fresh run.  The Python entry point also
+  # removes stale files, but clearing the marker here closes the race before it starts.
+  rm -f "$complete"
   echo "[train] $m epochs=$epochs batch=$batch lr=$lr wd=$wd amp=${amp_args[*]:-fp32}"
   python -m cowp.scripts.20_train_external_baseline \
     --baseline "$m" \

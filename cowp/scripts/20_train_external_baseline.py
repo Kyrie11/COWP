@@ -22,6 +22,7 @@ from cowp.external_baselines.gameformer_cowp import COWPGameFormer, gameformer_l
 from cowp.external_baselines.pluto_cowp import COWPPLUTO, pluto_loss
 from cowp.external_baselines.plant2_cowp import COWPPlanT2, plant2_loss
 from cowp.external_baselines.reference_metadata import baseline_reference_metadata
+from cowp.external_baselines.training_contract import EXTERNAL_TRAINING_CONTRACT_VERSION
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
@@ -276,12 +277,14 @@ def _run_epoch(
                 )
                 if hasattr(iterator, "set_postfix"):
                     iterator.set_postfix(loss="nonfinite", samples=n, skipped=skipped, refresh=False)
-                if consecutive_numerical >= int(args.max_consecutive_numerical_skips):
+                max_num_frac = float(getattr(args, "max_numerical_skip_fraction", 0.0))
+                if max_num_frac <= 0.0 or consecutive_numerical >= int(args.max_consecutive_numerical_skips):
                     bad_param = _first_nonfinite_parameter(model)
                     raise _FatalModelStateError(
-                        f"{args.baseline} produced {consecutive_numerical} consecutive non-finite losses at "
-                        f"{phase} epoch={epoch} batch={batch_idx}; first_nonfinite_parameter={bad_param}. "
-                        "Failing immediately instead of silently skipping the rest of the epoch."
+                        f"{args.baseline} produced a non-finite loss at {phase} epoch={epoch} batch={batch_idx}; "
+                        f"numerical_skipped={numerical_skipped}, first_nonfinite_parameter={bad_param}, "
+                        f"amp={amp_enabled}, amp_dtype={amp_dtype}. Numerical failures are fatal by default "
+                        "so the first causal traceback is preserved."
                     )
                 continue
             if train:
@@ -329,10 +332,11 @@ def _run_epoch(
                     )
                     if hasattr(iterator, "set_postfix"):
                         iterator.set_postfix(loss="bad_grad", samples=n, skipped=skipped, refresh=False)
-                    if consecutive_numerical >= int(args.max_consecutive_numerical_skips):
+                    max_num_frac = float(getattr(args, "max_numerical_skip_fraction", 0.0))
+                    if max_num_frac <= 0.0 or consecutive_numerical >= int(args.max_consecutive_numerical_skips):
                         raise _FatalModelStateError(
-                            f"{args.baseline} hit {consecutive_numerical} consecutive numerical-gradient failures at "
-                            f"{phase} epoch={epoch} batch={batch_idx}."
+                            f"{args.baseline} hit a numerical-gradient failure at {phase} epoch={epoch} batch={batch_idx}; "
+                            f"numerical_skipped={numerical_skipped}, first_nonfinite_gradient={bad_grad}."
                         ) from grad_exc
                     continue
                 bad_param = _first_nonfinite_parameter(model)
@@ -411,12 +415,21 @@ def _run_epoch(
         raise RuntimeError(f"No usable samples in {phase} epoch {epoch}. skipped_batches={skipped}. Set --strict to expose the first malformed batch.")
     skip_fraction = float(skipped / max(int(total_batches or (skipped + 1)), 1))
     max_skip_fraction = float(getattr(args, "max_skip_fraction", 0.02))
+    numerical_skip_fraction = float(numerical_skipped / max(int(total_batches or (skipped + 1)), 1))
+    max_numerical_skip_fraction = float(getattr(args, "max_numerical_skip_fraction", 0.0))
+    if numerical_skip_fraction > max_numerical_skip_fraction:
+        raise RuntimeError(
+            f"External baseline {args.baseline} {phase} epoch {epoch} numerical skips "
+            f"{numerical_skipped}/{total_batches} ({numerical_skip_fraction:.3%}) exceed "
+            f"max_numerical_skip_fraction={max_numerical_skip_fraction:.3%}."
+        )
     if skip_fraction > max_skip_fraction:
         raise RuntimeError(
             f"External baseline {args.baseline} {phase} epoch {epoch} skipped {skipped}/{total_batches} batches "
-            f"({skip_fraction:.3%}) > max_skip_fraction={max_skip_fraction:.3%}. "
-            "Do not publish or continue training a checkpoint learned from a tiny surviving subset. "
-            "Use ego-frame inputs and BF16/FP32 loss computation; rerun with --strict to expose malformed batches."
+            f"({skip_fraction:.3%}) > max_skip_fraction={max_skip_fraction:.3%}; "
+            f"numerical={numerical_skipped}, malformed={malformed_skipped}, empty_supervision={empty_supervision_skipped}. "
+            "Do not publish a checkpoint learned from a materially reduced subset. Use --strict to expose the first "
+            "adapter/data-contract failure; numerical failures are fatal on their first occurrence by default."
         )
     out = {k: v / max(metric_counts.get(k, float(n)), 1.0) for k, v in sums.items()} | {
         "num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped),
@@ -471,8 +484,9 @@ def main() -> None:
     ap.add_argument("--grad-clip", type=float, default=5.0)
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
     ap.add_argument("--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto", help="AMP dtype; auto prefers BF16 to avoid FP16 overflow in trajectory/GMM losses.")
-    ap.add_argument("--max-skip-fraction", type=float, default=0.02, help="Fail an epoch when non-finite/malformed batches exceed this fraction.")
-    ap.add_argument("--max-consecutive-numerical-skips", type=int, default=3, help="Fail fast after this many consecutive non-finite loss/gradient batches instead of poisoning/skipping the rest of an epoch.")
+    ap.add_argument("--max-skip-fraction", type=float, default=0.02, help="Fail an epoch when all excluded batches exceed this fraction.")
+    ap.add_argument("--max-numerical-skip-fraction", type=float, default=0.0, help="Allowed fraction of non-finite loss/gradient batches. Default 0 makes the first numerical failure fatal and preserves its traceback.")
+    ap.add_argument("--max-consecutive-numerical-skips", type=int, default=1, help="Compatibility guard when a nonzero numerical skip fraction is explicitly allowed.")
     ap.add_argument("--prefetch-factor", type=int, default=int(os.environ.get("PREFETCH_FACTOR", "2")))
     ap.add_argument("--val-prefetch-factor", type=int, default=2)
     ap.add_argument("--checkpoint-every", type=int, default=1, help="Save numbered epoch checkpoints every N epochs (best/final are always saved). Set >1 to reduce filesystem I/O without changing optimization.")
@@ -492,7 +506,21 @@ def main() -> None:
     _seed(args.seed, device)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _log(f"device={device} cuda_available={torch.cuda.is_available()} output_dir={out_dir}")
+    # This trainer has no resume semantics: every invocation starts from random
+    # initialization.  Remove stale success markers/checkpoints first so an
+    # interrupted V4 retrain cannot be mistaken for a valid older experiment.
+    stale = [
+        out_dir / f"external_{args.baseline}_training_complete.json",
+        out_dir / f"external_{args.baseline}_history.json",
+        out_dir / f"external_{args.baseline}_best.pt",
+    ] + list(out_dir.glob(f"external_{args.baseline}_epoch*.pt"))
+    for path in stale:
+        try:
+            path.unlink(missing_ok=True)
+        except TypeError:  # pragma: no cover - Python <3.8 compatibility
+            if path.exists():
+                path.unlink()
+    _log(f"device={device} cuda_available={torch.cuda.is_available()} output_dir={out_dir} contract={EXTERNAL_TRAINING_CONTRACT_VERSION}")
 
     _log(f"loading train dataset from {args.cache_dir}")
     train_ds = ExternalCOWPDataset(args.cache_dir, include_waymax_outcomes=False, baseline=args.baseline, purpose="train")
@@ -572,8 +600,12 @@ def main() -> None:
         record = {"epoch": epoch, "train": train_metrics, "val": val_metrics}
         history.append(record)
         _log("epoch summary " + json.dumps(record, sort_keys=True))
+        bad_param = _first_nonfinite_parameter(model)
+        if bad_param is not None:
+            raise _FatalModelStateError(f"Refusing to save checkpoint with non-finite parameter: {bad_param}")
         ckpt = {
             "baseline": args.baseline,
+            "training_contract_version": EXTERNAL_TRAINING_CONTRACT_VERSION,
             "model": _state_dict(model),
             "cfg": cfg,
             "args": vars(args),
@@ -600,7 +632,12 @@ def main() -> None:
         "best_checkpoint": str(best_path), "best_metric": float(best_metric),
         "completed": True,
         "training_signature": {
+            "contract_version": EXTERNAL_TRAINING_CONTRACT_VERSION,
+            "explicit_validity_masks": True,
             "lr": float(args.lr), "weight_decay": float(args.weight_decay),
+            "batch_size": int(args.batch_size), "seed": int(args.seed),
+            "future_len": int(args.future_len), "max_neighbors": int(args.max_neighbors),
+            "max_candidates": int(args.max_candidates),
             "amp": bool(args.amp), "amp_dtype": str(args.amp_dtype),
             "grad_clip": float(args.grad_clip),
             "dtpp_variable_cost": bool(getattr(args, "dtpp_variable_cost", False)),

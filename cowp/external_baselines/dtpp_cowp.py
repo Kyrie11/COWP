@@ -39,21 +39,26 @@ class VectorMapEncoder(nn.Module):
         self.point_net = nn.Sequential(nn.Linear(map_dim, 64), nn.ReLU(), nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, dim))
         self.position_encode = PositionalEncoding(dim, max_len=map_len)
 
-    def segment_map(self, map_tensor: torch.Tensor, map_encoding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def segment_map(
+        self, map_tensor: torch.Tensor, map_encoding: torch.Tensor,
+        point_valid: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         B, N_e, N_p, D = map_encoding.shape
-        enc = F.max_pool2d(map_encoding.permute(0, 3, 1, 2), kernel_size=(1, 10)).permute(0, 2, 3, 1).reshape(B, -1, D)
-        # Cross-domain WOMD adapter fix: zero padding is an all-zero point, not
-        # merely a point whose local x coordinate happens to be zero.  The old
-        # x==0 / max reduction masked valid lane blocks whenever a lane crossed
-        # the ego-frame y-axis, and could leave DTPP with almost no map tokens.
         points_per_segment = 10
-        point_padding = torch.eq(map_tensor, 0).all(dim=-1)
-        segment_padding = point_padding.reshape(B, N_e, N_p // points_per_segment, points_per_segment).all(dim=-1)
-        mask = segment_padding.reshape(B, -1)
-        return enc, mask
+        if N_p % points_per_segment != 0:
+            raise ValueError(f"DTPP map points must be divisible by {points_per_segment}, got {N_p}")
+        if point_valid is None:
+            point_valid = ~torch.eq(map_tensor, 0).all(dim=-1)
+        valid = point_valid.bool().reshape(B, N_e, N_p // points_per_segment, points_per_segment)
+        enc = map_encoding.reshape(B, N_e, N_p // points_per_segment, points_per_segment, D)
+        floor = torch.finfo(map_encoding.dtype).min
+        enc = enc.masked_fill(~valid[..., None], floor).max(dim=3).values
+        segment_valid = valid.any(dim=3)
+        enc = torch.where(segment_valid[..., None], enc, torch.zeros_like(enc))
+        return enc.reshape(B, -1, D), (~segment_valid).reshape(B, -1)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.segment_map(x, self.position_encode(self.point_net(x)))
+    def forward(self, x: torch.Tensor, point_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.segment_map(x, self.position_encode(self.point_net(x)), point_valid)
 
 
 class CrossAttention(nn.Module):
@@ -194,8 +199,8 @@ class DTPPEncoder(nn.Module):
         ego_valid = ego[:, -1, 6] > 0.5
         neighbor_valid = neighbors[:, :, -1, 10] > 0.5
         actors_mask = torch.cat([~ego_valid[:, None], ~neighbor_valid], dim=1)
-        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"])
-        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"])
+        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"], inputs.get("map_lanes_valid"))
+        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"], inputs.get("map_crosswalks_valid"))
         inp = torch.cat([encoded_actors, lanes, cross], dim=1)
         mask = torch.cat([actors_mask, lanes_mask, cross_mask], dim=1)
         return {"encoding": self.fusion_encoder(inp, src_key_padding_mask=mask), "mask": mask}

@@ -12,6 +12,7 @@ from cowp.external_baselines.dtpp_cowp import COWPDTPP
 from cowp.external_baselines.gameformer_cowp import COWPGameFormer
 from cowp.external_baselines.pluto_cowp import COWPPLUTO
 from cowp.external_baselines.plant2_cowp import COWPPlanT2
+from cowp.external_baselines.training_contract import EXTERNAL_TRAINING_CONTRACT_VERSION
 from cowp.waymax_eval.policy_wrapper import (
     _consistent_one_step_target,
     _extract_roadgraph_tokens,
@@ -36,6 +37,15 @@ def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str
         ckpt = torch.load(checkpoint, map_location="cpu")
     args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
     baseline = str(ckpt.get("baseline", args.get("baseline", "gameformer")))
+    contract = ckpt.get("training_contract_version") if isinstance(ckpt, dict) else None
+    allow_legacy = str(__import__("os").environ.get("ALLOW_LEGACY_EXTERNAL_CHECKPOINT", "0")).strip().lower() in {"1", "true", "yes"}
+    if contract != EXTERNAL_TRAINING_CONTRACT_VERSION and not allow_legacy:
+        raise RuntimeError(
+            f"External baseline checkpoint contract={contract!r} is incompatible with "
+            f"required contract={EXTERNAL_TRAINING_CONTRACT_VERSION!r}: {checkpoint}. "
+            "Rerun RUN_5_SOTA_BASELINES_COWP.sh train_parallel2 all so the checkpoint is overwritten at the same path. "
+            "Set ALLOW_LEGACY_EXTERNAL_CHECKPOINT=1 only for explicit historical auditing, not publication evaluation."
+        )
     model_cfg = ckpt.get("cfg", cfg)
     if baseline == "gameformer":
         model = COWPGameFormer(
@@ -77,10 +87,12 @@ def build_external_model_from_checkpoint(checkpoint: str, cfg: dict, device: str
         )
     else:
         raise ValueError(f"Unsupported external baseline checkpoint: {baseline}")
-    # A baseline benchmark must never run with silently missing/random weights.
-    # All V2/V3 architecture changes below are parameter-shape compatible, so
-    # strict loading is both safe and preferable for publication experiments.
-    model.load_state_dict(ckpt["model"], strict=True)
+    # A baseline benchmark must never run with silently missing/random/corrupt weights.
+    state_dict = ckpt["model"]
+    for name, tensor in state_dict.items():
+        if torch.is_tensor(tensor) and tensor.numel() and not bool(torch.isfinite(tensor).all()):
+            raise FloatingPointError(f"Checkpoint contains non-finite tensor {name}: {checkpoint}")
+    model.load_state_dict(state_dict, strict=True)
     model.to(dev).eval()
     return model, baseline, model_cfg, args, dev
 
@@ -234,7 +246,11 @@ class ExternalWaymaxPolicy:
         valid = np.zeros((n_agents, 1), dtype=bool)
         valid[sdc_index, 0] = True
         desired = np.asarray(traj[0], dtype=np.float32)
+        if not np.isfinite(desired).all():
+            raise FloatingPointError("Selected external-baseline trajectory begins with NaN/Inf")
         target, accel = _consistent_one_step_target(agent_state[sdc_index], desired, self.cfg, self._previous_longitudinal_accel)
+        if not np.isfinite(target).all() or not np.isfinite(accel):
+            raise FloatingPointError("External-baseline one-step target became NaN/Inf")
         self._previous_longitudinal_accel = float(accel)
         if self.action_mode == "absolute_xy_yaw":
             data[sdc_index, :5] = target
@@ -243,7 +259,9 @@ class ExternalWaymaxPolicy:
             dy = float(target[1] - agent_state[sdc_index, 1])
             dyaw = float(_wrap_angle(float(target[2] - agent_state[sdc_index, 6])))
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        if not np.isfinite(data).all():
+            raise FloatingPointError("Refusing to hide a non-finite Waymax action with nan_to_num")
+        data = data.astype(np.float32, copy=False)
         try:
             import jax.numpy as jnp  # type: ignore
             return datatypes.Action(data=jnp.asarray(data), valid=jnp.asarray(valid))
@@ -377,7 +395,9 @@ class ExternalWaymaxPolicy:
 
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
-        conv_np = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool)
+        candidate_finite = np.isfinite(cand).all(axis=(1, 2))
+        valid = valid & candidate_finite
+        conv_np = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool) & candidate_finite
         fallback_reason = None
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)

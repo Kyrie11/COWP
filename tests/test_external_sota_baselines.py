@@ -54,7 +54,7 @@ def test_womd_adapter_excludes_cowp_mechanism_labels_and_runs_planners():
     batch = _synthetic_batch(T=T)
     cfg = {"limits": {"max_agents": 64}, "model": {"history_steps": 11}, "time": {"future_steps": T}}
     ext = make_external_batch(batch, cfg, device=torch.device("cpu"), max_neighbors=4, max_candidates=6, horizon=T)
-    assert set(ext.planner_inputs) == {"agents", "agent_valid", "map_lanes", "route", "neighbors_future_xy", "neighbors_future_valid"}
+    assert set(ext.planner_inputs) == {"agents", "agent_valid", "map_lanes", "map_lanes_valid", "route", "neighbors_future_xy", "neighbors_future_valid"}
     assert ext.ego_future_xy.shape == (1, T, 2)
     assert ext.origin.shape == (1, 2)
     assert ext.yaw0.shape == (1,)

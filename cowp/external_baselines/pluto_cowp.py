@@ -92,7 +92,10 @@ class COWPPLUTO(nn.Module):
         if agent_valid is None:
             agent_valid = agents.abs().sum(dim=-1) > 0
         amap = inputs["map_lanes"]  # [B,L,P,7]
-        map_valid = amap[..., :2].abs().sum(dim=-1) > 0
+        map_valid = inputs.get("map_lanes_valid")
+        if map_valid is None:
+            map_valid = ~torch.eq(amap, 0).all(dim=-1)
+        map_valid = map_valid.bool()
         route = inputs["route"]  # [B,R,4]
         route_valid = route[..., 3] > 0.5
 

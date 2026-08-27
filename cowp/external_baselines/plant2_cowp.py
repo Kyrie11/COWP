@@ -45,7 +45,10 @@ class COWPPlanT2(nn.Module):
         rv = route[..., 3] > 0.5
         rh = self.route_point(route) + self.type_embedding.weight[1]
         lanes = inputs["map_lanes"]
-        lv = lanes[..., :2].abs().sum(dim=-1) > 0
+        lv = inputs.get("map_lanes_valid")
+        if lv is None:
+            lv = ~torch.eq(lanes, 0).all(dim=-1)
+        lv = lv.bool()
         mh = self.map_point(lanes)
         mh = self._masked_mean(mh, lv, -2) + self.type_embedding.weight[2]
         tokens = torch.cat([objs, rh, mh], dim=1)

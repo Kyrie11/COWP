@@ -403,6 +403,8 @@ def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None
     hist = _history_np(batch)
     cur = _current_state_from_history(hist) if hist is not None else np.zeros((B, 1, 11), dtype=np.float32)
     sdc = _sdc_indices_np(batch, B)
+    finite_geometry = np.isfinite(candidates[:, :K]).all(axis=(2, 3))
+    valid = valid & finite_geometry
     accept = valid.copy()
     if require_conventional_safe:
         accept &= conventional[:, :K]

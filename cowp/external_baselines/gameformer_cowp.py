@@ -197,13 +197,28 @@ class GameFormerEncoder(nn.Module):
         attention_layer = nn.TransformerEncoderLayer(d_model=dim, nhead=8, dim_feedforward=dim * 4, activation=F.gelu, dropout=0.1, batch_first=True)
         self.fusion_encoder = nn.TransformerEncoder(attention_layer, layers, enable_nested_tensor=False)
 
-    def segment_map(self, map_tensor: torch.Tensor, map_encoding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def segment_map(
+        self, map_tensor: torch.Tensor, map_encoding: torch.Tensor,
+        point_valid: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         stride = 10
         B, N_e, N_p, D = map_encoding.shape
-        pooled = F.max_pool2d(map_encoding.permute(0, 3, 1, 2), kernel_size=(1, stride)).permute(0, 2, 3, 1).reshape(B, -1, D)
-        mask = torch.eq(map_tensor, 0)[:, :, :, 0].reshape(B, N_e, N_p // stride, N_p // (N_p // stride))
-        mask = torch.max(mask, dim=-1)[0].reshape(B, -1)
-        return pooled, mask
+        if N_p % stride != 0:
+            raise ValueError(f"GameFormer map points must be divisible by {stride}, got {N_p}")
+        if point_valid is None:
+            # Backward-compatible fallback only.  The COWP/WOMD adapter passes
+            # source validity explicitly because a valid local point can be 0.
+            point_valid = ~torch.eq(map_tensor, 0).all(dim=-1)
+        point_valid = point_valid.bool()
+        nseg = N_p // stride
+        enc = map_encoding.reshape(B, N_e, nseg, stride, D)
+        valid = point_valid.reshape(B, N_e, nseg, stride)
+        floor = torch.finfo(map_encoding.dtype).min
+        enc = enc.masked_fill(~valid[..., None], floor)
+        pooled = enc.max(dim=3).values
+        segment_valid = valid.any(dim=3)
+        pooled = torch.where(segment_valid[..., None], pooled, torch.zeros_like(pooled))
+        return pooled.reshape(B, -1, D), (~segment_valid).reshape(B, -1)
 
     def forward(self, inputs: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         ego = inputs["ego_state"]
@@ -212,7 +227,11 @@ class GameFormerEncoder(nn.Module):
         encoded_ego = self.ego_encoder(ego)
         encoded_neighbors = [self.agent_encoder(neighbors[:, i]) for i in range(neighbors.shape[1])]
         encoded_actors = torch.stack([encoded_ego] + encoded_neighbors, dim=1)
-        actors_mask = torch.eq(actors[:, :, -1].sum(-1), 0)
+        actors_valid = inputs.get("actors_valid")
+        if actors_valid is not None:
+            actors_mask = ~actors_valid[:, :, -1].bool()
+        else:
+            actors_mask = torch.eq(actors[:, :, -1], 0).all(dim=-1)
         map_lanes = inputs["map_lanes"]
         map_crosswalks = inputs["map_crosswalks"]
         encoded_map_lanes = self.lane_encoder(map_lanes)
@@ -220,8 +239,14 @@ class GameFormerEncoder(nn.Module):
         encodings, masks = [], []
         N = self.neighbors + 1
         for i in range(N):
-            lanes, lanes_mask = self.segment_map(map_lanes[:, i], encoded_map_lanes[:, i])
-            crosswalks, cross_mask = self.segment_map(map_crosswalks[:, i], encoded_map_crosswalks[:, i])
+            lane_valid = inputs.get("map_lanes_valid")
+            cross_valid = inputs.get("map_crosswalks_valid")
+            lanes, lanes_mask = self.segment_map(
+                map_lanes[:, i], encoded_map_lanes[:, i], None if lane_valid is None else lane_valid[:, i]
+            )
+            crosswalks, cross_mask = self.segment_map(
+                map_crosswalks[:, i], encoded_map_crosswalks[:, i], None if cross_valid is None else cross_valid[:, i]
+            )
             fusion_input = torch.cat([encoded_actors, lanes, crosswalks], dim=1)
             mask = torch.cat([actors_mask, lanes_mask, cross_mask], dim=1)
             encodings.append(self.fusion_encoder(fusion_input, src_key_padding_mask=mask))
@@ -354,7 +379,7 @@ def gameformer_loss(outputs: Mapping[str, torch.Tensor], ego_future_xy: torch.Te
         metric_tensors[f"level{k}_gmm_nll"] = parts["gmm_nll"]
         metric_tensors[f"level{k}_mode_ce"] = parts["mode_ce"]
         if k >= 1:
-            nvalid = neighbors_future_valid[:, :, 0] if neighbors_future_valid.numel() else torch.zeros(gt.shape[0], 0, device=gt.device, dtype=torch.bool)
+            nvalid = neighbors_future_valid.any(dim=-1) if neighbors_future_valid.numel() else torch.zeros(gt.shape[0], 0, device=gt.device, dtype=torch.bool)
             inter = interaction_loss(traj, outputs[f"level_{k-1}_interactions"], nvalid)
             total = total + 0.1 * inter
             metric_tensors[f"level{k}_interaction"] = inter.detach()

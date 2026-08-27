@@ -44,7 +44,11 @@ class RuleBasedWaymaxPolicy:
         valid = np.zeros((n_agents, 1), dtype=bool)
         valid[sdc_index, 0] = True
         desired = np.asarray(traj[0], dtype=np.float32)
+        if not np.isfinite(desired).all():
+            raise FloatingPointError("Selected rule-baseline trajectory begins with NaN/Inf")
         target, accel = _consistent_one_step_target(agent_state[sdc_index], desired, self.cfg, self._previous_longitudinal_accel)
+        if not np.isfinite(target).all() or not np.isfinite(accel):
+            raise FloatingPointError("Rule-baseline one-step target became NaN/Inf")
         self._previous_longitudinal_accel = float(accel)
         if self.action_mode == "absolute_xy_yaw":
             data[sdc_index, :5] = target
@@ -53,7 +57,9 @@ class RuleBasedWaymaxPolicy:
             dy = float(target[1] - agent_state[sdc_index, 1])
             dyaw = float(_wrap_angle(float(target[2] - agent_state[sdc_index, 6])))
             data[sdc_index, : min(data_dim, 3)] = np.asarray([dx, dy, dyaw], dtype=np.float32)[:data_dim]
-        data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+        if not np.isfinite(data).all():
+            raise FloatingPointError("Refusing to hide a non-finite rule-baseline Waymax action with nan_to_num")
+        data = data.astype(np.float32, copy=False)
         try:
             import jax.numpy as jnp  # type: ignore
             return datatypes.Action(data=jnp.asarray(data), valid=jnp.asarray(valid))
@@ -103,10 +109,16 @@ class RuleBasedWaymaxPolicy:
             _t_after_score = time.perf_counter()
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
+        finite_geometry = np.isfinite(cand).all(axis=(1, 2))
+        valid = valid & finite_geometry
+        fallback = False
+        fallback_reason = None
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)
             selected = int(valid_idx[0]) if valid_idx.size else 0
-        conventional = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool)
+            fallback = True
+            fallback_reason = "invalid_or_nonfinite_rule_selection" if valid_idx.size else "no_valid_finite_candidate"
+        conventional = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool) & finite_geometry
         self._last_diagnostics = {
             "baseline": self.baseline,
             "selected_idx": selected,
@@ -114,7 +126,8 @@ class RuleBasedWaymaxPolicy:
             "accepted_candidates": int(accept[0].sum()) if accept.ndim == 2 else 0,
             "conventional_candidates": int(conventional.sum()),
             "selected_score": float(scores[0, selected]) if selected >= 0 and scores.ndim == 2 else float("nan"),
-            "fallback": bool(selected < 0),
+            "fallback": fallback,
+            "fallback_reason": fallback_reason,
             "scenario_static_map_cache": True,
             "causal_no_logged_future": True,
         }
