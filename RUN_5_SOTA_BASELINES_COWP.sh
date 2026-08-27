@@ -89,9 +89,9 @@ train_one() {
   contains_method "$m" "${LEARNED[@]}" || { echo "$m has no learned training stage"; return 0; }
   local epochs batch lr wd
   case "$m" in
-    gameformer) epochs=20; batch=24; lr=1e-4; wd=1e-4 ;;   # official open-loop defaults + existing adapter WD
+    gameformer) epochs=20; batch=16; lr=1e-4; wd=1e-4 ;;   # official open-loop defaults + existing adapter WD
     dtpp)       epochs=30; batch=16; lr=2e-4; wd=1e-2 ;;   # official DTPP AdamW default weight_decay=0.01
-    pluto)      epochs=25; batch=24; lr=1e-3; wd=1e-4 ;;   # official README full-data recipe + existing adapter WD
+    pluto)      epochs=25; batch=16; lr=1e-3; wd=1e-4 ;;   # official README full-data recipe + existing adapter WD
     plant2)     epochs=30; batch=16; lr=1e-4; wd=1e-4 ;;   # WOMD adapter budget; native CARLA config is domain-specific
   esac
   [[ -n "$EPOCHS_OVERRIDE" ]] && epochs="$EPOCHS_OVERRIDE"
