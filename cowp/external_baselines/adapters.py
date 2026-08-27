@@ -217,7 +217,8 @@ def all_tensor(batch: Mapping[str, torch.Tensor], name: str, *, max_agents: int)
 def sdc_indices(batch: Mapping[str, torch.Tensor], max_agents: int, batch_size: int, device: torch.device) -> torch.Tensor:
     is_sdc = all_tensor(batch, "is_sdc", max_agents=max_agents)
     if is_sdc is not None and is_sdc.ndim >= 2:
-        return torch.argmax(is_sdc.float().to(device), dim=1).long()
+        scores = torch.nan_to_num(is_sdc.float().to(device), nan=0.0, posinf=0.0, neginf=0.0)
+        return torch.argmax(scores, dim=1).long()
     return torch.zeros(batch_size, device=device, dtype=torch.long)
 
 
@@ -233,7 +234,7 @@ def _agent_type(batch: Mapping[str, torch.Tensor], max_agents: int, device: torc
     typ = all_tensor(batch, "type", max_agents=max_agents)
     if typ is None:
         typ = current_tensor(batch, "type", max_agents=max_agents)
-    return typ.to(device) if typ is not None else None
+    return torch.nan_to_num(typ.to(device), nan=0.0, posinf=0.0, neginf=0.0) if typ is not None else None
 
 
 def _select_neighbors(agent_history: torch.Tensor, agent_mask: torch.Tensor, sdc: torch.Tensor, max_neighbors: int) -> torch.Tensor:
@@ -363,13 +364,15 @@ def _roadgraph_xy(
     # by -ego_origin turns it into a huge fake map point and was another source of
     # unstable external-baseline inputs.
     valid_t = first_tensor(batch, ("roadgraph_samples/valid", "womd/roadgraph_samples/valid"))
+    finite_geometry = torch.isfinite(arr).all(dim=-1)
     if valid_t is not None:
         valid = valid_t.bool()
         if valid.ndim == 1:
             valid = valid.unsqueeze(0)
         valid = valid.reshape(valid.shape[0], -1)[:, : arr.shape[1]].to(device, non_blocking=True)
+        valid = valid & finite_geometry
     else:
-        valid = torch.isfinite(arr).all(dim=-1) & (torch.linalg.norm(arr, dim=-1) > 1.0e-6)
+        valid = finite_geometry & (torch.linalg.norm(torch.nan_to_num(arr), dim=-1) > 1.0e-6)
     arr = torch.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
     if origin is not None and yaw0 is not None:
         arr = _xy_to_ego_frame(arr, origin, yaw0)
@@ -420,6 +423,10 @@ def build_route_centerline(
             q = max(flat_xy.shape[1] // n_paths, 1)
             paths_xy = flat_xy[:, : n_paths * q].reshape(B, n_paths, q, 2)
             paths_valid = flat_valid[:, : n_paths * q].reshape(B, n_paths, q)
+        # Source validity is necessary but not sufficient: a marked-valid NaN/Inf
+        # path point must be excluded before nearest-point and heading operations.
+        paths_valid = paths_valid & torch.isfinite(paths_xy).all(dim=-1)
+        paths_xy = torch.nan_to_num(paths_xy, nan=0.0, posinf=0.0, neginf=0.0)
         P = paths_xy.shape[1]
         if on_route_t is not None:
             onr = on_route_t.to(device).reshape(B, -1)[:, :P]
@@ -485,7 +492,24 @@ def _roadgraph_valid_mask(batch: Mapping[str, torch.Tensor], device: torch.devic
         valid = valid_t.bool()
         if valid.ndim == 1:
             valid = valid.unsqueeze(0)
-        return valid.reshape(valid.shape[0], -1)[:, : int(max_points)].to(device, non_blocking=True)
+        valid = valid.reshape(valid.shape[0], -1)[:, : int(max_points)].to(device, non_blocking=True)
+        # Never trust a validity bit over non-finite source geometry.
+        xyz_t = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
+        if xyz_t is not None:
+            xy = xyz_t.float()
+            if xy.ndim == 2:
+                xy = xy.unsqueeze(0)
+            xy = xy.reshape(xy.shape[0], -1, xy.shape[-1])[..., :2][:, : valid.shape[1]].to(device, non_blocking=True)
+            valid = valid[:, : xy.shape[1]] & torch.isfinite(xy).all(dim=-1)
+        else:
+            x_t = first_tensor(batch, ("roadgraph_samples/x", "womd/roadgraph_samples/x"))
+            y_t = first_tensor(batch, ("roadgraph_samples/y", "womd/roadgraph_samples/y"))
+            if x_t is not None and y_t is not None:
+                x = x_t.float().reshape(x_t.shape[0] if x_t.ndim > 1 else 1, -1)[:, : valid.shape[1]].to(device, non_blocking=True)
+                y = y_t.float().reshape(y_t.shape[0] if y_t.ndim > 1 else 1, -1)[:, : valid.shape[1]].to(device, non_blocking=True)
+                n = min(valid.shape[1], x.shape[1], y.shape[1])
+                valid = valid[:, :n] & torch.isfinite(x[:, :n]) & torch.isfinite(y[:, :n])
+        return valid
     xyz = first_tensor(batch, ("roadgraph_samples/xyz", "womd/roadgraph_samples/xyz"))
     if xyz is None:
         return None
@@ -636,6 +660,7 @@ class ExternalBatch:
     sdc_indices: torch.Tensor
     origin: torch.Tensor
     yaw0: torch.Tensor
+    sdc_current_valid: torch.Tensor
 
 
 def make_external_batch(
@@ -655,11 +680,21 @@ def make_external_batch(
     if hist is not None:
         agent_history = hist.float().to(device)
         mask_t = first_tensor(batch, ("state/agent_valid", "womd/state/agent_valid", "state/current/valid", "womd/state/current/valid"))
-        agent_mask = mask_t.bool().to(device) if mask_t is not None and mask_t.shape[:2] == agent_history.shape[:2] else (agent_history[..., -1, 10] > 0.5)
+        source_agent_mask = mask_t.bool().to(device) if mask_t is not None and mask_t.shape[:2] == agent_history.shape[:2] else None
     else:
-        agent_history, agent_mask = build_agent_history_from_womd(batch, max_agents=int(cfg.get("limits", {}).get("max_agents", cfg.get("model", {}).get("max_agents", 128))), history_steps=int(cfg.get("model", {}).get("history_steps", 11)), d_state=11)
+        agent_history, source_agent_mask = build_agent_history_from_womd(batch, max_agents=int(cfg.get("limits", {}).get("max_agents", cfg.get("model", {}).get("max_agents", 128))), history_steps=int(cfg.get("model", {}).get("history_steps", 11)), d_state=11)
         agent_history = agent_history.to(device)
-        agent_mask = agent_mask.to(device)
+        source_agent_mask = source_agent_mask.to(device)
+    # Enforce the core WOMD state invariant before *any* coordinate transform:
+    # a timestep is usable only when declared valid AND all state fields used by
+    # the adapters are finite.  Invalid values are zero-filled only after their
+    # validity bit has been cleared so they cannot masquerade as real states.
+    state_finite = torch.isfinite(agent_history[..., :10]).all(dim=-1)
+    step_valid = (agent_history[..., 10] > 0.5) & state_finite
+    agent_history = torch.nan_to_num(agent_history, nan=0.0, posinf=0.0, neginf=0.0)
+    agent_history[..., 10] = step_valid.to(agent_history.dtype)
+    current_valid = step_valid[..., -1]
+    agent_mask = current_valid if source_agent_mask is None else (source_agent_mask.bool() & current_valid)
     B, N, Th, _ = agent_history.shape
     horizon = int(horizon or cfg.get("time", {}).get("future_steps", 80))
     sdc = sdc_indices(batch, N, B, device)
@@ -674,6 +709,7 @@ def make_external_batch(
     sdc_safe = sdc.clamp(0, N - 1)
     origin = agent_history[rows, sdc_safe, -1, :2].clone()
     yaw0 = agent_history[rows, sdc_safe, -1, 6].clone()
+    sdc_current_valid = current_valid[rows, sdc_safe]
 
     baseline_l = str(baseline).lower() if baseline is not None else None
     need_gf = baseline_l in {None, "gameformer"}
@@ -730,7 +766,7 @@ def make_external_batch(
         future_xy, future_valid = _future_xy_for_selected(batch, all_pred_idx, N, horizon, device)
         future_xy = _xy_to_ego_frame(future_xy, origin, yaw0)
         future_finite = torch.isfinite(future_xy).all(dim=-1)
-        future_valid = future_valid & future_finite
+        future_valid = future_valid & future_finite & sdc_current_valid[:, None, None]
         future_xy = torch.nan_to_num(future_xy, nan=0.0, posinf=0.0, neginf=0.0)
         ego_future_xy = future_xy[:, 0]
         ego_future_valid = future_valid[:, 0]
@@ -750,7 +786,7 @@ def make_external_batch(
         # One malformed proposal must never inject NaN/Inf into a whole-batch
         # transformer/loss.  Keep the proposal bank shape stable and invalidate
         # only the offending branch.
-        cand_valid = cand_valid & candidate_geometry_finite(cand)
+        cand_valid = cand_valid & candidate_geometry_finite(cand) & sdc_current_valid[:, None]
         cand = torch.nan_to_num(cand, nan=0.0, posinf=0.0, neginf=0.0)
     else:
         cand = torch.empty(B, 0, horizon, 7, device=device)
@@ -772,6 +808,7 @@ def make_external_batch(
         if conventional is not None:
             conventional = conventional.bool().to(device, non_blocking=True)
             conventional = conventional[:, : cand_valid.shape[1]] if conventional.shape[1] >= cand_valid.shape[1] else torch.cat([conventional, torch.zeros(B, cand_valid.shape[1] - conventional.shape[1], device=device, dtype=torch.bool)], dim=1)
+            conventional = conventional & cand_valid
         else:
             conventional = cand_valid
         dtpp_tree = candidates_to_dtpp_tree(cand)
@@ -812,12 +849,15 @@ def make_external_batch(
         sdc_indices=sdc,
         origin=origin,
         yaw0=yaw0,
+        sdc_current_valid=sdc_current_valid,
     )
 
 
 def best_candidate_to_logged_ego(candidates: torch.Tensor, candidate_valid: torch.Tensor, ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor) -> torch.Tensor:
-    valid_t = ego_future_valid[:, None, :, None].float()
-    diff = (candidates[..., :2] - ego_future_xy[:, None]) * valid_t
+    valid_b = ego_future_valid[:, None, :, None].bool()
+    safe_target = torch.where(valid_b, ego_future_xy[:, None], candidates[..., :2].detach())
+    diff = candidates[..., :2] - safe_target
+    valid_t = valid_b.float()
     denom = valid_t.sum(dim=-1).sum(dim=-1).clamp_min(1.0)
     ade = torch.linalg.norm(diff, dim=-1).sum(dim=-1) / denom
     ade = torch.where(candidate_valid, ade, torch.full_like(ade, 1e6))

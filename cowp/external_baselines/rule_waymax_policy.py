@@ -9,6 +9,7 @@ import numpy as np
 from cowp.external_baselines.rule_based import select_rule_indices
 from cowp.waymax_eval.policy_wrapper import (
     _consistent_one_step_target,
+    _resolve_execution_trajectory,
     _extract_roadgraph_tokens,
     _wrap_angle,
     build_online_batch,
@@ -115,9 +116,13 @@ class RuleBasedWaymaxPolicy:
         fallback_reason = None
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)
-            selected = int(valid_idx[0]) if valid_idx.size else 0
+            selected = int(valid_idx[0]) if valid_idx.size else -1
             fallback = True
             fallback_reason = "invalid_or_nonfinite_rule_selection" if valid_idx.size else "no_valid_finite_candidate"
+        has_valid_execution = bool(selected >= 0 and selected < len(cand) and valid[selected])
+        execution_traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
+            cand, selected, has_valid_execution, np.asarray(agent_state[sdc_index], dtype=np.float32), self.cfg
+        )
         conventional = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool) & finite_geometry
         self._last_diagnostics = {
             "baseline": self.baseline,
@@ -130,6 +135,8 @@ class RuleBasedWaymaxPolicy:
             "fallback_reason": fallback_reason,
             "scenario_static_map_cache": True,
             "causal_no_logged_future": True,
+            "emergency_action_used": bool(emergency_action_used),
+            "execution_trajectory_source": execution_source,
         }
         if self.profile_timing:
             self._last_diagnostics.update({
@@ -139,7 +146,7 @@ class RuleBasedWaymaxPolicy:
                 "timing_ms/rule_scoring": 1000.0 * (_t_after_score - _t_score0),
                 "timing_ms/total_before_action": 1000.0 * (time.perf_counter() - _t_total0),
             })
-        return self._trajectory_to_action(agent_state, sdc_index, cand[selected])
+        return self._trajectory_to_action(agent_state, sdc_index, execution_traj)
 
     def consume_diagnostics(self) -> dict[str, Any] | None:
         row = self._last_diagnostics

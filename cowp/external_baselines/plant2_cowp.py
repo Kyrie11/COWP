@@ -95,17 +95,29 @@ def plant2_loss(model: COWPPlanT2, inputs: Mapping[str, torch.Tensor], ego_futur
     out = model(inputs)
     pred = out["trajectory"].float()
     gt = ego_future_xy[:, : pred.shape[1]].float()
-    valid = ego_future_valid[:, : pred.shape[1]].float()
-    reg = F.smooth_l1_loss(pred, gt, reduction="none").sum(-1)
+    valid_b = ego_future_valid[:, : pred.shape[1]].bool()
+    valid = valid_b.float()
+    sample_valid = valid_b.any(dim=-1)
+    if not bool(sample_valid.any()):
+        zero = pred.sum() * 0.0 + out["speed"].sum() * 0.0 + out["hazard_logit"].sum() * 0.0
+        return zero, {"plannerADE": float("nan"), "plannerFDE": float("nan"), "valid_samples": 0.0}
+    gt_safe = torch.where(valid_b[..., None], gt, pred.detach())
+    reg = F.smooth_l1_loss(pred, gt_safe, reduction="none").sum(-1)
     reg = (reg * valid).sum() / valid.sum().clamp_min(1.0)
-    # Speed consistency is derived from logged displacement and is independent
-    # of all COWP certificate labels.
+    # Speed supervision requires two consecutive valid logged positions.  Using
+    # only the destination validity can turn a missing predecessor into a huge
+    # artificial speed target.
     gt_speed = torch.zeros_like(valid)
+    speed_valid = torch.zeros_like(valid_b)
     if gt.shape[1] > 1:
-        gt_speed[:, 1:] = torch.linalg.norm(gt[:, 1:] - gt[:, :-1], dim=-1) / 0.1
+        transition_valid = valid_b[:, 1:] & valid_b[:, :-1]
+        delta = torch.where(transition_valid[..., None], gt[:, 1:] - gt[:, :-1], torch.zeros_like(gt[:, 1:]))
+        gt_speed[:, 1:] = torch.linalg.norm(delta, dim=-1) / 0.1
+        speed_valid[:, 1:] = transition_valid
         gt_speed[:, 0] = gt_speed[:, 1]
-    sp = F.smooth_l1_loss(out["speed"].float(), gt_speed, reduction="none")
-    sp = (sp * valid).sum() / valid.sum().clamp_min(1.0)
+        speed_valid[:, 0] = transition_valid[:, 0]
+    sp_per = F.smooth_l1_loss(out["speed"].float(), gt_speed, reduction="none")
+    sp = (sp_per * speed_valid.float()).sum() / speed_valid.float().sum().clamp_min(1.0)
     # Collision-risk auxiliary target: whether logged ego comes within a compact
     # radius of any logged neighboring future.  It is observational, not COWP.
     neigh = inputs.get("neighbors_future_xy")
@@ -113,16 +125,21 @@ def plant2_loss(model: COWPPlanT2, inputs: Mapping[str, torch.Tensor], ego_futur
     hazard_loss = pred.sum() * 0.0
     if neigh is not None and neigh_valid is not None and neigh.numel() > 0:
         T = min(gt.shape[1], neigh.shape[2])
-        d = torch.linalg.norm(gt[:, None, :T] - neigh[:, :, :T], dim=-1)
-        d = torch.where(neigh_valid[:, :, :T].bool(), d, torch.full_like(d, 1e6))
+        pair_valid = neigh_valid[:, :, :T].bool() & valid_b[:, None, :T]
+        pair_delta = torch.where(
+            pair_valid[..., None], gt[:, None, :T] - neigh[:, :, :T], torch.zeros_like(neigh[:, :, :T])
+        )
+        d = torch.linalg.norm(pair_delta, dim=-1)
+        d = torch.where(pair_valid, d, torch.full_like(d, 1e6))
         target = (d.amin(dim=-1).amin(dim=-1) < 3.0).float()
-        hazard_loss = F.binary_cross_entropy_with_logits(out["hazard_logit"].float(), target)
+        hazard_loss = F.binary_cross_entropy_with_logits(out["hazard_logit"].float()[sample_valid], target[sample_valid])
     loss = reg + 0.05 * sp + 0.05 * hazard_loss
-    d = torch.linalg.norm(pred - gt, dim=-1) * valid
+    metric_target = torch.where(valid_b[..., None], gt, pred.detach())
+    d = torch.linalg.norm(pred - metric_target, dim=-1)
+    d = torch.where(valid_b, d, torch.zeros_like(d))
     ade = d.sum() / valid.sum().clamp_min(1.0)
     rows = torch.arange(gt.shape[0], device=gt.device)
     last = valid.sum(dim=-1).long().clamp_min(1) - 1
-    sample_valid = valid.bool().any(dim=-1)
     fde = d[rows[sample_valid], last[sample_valid]].mean() if bool(sample_valid.any()) else d.sum() * 0.0
     return loss, {
         "plannerADE": float(ade.detach().cpu()),
@@ -130,4 +147,5 @@ def plant2_loss(model: COWPPlanT2, inputs: Mapping[str, torch.Tensor], ego_futur
         "ego_reg": float(reg.detach().cpu()),
         "speed_reg": float(sp.detach().cpu()),
         "hazard_bce": float(hazard_loss.detach().cpu()),
+        "valid_samples": float(sample_valid.float().sum().detach().cpu()),
     }

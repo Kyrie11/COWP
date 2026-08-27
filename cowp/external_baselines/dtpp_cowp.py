@@ -199,6 +199,12 @@ class DTPPEncoder(nn.Module):
         ego_valid = ego[:, -1, 6] > 0.5
         neighbor_valid = neighbors[:, :, -1, 10] > 0.5
         actors_mask = torch.cat([~ego_valid[:, None], ~neighbor_valid], dim=1)
+        invalid_anchor = actors_mask[:, 0].clone()
+        if bool(invalid_anchor.any()):
+            encoded_actors = encoded_actors.clone()
+            encoded_actors[invalid_anchor, 0] = 0.0
+            actors_mask = actors_mask.clone()
+            actors_mask[:, 0] = False
         lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"], inputs.get("map_lanes_valid"))
         cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"], inputs.get("map_crosswalks_valid"))
         inp = torch.cat([encoded_actors, lanes, cross], dim=1)
@@ -350,12 +356,16 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     pred_xy = pred[:, :, :T, :2]
     gt_xy = neighbors_future_xy[sample_valid, :, :T, :2]
     valid = neighbors_future_valid[sample_valid, :, :T].float()
-    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy, reduction="none").sum(-1)
+    gt_xy_safe = torch.where(valid.bool()[..., None], gt_xy, pred_xy.detach())
+    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy_safe, reduction="none").sum(-1)
     cmp_loss = (cmp_loss * valid).sum() / valid.sum().clamp_min(1.0)
 
     ego_T = min(ego_reg.shape[1], ego_future_xy.shape[1])
     ego_valid = ego_future_valid[sample_valid, :ego_T].float()
-    reg = F.smooth_l1_loss(ego_reg[sample_valid, :ego_T, :2], ego_future_xy[sample_valid, :ego_T], reduction="none").sum(-1)
+    ego_pred = ego_reg[sample_valid, :ego_T, :2]
+    ego_gt = ego_future_xy[sample_valid, :ego_T]
+    ego_gt_safe = torch.where(ego_valid.bool()[..., None], ego_gt, ego_pred.detach())
+    reg = F.smooth_l1_loss(ego_pred, ego_gt_safe, reduction="none").sum(-1)
     reg = (reg * ego_valid).sum() / ego_valid.sum().clamp_min(1.0)
     wreg = torch.square(weights[sample_valid]).mean()
     loss = ce + cmp_loss + 0.1 * reg + 0.01 * wreg
@@ -364,7 +374,11 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     plan = ego_traj_tree[sample_valid][torch.arange(sel.shape[0], device=scores.device), sel, :, :2]
     pt = min(plan.shape[1], ego_future_xy.shape[1])
     valid_ego = ego_future_valid[sample_valid, :pt].float()
-    pde = torch.linalg.norm((plan[:, :pt] - ego_future_xy[sample_valid, :pt]) * valid_ego[:, :, None], dim=-1)
+    plan_target = torch.where(
+        valid_ego.bool()[..., None], ego_future_xy[sample_valid, :pt], plan[:, :pt].detach()
+    )
+    pde = torch.linalg.norm(plan[:, :pt] - plan_target, dim=-1)
+    pde = torch.where(valid_ego.bool(), pde, torch.zeros_like(pde))
     valid_score_values = scores[candidate_valid & sample_valid[:, None]]
     score_abs_max = valid_score_values.abs().max() if valid_score_values.numel() else scores.sum() * 0.0
     metrics = {

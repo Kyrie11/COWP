@@ -50,7 +50,7 @@ DTPP_AMP="${DTPP_AMP:-0}"
 PLUTO_AMP="${PLUTO_AMP:-0}"
 PLANT2_AMP="${PLANT2_AMP:-0}"
 DTPP_VARIABLE_COST="${DTPP_VARIABLE_COST:-0}"
-EXTERNAL_TRAINING_CONTRACT_VERSION="v4_explicit_validity_fp32_20260827"
+EXTERNAL_TRAINING_CONTRACT_VERSION="v5_stable_grad_masked_losses_20260827"
 SKIP_COMPLETED="${SKIP_COMPLETED:-1}"
 WEIGHT_DECAY_OVERRIDE="${WEIGHT_DECAY:-}"
 
@@ -125,7 +125,7 @@ except Exception:
     raise SystemExit(1)
 if last < target:
     raise SystemExit(1)
-# V4 changes the numerical and validity-mask contract for every learned
+# V5 changes the numerical, masked-loss, and validity contract for every learned
 # baseline.  Never silently reuse V2/V3 checkpoints at the same paths.
 if not cp.is_file():
     raise SystemExit(1)

@@ -152,7 +152,12 @@ class COWPPLUTO(nn.Module):
 
 def _best_mode(traj: torch.Tensor, gt: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
     w = valid[:, None].float()
-    dist = torch.linalg.norm(traj - gt[:, None], dim=-1) * w
+    valid_b = valid[:, None, :, None].bool()
+    # Build a finite target before subtraction; masking ``traj - NaN`` after
+    # the fact still leaves a NaN intermediate in fused/autograd kernels.
+    gt_safe = torch.where(valid_b, gt[:, None], traj.detach())
+    delta = traj - gt_safe
+    dist = torch.linalg.norm(delta, dim=-1)
     ade = dist.sum(dim=-1) / w.sum(dim=-1).clamp_min(1.0)
     return ade.argmin(dim=-1)
 
@@ -171,15 +176,21 @@ def pluto_loss(
     scores = out["scores"].float()
     gt = ego_future_xy[:, : traj.shape[2]].float()
     valid = ego_future_valid[:, : traj.shape[2]].bool()
+    sample_valid = valid.any(dim=-1)
+    if not bool(sample_valid.any()):
+        zero = traj.sum() * 0.0 + scores.sum() * 0.0 + out["aux_trajectory"].sum() * 0.0
+        return zero, {"plannerADE": float("nan"), "plannerFDE": float("nan"), "valid_samples": 0.0}
     best = _best_mode(traj, gt, valid)
     rows = torch.arange(gt.shape[0], device=gt.device)
     pred = traj[rows, best]
     v = valid.float()
-    reg = F.smooth_l1_loss(pred, gt, reduction="none").sum(-1)
+    gt_safe = torch.where(valid[..., None], gt, pred.detach())
+    reg = F.smooth_l1_loss(pred, gt_safe, reduction="none").sum(-1)
     reg = (reg * v).sum() / v.sum().clamp_min(1.0)
-    cls = F.cross_entropy(scores, best, label_smoothing=0.1)
+    cls = F.cross_entropy(scores[sample_valid], best[sample_valid], label_smoothing=0.1)
     aux = out["aux_trajectory"].float()[:, : gt.shape[1]]
-    aux_l = F.smooth_l1_loss(aux, gt, reduction="none").sum(-1)
+    aux_gt_safe = torch.where(valid[..., None], gt, aux.detach())
+    aux_l = F.smooth_l1_loss(aux, aux_gt_safe, reduction="none").sum(-1)
     aux_l = (aux_l * v).sum() / v.sum().clamp_min(1.0)
 
     contrast = scores.sum() * 0.0
@@ -207,10 +218,11 @@ def pluto_loss(
 
     loss = reg + cls + aux_weight * aux_l + contrast_weight * contrast
     pred_best = traj[rows, scores.argmax(dim=-1)]
-    d = torch.linalg.norm(pred_best - gt, dim=-1) * v
+    metric_target = torch.where(valid[..., None], gt, pred_best.detach())
+    d = torch.linalg.norm(pred_best - metric_target, dim=-1)
+    d = torch.where(valid, d, torch.zeros_like(d))
     ade = d.sum() / v.sum().clamp_min(1.0)
     last = v.sum(dim=-1).long().clamp_min(1) - 1
-    sample_valid = valid.any(dim=-1)
     fde = d[rows[sample_valid], last[sample_valid]].mean() if bool(sample_valid.any()) else d.sum() * 0.0
     return loss, {
         "plannerADE": float(ade.detach().cpu()),
@@ -219,4 +231,5 @@ def pluto_loss(
         "ego_reg": float(reg.detach().cpu()),
         "aux_reg": float(aux_l.detach().cpu()),
         "contrast": float(contrast.detach().cpu()),
+        "valid_samples": float(sample_valid.float().sum().detach().cpu()),
     }

@@ -173,6 +173,78 @@ def _first_nonfinite_gradient(model: torch.nn.Module) -> str | None:
             return name
     return None
 
+
+def _nonfinite_gradient_paths(model: torch.nn.Module, limit: int = 16) -> list[str]:
+    """Return parameter names whose *gradient entries* contain NaN/Inf.
+
+    This deliberately distinguishes a true non-finite gradient from the much
+    more common failure in ``clip_grad_norm_`` where every fp32 gradient entry
+    is finite but the fp32 sum-of-squares used for the global L2 norm overflows.
+    """
+    bad: list[str] = []
+    for name, param in model.named_parameters():
+        grad = param.grad
+        if grad is None:
+            continue
+        try:
+            if not bool(torch.isfinite(grad.detach()).all().item()):
+                bad.append(name)
+        except Exception:
+            bad.append(name)
+        if len(bad) >= int(limit):
+            break
+    return bad
+
+
+def _clip_grad_norm_stable(
+    model: torch.nn.Module, max_norm: float
+) -> tuple[torch.Tensor, list[str], bool]:
+    """Global L2 clip with an FP64 norm-reduction overflow fallback.
+
+    PyTorch normally reduces gradient norms in the gradient dtype.  Thus a set
+    of individually finite fp32 gradients can still make the *total* L2 norm
+    become Inf when squares are accumulated in fp32.  ``error_if_nonfinite``
+    must stay enabled: true NaN/Inf gradient entries are fatal.  Only when every
+    entry is finite do we recompute the mathematically identical global L2 norm
+    in float64 and scale the original gradients once.
+
+    Returns ``(pre_clip_norm, bad_gradient_paths, used_fp64_fallback)``.
+    """
+    params = [p for p in model.parameters() if p.grad is not None]
+    if not params:
+        ref = next(model.parameters(), None)
+        dev = ref.device if ref is not None else torch.device("cpu")
+        return torch.zeros((), dtype=torch.float32, device=dev), [], False
+    max_norm = max(float(max_norm), 1.0e-6)
+    try:
+        norm = torch.nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=True)
+        return norm, [], False
+    except TypeError:
+        # Compatibility with old local PyTorch builds lacking error_if_nonfinite.
+        bad = _nonfinite_gradient_paths(model)
+        if bad:
+            return torch.full((), float("nan"), device=params[0].grad.device), bad, False
+    except RuntimeError:
+        # IMPORTANT: clip_grad_norm_ raises before scaling when
+        # error_if_nonfinite=True, so the gradients are still available here.
+        bad = _nonfinite_gradient_paths(model)
+        if bad:
+            return torch.full((), float("nan"), device=params[0].grad.device), bad, False
+
+    device = params[0].grad.device
+    total_sq = torch.zeros((), dtype=torch.float64, device=device)
+    for param in params:
+        total_sq = total_sq + param.grad.detach().to(torch.float64).square().sum()
+    norm64 = total_sq.sqrt()
+    if not bool(torch.isfinite(norm64).item()):
+        return norm64, ["<finite entries but non-finite float64 norm>"], True
+    clip_coef = min(1.0, max_norm / (float(norm64.item()) + 1.0e-6))
+    if clip_coef < 1.0:
+        for param in params:
+            param.grad.mul_(clip_coef)
+    return norm64, [], True
+
+
 def _metrics_preview(metrics: dict[str, float]) -> str:
     parts = []
     for key in ("plannerADE", "score_ce", "neighbor_cmp", "ego_reg", "weight_reg", "score_abs_max", "weight_max", "valid_samples"):
@@ -204,6 +276,8 @@ def _run_epoch(
     numerical_skipped = 0
     malformed_skipped = 0
     empty_supervision_skipped = 0
+    fp64_grad_norm_fallbacks = 0
+    max_preclip_grad_norm = 0.0
     consecutive_numerical = 0
     total_batches = _safe_len(loader)
     log_every = max(int(getattr(args, "log_every", 0) or 0), 0)
@@ -255,7 +329,7 @@ def _run_epoch(
             # has a valid candidate/future pair; counting its NaN ADE used to
             # contaminate epoch metrics.
             valid_samples = float(metrics.get("valid_samples", bs))
-            if args.baseline == "dtpp" and valid_samples <= 0:
+            if valid_samples <= 0:
                 skipped += 1
                 empty_supervision_skipped += 1
                 consecutive_numerical = 0
@@ -296,22 +370,31 @@ def _run_epoch(
                         loss.backward()
                     if args.baseline == "dtpp" and hasattr(model, "encoder") and hasattr(model, "decoder"):
                         # Public DTPP clips encoder and decoder independently at
-                        # 5.0.  Keep that behavior instead of clipping the union,
-                        # which changes the effective update when one side has a
-                        # much larger norm.
-                        enc_norm = torch.nn.utils.clip_grad_norm_(
-                            model.encoder.parameters(), args.grad_clip, error_if_nonfinite=True
-                        )
-                        dec_norm = torch.nn.utils.clip_grad_norm_(
-                            model.decoder.parameters(), args.grad_clip, error_if_nonfinite=True
-                        )
-                        grad_norm = torch.maximum(enc_norm.float(), dec_norm.float())
+                        # 5.0.  Preserve that contract, but perform each global-L2
+                        # reduction robustly when fp32 sum-of-squares overflows.
+                        enc_norm, enc_bad, enc_fp64 = _clip_grad_norm_stable(model.encoder, args.grad_clip)
+                        dec_norm, dec_bad, dec_fp64 = _clip_grad_norm_stable(model.decoder, args.grad_clip)
+                        bad_paths = [f"encoder.{x}" for x in enc_bad] + [f"decoder.{x}" for x in dec_bad]
+                        if bad_paths:
+                            raise FloatingPointError(f"non-finite gradient entries: {bad_paths[:16]}")
+                        grad_norm = torch.maximum(enc_norm.to(torch.float64), dec_norm.to(torch.float64))
+                        used_fp64_fallback = bool(enc_fp64 or dec_fp64)
                     else:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), args.grad_clip, error_if_nonfinite=True
-                        )
+                        grad_norm, bad_paths, used_fp64_fallback = _clip_grad_norm_stable(model, args.grad_clip)
+                        if bad_paths:
+                            raise FloatingPointError(f"non-finite gradient entries: {bad_paths[:16]}")
                     if not bool(torch.isfinite(grad_norm)):
                         raise FloatingPointError(f"non-finite gradient norm={grad_norm}")
+                    grad_norm_value = float(grad_norm.detach().cpu())
+                    if math.isfinite(grad_norm_value):
+                        max_preclip_grad_norm = max(max_preclip_grad_norm, grad_norm_value)
+                    if used_fp64_fallback:
+                        fp64_grad_norm_fallbacks += 1
+                        if fp64_grad_norm_fallbacks <= 5 or (log_every and fp64_grad_norm_fallbacks % max(log_every, 1) == 0):
+                            _log(
+                                f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} recovered finite-gradient "
+                                f"fp32 norm overflow with float64 L2 clipping; preclip_norm={grad_norm_value:.6g}"
+                            )
                     if scaler is not None and amp_enabled:
                         scaler.step(optimizer)
                         scaler.update()
@@ -324,11 +407,15 @@ def _run_epoch(
                     skipped += 1
                     numerical_skipped += 1
                     consecutive_numerical += 1
-                    optimizer.zero_grad(set_to_none=True)
+                    # Diagnose BEFORE zero_grad(); the previous order guaranteed
+                    # first_nonfinite_gradient=None even when a real bad tensor existed.
                     bad_grad = _first_nonfinite_gradient(model)
+                    bad_grad_paths = _nonfinite_gradient_paths(model)
+                    optimizer.zero_grad(set_to_none=True)
                     _log(
                         f"{phase} {args.baseline} epoch={epoch} batch={batch_idx} skipped non-finite gradients: "
-                        f"{type(grad_exc).__name__}: {grad_exc}; first_nonfinite_gradient={bad_grad}; {_metrics_preview(metrics)}"
+                        f"{type(grad_exc).__name__}: {grad_exc}; first_nonfinite_gradient={bad_grad}; "
+                        f"nonfinite_gradient_paths={bad_grad_paths}; {_metrics_preview(metrics)}"
                     )
                     if hasattr(iterator, "set_postfix"):
                         iterator.set_postfix(loss="bad_grad", samples=n, skipped=skipped, refresh=False)
@@ -336,7 +423,8 @@ def _run_epoch(
                     if max_num_frac <= 0.0 or consecutive_numerical >= int(args.max_consecutive_numerical_skips):
                         raise _FatalModelStateError(
                             f"{args.baseline} hit a numerical-gradient failure at {phase} epoch={epoch} batch={batch_idx}; "
-                            f"numerical_skipped={numerical_skipped}, first_nonfinite_gradient={bad_grad}."
+                            f"numerical_skipped={numerical_skipped}, first_nonfinite_gradient={bad_grad}, "
+                            f"nonfinite_gradient_paths={bad_grad_paths}."
                         ) from grad_exc
                     continue
                 bad_param = _first_nonfinite_parameter(model)
@@ -350,7 +438,7 @@ def _run_epoch(
             n += bs
             sums["loss"] = sums.get("loss", 0.0) + float(loss.detach().cpu()) * bs
             metric_counts["loss"] = metric_counts.get("loss", 0.0) + bs
-            metric_weight = valid_samples if args.baseline == "dtpp" else float(bs)
+            metric_weight = valid_samples
             for k, v in metrics.items():
                 try:
                     vf = float(v)
@@ -435,6 +523,8 @@ def _run_epoch(
         "num_samples": float(n), "num_batches": float(total_batches or 0), "skipped_batches": float(skipped),
         "numerical_skipped_batches": float(numerical_skipped), "malformed_skipped_batches": float(malformed_skipped),
         "empty_supervision_skipped_batches": float(empty_supervision_skipped),
+        "fp64_grad_norm_fallbacks": float(fp64_grad_norm_fallbacks),
+        "max_preclip_grad_norm": float(max_preclip_grad_norm),
         "skip_fraction": skip_fraction, "seconds": float(elapsed),
     }
     _log(f"{phase} {args.baseline} epoch={epoch} done samples={n} skipped={skipped} seconds={elapsed:.1f} loss={out.get('loss', float('nan')):.6f}")
@@ -508,7 +598,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     # This trainer has no resume semantics: every invocation starts from random
     # initialization.  Remove stale success markers/checkpoints first so an
-    # interrupted V4 retrain cannot be mistaken for a valid older experiment.
+    # interrupted V5 retrain cannot be mistaken for a valid older experiment.
     stale = [
         out_dir / f"external_{args.baseline}_training_complete.json",
         out_dir / f"external_{args.baseline}_history.json",

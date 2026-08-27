@@ -232,6 +232,15 @@ class GameFormerEncoder(nn.Module):
             actors_mask = ~actors_valid[:, :, -1].bool()
         else:
             actors_mask = torch.eq(actors[:, :, -1], 0).all(dim=-1)
+        # TransformerEncoder can emit NaNs when every token of a row is masked.
+        # Keep a zero-valued SDC anchor token addressable only for the pathological
+        # invalid-SDC row; normal valid rows are bit-for-bit unchanged.
+        invalid_anchor = actors_mask[:, 0].clone()
+        if bool(invalid_anchor.any()):
+            encoded_actors = encoded_actors.clone()
+            encoded_actors[invalid_anchor, 0] = 0.0
+            actors_mask = actors_mask.clone()
+            actors_mask[:, 0] = False
         map_lanes = inputs["map_lanes"]
         map_crosswalks = inputs["map_crosswalks"]
         encoded_map_lanes = self.lane_encoder(map_lanes)
@@ -325,7 +334,12 @@ def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor,
     valid_f = valid.float()
     agent_valid = valid.any(dim=-1)
     denom_agent = valid_f.sum(dim=-1).clamp_min(1.0)
-    dist = torch.linalg.norm((gmm[..., :2] - gt_xy[:, :, None]) * valid_f[:, :, None, :, None], dim=-1)
+    # Sanitize the target *before* subtraction.  Masking a NaN residual after
+    # the subtraction is too late for some fused/autograd kernels.
+    gt_modes = gt_xy[:, :, None].expand(-1, -1, gmm.shape[2], -1, -1)
+    safe_target = torch.where(valid[:, :, None, :, None], gt_modes, gmm[..., :2].detach())
+    safe_delta = gmm[..., :2] - safe_target
+    dist = torch.linalg.norm(safe_delta, dim=-1)
     mode_ade = dist.sum(dim=-1) / denom_agent[:, :, None]
     mode_ade = torch.where(agent_valid[:, :, None], mode_ade, torch.zeros_like(mode_ade))
     scene_mode_ade = mode_ade.sum(dim=1) / agent_valid.float().sum(dim=1, keepdim=True).clamp_min(1.0)
@@ -333,8 +347,9 @@ def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor,
     B, N, M, T, _ = gmm.shape
     gather_idx = best_mode[:, None, None, None, None].expand(B, N, 1, T, 4)
     best = torch.gather(gmm, 2, gather_idx).squeeze(2)
-    dx = gt_xy[..., 0] - best[..., 0]
-    dy = gt_xy[..., 1] - best[..., 1]
+    safe_best_target = torch.where(valid[..., None], gt_xy, best[..., :2].detach())
+    dx = safe_best_target[..., 0] - best[..., 0]
+    dy = safe_best_target[..., 1] - best[..., 1]
     log_std_x = torch.clamp(best[..., 2], -2, 2)
     log_std_y = torch.clamp(best[..., 3], -2, 2)
     loss_t = log_std_x + log_std_y + 0.5 * ((dx / torch.exp(log_std_x)) ** 2 + (dy / torch.exp(log_std_y)) ** 2)
@@ -349,6 +364,8 @@ def imitation_loss(gmm: torch.Tensor, scores: torch.Tensor, gt_xy: torch.Tensor,
 
 
 def interaction_loss(trajectories: torch.Tensor, last_trajectories: torch.Tensor, neighbors_valid: torch.Tensor) -> torch.Tensor:
+    trajectories = trajectories.float()
+    last_trajectories = last_trajectories.float()
     B, N, M, T, _ = trajectories.shape
     if N <= 1:
         return trajectories.sum() * 0.0
@@ -367,7 +384,10 @@ def interaction_loss(trajectories: torch.Tensor, last_trajectories: torch.Tensor
 def gameformer_loss(outputs: Mapping[str, torch.Tensor], ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor, neighbors_future_xy: torch.Tensor, neighbors_future_valid: torch.Tensor) -> tuple[torch.Tensor, dict[str, float]]:
     gt = torch.cat([ego_future_xy[:, None], neighbors_future_xy], dim=1)
     valid = torch.cat([ego_future_valid[:, None], neighbors_future_valid], dim=1)
-    total = gt.sum() * 0.0
+    # Never seed the differentiable zero from raw labels: an invalid NaN label
+    # would make ``NaN * 0`` and contaminate an otherwise mask-safe batch.
+    first_output = next(v for v in outputs.values() if torch.is_tensor(v))
+    total = first_output.sum() * 0.0
     future = None
     metric_tensors: dict[str, torch.Tensor] = {}
     levels = len([k for k in outputs if k.endswith("_interactions")])
@@ -386,11 +406,15 @@ def gameformer_loss(outputs: Mapping[str, torch.Tensor], ego_future_xy: torch.Te
     metrics: dict[str, float] = {k: float(v.detach().cpu()) for k, v in metric_tensors.items()}
     if future is not None:
         valid_f = ego_future_valid.float()
-        ego_dist = torch.linalg.norm((future[:, 0] - ego_future_xy) * valid_f[..., None], dim=-1)
+        ego_target_safe = torch.where(ego_future_valid[..., None], ego_future_xy, future[:, 0].detach())
+        ego_dist = torch.linalg.norm(future[:, 0] - ego_target_safe, dim=-1)
+        ego_dist = torch.where(ego_future_valid, ego_dist, torch.zeros_like(ego_dist))
         metrics["plannerADE"] = float((ego_dist.sum() / valid_f.sum().clamp_min(1.0)).detach().cpu())
         sample_valid = ego_future_valid.any(dim=1)
+        metrics["valid_samples"] = float(sample_valid.float().sum().detach().cpu())
         if bool(sample_valid.any()):
             last_idx = valid_f.sum(dim=1).long().clamp_min(1) - 1
             rows = torch.arange(ego_dist.shape[0], device=ego_dist.device)
             metrics["plannerFDE"] = float(ego_dist[rows[sample_valid], last_idx[sample_valid]].mean().detach().cpu())
+    metrics.setdefault("valid_samples", float(ego_future_valid.any(dim=1).float().sum().detach().cpu()))
     return total, metrics

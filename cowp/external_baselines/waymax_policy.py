@@ -15,6 +15,7 @@ from cowp.external_baselines.plant2_cowp import COWPPlanT2
 from cowp.external_baselines.training_contract import EXTERNAL_TRAINING_CONTRACT_VERSION
 from cowp.waymax_eval.policy_wrapper import (
     _consistent_one_step_target,
+    _resolve_execution_trajectory,
     _extract_roadgraph_tokens,
     _extract_sdc_path_tokens,
     _wrap_angle,
@@ -315,17 +316,29 @@ class ExternalWaymaxPolicy:
                     max_candidates=max_candidates, horizon=future_len, baseline=self.baseline,
                     require_candidates=False, require_future=False,
                 )
-                direct_xy, direct_score, direct_source = self._direct_local_xy(ext)
+                if bool(ext.sdc_current_valid[0]):
+                    direct_xy, direct_score, direct_source = self._direct_local_xy(ext)
+                else:
+                    direct_xy, direct_score, direct_source = None, None, "invalid_sdc_observation"
             if self.profile_timing:
                 self._timing_sync()
                 _t_after_direct = time.perf_counter()
             if direct_xy is not None:
-                traj = self._local_xy_to_global_traj(
-                    direct_xy,
-                    ext.origin[0].detach().float().cpu().numpy(),
-                    float(ext.yaw0[0].detach().cpu()),
-                    dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
-                )
+                try:
+                    traj = self._local_xy_to_global_traj(
+                        direct_xy,
+                        ext.origin[0].detach().float().cpu().numpy(),
+                        float(ext.yaw0[0].detach().cpu()),
+                        dt=float(self.cfg.get("time", {}).get("dt", 0.1)),
+                    )
+                except (FloatingPointError, ValueError, OverflowError):
+                    # A finite tensor can still overflow while globalizing very
+                    # large waypoints.  Fall through to the already-causal
+                    # candidate/emergency path instead of aborting the rollout.
+                    direct_xy = None
+                    direct_score = None
+                    direct_source = "invalid_globalized_direct_trajectory"
+            if direct_xy is not None:
                 self._last_diagnostics = {
                     "baseline": self.baseline,
                     "execution_mode": "direct",
@@ -349,7 +362,9 @@ class ExternalWaymaxPolicy:
                         "timing_ms/total_before_action": 1000.0 * (time.perf_counter() - _t_total0),
                     })
                 return self._trajectory_to_action(agent_state, sdc_index, traj)
-            # Only DTPP should arrive here; preserve candidate-tree fallback.
+            # DTPP normally uses candidate mode directly.  A direct planner also
+            # arrives here when its native trajectory is unusable; preserve the
+            # same causal proposal/emergency execution fallback.
             resolved_mode = "candidate"
 
         # Closed-loop planners must not read the future portion of Waymax's
@@ -396,14 +411,22 @@ class ExternalWaymaxPolicy:
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
         candidate_finite = np.isfinite(cand).all(axis=(1, 2))
-        valid = valid & candidate_finite
+        # Keep the adapter's validity contract (including SDC-current validity)
+        # in the execution path.  Falling back from a bad model score must not
+        # resurrect a proposal that the adapter already invalidated.
+        adapter_valid = ext.candidate_valid[0].detach().cpu().numpy().astype(bool, copy=False)
+        valid = valid & candidate_finite & adapter_valid
         conv_np = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool) & candidate_finite
         fallback_reason = None
         if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
             valid_idx = np.flatnonzero(valid)
-            selected = int(valid_idx[0]) if valid_idx.size else 0
+            selected = int(valid_idx[0]) if valid_idx.size else -1
             fallback_reason = "no_finite_candidate_score" if valid_idx.size else "no_valid_candidate"
-        selected_score_value = float(scores[selected].detach().cpu()) if selected >= 0 else float("nan")
+        has_valid_execution = bool(selected >= 0 and selected < len(cand) and valid[selected])
+        execution_traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
+            cand, selected, has_valid_execution, np.asarray(agent_state[sdc_index], dtype=np.float32), self.cfg
+        )
+        selected_score_value = float(scores[selected].detach().cpu()) if has_valid_execution else float("nan")
         if not np.isfinite(selected_score_value):
             selected_score_value = None
         finite_valid_candidates = int((ext.candidate_valid[0] & torch.isfinite(scores)).sum().detach().cpu())
@@ -421,6 +444,8 @@ class ExternalWaymaxPolicy:
             "optimized_candidate_observation_path": True,
             "scenario_static_map_cache": True,
             "causal_no_logged_future": True,
+            "emergency_action_used": bool(emergency_action_used),
+            "execution_trajectory_source": execution_source,
         }
         if self.profile_timing:
             self._last_diagnostics.update({
@@ -430,7 +455,7 @@ class ExternalWaymaxPolicy:
                 "timing_ms/adapter_and_model": 1000.0 * (_t_after_model - _t_model0),
                 "timing_ms/total_before_action": 1000.0 * (time.perf_counter() - _t_total0),
             })
-        return self._trajectory_to_action(agent_state, sdc_index, cand[selected])
+        return self._trajectory_to_action(agent_state, sdc_index, execution_traj)
 
     def consume_diagnostics(self) -> dict[str, Any] | None:
         row = self._last_diagnostics

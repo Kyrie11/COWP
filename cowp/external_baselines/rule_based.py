@@ -125,7 +125,8 @@ def _sdc_indices_np(batch: Mapping[str, Any], batch_size: int) -> np.ndarray:
     if is_sdc is not None:
         arr = _to_numpy(is_sdc)
         if arr.ndim >= 2:
-            return np.argmax(arr.astype(np.float32), axis=1).astype(np.int64)
+            safe = np.nan_to_num(arr.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+            return np.argmax(safe, axis=1).astype(np.int64)
     return np.zeros(batch_size, dtype=np.int64)
 
 
@@ -405,6 +406,29 @@ def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None
     sdc = _sdc_indices_np(batch, B)
     finite_geometry = np.isfinite(candidates[:, :K]).all(axis=(2, 3))
     valid = valid & finite_geometry
+    # A declared-valid but non-finite current state must not feed IDM/Frenet/PDM
+    # arithmetic.  Invalidate the whole scene when the SDC observation is bad;
+    # sanitize non-SDC rows after clearing their validity bit.
+    cur_finite = np.isfinite(cur[..., :10]).all(axis=-1)
+    cur_declared = cur[..., 10] > 0.5 if cur.shape[-1] > 10 else np.ones_like(cur_finite, dtype=bool)
+    if cur.shape[-1] > 10:
+        # Preserve the source validity semantics for non-SDC agents, but clear a
+        # validity bit whenever its numeric state is malformed.  For the SDC we
+        # only make the whole scene unselectable on a *numeric* failure; some
+        # offline audit fixtures omit/zero the current validity channel while
+        # still supplying a valid proposal bank.
+        safe_valid = cur_declared & cur_finite
+        cur = np.nan_to_num(cur, nan=0.0, posinf=0.0, neginf=0.0)
+        cur[..., 10] = safe_valid.astype(np.float32)
+    else:
+        cur = np.nan_to_num(cur, nan=0.0, posinf=0.0, neginf=0.0)
+    for b in range(B):
+        si = int(np.clip(sdc[b], 0, max(cur.shape[1] - 1, 0)))
+        if cur.shape[1] == 0 or not bool(cur_finite[b, si]):
+            valid[b] = False
+    # Invalid proposal branches are never selectable, so replace their geometry
+    # before high-order jerk/curvature operations to avoid overflow/warnings.
+    candidates = np.where(valid[..., None, None], candidates[:, :K], 0.0).astype(np.float32, copy=False)
     accept = valid.copy()
     if require_conventional_safe:
         accept &= conventional[:, :K]
