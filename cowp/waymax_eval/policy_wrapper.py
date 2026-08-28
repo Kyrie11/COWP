@@ -114,7 +114,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -1088,6 +1088,157 @@ def _option_profile_relation(
     min_margin = int(diff.min()) if diff.size else 0
     area_delta = int(diff.sum()) if diff.size else 0
     return strict, weak, min_margin, area_delta
+
+
+
+def _returnability_relation(
+    base_direct_restore: bool,
+    base_recourse_macros: frozenset[int],
+    alt_direct_restore: bool,
+    alt_recourse_macros: frozenset[int],
+) -> tuple[bool, bool]:
+    """Partial order for the v16.8.37 recourse-returnability witness.
+
+    Direct one-step restoration of the frozen full-conventional set strictly
+    dominates a state that still needs a recourse action.  If neither branch
+    restores immediately, the alternative must preserve a *superset* of
+    witnessed semantic recourse macros, with strict set inclusion for entry.
+    Counts are never scalarized; incomparable sets are rejected.
+    """
+    bd = bool(base_direct_restore)
+    ad = bool(alt_direct_restore)
+    if bd != ad:
+        return bool(ad and not bd), bool(ad and not bd)
+    if bd and ad:
+        return False, True
+    b = frozenset(int(x) for x in base_recourse_macros)
+    a = frozenset(int(x) for x in alt_recourse_macros)
+    weak = bool(b.issubset(a))
+    strict = bool(weak and a != b)
+    return strict, weak
+
+
+def _returnability_witness_signature(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    emitted_target: np.ndarray,
+    emitted_accel: float,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[bool, frozenset[int], dict[str, int | float]]:
+    """One-replan causal recourse witness used by v16.8.37.
+
+    The first successor uses the *actually emitted* control target.  If the
+    unchanged online bank already contains a full-conventional option, the
+    branch directly restores the certified physical region.  Otherwise we take
+    one deterministic representative per semantic macro from the same fixed
+    bank, project its first action through the existing stateful controller, and
+    ask whether that one additional real replanning transition reaches a state
+    with any full-conventional proposal.
+
+    This is intentionally different from THOP-style horizon stacking: the
+    second edge is a newly generated action at s_{t+1}, not waypoint t+2 of the
+    original candidate.  No logged future state is consumed.
+    """
+    s1 = _counterfactual_successor_agent_state(agent_state, sdc_index, emitted_target, cfg)
+    (
+        traj1, valid1, conv1, macro1, _utility1, road1, _coll1, prefix1, _margin1,
+    ) = _route_lane_aware_candidates(s1, int(sdc_index), roadgraph, cfg, other_future_trajs=None)
+    traj1 = np.asarray(traj1)
+    valid1 = np.asarray(valid1, dtype=bool)
+    conv1 = np.asarray(conv1, dtype=bool) & valid1
+    macro1 = np.asarray(macro1, dtype=np.int64)
+    road1 = np.asarray(road1, dtype=bool)
+    prefix1 = np.asarray(prefix1, dtype=np.float64)
+    direct = bool(conv1.any())
+    detail: dict[str, int | float] = {
+        "successor_valid_candidates": int(valid1.sum()),
+        "successor_conventional_candidates": int(conv1.sum()),
+        "recourse_representatives": 0,
+        "recourse_action_classes_evaluated": 0,
+        "recourse_macros_restoring": 0,
+    }
+    if direct or traj1.ndim != 3 or traj1.shape[0] == 0:
+        return direct, frozenset(), detail
+
+    action_targets1, action_accels1, _projection_risk1 = _consistent_one_step_targets_np(
+        s1[int(sdc_index)], traj1[:, 0, :], cfg, float(emitted_accel)
+    )
+    kin1, _ia1, _st1, _contract1 = _waymax_kinematic_transition_np(
+        s1[int(sdc_index)], action_targets1, cfg
+    )
+    pool = valid1 & road1 & (prefix1 > 0.0) & np.asarray(kin1, dtype=bool) & (macro1 != int(MacroType.PAD))
+    # One deterministic witness per semantic macro.  This is a support probe,
+    # not proposal expansion; tie-breaking is prefix then candidate index.
+    zero_score = np.zeros_like(prefix1, dtype=np.float64)
+    reps = _macro_recovery_representatives_np(pool, pool, prefix1, macro1, zero_score)
+    detail["recourse_representatives"] = int(len(reps))
+    restoring: set[int] = set()
+    # Deduplicate physically identical control targets inside each semantic macro.
+    seen: list[tuple[int, np.ndarray]] = []
+    for rep in reps:
+        rep = int(rep)
+        target = np.asarray(action_targets1[rep], dtype=np.float32)
+        m = int(macro1[rep])
+        if any(m == sm and np.allclose(target, st, rtol=0.0, atol=1.0e-6) for sm, st in seen):
+            continue
+        seen.append((m, target.copy()))
+        detail["recourse_action_classes_evaluated"] = int(detail["recourse_action_classes_evaluated"]) + 1
+        s2 = _counterfactual_successor_agent_state(s1, int(sdc_index), target, cfg)
+        _t2, v2, c2, _m2, _u2, _r2, _cs2, _p2, _mg2 = _route_lane_aware_candidates(
+            s2, int(sdc_index), roadgraph, cfg, other_future_trajs=None
+        )
+        if bool((np.asarray(v2, dtype=bool) & np.asarray(c2, dtype=bool)).any()):
+            restoring.add(m)
+    detail["recourse_macros_restoring"] = int(len(restoring))
+    return False, frozenset(restoring), detail
+
+
+def _direct_restoring_representatives_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    cand_valid: np.ndarray,
+    roadgraph_safe: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    macro: np.ndarray,
+    fallback_score: np.ndarray,
+    action_targets: np.ndarray,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Find same-bank semantic representatives that restore conventional support.
+
+    Used only on the single replanning step after a v16.8.37 bridge entry.  A
+    candidate is a bridge witness only if its actual emitted one-step transition
+    is evaluator-kinematically feasible and the resulting causal successor has at
+    least one unchanged full-conventional proposal.
+    """
+    valid = np.asarray(cand_valid, dtype=bool)
+    road = np.asarray(roadgraph_safe, dtype=bool)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64)
+    macro = np.asarray(macro, dtype=np.int64)
+    scores = np.asarray(fallback_score, dtype=np.float64)
+    targets = np.asarray(action_targets, dtype=np.float32)
+    kin, _ia, _st, _contract = _waymax_kinematic_transition_np(
+        agent_state[int(sdc_index)], targets, cfg
+    )
+    pool = valid & road & (prefix > 0.0) & np.asarray(kin, dtype=bool) & (macro != int(MacroType.PAD))
+    reps = _macro_recovery_representatives_np(pool, pool, prefix, macro, scores)
+    mask = np.zeros_like(valid, dtype=bool)
+    evaluated = 0
+    for rep in reps:
+        rep = int(rep)
+        evaluated += 1
+        s1 = _counterfactual_successor_agent_state(
+            agent_state, int(sdc_index), np.asarray(targets[rep], dtype=np.float32), cfg
+        )
+        _t1, v1, c1, _m1, _u1, _r1, _cs1, _p1, _mg1 = _route_lane_aware_candidates(
+            s1, int(sdc_index), roadgraph, cfg, other_future_trajs=None
+        )
+        if bool((np.asarray(v1, dtype=bool) & np.asarray(c1, dtype=bool)).any()):
+            mask[rep] = True
+    return mask, {"representatives": int(len(reps)), "evaluated": int(evaluated), "restoring": int(mask.sum())}
+
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
@@ -3226,6 +3377,8 @@ class COWPWaymaxPolicy:
         self._recovery_hysteresis_active: bool = False
         # v16.8.36: semantic recovery mode for the control-projected recovery frontier.
         self._recovery_frontier_macro: int = -1
+        # v16.8.37: at most one pending real-replan bridge action.
+        self._recovery_bridge_pending: bool = False
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
         self._cached_sdc_scenario_index: int | None = None
@@ -3297,6 +3450,7 @@ class COWPWaymaxPolicy:
             self._recovery_commitment_active = False
             self._recovery_hysteresis_active = False
             self._recovery_frontier_macro = -1
+            self._recovery_bridge_pending = False
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
@@ -3879,7 +4033,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -4025,6 +4179,23 @@ class COWPWaymaxPolicy:
             recovery_frontier_selected_is_historical_rvr = False
             recovery_frontier_selected_is_non_rvr = False
             recovery_frontier_selected_fallback_score_delta = 0.0
+            recovery_bridge_pending_before = bool(self._recovery_bridge_pending) if method == "cowp_recourse_returnability_bridge" else False
+            recovery_bridge_entered = False
+            recovery_bridge_direct_entry = False
+            recovery_bridge_recourse_executed = False
+            recovery_bridge_aborted = False
+            recourse_returnability_probe_used = False
+            recourse_base_direct_restore = False
+            recourse_rvr_direct_restore = False
+            recourse_base_macros: frozenset[int] = frozenset()
+            recourse_rvr_macros: frozenset[int] = frozenset()
+            recourse_returnability_strict_dominates = False
+            recourse_returnability_weak_dominates = False
+            recourse_base_detail: dict[str, int | float] = {}
+            recourse_rvr_detail: dict[str, int | float] = {}
+            recourse_direct_restoring_candidate_count = 0
+            recourse_bridge_representatives_evaluated = 0
+            recourse_current_prefix_nonregressive = False
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -4034,6 +4205,8 @@ class COWPWaymaxPolicy:
                     recovery_hysteresis_cleared = True
                 if method == "cowp_control_projected_recovery_frontier":
                     self._recovery_frontier_macro = -1
+                if method == "cowp_recourse_returnability_bridge":
+                    self._recovery_bridge_pending = False
                 select_mask = selection_mask
                 select_score = adjusted_scores
                 fallback_used = False
@@ -4050,13 +4223,15 @@ class COWPWaymaxPolicy:
                     recovery_hysteresis_cleared = True
                 if method == "cowp_control_projected_recovery_frontier":
                     self._recovery_frontier_macro = -1
+                if method == "cowp_recourse_returnability_bridge":
+                    self._recovery_bridge_pending = False
                 select_mask = cand_valid & conventional
                 select_score = fallback_score
                 fallback_used = True
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -4086,6 +4261,122 @@ class COWPWaymaxPolicy:
                         select_mask[chosen] = True
                         select_score = fallback_score
                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
+                    elif method == "cowp_recourse_returnability_bridge":
+                        # V16.8.37 follows the preregistered V36 failure branch:
+                        # stop enlarging/tuning spectrum selectors and test an
+                        # explicit *return to the unchanged full-conventional set*.
+                        # The bridge can occupy at most one real replanning edge.
+                        chosen = int(recovery_base_candidate)
+                        valid_np = cand_valid.detach().cpu().numpy().astype(bool)
+                        road_np = roadgraph_safe.detach().cpu().numpy().astype(bool)
+                        prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
+                        macro_np_bridge = macro_t.detach().cpu().numpy().astype(np.int64)
+                        fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
+
+                        if bool(self._recovery_bridge_pending):
+                            restore_mask, bridge_detail = _direct_restoring_representatives_np(
+                                agent_state, int(sdc_index), roadgraph, self.cfg,
+                                valid_np, road_np, prefix_np, macro_np_bridge, fallback_np,
+                                np.asarray(action_targets_np, dtype=np.float32),
+                            )
+                            recourse_direct_restoring_candidate_count = int(np.asarray(restore_mask, dtype=bool).sum())
+                            recourse_bridge_representatives_evaluated = int(bridge_detail.get("evaluated", 0))
+                            restoring_idx = np.flatnonzero(restore_mask)
+                            if restoring_idx.size:
+                                chosen = int(min(
+                                    restoring_idx.tolist(),
+                                    key=lambda i: (float(fallback_np[int(i)]) if np.isfinite(fallback_np[int(i)]) else float("inf"), int(i)),
+                                ))
+                                recovery_bridge_recourse_executed = True
+                                recovery_switch_applied = bool(chosen != int(recovery_base_candidate))
+                            else:
+                                recovery_bridge_aborted = True
+                            # One-replan bridge is structural, not a dwell-time
+                            # hyperparameter: it always terminates after this edge.
+                            self._recovery_bridge_pending = False
+                        else:
+                            bp = int(round(float(prefix_np[int(recovery_base_candidate)])))
+                            rp = int(round(float(prefix_np[int(recovery_rvr_candidate)])))
+                            recourse_current_prefix_nonregressive = bool(rp >= bp)
+                            if recovery_rvr_candidate != recovery_base_candidate and recourse_current_prefix_nonregressive:
+                                bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
+                                rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
+                                recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
+                                if not recovery_action_target_equal:
+                                    # Preserve the positive V35 signal as a coarse
+                                    # pre-gate.  Returnability is only evaluated for
+                                    # an RVR branch that already strictly dominates
+                                    # under the frozen control-projected observable.
+                                    option_profile_probe_used = True
+                                    waymax_kinematic_guard_used = True
+                                    control_projected_option_profile_used = True
+                                    current_pair = np.stack([bt, rt], axis=0)
+                                    kim_ok_pair, kim_acc_pair, kim_steer_pair, recovery_waymax_contract_detail = _waymax_kinematic_transition_np(
+                                        agent_state[int(sdc_index)], current_pair, self.cfg
+                                    )
+                                    recovery_base_waymax_kinematic_feasible = bool(kim_ok_pair[0])
+                                    recovery_rvr_waymax_kinematic_feasible = bool(kim_ok_pair[1])
+                                    recovery_base_waymax_inverse_accel = float(kim_acc_pair[0])
+                                    recovery_rvr_waymax_inverse_accel = float(kim_acc_pair[1])
+                                    recovery_base_waymax_steering = float(kim_steer_pair[0])
+                                    recovery_rvr_waymax_steering = float(kim_steer_pair[1])
+                                    base_profile, option_profile_base_detail = _successor_control_projected_option_profile(
+                                        agent_state, sdc_index, bt,
+                                        float(action_accels_np[recovery_base_candidate]), roadgraph, self.cfg
+                                    )
+                                    rvr_profile, option_profile_rvr_detail = _successor_control_projected_option_profile(
+                                        agent_state, sdc_index, rt,
+                                        float(action_accels_np[recovery_rvr_candidate]), roadgraph, self.cfg
+                                    )
+                                    (
+                                        option_profile_strict_dominates,
+                                        option_profile_weak_dominates,
+                                        recovery_transition_delta,
+                                        option_profile_min_margin,
+                                        option_profile_area_delta,
+                                    ) = _kinematic_guarded_profile_relation(
+                                        recovery_rvr_waymax_kinematic_feasible,
+                                        recovery_base_waymax_kinematic_feasible,
+                                        base_profile, rvr_profile,
+                                    )
+                                    if option_profile_strict_dominates:
+                                        recourse_returnability_probe_used = True
+                                        (
+                                            recourse_base_direct_restore,
+                                            recourse_base_macros,
+                                            recourse_base_detail,
+                                        ) = _returnability_witness_signature(
+                                            agent_state, int(sdc_index), bt,
+                                            float(action_accels_np[recovery_base_candidate]),
+                                            roadgraph, self.cfg,
+                                        )
+                                        (
+                                            recourse_rvr_direct_restore,
+                                            recourse_rvr_macros,
+                                            recourse_rvr_detail,
+                                        ) = _returnability_witness_signature(
+                                            agent_state, int(sdc_index), rt,
+                                            float(action_accels_np[recovery_rvr_candidate]),
+                                            roadgraph, self.cfg,
+                                        )
+                                        (
+                                            recourse_returnability_strict_dominates,
+                                            recourse_returnability_weak_dominates,
+                                        ) = _returnability_relation(
+                                            recourse_base_direct_restore, recourse_base_macros,
+                                            recourse_rvr_direct_restore, recourse_rvr_macros,
+                                        )
+                                        if recourse_returnability_strict_dominates:
+                                            chosen = int(recovery_rvr_candidate)
+                                            recovery_bridge_entered = True
+                                            recovery_bridge_direct_entry = bool(recourse_rvr_direct_restore)
+                                            self._recovery_bridge_pending = bool(not recourse_rvr_direct_restore)
+                                            recovery_switch_applied = bool(chosen != int(recovery_base_candidate))
+
+                        select_mask = self.torch.zeros_like(cand_valid)
+                        select_mask[int(chosen)] = True
+                        select_score = fallback_score
+                        fallback_reason = "no_conventional_use_recourse_returnability_bridge"
                     else:
                         chosen = recovery_base_candidate
                         base_sig = None
@@ -4496,6 +4787,8 @@ class COWPWaymaxPolicy:
                     recovery_hysteresis_cleared = True
                 if method == "cowp_control_projected_recovery_frontier":
                     self._recovery_frontier_macro = -1
+                if method == "cowp_recourse_returnability_bridge":
+                    self._recovery_bridge_pending = False
                 select_mask = cand_valid
                 select_score = fallback_score
                 fallback_used = True
@@ -4513,6 +4806,7 @@ class COWPWaymaxPolicy:
                 "cowp_waymax_kinematic_guarded_rosh",
                 "cowp_control_projected_option_spectrum_hysteresis",
                 "cowp_control_projected_recovery_frontier",
+                "cowp_recourse_returnability_bridge",
             }:
                 _sel_ok, _sel_acc, _sel_steer, _sel_contract = _waymax_kinematic_transition_np(
                     agent_state[int(sdc_index)], np.asarray(action_targets_np[selected]), self.cfg
@@ -4743,6 +5037,26 @@ class COWPWaymaxPolicy:
                 "recovery_frontier_selected_is_historical_rvr": bool(recovery_frontier_selected_is_historical_rvr),
                 "recovery_frontier_selected_is_non_rvr": bool(recovery_frontier_selected_is_non_rvr),
                 "recovery_frontier_selected_fallback_score_delta": float(recovery_frontier_selected_fallback_score_delta),
+                "recovery_bridge_pending_before": bool(recovery_bridge_pending_before),
+                "recovery_bridge_pending_after": bool(self._recovery_bridge_pending) if method == "cowp_recourse_returnability_bridge" else False,
+                "recovery_bridge_entered": bool(recovery_bridge_entered),
+                "recovery_bridge_direct_entry": bool(recovery_bridge_direct_entry),
+                "recovery_bridge_recourse_executed": bool(recovery_bridge_recourse_executed),
+                "recovery_bridge_aborted": bool(recovery_bridge_aborted),
+                "recourse_returnability_probe_used": bool(recourse_returnability_probe_used),
+                "recourse_base_direct_restore": bool(recourse_base_direct_restore),
+                "recourse_rvr_direct_restore": bool(recourse_rvr_direct_restore),
+                "recourse_base_macro_count": int(len(recourse_base_macros)),
+                "recourse_rvr_macro_count": int(len(recourse_rvr_macros)),
+                "recourse_returnability_strict_dominates": bool(recourse_returnability_strict_dominates),
+                "recourse_returnability_weak_dominates": bool(recourse_returnability_weak_dominates),
+                "recourse_base_action_classes_evaluated": int(recourse_base_detail.get("recourse_action_classes_evaluated", 0)),
+                "recourse_rvr_action_classes_evaluated": int(recourse_rvr_detail.get("recourse_action_classes_evaluated", 0)),
+                "recourse_base_successor_conventional_candidates": int(recourse_base_detail.get("successor_conventional_candidates", -1)),
+                "recourse_rvr_successor_conventional_candidates": int(recourse_rvr_detail.get("successor_conventional_candidates", -1)),
+                "recourse_direct_restoring_candidate_count": int(recourse_direct_restoring_candidate_count),
+                "recourse_bridge_representatives_evaluated": int(recourse_bridge_representatives_evaluated),
+                "recourse_current_prefix_nonregressive": bool(recourse_current_prefix_nonregressive),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),

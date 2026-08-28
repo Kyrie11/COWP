@@ -1,0 +1,39 @@
+{
+  "schema_version": "v16.8.37-code-validation-v1",
+  "version": "V16.8.37",
+  "method": "cowp_recourse_returnability_bridge",
+  "focused_semantic_integrity_tests": {
+    "passed": 57,
+    "failed": 0,
+    "status": "passed"
+  },
+  "v37_new_tests": {
+    "passed": 4,
+    "failed": 0,
+    "status": "passed"
+  },
+  "python_compile": "passed",
+  "launcher_bash_syntax": "passed",
+  "manifest_validation": {
+    "exact200": "passed",
+    "equivalence16": "passed",
+    "counterfactual48": "passed",
+    "fresh37": "passed"
+  },
+  "analyzer_smoke": {
+    "status": "passed",
+    "scenario_count": 48,
+    "schema": "cowp_recourse_returnability_bridge_analysis_v1"
+  },
+  "fail_closed_promotion": {
+    "status": "passed",
+    "fresh37_without_stage1_analysis_exit_code": 4,
+    "waymax_rollout_started": false
+  },
+  "full_repository": {
+    "status": "blocked_by_preexisting_collection_error",
+    "error": "ImportError: candidate_geometry_finite missing from cowp.external_baselines.adapters",
+    "reproduced_on_user_uploaded_v16_8_36": true,
+    "attributed_to_v16_8_37": false
+  }
+}

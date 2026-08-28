@@ -1,0 +1,343 @@
+{
+  "schema_version": "cowp_v16_8_36_result_integrity_and_attribution_audit_v1",
+  "code_root": "/mnt/data/_v36_code/COWP_v16_8_36_CONTROL_PROJECTED_RECOVERY_FRONTIER",
+  "result_root": "/mnt/data/_v36_res/v16_8_36_control_projected_recovery_frontier",
+  "hard_checks_total": 53,
+  "hard_checks_passed": 53,
+  "all_passed": true,
+  "checks": [
+    {
+      "name": "equivalence16_unique_16",
+      "passed": true,
+      "detail": {
+        "n": 16
+      }
+    },
+    {
+      "name": "counterfactual48_unique_48",
+      "passed": true,
+      "detail": {
+        "n": 48
+      }
+    },
+    {
+      "name": "equivalence16_manifest_sha256",
+      "passed": true,
+      "detail": {
+        "computed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+        "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+      }
+    },
+    {
+      "name": "counterfactual48_manifest_sha256",
+      "passed": true,
+      "detail": {
+        "computed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "equivalence16_shard0_method",
+      "passed": true,
+      "detail": "cowp"
+    },
+    {
+      "name": "equivalence16_shard0_requested_total",
+      "passed": true,
+      "detail": 16
+    },
+    {
+      "name": "equivalence16_shard0_requested_on_shard",
+      "passed": true,
+      "detail": 8
+    },
+    {
+      "name": "equivalence16_shard0_resolved_count",
+      "passed": true,
+      "detail": 8
+    },
+    {
+      "name": "equivalence16_shard0_manifest_hash",
+      "passed": true,
+      "detail": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16_shard0_no_online_gt",
+      "passed": true,
+      "detail": false
+    },
+    {
+      "name": "equivalence16_shard0_logged_replay_non_ego",
+      "passed": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "equivalence16_shard1_method",
+      "passed": true,
+      "detail": "cowp"
+    },
+    {
+      "name": "equivalence16_shard1_requested_total",
+      "passed": true,
+      "detail": 16
+    },
+    {
+      "name": "equivalence16_shard1_requested_on_shard",
+      "passed": true,
+      "detail": 8
+    },
+    {
+      "name": "equivalence16_shard1_resolved_count",
+      "passed": true,
+      "detail": 8
+    },
+    {
+      "name": "equivalence16_shard1_manifest_hash",
+      "passed": true,
+      "detail": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16_shard1_no_online_gt",
+      "passed": true,
+      "detail": false
+    },
+    {
+      "name": "equivalence16_shard1_logged_replay_non_ego",
+      "passed": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "equivalence16_shards_disjoint",
+      "passed": true,
+      "detail": {
+        "overlap": []
+      }
+    },
+    {
+      "name": "equivalence16_shards_union_manifest",
+      "passed": true,
+      "detail": {
+        "missing": [],
+        "extra": []
+      }
+    },
+    {
+      "name": "equivalence16_merged_unique",
+      "passed": true,
+      "detail": 16
+    },
+    {
+      "name": "equivalence16_merged_manifest_exact",
+      "passed": true,
+      "detail": {
+        "missing": [],
+        "extra": []
+      }
+    },
+    {
+      "name": "equivalence16_merged_method",
+      "passed": true,
+      "detail": "cowp"
+    },
+    {
+      "name": "equivalence16_merged_checkpoint_matches_shards",
+      "passed": true,
+      "detail": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+    },
+    {
+      "name": "equivalence16_summary_recompute_zero",
+      "passed": true,
+      "detail": {
+        "max_abs_error": 0.0
+      }
+    },
+    {
+      "name": "equivalence16_scenario_metric_diag_consistency",
+      "passed": true,
+      "detail": {
+        "mismatch_count": 0,
+        "examples": []
+      }
+    },
+    {
+      "name": "counterfactual48_v36_shard0_method",
+      "passed": true,
+      "detail": "cowp_control_projected_recovery_frontier"
+    },
+    {
+      "name": "counterfactual48_v36_shard0_requested_total",
+      "passed": true,
+      "detail": 48
+    },
+    {
+      "name": "counterfactual48_v36_shard0_requested_on_shard",
+      "passed": true,
+      "detail": 24
+    },
+    {
+      "name": "counterfactual48_v36_shard0_resolved_count",
+      "passed": true,
+      "detail": 24
+    },
+    {
+      "name": "counterfactual48_v36_shard0_manifest_hash",
+      "passed": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48_v36_shard0_no_online_gt",
+      "passed": true,
+      "detail": false
+    },
+    {
+      "name": "counterfactual48_v36_shard0_logged_replay_non_ego",
+      "passed": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "counterfactual48_v36_shard1_method",
+      "passed": true,
+      "detail": "cowp_control_projected_recovery_frontier"
+    },
+    {
+      "name": "counterfactual48_v36_shard1_requested_total",
+      "passed": true,
+      "detail": 48
+    },
+    {
+      "name": "counterfactual48_v36_shard1_requested_on_shard",
+      "passed": true,
+      "detail": 24
+    },
+    {
+      "name": "counterfactual48_v36_shard1_resolved_count",
+      "passed": true,
+      "detail": 24
+    },
+    {
+      "name": "counterfactual48_v36_shard1_manifest_hash",
+      "passed": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48_v36_shard1_no_online_gt",
+      "passed": true,
+      "detail": false
+    },
+    {
+      "name": "counterfactual48_v36_shard1_logged_replay_non_ego",
+      "passed": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "counterfactual48_v36_shards_disjoint",
+      "passed": true,
+      "detail": {
+        "overlap": []
+      }
+    },
+    {
+      "name": "counterfactual48_v36_shards_union_manifest",
+      "passed": true,
+      "detail": {
+        "missing": [],
+        "extra": []
+      }
+    },
+    {
+      "name": "counterfactual48_v36_merged_unique",
+      "passed": true,
+      "detail": 48
+    },
+    {
+      "name": "counterfactual48_v36_merged_manifest_exact",
+      "passed": true,
+      "detail": {
+        "missing": [],
+        "extra": []
+      }
+    },
+    {
+      "name": "counterfactual48_v36_merged_method",
+      "passed": true,
+      "detail": "cowp_control_projected_recovery_frontier"
+    },
+    {
+      "name": "counterfactual48_v36_merged_checkpoint_matches_shards",
+      "passed": true,
+      "detail": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+    },
+    {
+      "name": "counterfactual48_v36_summary_recompute_zero",
+      "passed": true,
+      "detail": {
+        "max_abs_error": 0.0
+      }
+    },
+    {
+      "name": "counterfactual48_v36_scenario_metric_diag_consistency",
+      "passed": true,
+      "detail": {
+        "mismatch_count": 0,
+        "examples": []
+      }
+    },
+    {
+      "name": "equivalence16_reference_passed",
+      "passed": true,
+      "detail": {
+        "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+        "scenarios": 16,
+        "fields_checked": 1120,
+        "atol": 1e-07,
+        "passed": true,
+        "mismatch_count_capped": 0,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "analyzer_recursive_reproduction",
+      "passed": true,
+      "detail": {
+        "mismatch_count": 0,
+        "examples": []
+      }
+    },
+    {
+      "name": "preregistered_gate_checks_exact",
+      "passed": true,
+      "detail": {
+        "actual": {
+          "retain_at_least_5_of_10_old_rvr_rescues": true,
+          "avoid_at_least_7_of_9_old_rvr_induced": false,
+          "net_remove_at_least_3_cowp_collisions": false,
+          "kinematics_net_regression_at_most_1_scene": false,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        },
+        "expected": {
+          "retain_at_least_5_of_10_old_rvr_rescues": true,
+          "avoid_at_least_7_of_9_old_rvr_induced": false,
+          "net_remove_at_least_3_cowp_collisions": false,
+          "kinematics_net_regression_at_most_1_scene": false,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        }
+      }
+    },
+    {
+      "name": "preregistered_gate_fail",
+      "passed": true,
+      "detail": false
+    },
+    {
+      "name": "v28_no_valid_execution_invariant",
+      "passed": true,
+      "detail": {
+        "mismatch_ids": []
+      }
+    }
+  ],
+  "conclusion": "eligible_for_algorithm_attribution",
+  "non_blocking_code_semantic_note": "V36 allows strict entry for exact-equal emitted targets when nominal current prefix is strictly larger; this matches the written product-order spec but creates a latent mode-state change without a distinct current physical action. Treat as a mechanism/representation issue, not a result-integrity failure."
+}
