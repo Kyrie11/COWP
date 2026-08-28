@@ -1,0 +1,338 @@
+{
+  "schema_version": "v16.8.35-independent-result-audit-v1",
+  "checks_total": 66,
+  "checks_passed": 66,
+  "all_passed": true,
+  "checks": [
+    {
+      "name": "cf48_unique",
+      "pass": true,
+      "detail": "48"
+    },
+    {
+      "name": "eq16_unique",
+      "pass": true,
+      "detail": "16"
+    },
+    {
+      "name": "result_cf_manifest_exact",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "result_eq_manifest_exact",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_s0_method",
+      "pass": true,
+      "detail": "cowp"
+    },
+    {
+      "name": "cowp_s0_shard_index",
+      "pass": true,
+      "detail": "0"
+    },
+    {
+      "name": "cowp_s0_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_s0_declared_hash",
+      "pass": true,
+      "detail": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "cowp_s0_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_s0_resolved_unique",
+      "pass": true,
+      "detail": "8"
+    },
+    {
+      "name": "cowp_s1_method",
+      "pass": true,
+      "detail": "cowp"
+    },
+    {
+      "name": "cowp_s1_shard_index",
+      "pass": true,
+      "detail": "1"
+    },
+    {
+      "name": "cowp_s1_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_s1_declared_hash",
+      "pass": true,
+      "detail": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "cowp_s1_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_s1_resolved_unique",
+      "pass": true,
+      "detail": "8"
+    },
+    {
+      "name": "cowp_shards_disjoint",
+      "pass": true,
+      "detail": "set()"
+    },
+    {
+      "name": "cowp_shards_union_manifest",
+      "pass": true,
+      "detail": "16"
+    },
+    {
+      "name": "cowp_merged_unique",
+      "pass": true,
+      "detail": "16"
+    },
+    {
+      "name": "cowp_merged_set",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_merged_hash",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_merged_checkpoint_same",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_summary_recalc",
+      "pass": true,
+      "detail": "maxerr=0.0 worst=None"
+    },
+    {
+      "name": "cowp_fallback_recalc",
+      "pass": true,
+      "detail": "0.8078125 vs 0.8078125"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_method",
+      "pass": true,
+      "detail": "cowp_waymax_kinematic_guarded_rosh"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_shard_index",
+      "pass": true,
+      "detail": "0"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_declared_hash",
+      "pass": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s0_resolved_unique",
+      "pass": true,
+      "detail": "24"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_method",
+      "pass": true,
+      "detail": "cowp_waymax_kinematic_guarded_rosh"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_shard_index",
+      "pass": true,
+      "detail": "1"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_declared_hash",
+      "pass": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_s1_resolved_unique",
+      "pass": true,
+      "detail": "24"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_shards_disjoint",
+      "pass": true,
+      "detail": "set()"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_shards_union_manifest",
+      "pass": true,
+      "detail": "48"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_merged_unique",
+      "pass": true,
+      "detail": "48"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_merged_set",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_merged_hash",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_merged_checkpoint_same",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_summary_recalc",
+      "pass": true,
+      "detail": "maxerr=0.0 worst=None"
+    },
+    {
+      "name": "cowp_waymax_kinematic_guarded_rosh_fallback_recalc",
+      "pass": true,
+      "detail": "0.8447916666666666 vs 0.8447916666666667"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_method",
+      "pass": true,
+      "detail": "cowp_control_projected_option_spectrum_hysteresis"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_shard_index",
+      "pass": true,
+      "detail": "0"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_declared_hash",
+      "pass": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s0_resolved_unique",
+      "pass": true,
+      "detail": "24"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_method",
+      "pass": true,
+      "detail": "cowp_control_projected_option_spectrum_hysteresis"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_shard_index",
+      "pass": true,
+      "detail": "1"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_num_shards",
+      "pass": true,
+      "detail": "2"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_declared_hash",
+      "pass": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_online_no_gt",
+      "pass": true,
+      "detail": "False"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_s1_resolved_unique",
+      "pass": true,
+      "detail": "24"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_shards_disjoint",
+      "pass": true,
+      "detail": "set()"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_shards_union_manifest",
+      "pass": true,
+      "detail": "48"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_merged_unique",
+      "pass": true,
+      "detail": "48"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_merged_set",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_merged_hash",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_merged_checkpoint_same",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_summary_recalc",
+      "pass": true,
+      "detail": "maxerr=0.0 worst=None"
+    },
+    {
+      "name": "cowp_control_projected_option_spectrum_hysteresis_fallback_recalc",
+      "pass": true,
+      "detail": "0.8385416666666666 vs 0.8385416666666666"
+    },
+    {
+      "name": "equivalence_pass",
+      "pass": true,
+      "detail": "{'schema_version': 'cowp_v16_8_29_base_equivalence_v1', 'scenarios': 16, 'fields_checked': 1120, 'atol': 1e-07, 'passed': True, 'mismatch_count_capped': 0, 'mismatches': []}"
+    },
+    {
+      "name": "equivalence_1120_0",
+      "pass": true,
+      "detail": "{'schema_version': 'cowp_v16_8_29_base_equivalence_v1', 'scenarios': 16, 'fields_checked': 1120, 'atol': 1e-07, 'passed': True, 'mismatch_count_capped': 0, 'mismatches': []}"
+    }
+  ]
+}

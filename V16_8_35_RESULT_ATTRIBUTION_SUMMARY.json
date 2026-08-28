@@ -1,0 +1,154 @@
+{
+  "schema_version": "v16.8.35-attribution-summary-for-v16.8.36-v1",
+  "reliability": {
+    "hard_checks_passed": 66,
+    "hard_checks_total": 66,
+    "analyzer_recursive_mismatch_count": 0,
+    "analyzer_tolerance": 1e-12,
+    "focused_tests_passed": 49
+  },
+  "stage1_gate_unchanged": true,
+  "wk_rosh": {
+    "collision_count": 29,
+    "kinematics_count": 8,
+    "EP": 0.9746472767243782,
+    "gate": {
+      "checks": {
+        "retain_at_least_5_of_10_old_rvr_rescues": true,
+        "avoid_at_least_7_of_9_old_rvr_induced": true,
+        "net_remove_at_least_3_cowp_collisions": true,
+        "kinematics_net_regression_at_most_1_scene": false,
+        "mean_ep_delta_not_below_minus_0_05": true,
+        "nonzero_intervention": true
+      },
+      "pass": false,
+      "paper_evidence": false
+    },
+    "exact_closed_loop_match_v33_rosh": true
+  },
+  "cposh": {
+    "collision_count": 27,
+    "kinematics_count": 7,
+    "offroad_count": 0,
+    "EP": 0.913986936211586,
+    "paired_vs_cowp": {
+      "CR": {
+        "rescued": 10,
+        "induced": 3,
+        "shared_failure": 24,
+        "net_failures_removed": 7,
+        "mcnemar_exact_p": 0.09228515625,
+        "rescued_ids": [
+          "9e3e5f19ee38f2e3",
+          "ad7d72d8adca3e25",
+          "fccd9a25a2a57a73",
+          "9ccf60966ec93c20",
+          "2c2395ec28c6a158",
+          "7c6ac47c0deee2af",
+          "84196f1d9198b616",
+          "f8d5d2f0f7cf5825",
+          "72a34ea361a39c22",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": [
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "c34fe8e79cdf1161"
+        ]
+      },
+      "Collision": {
+        "rescued": 10,
+        "induced": 3,
+        "shared_failure": 24,
+        "net_failures_removed": 7,
+        "mcnemar_exact_p": 0.09228515625,
+        "rescued_ids": [
+          "9e3e5f19ee38f2e3",
+          "ad7d72d8adca3e25",
+          "fccd9a25a2a57a73",
+          "9ccf60966ec93c20",
+          "2c2395ec28c6a158",
+          "7c6ac47c0deee2af",
+          "84196f1d9198b616",
+          "f8d5d2f0f7cf5825",
+          "72a34ea361a39c22",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": [
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "c34fe8e79cdf1161"
+        ]
+      },
+      "Offroad": {
+        "rescued": 1,
+        "induced": 0,
+        "shared_failure": 0,
+        "net_failures_removed": 1,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [
+          "fccd9a25a2a57a73"
+        ],
+        "induced_ids": []
+      },
+      "Kinematics": {
+        "rescued": 1,
+        "induced": 2,
+        "shared_failure": 5,
+        "net_failures_removed": -1,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [
+          "fb9d8277036a53f3"
+        ],
+        "induced_ids": [
+          "fccd9a25a2a57a73",
+          "29cd2aca8ae5e222"
+        ]
+      },
+      "EP": {
+        "paired_n": 48,
+        "delta_mean": -0.08852511302878459,
+        "delta_median": 0.0,
+        "bootstrap95": [
+          -0.24285445299465208,
+          0.013243956506873166
+        ]
+      }
+    },
+    "rvr_retention": {
+      "old_rvr_rescues_total": 10,
+      "old_rvr_rescues_retained": 8,
+      "old_rvr_induced_total": 9,
+      "old_rvr_induced_avoided": 6
+    },
+    "gate": {
+      "checks": {
+        "retain_at_least_5_of_10_old_rvr_rescues": true,
+        "avoid_at_least_7_of_9_old_rvr_induced": false,
+        "net_remove_at_least_3_cowp_collisions": true,
+        "kinematics_net_regression_at_most_1_scene": true,
+        "mean_ep_delta_not_below_minus_0_05": false,
+        "nonzero_intervention": true
+      },
+      "pass": false,
+      "paper_evidence": false
+    }
+  },
+  "mechanism_groups": {
+    "rescued_count": 10,
+    "induced_count": 3,
+    "rescued_mean_zero_conventional_rate": 0.69125,
+    "induced_mean_zero_conventional_rate": 0.8541666666666666,
+    "rescued_mean_valid_candidates": 37.795,
+    "induced_mean_valid_candidates": 38.479166666666664,
+    "rescued_mean_conventional_candidates": 3.2699999999999996,
+    "induced_mean_conventional_candidates": 1.675
+  },
+  "ep_concentration": {
+    "worst_scene": "fccd9a25a2a57a73",
+    "worst_scene_delta": -3.129327416419983,
+    "mean_delta_all": -0.08852511302878459,
+    "mean_delta_excluding_worst_scene": -0.023827191680035692
+  },
+  "next_bottleneck": "Control-Projected Semantic Recovery Frontier / existing-bank support utilization under uncertified recovery"
+}

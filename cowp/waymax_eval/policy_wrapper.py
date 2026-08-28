@@ -114,7 +114,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -140,6 +140,96 @@ def _recursive_viability_recovery_mask(cand_valid, roadgraph_safe, collision_pre
         return cand_valid
     max_prefix = collision_prefix_steps[pool].max()
     return pool & (collision_prefix_steps >= max_prefix)
+
+
+
+def _macro_recovery_representatives_np(
+    cand_valid: np.ndarray,
+    roadgraph_safe: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    pad_macro: int = int(MacroType.PAD),
+) -> list[int]:
+    """Build one deterministic recovery representative per semantic macro.
+
+    V16.8.29--35 compared the original COWP fallback with only one global RVR
+    endpoint.  V16.8.36 keeps the *same fixed candidate bank* but exposes its
+    semantic support: use the same roadgraph-first recovery pool as RVR, then for
+    every non-PAD macro retain the candidate with the longest current causal
+    collision-safe prefix, breaking ties by the already-frozen COWP fallback
+    score and finally by candidate index.
+
+    This is support construction, not proposal expansion: no trajectory is added
+    and no learned score/threshold is introduced.
+    """
+    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
+    road = np.asarray(roadgraph_safe, dtype=bool).reshape(-1)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    score = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+    n = min(valid.size, road.size, prefix.size, macro.size, score.size)
+    if n <= 0:
+        return []
+    valid, road, prefix, macro, score = valid[:n], road[:n], prefix[:n], macro[:n], score[:n]
+    road_pool = valid & road
+    pool = road_pool if bool(road_pool.any()) else valid
+    reps: list[int] = []
+    for m in sorted(int(x) for x in np.unique(macro[pool]) if int(x) != int(pad_macro)):
+        idx = np.flatnonzero(pool & (macro == int(m)))
+        if idx.size == 0:
+            continue
+        pmax = float(np.nanmax(prefix[idx]))
+        tied = idx[np.isclose(prefix[idx], pmax, rtol=0.0, atol=1.0e-9)]
+        finite = tied[np.isfinite(score[tied])]
+        if finite.size:
+            best_score = float(np.min(score[finite]))
+            tied = finite[np.isclose(score[finite], best_score, rtol=0.0, atol=1.0e-9)]
+        reps.append(int(np.min(tied)))
+    return reps
+
+
+def _recovery_frontier_mode_choice_np(
+    base_idx: int,
+    representative_indices: list[int] | tuple[int, ...],
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    strict_dominance: dict[int, bool],
+    weak_dominance: dict[int, bool],
+    active_macro: int,
+) -> tuple[int, int, bool, bool, bool]:
+    """Choose a candidate from the physical recovery frontier without scalarizing it.
+
+    Entry: any representative that *strictly* dominates the base control-projected
+    option spectrum is physically admissible; select the least COWP-fallback-cost
+    member of that hard frontier.
+
+    Continuation: never jump directly between recovery macros.  Continue only the
+    currently active semantic macro while one of its representatives weakly
+    dominates the base.  On dominance loss, exit to the base and clear mode state.
+
+    Returns ``(chosen_idx, new_active_macro, entered, continued, exited)``.
+    """
+    reps = [int(i) for i in representative_indices]
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+
+    def _best(cands: list[int]) -> int:
+        if not cands:
+            return int(base_idx)
+        return int(min(cands, key=lambda i: (float(scores[i]) if np.isfinite(scores[i]) else float('inf'), int(i))))
+
+    if int(active_macro) >= 0:
+        same = [i for i in reps if 0 <= i < macro.size and int(macro[i]) == int(active_macro) and bool(weak_dominance.get(i, False))]
+        if same:
+            return _best(same), int(active_macro), False, True, False
+        return int(base_idx), -1, False, False, True
+
+    strict = [i for i in reps if i != int(base_idx) and bool(strict_dominance.get(i, False))]
+    if not strict:
+        return int(base_idx), -1, False, False, False
+    chosen = _best(strict)
+    return chosen, int(macro[chosen]), True, False, False
 
 
 def _counterfactual_successor_agent_state(
@@ -3134,6 +3224,8 @@ class COWPWaymaxPolicy:
         # methods share state semantics but use different successor viability
         # relations (legacy SOV signature vs recovery-option persistence profile).
         self._recovery_hysteresis_active: bool = False
+        # v16.8.36: semantic recovery mode for the control-projected recovery frontier.
+        self._recovery_frontier_macro: int = -1
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
         self._cached_sdc_scenario_index: int | None = None
@@ -3204,6 +3296,7 @@ class COWPWaymaxPolicy:
             self._previous_selected_traj = None
             self._recovery_commitment_active = False
             self._recovery_hysteresis_active = False
+            self._recovery_frontier_macro = -1
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
@@ -3786,7 +3879,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -3893,7 +3986,7 @@ class COWPWaymaxPolicy:
             recovery_commitment_entered = False
             recovery_commitment_continued = False
             recovery_commitment_cleared = False
-            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"}
+            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"}
             recovery_hysteresis_active_before = bool(self._recovery_hysteresis_active) if hysteresis_method else False
             recovery_hysteresis_entered = False
             recovery_hysteresis_continued = False
@@ -3919,6 +4012,19 @@ class COWPWaymaxPolicy:
             recovery_base_waymax_steering = 0.0
             recovery_rvr_waymax_steering = 0.0
             recovery_waymax_contract_detail = {}
+            recovery_frontier_probe_used = False
+            recovery_frontier_representative_count = 0
+            recovery_frontier_profiles_evaluated = 0
+            recovery_frontier_strict_admissible_count = 0
+            recovery_frontier_weak_admissible_count = 0
+            recovery_frontier_current_prefix_admissible_count = 0
+            recovery_frontier_selected_prefix_delta_steps = 0
+            recovery_frontier_active_macro_before = int(self._recovery_frontier_macro) if method == "cowp_control_projected_recovery_frontier" else -1
+            recovery_frontier_selected_macro = -1
+            recovery_frontier_selected_candidate = -1
+            recovery_frontier_selected_is_historical_rvr = False
+            recovery_frontier_selected_is_non_rvr = False
+            recovery_frontier_selected_fallback_score_delta = 0.0
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -3926,6 +4032,8 @@ class COWPWaymaxPolicy:
                 if hysteresis_method and self._recovery_hysteresis_active:
                     self._recovery_hysteresis_active = False
                     recovery_hysteresis_cleared = True
+                if method == "cowp_control_projected_recovery_frontier":
+                    self._recovery_frontier_macro = -1
                 select_mask = selection_mask
                 select_score = adjusted_scores
                 fallback_used = False
@@ -3940,15 +4048,19 @@ class COWPWaymaxPolicy:
                 if hysteresis_method and self._recovery_hysteresis_active:
                     self._recovery_hysteresis_active = False
                     recovery_hysteresis_cleared = True
+                if method == "cowp_control_projected_recovery_frontier":
+                    self._recovery_frontier_macro = -1
                 select_mask = cand_valid & conventional
                 select_score = fallback_score
                 fallback_used = True
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"}:
-                    # Every recovery probe uses the exact same controlled pair:
-                    # original COWP least-coercive-valid vs v16.8.29 max-prefix RVR.
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier"}:
+                    # Historical v16.8.29--35 recovery probes use the same controlled
+                    # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
+                    # references but expands the *current* support to one existing-bank
+                    # representative per semantic macro.
                     rvr_mask = _recursive_viability_recovery_mask(
                         cand_valid, roadgraph_safe, collision_prefix_steps
                     )
@@ -3981,230 +4093,281 @@ class COWPWaymaxPolicy:
                         bp = int(round(float(collision_prefix_steps[recovery_base_candidate].detach().cpu().item())))
                         rp = int(round(float(collision_prefix_steps[recovery_rvr_candidate].detach().cpu().item())))
 
-                        # v16.8.32 commitment diagnostic: strict SOV is an
-                        # entry trigger, followed by unconditional RVR until state
-                        # restoration.  v16.8.33 keeps this historical branch intact
-                        # as a reference, but adds a parameter-free dominance
-                        # hysteresis to separate chattering from over-commitment.
-                        commitment_already_active = bool(
-                            method == "cowp_sov_recovery_commitment"
-                            and self._recovery_commitment_active
-                        )
-                        hysteresis_already_active = bool(
-                            hysteresis_method and self._recovery_hysteresis_active
-                        )
-                        if commitment_already_active:
-                            recovery_switch_applied = bool(recovery_rvr_candidate != recovery_base_candidate)
-                            recovery_commitment_continued = True
-                            chosen = recovery_rvr_candidate
-                        elif hysteresis_already_active and recovery_rvr_candidate == recovery_base_candidate:
-                            # Exact candidate equality cannot create a hybrid action;
-                            # keep the mode through the tie without an unnecessary
-                            # counterfactual probe.
-                            recovery_hysteresis_continued = True
-                            chosen = recovery_rvr_candidate
-                        elif recovery_rvr_candidate != recovery_base_candidate:
-                            bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
-                            rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
-                            recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
-                            if recovery_action_target_equal:
-                                if hysteresis_already_active:
-                                    recovery_hysteresis_continued = True
-                                    chosen = recovery_rvr_candidate
-                            elif method in {
-                                "cowp_waymax_kinematic_guarded_rosh",
-                                "cowp_control_projected_option_spectrum_hysteresis",
-                            }:
-                                # v16.8.35 fixes the representation mismatch exposed
-                                # by v16.8.34.  The current-action guard now mirrors
-                                # Waymax's evaluated inverse acceleration/steering-
-                                # curvature contract.  The main branch additionally
-                                # builds the successor spectrum from trajectories
-                                # repeatedly projected through the same stateful
-                                # controller that emits online actions.
-                                option_profile_probe_used = True
-                                waymax_kinematic_guard_used = True
-                                current_pair = np.stack([bt, rt], axis=0)
-                                (
-                                    kim_ok_pair, kim_acc_pair, kim_steer_pair,
-                                    recovery_waymax_contract_detail,
-                                ) = _waymax_kinematic_transition_np(
-                                    agent_state[int(sdc_index)], current_pair, self.cfg
-                                )
-                                recovery_base_waymax_kinematic_feasible = bool(kim_ok_pair[0])
-                                recovery_rvr_waymax_kinematic_feasible = bool(kim_ok_pair[1])
-                                recovery_base_waymax_inverse_accel = float(kim_acc_pair[0])
-                                recovery_rvr_waymax_inverse_accel = float(kim_acc_pair[1])
-                                recovery_base_waymax_steering = float(kim_steer_pair[0])
-                                recovery_rvr_waymax_steering = float(kim_steer_pair[1])
+                        if method == "cowp_control_projected_recovery_frontier":
+                            # V16.8.36 changes one factor relative to V35 CPOSH:
+                            # instead of comparing only base vs one global-RVR
+                            # endpoint, expose one RVR-style representative per
+                            # semantic macro already present in the fixed bank.
+                            # Physical admissibility is still the unchanged V35
+                            # control-projected pointwise option-spectrum dominance.
+                            recovery_frontier_probe_used = True
+                            option_profile_probe_used = True
+                            control_projected_option_profile_used = True
+                            waymax_kinematic_guard_used = True
 
-                                if method == "cowp_control_projected_option_spectrum_hysteresis":
-                                    control_projected_option_profile_used = True
-                                    base_profile, option_profile_base_detail = _successor_control_projected_option_profile(
-                                        agent_state, sdc_index, bt,
-                                        float(action_accels_np[recovery_base_candidate]),
-                                        roadgraph, self.cfg
-                                    )
-                                    rvr_profile, option_profile_rvr_detail = _successor_control_projected_option_profile(
-                                        agent_state, sdc_index, rt,
-                                        float(action_accels_np[recovery_rvr_candidate]),
-                                        roadgraph, self.cfg
-                                    )
-                                else:
-                                    base_profile, option_profile_base_detail = _successor_recovery_option_profile(
-                                        agent_state, sdc_index, bt, roadgraph, self.cfg
-                                    )
-                                    rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
-                                        agent_state, sdc_index, rt, roadgraph, self.cfg
-                                    )
-                                (
-                                    option_profile_strict_dominates,
-                                    option_profile_weak_dominates,
-                                    recovery_transition_delta,
-                                    option_profile_min_margin,
-                                    option_profile_area_delta,
-                                ) = _kinematic_guarded_profile_relation(
-                                    recovery_rvr_waymax_kinematic_feasible,
-                                    recovery_base_waymax_kinematic_feasible,
-                                    base_profile, rvr_profile,
-                                )
-                                (active_after, entered, continued, exited) = _dominance_hysteresis_transition(
-                                    hysteresis_already_active,
-                                    strict_alt_dominates=option_profile_strict_dominates,
-                                    weak_alt_dominates=option_profile_weak_dominates,
-                                )
-                                self._recovery_hysteresis_active = bool(active_after)
-                                recovery_hysteresis_entered = bool(entered)
-                                recovery_hysteresis_continued = bool(continued)
-                                recovery_hysteresis_exited = bool(exited)
-                                recovery_switch_applied = bool(active_after)
-                                chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
-                            elif method in {
-                                "cowp_recovery_option_spectrum_hysteresis",
-                                "cowp_transition_guarded_rosh",
-                                "cowp_executable_option_spectrum_hysteresis",
-                            }:
-                                # v16.8.33 ROSH keeps the nominal semantic option
-                                # spectrum.  v16.8.34 adds two controlled probes:
-                                #   TG-ROSH: same future spectrum + current hard
-                                #            controller-transition non-regression;
-                                #   EOSH:    additionally counts only successor
-                                #            options executable from the carried
-                                #            controller acceleration state.
-                                option_profile_probe_used = True
-                                recovery_base_transition_feasible = bool(
-                                    controller_transition_feasible_np[recovery_base_candidate]
-                                )
-                                recovery_rvr_transition_feasible = bool(
-                                    controller_transition_feasible_np[recovery_rvr_candidate]
-                                )
-                                if method == "cowp_executable_option_spectrum_hysteresis":
-                                    executable_option_profile_used = True
-                                    base_profile, option_profile_base_detail = _successor_executable_recovery_option_profile(
-                                        agent_state, sdc_index, bt,
-                                        float(action_accels_np[recovery_base_candidate]),
-                                        roadgraph, self.cfg
-                                    )
-                                    rvr_profile, option_profile_rvr_detail = _successor_executable_recovery_option_profile(
-                                        agent_state, sdc_index, rt,
-                                        float(action_accels_np[recovery_rvr_candidate]),
-                                        roadgraph, self.cfg
-                                    )
-                                else:
-                                    base_profile, option_profile_base_detail = _successor_recovery_option_profile(
-                                        agent_state, sdc_index, bt, roadgraph, self.cfg
-                                    )
-                                    rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
-                                        agent_state, sdc_index, rt, roadgraph, self.cfg
-                                    )
+                            valid_np = cand_valid.detach().cpu().numpy().astype(bool)
+                            road_np = roadgraph_safe.detach().cpu().numpy().astype(bool)
+                            prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
+                            macro_np_frontier = macro_t.detach().cpu().numpy().astype(np.int64)
+                            fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
+                            reps = _macro_recovery_representatives_np(
+                                valid_np, road_np, prefix_np, macro_np_frontier, fallback_np
+                            )
+                            if recovery_base_candidate not in reps:
+                                reps = [int(recovery_base_candidate), *reps]
+                            # Preserve deterministic order while removing duplicates.
+                            reps = list(dict.fromkeys(int(i) for i in reps))
+                            recovery_frontier_representative_count = int(len(reps))
 
-                                if method == "cowp_recovery_option_spectrum_hysteresis":
+                            base_target = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
+                            base_ok_arr, _base_inv_acc, _base_steer, recovery_waymax_contract_detail = _waymax_kinematic_transition_np(
+                                agent_state[int(sdc_index)], base_target, self.cfg
+                            )
+                            recovery_base_waymax_kinematic_feasible = bool(base_ok_arr[0])
+                            base_profile, option_profile_base_detail = _successor_control_projected_option_profile(
+                                agent_state, sdc_index, base_target,
+                                float(action_accels_np[recovery_base_candidate]), roadgraph, self.cfg
+                            )
+
+                            strict_map: dict[int, bool] = {int(recovery_base_candidate): False}
+                            weak_map: dict[int, bool] = {int(recovery_base_candidate): True}
+                            relation_detail: dict[int, tuple[int, int]] = {}
+                            base_prefix_frontier = int(round(float(prefix_np[int(recovery_base_candidate)])))
+                            for rep in reps:
+                                rep = int(rep)
+                                if rep == int(recovery_base_candidate):
+                                    continue
+                                alt_target = np.asarray(action_targets_np[rep], dtype=np.float32)
+                                rep_prefix_frontier = int(round(float(prefix_np[rep])))
+                                # The frontier never trades away immediate causal survival
+                                # for a richer successor set. This is a hard product-order
+                                # component, not a weighted prefix reward.
+                                prefix_weak = bool(rep_prefix_frontier >= base_prefix_frontier)
+                                prefix_strict = bool(rep_prefix_frontier > base_prefix_frontier)
+                                if prefix_weak:
+                                    recovery_frontier_current_prefix_admissible_count += 1
+                                else:
+                                    # Hard current-survival pre-gate: avoid the expensive
+                                    # successor projection when the representative already
+                                    # loses against base at H0.
+                                    strict_map[rep] = False
+                                    weak_map[rep] = False
+                                    relation_detail[rep] = (int(rep_prefix_frontier - base_prefix_frontier), 0)
+                                    continue
+                                # Exact emitted-action equality cannot create a new
+                                # physical branch.  It is weakly equivalent for
+                                # continuation but never a strict entry witness.
+                                if np.allclose(base_target, alt_target, rtol=0.0, atol=1.0e-6):
+                                    strict_map[rep] = bool(prefix_strict)
+                                    weak_map[rep] = bool(prefix_weak)
+                                    relation_detail[rep] = (0, 0)
+                                    continue
+                                alt_ok_arr, _alt_inv_acc, _alt_steer, _ = _waymax_kinematic_transition_np(
+                                    agent_state[int(sdc_index)], alt_target, self.cfg
+                                )
+                                alt_profile, alt_detail = _successor_control_projected_option_profile(
+                                    agent_state, sdc_index, alt_target,
+                                    float(action_accels_np[rep]), roadgraph, self.cfg
+                                )
+                                recovery_frontier_profiles_evaluated += 1
+                                strict_i, weak_i, _td, min_margin_i, area_i = _kinematic_guarded_profile_relation(
+                                    bool(alt_ok_arr[0]), bool(recovery_base_waymax_kinematic_feasible),
+                                    base_profile, alt_profile,
+                                )
+                                # Product order: immediate current safe-prefix and
+                                # successor control-projected option spectrum must both
+                                # be non-regressive; at least one component must improve.
+                                strict_map[rep] = bool(prefix_weak and weak_i and (prefix_strict or strict_i))
+                                weak_map[rep] = bool(prefix_weak and weak_i)
+                                relation_detail[rep] = (int(min_margin_i), int(area_i))
+
+                            recovery_frontier_strict_admissible_count = int(sum(bool(strict_map.get(i, False)) for i in reps if i != recovery_base_candidate))
+                            recovery_frontier_weak_admissible_count = int(sum(bool(weak_map.get(i, False)) for i in reps if i != recovery_base_candidate))
+                            chosen, new_macro, entered, continued, exited = _recovery_frontier_mode_choice_np(
+                                recovery_base_candidate, reps, macro_np_frontier, fallback_np,
+                                strict_map, weak_map, int(self._recovery_frontier_macro),
+                            )
+                            self._recovery_frontier_macro = int(new_macro)
+                            self._recovery_hysteresis_active = bool(new_macro >= 0)
+                            recovery_hysteresis_entered = bool(entered)
+                            recovery_hysteresis_continued = bool(continued)
+                            recovery_hysteresis_exited = bool(exited)
+                            recovery_switch_applied = bool(int(chosen) != int(recovery_base_candidate))
+                            recovery_frontier_selected_candidate = int(chosen)
+                            recovery_frontier_selected_macro = int(macro_np_frontier[int(chosen)]) if 0 <= int(chosen) < len(macro_np_frontier) else -1
+                            recovery_frontier_selected_is_historical_rvr = bool(int(chosen) == int(recovery_rvr_candidate))
+                            recovery_frontier_selected_is_non_rvr = bool(recovery_switch_applied and int(chosen) != int(recovery_rvr_candidate))
+                            recovery_frontier_selected_fallback_score_delta = float(fallback_np[int(chosen)] - fallback_np[int(recovery_base_candidate)]) if 0 <= int(chosen) < len(fallback_np) else 0.0
+                            recovery_frontier_selected_prefix_delta_steps = int(round(float(prefix_np[int(chosen)] - prefix_np[int(recovery_base_candidate)]))) if 0 <= int(chosen) < len(prefix_np) else 0
+                            if int(chosen) in relation_detail:
+                                option_profile_min_margin, option_profile_area_delta = relation_detail[int(chosen)]
+                                option_profile_strict_dominates = bool(strict_map.get(int(chosen), False))
+                                option_profile_weak_dominates = bool(weak_map.get(int(chosen), False))
+                            chosen = int(chosen)
+                        else:
+                            # v16.8.32 commitment diagnostic: strict SOV is an
+                            # entry trigger, followed by unconditional RVR until state
+                            # restoration.  v16.8.33 keeps this historical branch intact
+                            # as a reference, but adds a parameter-free dominance
+                            # hysteresis to separate chattering from over-commitment.
+                            commitment_already_active = bool(
+                                method == "cowp_sov_recovery_commitment"
+                                and self._recovery_commitment_active
+                            )
+                            hysteresis_already_active = bool(
+                                hysteresis_method and self._recovery_hysteresis_active
+                            )
+                            if commitment_already_active:
+                                recovery_switch_applied = bool(recovery_rvr_candidate != recovery_base_candidate)
+                                recovery_commitment_continued = True
+                                chosen = recovery_rvr_candidate
+                            elif hysteresis_already_active and recovery_rvr_candidate == recovery_base_candidate:
+                                # Exact candidate equality cannot create a hybrid action;
+                                # keep the mode through the tie without an unnecessary
+                                # counterfactual probe.
+                                recovery_hysteresis_continued = True
+                                chosen = recovery_rvr_candidate
+                            elif recovery_rvr_candidate != recovery_base_candidate:
+                                bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
+                                rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
+                                recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
+                                if recovery_action_target_equal:
+                                    if hysteresis_already_active:
+                                        recovery_hysteresis_continued = True
+                                        chosen = recovery_rvr_candidate
+                                elif method in {
+                                    "cowp_waymax_kinematic_guarded_rosh",
+                                    "cowp_control_projected_option_spectrum_hysteresis",
+                                }:
+                                    # v16.8.35 fixes the representation mismatch exposed
+                                    # by v16.8.34.  The current-action guard now mirrors
+                                    # Waymax's evaluated inverse acceleration/steering-
+                                    # curvature contract.  The main branch additionally
+                                    # builds the successor spectrum from trajectories
+                                    # repeatedly projected through the same stateful
+                                    # controller that emits online actions.
+                                    option_profile_probe_used = True
+                                    waymax_kinematic_guard_used = True
+                                    current_pair = np.stack([bt, rt], axis=0)
                                     (
-                                        option_profile_strict_dominates,
-                                        option_profile_weak_dominates,
-                                        option_profile_min_margin,
-                                        option_profile_area_delta,
-                                    ) = _option_profile_relation(base_profile, rvr_profile)
-                                else:
+                                        kim_ok_pair, kim_acc_pair, kim_steer_pair,
+                                        recovery_waymax_contract_detail,
+                                    ) = _waymax_kinematic_transition_np(
+                                        agent_state[int(sdc_index)], current_pair, self.cfg
+                                    )
+                                    recovery_base_waymax_kinematic_feasible = bool(kim_ok_pair[0])
+                                    recovery_rvr_waymax_kinematic_feasible = bool(kim_ok_pair[1])
+                                    recovery_base_waymax_inverse_accel = float(kim_acc_pair[0])
+                                    recovery_rvr_waymax_inverse_accel = float(kim_acc_pair[1])
+                                    recovery_base_waymax_steering = float(kim_steer_pair[0])
+                                    recovery_rvr_waymax_steering = float(kim_steer_pair[1])
+
+                                    if method == "cowp_control_projected_option_spectrum_hysteresis":
+                                        control_projected_option_profile_used = True
+                                        base_profile, option_profile_base_detail = _successor_control_projected_option_profile(
+                                            agent_state, sdc_index, bt,
+                                            float(action_accels_np[recovery_base_candidate]),
+                                            roadgraph, self.cfg
+                                        )
+                                        rvr_profile, option_profile_rvr_detail = _successor_control_projected_option_profile(
+                                            agent_state, sdc_index, rt,
+                                            float(action_accels_np[recovery_rvr_candidate]),
+                                            roadgraph, self.cfg
+                                        )
+                                    else:
+                                        base_profile, option_profile_base_detail = _successor_recovery_option_profile(
+                                            agent_state, sdc_index, bt, roadgraph, self.cfg
+                                        )
+                                        rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
+                                            agent_state, sdc_index, rt, roadgraph, self.cfg
+                                        )
                                     (
                                         option_profile_strict_dominates,
                                         option_profile_weak_dominates,
                                         recovery_transition_delta,
                                         option_profile_min_margin,
                                         option_profile_area_delta,
-                                    ) = _execution_spectrum_relation(
-                                        recovery_base_transition_feasible,
-                                        recovery_rvr_transition_feasible,
-                                        base_profile,
-                                        rvr_profile,
+                                    ) = _kinematic_guarded_profile_relation(
+                                        recovery_rvr_waymax_kinematic_feasible,
+                                        recovery_base_waymax_kinematic_feasible,
+                                        base_profile, rvr_profile,
                                     )
-                                (
-                                    active_after, entered, continued, exited,
-                                ) = _dominance_hysteresis_transition(
-                                    hysteresis_already_active,
-                                    strict_alt_dominates=option_profile_strict_dominates,
-                                    weak_alt_dominates=option_profile_weak_dominates,
-                                )
-                                self._recovery_hysteresis_active = bool(active_after)
-                                recovery_hysteresis_entered = bool(entered)
-                                recovery_hysteresis_continued = bool(continued)
-                                recovery_hysteresis_exited = bool(exited)
-                                recovery_switch_applied = bool(active_after)
-                                chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
-                            else:
-                                # Legacy successor signature is still evaluated for
-                                # historical SOV/BHOV/THOP/commitment and for the
-                                # v16.8.33 state-machine-only diagnostic.
-                                successor_probe_used = True
-                                base_sig, successor_base_detail = _successor_option_signature(
-                                    agent_state, sdc_index, bt, roadgraph, self.cfg
-                                )
-                                rvr_sig, successor_rvr_detail = _successor_option_signature(
-                                    agent_state, sdc_index, rt, roadgraph, self.cfg
-                                )
-                                successor_signature_cmp = 1 if rvr_sig > base_sig else (-1 if rvr_sig < base_sig else 0)
-                                if method == "cowp_successor_option_viability":
-                                    recovery_switch_applied = bool(rvr_sig > base_sig)
-                                elif method == "cowp_bihorizon_option_viability":
-                                    recovery_switch_applied = _bihorizon_option_dominates(
-                                        base_sig, rvr_sig, bp, rp
+                                    (active_after, entered, continued, exited) = _dominance_hysteresis_transition(
+                                        hysteresis_already_active,
+                                        strict_alt_dominates=option_profile_strict_dominates,
+                                        weak_alt_dominates=option_profile_weak_dominates,
                                     )
-                                elif method == "cowp_successor_restore_only":
-                                    recovery_switch_applied = _successor_restoration_dominates(
-                                        successor_base_detail, successor_rvr_detail
+                                    self._recovery_hysteresis_active = bool(active_after)
+                                    recovery_hysteresis_entered = bool(entered)
+                                    recovery_hysteresis_continued = bool(continued)
+                                    recovery_hysteresis_exited = bool(exited)
+                                    recovery_switch_applied = bool(active_after)
+                                    chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
+                                elif method in {
+                                    "cowp_recovery_option_spectrum_hysteresis",
+                                    "cowp_transition_guarded_rosh",
+                                    "cowp_executable_option_spectrum_hysteresis",
+                                }:
+                                    # v16.8.33 ROSH keeps the nominal semantic option
+                                    # spectrum.  v16.8.34 adds two controlled probes:
+                                    #   TG-ROSH: same future spectrum + current hard
+                                    #            controller-transition non-regression;
+                                    #   EOSH:    additionally counts only successor
+                                    #            options executable from the carried
+                                    #            controller acceleration state.
+                                    option_profile_probe_used = True
+                                    recovery_base_transition_feasible = bool(
+                                        controller_transition_feasible_np[recovery_base_candidate]
                                     )
-                                elif method == "cowp_trihorizon_option_persistence":
-                                    # Historical v16.8.32 branch kept unchanged for
-                                    # reference/regression purposes.
-                                    bhov_pre = _bihorizon_option_dominates(
-                                        base_sig, rvr_sig, bp, rp
+                                    recovery_rvr_transition_feasible = bool(
+                                        controller_transition_feasible_np[recovery_rvr_candidate]
                                     )
-                                    if bhov_pre:
-                                        second_successor_probe_used = True
-                                        traj_np = np.asarray(batch_np["cowp/candidates/trajectory"][0])
-                                        base_sig2, second_successor_base_detail = _second_successor_option_signature(
+                                    if method == "cowp_executable_option_spectrum_hysteresis":
+                                        executable_option_profile_used = True
+                                        base_profile, option_profile_base_detail = _successor_executable_recovery_option_profile(
                                             agent_state, sdc_index, bt,
                                             float(action_accels_np[recovery_base_candidate]),
-                                            traj_np[recovery_base_candidate], roadgraph, self.cfg
+                                            roadgraph, self.cfg
                                         )
-                                        rvr_sig2, second_successor_rvr_detail = _second_successor_option_signature(
+                                        rvr_profile, option_profile_rvr_detail = _successor_executable_recovery_option_profile(
                                             agent_state, sdc_index, rt,
                                             float(action_accels_np[recovery_rvr_candidate]),
-                                            traj_np[recovery_rvr_candidate], roadgraph, self.cfg
+                                            roadgraph, self.cfg
                                         )
-                                        second_successor_signature_cmp = 1 if rvr_sig2 > base_sig2 else (-1 if rvr_sig2 < base_sig2 else 0)
-                                        recovery_switch_applied = _trihorizon_option_persistence_dominates(
-                                            base_sig, rvr_sig, base_sig2, rvr_sig2, bp, rp
+                                    else:
+                                        base_profile, option_profile_base_detail = _successor_recovery_option_profile(
+                                            agent_state, sdc_index, bt, roadgraph, self.cfg
                                         )
-                                elif method == "cowp_sov_dominance_hysteresis":
-                                    strict_dom = bool(rvr_sig > base_sig)
-                                    weak_dom = bool(rvr_sig >= base_sig)
+                                        rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
+                                            agent_state, sdc_index, rt, roadgraph, self.cfg
+                                        )
+
+                                    if method == "cowp_recovery_option_spectrum_hysteresis":
+                                        (
+                                            option_profile_strict_dominates,
+                                            option_profile_weak_dominates,
+                                            option_profile_min_margin,
+                                            option_profile_area_delta,
+                                        ) = _option_profile_relation(base_profile, rvr_profile)
+                                    else:
+                                        (
+                                            option_profile_strict_dominates,
+                                            option_profile_weak_dominates,
+                                            recovery_transition_delta,
+                                            option_profile_min_margin,
+                                            option_profile_area_delta,
+                                        ) = _execution_spectrum_relation(
+                                            recovery_base_transition_feasible,
+                                            recovery_rvr_transition_feasible,
+                                            base_profile,
+                                            rvr_profile,
+                                        )
                                     (
                                         active_after, entered, continued, exited,
                                     ) = _dominance_hysteresis_transition(
                                         hysteresis_already_active,
-                                        strict_alt_dominates=strict_dom,
-                                        weak_alt_dominates=weak_dom,
+                                        strict_alt_dominates=option_profile_strict_dominates,
+                                        weak_alt_dominates=option_profile_weak_dominates,
                                     )
                                     self._recovery_hysteresis_active = bool(active_after)
                                     recovery_hysteresis_entered = bool(entered)
@@ -4213,21 +4376,83 @@ class COWPWaymaxPolicy:
                                     recovery_switch_applied = bool(active_after)
                                     chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
                                 else:
-                                    # Historical SOV-triggered unconditional
-                                    # commitment entry.
-                                    recovery_switch_applied = bool(rvr_sig > base_sig)
-                                    if recovery_switch_applied:
-                                        self._recovery_commitment_active = True
-                                        recovery_commitment_entered = True
-                                if recovery_switch_applied and method not in {
-                                    "cowp_sov_dominance_hysteresis",
-                                    "cowp_recovery_option_spectrum_hysteresis",
-                                    "cowp_transition_guarded_rosh",
-                                    "cowp_executable_option_spectrum_hysteresis",
-                                    "cowp_waymax_kinematic_guarded_rosh",
-                                    "cowp_control_projected_option_spectrum_hysteresis",
-                                }:
-                                    chosen = recovery_rvr_candidate
+                                    # Legacy successor signature is still evaluated for
+                                    # historical SOV/BHOV/THOP/commitment and for the
+                                    # v16.8.33 state-machine-only diagnostic.
+                                    successor_probe_used = True
+                                    base_sig, successor_base_detail = _successor_option_signature(
+                                        agent_state, sdc_index, bt, roadgraph, self.cfg
+                                    )
+                                    rvr_sig, successor_rvr_detail = _successor_option_signature(
+                                        agent_state, sdc_index, rt, roadgraph, self.cfg
+                                    )
+                                    successor_signature_cmp = 1 if rvr_sig > base_sig else (-1 if rvr_sig < base_sig else 0)
+                                    if method == "cowp_successor_option_viability":
+                                        recovery_switch_applied = bool(rvr_sig > base_sig)
+                                    elif method == "cowp_bihorizon_option_viability":
+                                        recovery_switch_applied = _bihorizon_option_dominates(
+                                            base_sig, rvr_sig, bp, rp
+                                        )
+                                    elif method == "cowp_successor_restore_only":
+                                        recovery_switch_applied = _successor_restoration_dominates(
+                                            successor_base_detail, successor_rvr_detail
+                                        )
+                                    elif method == "cowp_trihorizon_option_persistence":
+                                        # Historical v16.8.32 branch kept unchanged for
+                                        # reference/regression purposes.
+                                        bhov_pre = _bihorizon_option_dominates(
+                                            base_sig, rvr_sig, bp, rp
+                                        )
+                                        if bhov_pre:
+                                            second_successor_probe_used = True
+                                            traj_np = np.asarray(batch_np["cowp/candidates/trajectory"][0])
+                                            base_sig2, second_successor_base_detail = _second_successor_option_signature(
+                                                agent_state, sdc_index, bt,
+                                                float(action_accels_np[recovery_base_candidate]),
+                                                traj_np[recovery_base_candidate], roadgraph, self.cfg
+                                            )
+                                            rvr_sig2, second_successor_rvr_detail = _second_successor_option_signature(
+                                                agent_state, sdc_index, rt,
+                                                float(action_accels_np[recovery_rvr_candidate]),
+                                                traj_np[recovery_rvr_candidate], roadgraph, self.cfg
+                                            )
+                                            second_successor_signature_cmp = 1 if rvr_sig2 > base_sig2 else (-1 if rvr_sig2 < base_sig2 else 0)
+                                            recovery_switch_applied = _trihorizon_option_persistence_dominates(
+                                                base_sig, rvr_sig, base_sig2, rvr_sig2, bp, rp
+                                            )
+                                    elif method == "cowp_sov_dominance_hysteresis":
+                                        strict_dom = bool(rvr_sig > base_sig)
+                                        weak_dom = bool(rvr_sig >= base_sig)
+                                        (
+                                            active_after, entered, continued, exited,
+                                        ) = _dominance_hysteresis_transition(
+                                            hysteresis_already_active,
+                                            strict_alt_dominates=strict_dom,
+                                            weak_alt_dominates=weak_dom,
+                                        )
+                                        self._recovery_hysteresis_active = bool(active_after)
+                                        recovery_hysteresis_entered = bool(entered)
+                                        recovery_hysteresis_continued = bool(continued)
+                                        recovery_hysteresis_exited = bool(exited)
+                                        recovery_switch_applied = bool(active_after)
+                                        chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
+                                    else:
+                                        # Historical SOV-triggered unconditional
+                                        # commitment entry.
+                                        recovery_switch_applied = bool(rvr_sig > base_sig)
+                                        if recovery_switch_applied:
+                                            self._recovery_commitment_active = True
+                                            recovery_commitment_entered = True
+                                    if recovery_switch_applied and method not in {
+                                        "cowp_sov_dominance_hysteresis",
+                                        "cowp_recovery_option_spectrum_hysteresis",
+                                        "cowp_transition_guarded_rosh",
+                                        "cowp_executable_option_spectrum_hysteresis",
+                                        "cowp_waymax_kinematic_guarded_rosh",
+                                        "cowp_control_projected_option_spectrum_hysteresis",
+                                        "cowp_control_projected_recovery_frontier",
+                                    }:
+                                        chosen = recovery_rvr_candidate
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[chosen] = True
                         select_score = fallback_score
@@ -4251,6 +4476,8 @@ class COWPWaymaxPolicy:
                             fallback_reason = "no_conventional_use_waymax_kinematic_guarded_rosh"
                         elif method == "cowp_control_projected_option_spectrum_hysteresis":
                             fallback_reason = "no_conventional_use_control_projected_option_spectrum_hysteresis"
+                        elif method == "cowp_control_projected_recovery_frontier":
+                            fallback_reason = "no_conventional_use_control_projected_recovery_frontier"
                         else:
                             fallback_reason = "no_conventional_use_recovery_option_spectrum_hysteresis"
                 else:
@@ -4267,6 +4494,8 @@ class COWPWaymaxPolicy:
                 if hysteresis_method and self._recovery_hysteresis_active:
                     self._recovery_hysteresis_active = False
                     recovery_hysteresis_cleared = True
+                if method == "cowp_control_projected_recovery_frontier":
+                    self._recovery_frontier_macro = -1
                 select_mask = cand_valid
                 select_score = fallback_score
                 fallback_used = True
@@ -4283,6 +4512,7 @@ class COWPWaymaxPolicy:
             if has_valid and method in {
                 "cowp_waymax_kinematic_guarded_rosh",
                 "cowp_control_projected_option_spectrum_hysteresis",
+                "cowp_control_projected_recovery_frontier",
             }:
                 _sel_ok, _sel_acc, _sel_steer, _sel_contract = _waymax_kinematic_transition_np(
                     agent_state[int(sdc_index)], np.asarray(action_targets_np[selected]), self.cfg
@@ -4499,6 +4729,20 @@ class COWPWaymaxPolicy:
                 "recovery_option_profile_rvr_control_projected_full_kinematic_feasible_candidates": int(option_profile_rvr_detail.get("control_projected_full_kinematic_feasible_candidates", -1)),
                 "recovery_option_profile_base_control_projected_max_realized_prefix_steps": int(option_profile_base_detail.get("control_projected_max_realized_prefix_steps", -1)),
                 "recovery_option_profile_rvr_control_projected_max_realized_prefix_steps": int(option_profile_rvr_detail.get("control_projected_max_realized_prefix_steps", -1)),
+                "recovery_frontier_probe_used": bool(recovery_frontier_probe_used),
+                "recovery_frontier_representative_count": int(recovery_frontier_representative_count),
+                "recovery_frontier_profiles_evaluated": int(recovery_frontier_profiles_evaluated),
+                "recovery_frontier_strict_admissible_count": int(recovery_frontier_strict_admissible_count),
+                "recovery_frontier_weak_admissible_count": int(recovery_frontier_weak_admissible_count),
+                "recovery_frontier_current_prefix_admissible_count": int(recovery_frontier_current_prefix_admissible_count),
+                "recovery_frontier_selected_prefix_delta_steps": int(recovery_frontier_selected_prefix_delta_steps),
+                "recovery_frontier_active_macro_before": int(recovery_frontier_active_macro_before),
+                "recovery_frontier_active_macro_after": int(self._recovery_frontier_macro) if method == "cowp_control_projected_recovery_frontier" else -1,
+                "recovery_frontier_selected_macro": int(recovery_frontier_selected_macro),
+                "recovery_frontier_selected_candidate": int(recovery_frontier_selected_candidate),
+                "recovery_frontier_selected_is_historical_rvr": bool(recovery_frontier_selected_is_historical_rvr),
+                "recovery_frontier_selected_is_non_rvr": bool(recovery_frontier_selected_is_non_rvr),
+                "recovery_frontier_selected_fallback_score_delta": float(recovery_frontier_selected_fallback_score_delta),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),

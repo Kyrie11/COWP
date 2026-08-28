@@ -1,0 +1,42 @@
+{
+  "schema_version": "v16.8.36-code-validation-v1",
+  "version": "V16.8.36",
+  "new_method": "cowp_control_projected_recovery_frontier",
+  "new_tests": {
+    "passed": 4,
+    "total": 4
+  },
+  "v35_plus_v36_tests": {
+    "passed": 10,
+    "total": 10
+  },
+  "focused_v16_8_25_through_36": {
+    "passed": 53,
+    "total": 53
+  },
+  "python_compile": true,
+  "launcher_bash_syntax": true,
+  "manifest_hashes": true,
+  "fail_closed_fresh37_without_stage1": {
+    "passed": true,
+    "exit_code": 4
+  },
+  "semantic_contracts": {
+    "same_fixed_candidate_bank": true,
+    "no_proposal_expansion": true,
+    "no_new_learned_score": true,
+    "current_prefix_hard_nonregression": true,
+    "control_projected_profile_reused_from_v35": true,
+    "frontier_tiebreak_uses_frozen_cowp_fallback_score": true,
+    "semantic_macro_mode_consistency": true,
+    "certificate_and_conventional_paths_unchanged": true,
+    "no_logged_future_gt": true
+  },
+  "known_full_repo_boundary": "Not re-claimed as full-suite pass; lineage has historical external-baseline collection/import failures unrelated to V36.",
+  "full_repository_pytest": {
+    "passed": false,
+    "first_error": "historical external-baseline collection ImportError: candidate_geometry_finite",
+    "reproduced_in_uploaded_v16_8_35": true,
+    "attributed_to_v16_8_36": false
+  }
+}
