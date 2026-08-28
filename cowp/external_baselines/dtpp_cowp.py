@@ -39,26 +39,15 @@ class VectorMapEncoder(nn.Module):
         self.point_net = nn.Sequential(nn.Linear(map_dim, 64), nn.ReLU(), nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, dim))
         self.position_encode = PositionalEncoding(dim, max_len=map_len)
 
-    def segment_map(
-        self, map_tensor: torch.Tensor, map_encoding: torch.Tensor,
-        point_valid: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def segment_map(self, map_tensor: torch.Tensor, map_encoding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, N_e, N_p, D = map_encoding.shape
-        points_per_segment = 10
-        if N_p % points_per_segment != 0:
-            raise ValueError(f"DTPP map points must be divisible by {points_per_segment}, got {N_p}")
-        if point_valid is None:
-            point_valid = ~torch.eq(map_tensor, 0).all(dim=-1)
-        valid = point_valid.bool().reshape(B, N_e, N_p // points_per_segment, points_per_segment)
-        enc = map_encoding.reshape(B, N_e, N_p // points_per_segment, points_per_segment, D)
-        floor = torch.finfo(map_encoding.dtype).min
-        enc = enc.masked_fill(~valid[..., None], floor).max(dim=3).values
-        segment_valid = valid.any(dim=3)
-        enc = torch.where(segment_valid[..., None], enc, torch.zeros_like(enc))
-        return enc.reshape(B, -1, D), (~segment_valid).reshape(B, -1)
+        enc = F.max_pool2d(map_encoding.permute(0, 3, 1, 2), kernel_size=(1, 10)).permute(0, 2, 3, 1).reshape(B, -1, D)
+        mask = torch.eq(map_tensor, 0)[:, :, :, 0].reshape(B, N_e, N_p // 10, N_p // (N_p // 10))
+        mask = torch.max(mask, dim=-1)[0].reshape(B, -1)
+        return enc, mask
 
-    def forward(self, x: torch.Tensor, point_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.segment_map(x, self.position_encode(self.point_net(x)), point_valid)
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.segment_map(x, self.position_encode(self.point_net(x)))
 
 
 class CrossAttention(nn.Module):
@@ -71,10 +60,8 @@ class CrossAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
-        # Match the public DTPP CrossAttention block: the attention output is
-        # normalized before the FFN; there is no extra query residual here.
         out, _ = self.cross_attention(query, key, value, attn_mask=mask)
-        out = self.norm_1(out)
+        out = self.norm_1(out + query)
         return self.norm_2(out + self.dropout(self.ffn(out)))
 
 
@@ -115,15 +102,12 @@ class ScoreDecoder(nn.Module):
         return torch.stack((speed, acceleration, jerk, lateral_acc), dim=-1)
 
     def calculate_collision(self, ego_traj: torch.Tensor, agent_traj: torch.Tensor, agents_states: torch.Tensor, max_time: int) -> torch.Tensor:
-        # WOMD adapter appends an explicit validity channel at index 10.  A
-        # stopped neighbor can otherwise be all-zero in ego-centric kinematics
-        # and must still participate in interaction/collision scoring.
-        agent_mask = agents_states[..., 10] > 0.5
+        agent_mask = torch.ne(agents_states.sum(-1), 0)
         dist = torch.linalg.norm(ego_traj[:, None, :max_time, :2] - agent_traj[:, :, :max_time, :2], dim=-1)
         return (torch.exp(-0.2 * dist ** 2) * agent_mask[:, :, None]).sum(-1).sum(-1)
 
     def get_latent_interaction_features(self, ego_traj: torch.Tensor, agent_traj: torch.Tensor, agents_states: torch.Tensor, max_time: int) -> torch.Tensor:
-        agent_mask = agents_states[..., 10] > 0.5
+        agent_mask = torch.ne(agents_states.sum(-1), 0)
         ego_yaw = ego_traj[:, None, :max_time, 2]
         relative_yaw = torch.atan2(torch.sin(agent_traj[:, :, :max_time, 2] - ego_yaw), torch.cos(agent_traj[:, :, :max_time, 2] - ego_yaw))
         rel = agent_traj[:, :, :max_time, :2] - ego_traj[:, None, :max_time, :2]
@@ -144,35 +128,21 @@ class ScoreDecoder(nn.Module):
         features = features.max(1).values.mean(1)
         return self.interaction_feature_decoder(features)
 
-    def forward(self, ego_traj: torch.Tensor, ego_encoding: torch.Tensor, agents_traj: torch.Tensor, agents_states: torch.Tensor, timesteps: int, candidate_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """Vectorized branch scoring.
-
-        The public DTPP formulation scores each tree branch independently with
-        the same learned/hard-coded feature functions.  The earlier adapter used
-        a Python loop over K branches; flattening BxK performs the exact same
-        tensor operations in one GPU launch family and removes a major K=30
-        inference/training bottleneck.
-        """
+    def forward(self, ego_traj: torch.Tensor, ego_encoding: torch.Tensor, agents_traj: torch.Tensor, agents_states: torch.Tensor, timesteps: int) -> tuple[torch.Tensor, torch.Tensor]:
         ego_traj_features = self.get_hardcoded_features(ego_traj, timesteps)
         if not self.variable_cost:
             ego_encoding = torch.ones_like(ego_encoding)
         weights = self.weights_decoder(ego_encoding)
-        # Prefer the explicit COWP proposal-valid mask.  It is the only reliable
-        # way to distinguish an intentionally stationary stop trajectory (which
-        # can be all zeros in the ego frame) from a padded branch.
-        if candidate_valid is None:
-            ego_mask = ego_traj.abs().sum(dim=-1).sum(dim=-1) > 0
-        else:
-            ego_mask = candidate_valid.bool()
-        B, K = ego_traj.shape[:2]
-        T = min(int(timesteps), int(ego_traj.shape[2]), int(agents_traj.shape[3]))
-        ego_flat = ego_traj[:, :, :T].reshape(B * K, T, ego_traj.shape[-1])
-        agents_flat = agents_traj[:, :, :, :T].reshape(B * K, agents_traj.shape[2], T, agents_traj.shape[-1])
-        states_flat = agents_states[:, None].expand(B, K, *agents_states.shape[1:]).reshape(B * K, *agents_states.shape[1:])
-        latent = self.get_latent_interaction_features(ego_flat, agents_flat, states_flat, T).reshape(B, K, -1)
-        collision = self.calculate_collision(ego_flat, agents_flat, states_flat, T).reshape(B, K)
-        feat = torch.cat((ego_traj_features, latent), dim=-1)
-        scores = -torch.sum(feat * weights[:, None, :], dim=-1) - 10.0 * collision
+        ego_mask = torch.ne(ego_traj.sum(-1).sum(-1), 0)
+        scores = []
+        for i in range(agents_traj.shape[1]):
+            hard = ego_traj_features[:, i]
+            latent = self.get_latent_interaction_features(ego_traj[:, i], agents_traj[:, i], agents_states, timesteps)
+            feat = torch.cat((hard, latent), dim=-1)
+            score = -torch.sum(feat * weights, dim=-1)
+            score += -10.0 * self.calculate_collision(ego_traj[:, i], agents_traj[:, i], agents_states, timesteps)
+            scores.append(score)
+        scores = torch.stack(scores, dim=1)
         scores = torch.where(ego_mask, scores, torch.full_like(scores, -1e9))
         return scores, weights
 
@@ -190,23 +160,13 @@ class DTPPEncoder(nn.Module):
     def forward(self, inputs: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         ego = inputs["ego_agent_past"]
         neighbors = inputs["neighbor_agents_past"]
+        actors = torch.cat([ego[:, None, :, :5], neighbors[..., :5]], dim=1)
         encoded_ego = self.ego_encoder(ego)
         encoded_neighbors = [self.agent_encoder(neighbors[:, i]) for i in range(neighbors.shape[1])]
         encoded_actors = torch.stack([encoded_ego] + encoded_neighbors, dim=1)
-        # Inputs are in the current SDC frame.  A stopped ego therefore has
-        # x=y=yaw=vx=vy=0 by construction and must not be mistaken for padding.
-        # Use the explicit validity channels emitted by adapters.py instead.
-        ego_valid = ego[:, -1, 6] > 0.5
-        neighbor_valid = neighbors[:, :, -1, 10] > 0.5
-        actors_mask = torch.cat([~ego_valid[:, None], ~neighbor_valid], dim=1)
-        invalid_anchor = actors_mask[:, 0].clone()
-        if bool(invalid_anchor.any()):
-            encoded_actors = encoded_actors.clone()
-            encoded_actors[invalid_anchor, 0] = 0.0
-            actors_mask = actors_mask.clone()
-            actors_mask[:, 0] = False
-        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"], inputs.get("map_lanes_valid"))
-        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"], inputs.get("map_crosswalks_valid"))
+        actors_mask = torch.eq(actors[:, :, -1].sum(-1), 0)
+        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"])
+        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"])
         inp = torch.cat([encoded_actors, lanes, cross], dim=1)
         mask = torch.cat([actors_mask, lanes_mask, cross_mask], dim=1)
         return {"encoding": self.fusion_encoder(inp, src_key_padding_mask=mask), "mask": mask}
@@ -247,7 +207,7 @@ class DTPPDecoder(nn.Module):
             mask[i * self.time : (i + 1) * self.time, i * self.time : (i + 1) * self.time] = time_mask
         return mask
 
-    def forward(self, encoder_outputs: Mapping[str, torch.Tensor], ego_traj_inputs: torch.Tensor, agents_states: torch.Tensor, timesteps: int, candidate_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, encoder_outputs: Mapping[str, torch.Tensor], ego_traj_inputs: torch.Tensor, agents_states: torch.Tensor, timesteps: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         current_states = agents_states[:, : self.neighbors, -1]
         encoding, encoding_mask = encoder_outputs["encoding"], encoder_outputs["mask"]
         ego_traj_ori_encoding = self.ego_traj_encoder(ego_traj_inputs)
@@ -255,24 +215,10 @@ class DTPPDecoder(nn.Module):
         branch_embedding = ego_traj_ori_encoding[:, :, branch_t]
         time_embedding = self.time_embed(self.time_index)
         tree_embedding = time_embedding[None] + branch_embedding[:, :, None, :]
-        raw_ego_traj_mask = torch.ne(ego_traj_inputs.abs().sum(-1), 0)
-        if candidate_valid is not None:
-            # A valid full-stop branch may be exactly zero for all 80 steps in
-            # the ego frame.  Keep it addressable in the decoder; invalid/padded
-            # branches remain fully masked by the explicit proposal mask.
-            raw_ego_traj_mask = torch.where(
-                candidate_valid.bool()[:, :, None],
-                torch.ones_like(raw_ego_traj_mask),
-                torch.zeros_like(raw_ego_traj_mask),
-            )
-        # Public DTPP summarizes each 1 s / 10-step chunk by max pooling before
-        # ego-conditioned attention.  The previous adapter used strided samples,
-        # which changed the model and made a single noisy step dominate masks.
-        ego_tree_for_attn = self.pooling_trajectory(ego_traj_ori_encoding)
-        mask_float = raw_ego_traj_mask.float().unsqueeze(-1)
-        pooled_mask = self.pooling_trajectory(mask_float).squeeze(-1) > 0.5
-        ego_traj_mask_3d = pooled_mask[:, :, : self.time]
-        ego_tree_for_attn = ego_tree_for_attn[:, :, : self.time]
+        raw_ego_traj_mask = torch.ne(ego_traj_inputs.sum(-1), 0)
+        step = max(raw_ego_traj_mask.shape[-1] // self.time, 1)
+        ego_traj_mask_3d = raw_ego_traj_mask[:, :, ::step][:, :, : self.time]
+        ego_tree_for_attn = ego_traj_ori_encoding[:, :, ::step][:, :, : self.time]
         if ego_traj_mask_3d.shape[2] < self.time:
             pad_t = self.time - ego_traj_mask_3d.shape[2]
             ego_traj_mask_3d = F.pad(ego_traj_mask_3d, (0, pad_t), value=False)
@@ -284,13 +230,13 @@ class DTPPDecoder(nn.Module):
         env_allowed = ego_traj_mask[:, :, None] & encoding_mask.logical_not()[:, None, :]
         env_mask = torch.where(env_allowed, 0.0, -1e9)
         env_mask = torch.where(ego_traj_mask[:, :, None], env_mask, torch.zeros_like(env_mask))
-        env_mask = env_mask.repeat_interleave(self.nheads, dim=0)
+        env_mask = env_mask.repeat(self.nheads, 1, 1)
         causal = self.casual_mask.to(device=ego_traj_inputs.device, dtype=torch.bool)[None]
         ego_key_valid = ego_traj_mask[:, None, :]
         ego_allowed = ego_traj_mask[:, :, None] & ego_key_valid & causal
         ego_condition_mask = torch.where(ego_allowed, 0.0, -1e9)
         ego_condition_mask = torch.where(ego_traj_mask[:, :, None], ego_condition_mask, torch.zeros_like(ego_condition_mask))
-        ego_condition_mask = ego_condition_mask.repeat_interleave(self.nheads, dim=0)
+        ego_condition_mask = ego_condition_mask.repeat(self.nheads, 1, 1)
         ego_flat = torch.reshape(ego_tree_for_attn, (ego_tree_for_attn.shape[0], -1, ego_tree_for_attn.shape[-1]))
         agents_trajectories = []
         for i in range(self.neighbors):
@@ -301,36 +247,30 @@ class DTPPDecoder(nn.Module):
             dec = torch.cat([env_dec, ego_dec], dim=-1)
             agents_trajectories.append(self.agent_traj_decoder(dec, current_states[:, i]))
         agents_trajectories = torch.stack(agents_trajectories, dim=2)
-        scores, weights = self.scorer(
-            ego_traj_inputs, encoding[:, 0], agents_trajectories, current_states, timesteps, candidate_valid=candidate_valid
-        )
+        scores, weights = self.scorer(ego_traj_inputs, encoding[:, 0], agents_trajectories, current_states, timesteps)
         ego_reg = self.ego_traj_decoder(encoding[:, 0]).reshape(encoding.shape[0], self.time * 10, 3)
         return agents_trajectories, scores, ego_reg, weights
 
 
 class COWPDTPP(nn.Module):
-    def __init__(self, neighbors: int = 10, max_branch: int = 30, variable_cost: bool = False):
+    def __init__(self, neighbors: int = 10, max_branch: int = 30, variable_cost: bool = True):
         super().__init__()
         self.neighbors = int(neighbors)
         self.max_branch = int(max_branch)
         self.encoder = DTPPEncoder()
         self.decoder = DTPPDecoder(neighbors=neighbors, max_branch=max_branch, variable_cost=variable_cost)
 
-    def forward(self, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, timesteps: int = 80, candidate_valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, timesteps: int = 80) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         enc = self.encoder(inputs)
-        return self.decoder(
-            enc, ego_traj_tree, inputs["neighbor_agents_past"], timesteps, candidate_valid=candidate_valid
-        )
+        return self.decoder(enc, ego_traj_tree, inputs["neighbor_agents_past"], timesteps)
 
     def score_candidates(self, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, candidate_valid: torch.Tensor, timesteps: int = 80) -> torch.Tensor:
-        _, scores, _, _ = self.forward(inputs, ego_traj_tree, timesteps=timesteps, candidate_valid=candidate_valid)
+        _, scores, _, _ = self.forward(inputs, ego_traj_tree, timesteps=timesteps)
         return torch.where(candidate_valid, scores, torch.full_like(scores, -1e9))
 
 
 def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree: torch.Tensor, candidate_valid: torch.Tensor, best_idx: torch.Tensor, ego_future_xy: torch.Tensor, ego_future_valid: torch.Tensor, neighbors_future_xy: torch.Tensor, neighbors_future_valid: torch.Tensor, timesteps: int = 80) -> tuple[torch.Tensor, dict[str, float]]:
-    neighbors_pred, scores, ego_reg, weights = model(
-        inputs, ego_traj_tree, timesteps=timesteps, candidate_valid=candidate_valid
-    )
+    neighbors_pred, scores, ego_reg, weights = model(inputs, ego_traj_tree, timesteps=timesteps)
     # Loss-side FP32 keeps AMP forward speed while preventing SmoothL1/score
     # arithmetic from silently producing non-finite batches.
     neighbors_pred = neighbors_pred.float()
@@ -356,16 +296,12 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     pred_xy = pred[:, :, :T, :2]
     gt_xy = neighbors_future_xy[sample_valid, :, :T, :2]
     valid = neighbors_future_valid[sample_valid, :, :T].float()
-    gt_xy_safe = torch.where(valid.bool()[..., None], gt_xy, pred_xy.detach())
-    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy_safe, reduction="none").sum(-1)
+    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy, reduction="none").sum(-1)
     cmp_loss = (cmp_loss * valid).sum() / valid.sum().clamp_min(1.0)
 
     ego_T = min(ego_reg.shape[1], ego_future_xy.shape[1])
     ego_valid = ego_future_valid[sample_valid, :ego_T].float()
-    ego_pred = ego_reg[sample_valid, :ego_T, :2]
-    ego_gt = ego_future_xy[sample_valid, :ego_T]
-    ego_gt_safe = torch.where(ego_valid.bool()[..., None], ego_gt, ego_pred.detach())
-    reg = F.smooth_l1_loss(ego_pred, ego_gt_safe, reduction="none").sum(-1)
+    reg = F.smooth_l1_loss(ego_reg[sample_valid, :ego_T, :2], ego_future_xy[sample_valid, :ego_T], reduction="none").sum(-1)
     reg = (reg * ego_valid).sum() / ego_valid.sum().clamp_min(1.0)
     wreg = torch.square(weights[sample_valid]).mean()
     loss = ce + cmp_loss + 0.1 * reg + 0.01 * wreg
@@ -374,21 +310,13 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     plan = ego_traj_tree[sample_valid][torch.arange(sel.shape[0], device=scores.device), sel, :, :2]
     pt = min(plan.shape[1], ego_future_xy.shape[1])
     valid_ego = ego_future_valid[sample_valid, :pt].float()
-    plan_target = torch.where(
-        valid_ego.bool()[..., None], ego_future_xy[sample_valid, :pt], plan[:, :pt].detach()
-    )
-    pde = torch.linalg.norm(plan[:, :pt] - plan_target, dim=-1)
-    pde = torch.where(valid_ego.bool(), pde, torch.zeros_like(pde))
-    valid_score_values = scores[candidate_valid & sample_valid[:, None]]
-    score_abs_max = valid_score_values.abs().max() if valid_score_values.numel() else scores.sum() * 0.0
+    pde = torch.linalg.norm((plan[:, :pt] - ego_future_xy[sample_valid, :pt]) * valid_ego[:, :, None], dim=-1)
     metrics = {
         "plannerADE": float((pde.sum() / valid_ego.sum().clamp_min(1.0)).detach().cpu()),
         "score_ce": float(ce.detach().cpu()),
         "neighbor_cmp": float(cmp_loss.detach().cpu()),
         "ego_reg": float(reg.detach().cpu()),
         "weight_reg": float(wreg.detach().cpu()),
-        "score_abs_max": float(score_abs_max.detach().cpu()),
-        "weight_max": float(weights[sample_valid].abs().max().detach().cpu()),
         "valid_samples": float(sample_valid.float().sum().detach().cpu()),
     }
     return loss, metrics

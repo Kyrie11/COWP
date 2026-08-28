@@ -113,7 +113,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -460,6 +460,189 @@ def _successor_recovery_option_profile(
     return curve, detail
 
 
+
+def _controller_transition_feasible_np(
+    current: np.ndarray,
+    desired: np.ndarray,
+    cfg: dict,
+    previous_longitudinal_accel: float = 0.0,
+) -> np.ndarray:
+    """Hard, parameter-free compatibility of a nominal first step with the real controller state.
+
+    Online candidate validity intentionally ignores the initialization transient of
+    discrete trajectory jerk so useful acceleration/yield primitives are not erased
+    from the proposal bank.  That contract is preserved.  For *physical option-set
+    representation*, however, an option should only count as immediately executable
+    if its first desired step can be reached from the current controller memory
+    without violating the already-existing acceleration, jerk, yaw-rate and lateral
+    acceleration limits.
+
+    This function introduces no new threshold: it reuses the same hard limits and
+    dt already used by the candidate validator / emitted-action controller.  It is
+    diagnostic/selection state for v16.8.34 recovery only; it does not relabel a
+    candidate as conventional-safe or NCF.
+    """
+    cur = np.asarray(current, dtype=np.float64).reshape(-1)
+    des = np.asarray(desired, dtype=np.float64)
+    if des.ndim == 1:
+        des = des[None, :]
+    k = int(des.shape[0]) if des.ndim == 2 else 0
+    if k <= 0 or cur.size < 7 or des.shape[1] < 3:
+        return np.zeros((max(k, 0),), dtype=bool)
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    cand_cfg = cfg.get("candidate", {})
+    wm_cfg = cfg.get("waymax", {})
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 1.0e-6)
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 1.0e-6)
+    max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1.0e-6)
+    max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1.0e-6)
+    max_lateral_accel = max(float(cand_cfg.get("max_lateral_accel_mps2", 4.0)), 1.0e-6)
+
+    cur_xy = cur[:2]
+    cur_vel = np.asarray(cur[3:5], dtype=np.float64) if cur.size >= 5 else np.zeros((2,), dtype=np.float64)
+    cur_speed = float(max(np.linalg.norm(cur_vel), float(cur[5]) if cur.size > 5 else 0.0, 0.0))
+    cur_yaw = float(cur[6])
+
+    if des.shape[1] >= 5:
+        desired_vel = des[:, 3:5]
+        desired_speed = np.linalg.norm(desired_vel, axis=-1)
+    else:
+        desired_vel = np.zeros((k, 2), dtype=np.float64)
+        desired_speed = np.zeros((k,), dtype=np.float64)
+    position_speed = np.linalg.norm(des[:, :2] - cur_xy[None, :], axis=-1) / dt
+    desired_speed = np.where(desired_speed < 1.0e-3, position_speed, desired_speed)
+
+    raw_accel = (desired_speed - cur_speed) / dt
+    accel_ok = (raw_accel <= max_accel + 1.0e-3) & (raw_accel >= -max_decel - 1.0e-3)
+    jerk_ok = np.abs(raw_accel - float(previous_longitudinal_accel)) <= max_jerk * dt + 1.0e-3
+
+    desired_yaw_from_vel = np.arctan2(desired_vel[:, 1], desired_vel[:, 0])
+    desired_yaw = np.where(
+        desired_speed > 0.25,
+        desired_yaw_from_vel,
+        des[:, 2] if des.shape[1] > 2 else cur_yaw,
+    )
+    requested_dyaw = np.asarray(_wrap_angle(desired_yaw - cur_yaw), dtype=np.float64)
+    max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
+    yaw_ok = np.abs(requested_dyaw) <= max(max_dyaw, 1.0e-6) + 1.0e-3
+
+    # The emitted controller realizes a speed/yaw pair.  Check the resulting
+    # one-step lateral acceleration against the same hard candidate limit so a
+    # nominal macro is not counted as an independent executable option when the
+    # interface itself would need to distort that transition.
+    desired_v_realized = desired_speed[:, None] * np.stack(
+        [np.cos(desired_yaw), np.sin(desired_yaw)], axis=-1
+    )
+    acc_vec = (desired_v_realized - cur_vel[None, :]) / dt
+    lat_axis = np.stack([-np.sin(desired_yaw), np.cos(desired_yaw)], axis=-1)
+    lateral_accel = np.abs(np.sum(acc_vec * lat_axis, axis=-1))
+    lateral_ok = lateral_accel <= max_lateral_accel + 1.0e-3
+
+    finite = np.isfinite(raw_accel) & np.isfinite(requested_dyaw) & np.isfinite(lateral_accel)
+    return np.asarray(finite & accel_ok & jerk_ok & yaw_ok & lateral_ok, dtype=bool)
+
+
+def _successor_executable_recovery_option_profile(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    emitted_target: np.ndarray,
+    emitted_accel: float,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[tuple[int, ...], dict[str, int | float]]:
+    """Recovery-option survival curve over *controller-realizable* successor options.
+
+    v16.8.33 counts semantic macro modes in a causal successor state, but the
+    online policy controller is not Markov in ``agent_state`` alone: its next
+    emitted action also depends on the previous longitudinal acceleration.  This
+    v16.8.34 profile therefore carries the acceleration produced by the current
+    emitted action into the successor and filters the unchanged proposal bank by
+    hard first-step controller-transition feasibility before an option contributes
+    to the spectrum.
+
+    The candidate bank, roadgraph screen and collision-prefix calculation remain
+    exactly unchanged.  No future Waymax/logged state is read.
+    """
+    nxt = _counterfactual_successor_agent_state(agent_state, sdc_index, emitted_target, cfg)
+    (
+        traj, valid, conventional, macro, _utility, road_safe, _collision_safe,
+        prefix, _margin,
+    ) = _route_lane_aware_candidates(
+        nxt, int(sdc_index), roadgraph, cfg, other_future_trajs=None
+    )
+    traj = np.asarray(traj)
+    valid = np.asarray(valid, dtype=bool)
+    road_valid = np.asarray(road_safe, dtype=bool) & valid
+    conventional = np.asarray(conventional, dtype=bool) & valid
+    macro = np.asarray(macro, dtype=np.int64)
+    prefix = np.asarray(prefix, dtype=np.int32)
+
+    if traj.ndim >= 3 and traj.shape[0] == valid.shape[0] and traj.shape[1] > 0:
+        transition_ok = _controller_transition_feasible_np(
+            nxt[int(sdc_index)], traj[:, 0], cfg, float(emitted_accel)
+        )
+    else:
+        transition_ok = np.zeros_like(valid, dtype=bool)
+    executable_road = road_valid & transition_ok
+
+    horizon = int(traj.shape[1]) if traj.ndim >= 3 and traj.shape[1] > 0 else int(max(prefix.max(initial=0), 1))
+    best_by_macro: dict[int, int] = {}
+    for idx in np.flatnonzero(executable_road):
+        m = int(macro[idx])
+        if m == int(MacroType.PAD):
+            continue
+        p = int(max(prefix[idx], 0))
+        if p <= 0:
+            continue
+        if p > best_by_macro.get(m, 0):
+            best_by_macro[m] = p
+
+    curve = tuple(
+        int(sum(int(p) >= h for p in best_by_macro.values()))
+        for h in range(1, horizon + 1)
+    )
+    detail: dict[str, int | float] = {
+        "profile_horizon_steps": int(horizon),
+        "recovery_macro_types_h1": int(curve[0]) if curve else 0,
+        "recovery_macro_types_full_horizon": int(curve[-1]) if curve else 0,
+        "recovery_profile_area": int(sum(curve)),
+        "recovery_macro_types_any": int(len(best_by_macro)),
+        "valid_candidates": int(valid.sum()),
+        "roadgraph_safe_candidates": int(road_valid.sum()),
+        "controller_transition_feasible_candidates": int((valid & transition_ok).sum()),
+        "executable_roadgraph_candidates": int(executable_road.sum()),
+        "transition_rejected_roadgraph_candidates": int((road_valid & ~transition_ok).sum()),
+        "conventional_candidates": int(conventional.sum()),
+        "max_collision_safe_prefix_steps": int(prefix[executable_road].max()) if bool(executable_road.any()) else (int(prefix[road_valid].max()) if bool(road_valid.any()) else 0),
+    }
+    return curve, detail
+
+
+def _execution_spectrum_relation(
+    base_transition_ok: bool,
+    alt_transition_ok: bool,
+    base_profile: tuple[int, ...],
+    alt_profile: tuple[int, ...],
+) -> tuple[bool, bool, int, int, int]:
+    """Product-order dominance over current execution and future option support.
+
+    A recovery alternative is weakly admissible only if it does not regress the
+    current hard controller-transition feasibility *and* does not lose any future
+    option-spectrum support.  Strict dominance requires improvement in at least one
+    of those components.  No scalar weighting or tunable margin is used.
+    """
+    profile_strict, profile_weak, min_margin, area_delta = _option_profile_relation(
+        base_profile, alt_profile
+    )
+    transition_delta = int(bool(alt_transition_ok)) - int(bool(base_transition_ok))
+    transition_weak = transition_delta >= 0
+    transition_strict = transition_delta > 0
+    weak = bool(transition_weak and profile_weak)
+    strict = bool(weak and (transition_strict or profile_strict))
+    return strict, weak, int(transition_delta), int(min_margin), int(area_delta)
+
+
 def _option_profile_relation(
     base_profile: tuple[int, ...],
     alt_profile: tuple[int, ...],
@@ -733,235 +916,71 @@ def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray
     return hist, cur11, sdc
 
 def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
-    """Return causal Waymax roadgraph tokens without destroying map-feature identity.
+    """Return best-effort roadgraph point tokens from Waymax state.
 
-    Waymax ``RoadgraphPoints`` exposes x/y/z, dir_x/dir_y/dir_z, types, ids and
-    valid.  ``ids`` identify the contiguous vector-map feature that generated
-    each sampled point.  External vector-map baselines need those ids to rebuild
-    real polylines; dropping them (the V5 behaviour) silently reduced the online
-    map back to a flat point stream and reintroduced the same train/test topology
-    mismatch fixed in the offline WOMD adapter.
+    Public/local Waymax builds expose roadgraph fields with slightly different
+    names.  The policy should not fail if roadgraph is unavailable; it simply
+    falls back to ego-heading proposals.
     """
-    empty = {
-        "xy": np.zeros((0, 2), dtype=np.float32),
-        "dir_xy": np.zeros((0, 2), dtype=np.float32),
-        "heading": np.zeros(0, dtype=np.float32),
-        "valid": np.zeros(0, dtype=bool),
-        "types": np.zeros(0, dtype=np.int32),
-        "ids": np.zeros(0, dtype=np.int64),
-    }
     rg = _get_field(state, ("roadgraph_points", "roadgraph", "roadgraph_static_points"))
     if rg is None:
-        return empty
-
-    def _flat_field(field: Any | None, dtype: Any) -> np.ndarray | None:
-        if field is None:
-            return None
-        arr = _to_numpy(field)
-        # SimulatorState may carry a leading batch/device dimension.  Roadgraph
-        # leaves themselves are one-dimensional over sampled points.
-        while arr.ndim > 1:
-            arr = arr[0]
-        return np.asarray(arr).reshape(-1).astype(dtype, copy=False)
-
-    x = _flat_field(_get_field(rg, ("x", "center_x")), np.float32)
-    y = _flat_field(_get_field(rg, ("y", "center_y")), np.float32)
-    if x is not None and y is not None:
-        nxy = min(len(x), len(y))
-        xy = np.stack([x[:nxy], y[:nxy]], axis=-1).astype(np.float32, copy=False)
-    else:
-        xy_field = _get_field(rg, ("xy", "points", "xyz"))
-        if xy_field is None:
-            return empty
+        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
+    x_field = _get_field(rg, ("x", "center_x"))
+    y_field = _get_field(rg, ("y", "center_y"))
+    xy_field = _get_field(rg, ("xy", "points", "xyz"))
+    if x_field is not None and y_field is not None:
+        x = _to_numpy(x_field)
+        y = _to_numpy(y_field)
+        while x.ndim > 1:
+            x = x[0]
+            y = y[0]
+        xy = np.stack([x, y], axis=-1).astype(np.float32)
+    elif xy_field is not None:
         arr = _to_numpy(xy_field)
         while arr.ndim > 2:
             arr = arr[0]
-        if arr.ndim != 2 or arr.shape[-1] < 2:
-            return empty
-        xy = np.asarray(arr[..., :2], dtype=np.float32).reshape(-1, 2)
-    n = len(xy)
-    if n == 0:
-        return empty
-
-    ids_src = _flat_field(_get_field(rg, ("ids", "id", "feature_ids")), np.int64)
-    types_src = _flat_field(_get_field(rg, ("types", "type", "map_element_type")), np.int32)
-    valid_src = _flat_field(_get_field(rg, ("valid",)), bool)
-    dx = _flat_field(_get_field(rg, ("dir_x", "direction_x", "dx")), np.float32)
-    dy = _flat_field(_get_field(rg, ("dir_y", "direction_y", "dy")), np.float32)
-
-    def _aligned_or_default(arr: np.ndarray | None, *, dtype: Any, fill: Any) -> np.ndarray:
-        out = np.full(n, fill, dtype=dtype)
-        if arr is not None:
-            m = min(n, len(arr))
-            out[:m] = arr[:m]
-        return out
-
-    # Keep absence distinguishable from an actual id/type value.  Synthesizing
-    # id=-1 for every point would make the external adapter believe the entire
-    # flat roadgraph is one contiguous feature; synthesizing type=0 would filter
-    # every point out of the lane-center selection.
-    ids_work = _aligned_or_default(ids_src, dtype=np.int64, fill=-1) if ids_src is not None else np.full(n, -1, dtype=np.int64)
-    ids_out = ids_work if ids_src is not None else np.zeros(0, dtype=np.int64)
-    types_out = _aligned_or_default(types_src, dtype=np.int32, fill=0) if types_src is not None else np.zeros(0, dtype=np.int32)
-    valid = _aligned_or_default(valid_src, dtype=bool, fill=False) if valid_src is not None else np.ones(n, dtype=bool)
-
-    if dx is not None and dy is not None:
-        dir_xy = np.zeros((n, 2), dtype=np.float32)
-        m = min(n, len(dx), len(dy))
-        dir_xy[:m, 0] = dx[:m]
-        dir_xy[:m, 1] = dy[:m]
-        dir_valid = np.zeros(n, dtype=bool)
-        dir_valid[:m] = np.isfinite(dir_xy[:m]).all(axis=-1)
+        xy = arr[..., :2].reshape(-1, 2).astype(np.float32)
     else:
-        # Legacy/local Waymax compatibility.  Estimate directions *within each
-        # feature id*.  V5's global np.gradient crossed feature boundaries and
-        # could create a fictitious long segment between unrelated map elements.
-        dir_xy = np.zeros((n, 2), dtype=np.float32)
-        dir_valid = np.zeros(n, dtype=bool)
-        finite_xy = np.isfinite(xy).all(axis=-1)
-        if ids_src is not None and np.any(ids_work >= 0):
-            for fid in np.unique(ids_work[(ids_work >= 0) & finite_xy]):
-                idx = np.flatnonzero((ids_work == fid) & finite_xy)
-                if len(idx) >= 2:
-                    delta = xy[idx[1:]] - xy[idx[:-1]]
-                    dir_xy[idx[:-1]] = delta
-                    dir_xy[idx[-1]] = delta[-1]
-                    dir_valid[idx] = np.isfinite(dir_xy[idx]).all(axis=-1)
-        elif n >= 2:
-            delta = xy[1:] - xy[:-1]
-            dir_xy[:-1] = delta
-            dir_xy[-1] = delta[-1]
-            dir_valid = np.isfinite(dir_xy).all(axis=-1)
-
-    finite_xy = np.isfinite(xy).all(axis=-1)
-    finite_dir = np.isfinite(dir_xy).all(axis=-1)
-    # A zero direction is allowed for map primitives where orientation is not
-    # meaningful; only non-finite direction values invalidate the point.
-    valid = valid & finite_xy & finite_dir
-    xy = np.nan_to_num(xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-    dir_xy = np.nan_to_num(dir_xy, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-    heading = np.arctan2(dir_xy[:, 1], dir_xy[:, 0]).astype(np.float32)
-    heading[~valid] = 0.0
-
+        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
+    dir_x = _get_field(rg, ("dir_x", "direction_x", "dx"))
+    dir_y = _get_field(rg, ("dir_y", "direction_y", "dy"))
+    if dir_x is not None and dir_y is not None:
+        dx = _to_numpy(dir_x)
+        dy = _to_numpy(dir_y)
+        while dx.ndim > 1:
+            dx = dx[0]
+            dy = dy[0]
+        heading = np.arctan2(dy.reshape(-1), dx.reshape(-1)).astype(np.float32)
+    else:
+        # Local finite-difference heading.  It is noisy across polyline breaks but
+        # still better than all-zero map tokens for conflict-query conditioning.
+        diff = np.gradient(xy, axis=0) if len(xy) > 1 else np.zeros_like(xy)
+        heading = np.arctan2(diff[:, 1], diff[:, 0]).astype(np.float32)
+    valid_field = _get_field(rg, ("valid",))
+    if valid_field is not None:
+        valid = _to_numpy(valid_field)
+        while valid.ndim > 1:
+            valid = valid[0]
+        valid = valid.reshape(-1).astype(bool)[: len(xy)]
+    else:
+        valid = np.isfinite(xy).all(axis=-1)
+    type_field = _get_field(rg, ("types", "type", "map_element_type"))
+    if type_field is not None:
+        types = _to_numpy(type_field)
+        while types.ndim > 1:
+            types = types[0]
+        types = types.reshape(-1).astype(np.int32)[: len(xy)]
+    else:
+        types = np.zeros(len(xy), dtype=np.int32)
+    finite = np.isfinite(xy).all(axis=-1) & np.isfinite(heading)
+    valid = valid & finite
     max_points = int(cfg.get("limits", {}).get("max_roadgraph_points", 20000))
-    if n > max_points:
-        # Keep a deterministic spread for pathological states and, critically,
-        # slice every roadgraph field with the *same* indices so ids/types/dir
-        # stay aligned with xy/valid.
-        idx = np.linspace(0, n - 1, max_points, dtype=np.int64)
-        xy, dir_xy, heading, valid = xy[idx], dir_xy[idx], heading[idx], valid[idx]
-        if len(types_out):
-            types_out = types_out[idx]
-        if len(ids_out):
-            ids_out = ids_out[idx]
-    return {
-        "xy": xy,
-        "dir_xy": dir_xy,
-        "heading": heading,
-        "valid": valid,
-        "types": types_out,
-        "ids": ids_out,
-    }
-
-
-def _roadgraph_womd_batch_fields(roadgraph: dict[str, np.ndarray] | None) -> dict[str, np.ndarray]:
-    """Convert extracted Waymax roadgraph tokens to WOMD tf.Example-style keys.
-
-    The returned tensors carry a leading batch dimension and are consumed by
-    the same external-baseline adapter used for offline train/eval.  This keeps
-    map semantics identical across training, offline evaluation and Waymax.
-    """
-    if not roadgraph:
-        return {}
-    xy = np.asarray(roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
-    if xy.ndim != 2 or xy.shape[-1] < 2 or len(xy) == 0:
-        return {}
-    n = len(xy)
-    valid = np.asarray(roadgraph.get("valid", np.ones(n, dtype=bool)), dtype=bool).reshape(-1)
-    if len(valid) != n:
-        vv = np.zeros(n, dtype=bool)
-        vv[: min(n, len(valid))] = valid[: min(n, len(valid))]
-        valid = vv
-    xyz = np.zeros((n, 3), dtype=np.float32)
-    xyz[:, :2] = np.nan_to_num(xy[:, :2], nan=0.0, posinf=0.0, neginf=0.0)
-    fields: dict[str, np.ndarray] = {
-        "roadgraph_samples/xyz": xyz[None],
-        "roadgraph_samples/valid": valid[None],
-    }
-
-    dir_xy = np.asarray(roadgraph.get("dir_xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32)
-    if dir_xy.ndim == 2 and dir_xy.shape[0] == n and dir_xy.shape[1] >= 2:
-        direction = np.zeros((n, 3), dtype=np.float32)
-        direction[:, :2] = np.nan_to_num(dir_xy[:, :2], nan=0.0, posinf=0.0, neginf=0.0)
-        fields["roadgraph_samples/dir"] = direction[None]
-    else:
-        heading = np.asarray(roadgraph.get("heading", np.zeros(0, dtype=np.float32)), dtype=np.float32).reshape(-1)
-        if len(heading) == n:
-            direction = np.zeros((n, 3), dtype=np.float32)
-            direction[:, 0] = np.cos(heading)
-            direction[:, 1] = np.sin(heading)
-            fields["roadgraph_samples/dir"] = direction[None]
-
-    ids = np.asarray(roadgraph.get("ids", np.zeros(0, dtype=np.int64))).reshape(-1)
-    if len(ids) == n:
-        fields["roadgraph_samples/id"] = ids.astype(np.int64, copy=False)[None]
-    types = np.asarray(roadgraph.get("types", np.zeros(0, dtype=np.int32))).reshape(-1)
-    if len(types) == n:
-        fields["roadgraph_samples/type"] = types.astype(np.int64, copy=False)[None]
-    return fields
-
-
-def _extract_sdc_path_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
-    """Extract WOMD 1.3.1 Waymax ``SimulatorState.sdc_paths`` on host.
-
-    Waymax ``Paths`` stores [num_paths,num_points] x/y/z/valid and an
-    [num_paths,1] on_route flag.  The result uses the same ``path_samples/*``
-    tensor contract consumed by the external planner adapter.
-    """
-    paths = _get_field(state, ("sdc_paths",))
-    if paths is None:
-        return {
-            "xyz": np.zeros((0, 0, 3), dtype=np.float32),
-            "valid": np.zeros((0, 0), dtype=bool),
-            "on_route": np.zeros((0, 1), dtype=bool),
-        }
-    x_f = _get_field(paths, ("x",))
-    y_f = _get_field(paths, ("y",))
-    z_f = _get_field(paths, ("z",))
-    valid_f = _get_field(paths, ("valid",))
-    on_route_f = _get_field(paths, ("on_route",))
-    if x_f is None or y_f is None or valid_f is None:
-        return {
-            "xyz": np.zeros((0, 0, 3), dtype=np.float32),
-            "valid": np.zeros((0, 0), dtype=bool),
-            "on_route": np.zeros((0, 1), dtype=bool),
-        }
-    x = _to_numpy(x_f)
-    y = _to_numpy(y_f)
-    z = _to_numpy(z_f) if z_f is not None else np.zeros_like(x)
-    valid = _to_numpy(valid_f).astype(bool, copy=False)
-    on_route = _to_numpy(on_route_f).astype(bool, copy=False) if on_route_f is not None else None
-    # Remove leading singleton batch/device axes while preserving [P,Q].
-    while x.ndim > 2 and x.shape[0] == 1:
-        x, y, z, valid = x[0], y[0], z[0], valid[0]
-        if on_route is not None and on_route.ndim > 2 and on_route.shape[0] == 1:
-            on_route = on_route[0]
-    if x.ndim != 2:
-        x = x.reshape(-1, x.shape[-1])
-        y = y.reshape(x.shape)
-        z = z.reshape(x.shape)
-        valid = valid.reshape(x.shape)
-    P = int(x.shape[0])
-    if on_route is None:
-        on_route = np.zeros((P, 1), dtype=bool)
-    else:
-        while on_route.ndim > 2 and on_route.shape[0] == 1:
-            on_route = on_route[0]
-        on_route = on_route.reshape(P, -1)[:, :1]
-    xyz = np.stack([x, y, z], axis=-1).astype(np.float32, copy=False)
-    finite = np.isfinite(xyz).all(axis=-1)
-    valid = valid.astype(bool, copy=False) & finite
-    return {"xyz": np.nan_to_num(xyz).astype(np.float32), "valid": valid, "on_route": on_route.astype(bool)}
+    if len(xy) > max_points:
+        # Keep a deterministic spread of points; local filtering below selects
+        # only points near ego, so this mostly protects pathological states.
+        idx = np.linspace(0, len(xy) - 1, max_points, dtype=np.int64)
+        xy, heading, valid, types = xy[idx], heading[idx], valid[idx], types[idx]
+    return {"xy": xy, "heading": heading, "valid": valid, "types": types}
 
 
 def _lane_centerline_mask(roadgraph: dict[str, np.ndarray]) -> np.ndarray:
@@ -2405,7 +2424,6 @@ def build_online_batch(
     roadgraph: dict[str, np.ndarray] | None = None,
     other_future_trajs: np.ndarray | None = None,
     compute_rule_risk: bool = True,
-    include_interaction_tokens: bool = True,
     include_training_targets: bool = False,
 ) -> dict[str, Any]:
     K = int(cfg.get("limits", {}).get("max_candidates", 64))
@@ -2440,11 +2458,7 @@ def build_online_batch(
     ) = _route_lane_aware_candidates(
         agent_state, sdc_index, roadgraph, cfg, other_future_trajs=other_future_trajs
     )
-    if include_interaction_tokens or compute_rule_risk:
-        crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
-    else:
-        crit_idx = np.zeros(A, dtype=np.int64)
-        crit_valid = np.zeros(A, dtype=bool)
+    crit_idx, crit_valid = _critical_interaction_rank(agent_state, sdc_index, cand_traj, cand_valid, cfg)
     if compute_rule_risk:
         rule_risk = _candidate_rule_risk_np(
             agent_state, sdc_index, cand_traj, cand_valid, conventional_safe, crit_idx, crit_valid, cfg,
@@ -2452,10 +2466,7 @@ def build_online_batch(
         )
     else:
         rule_risk = np.zeros(K, dtype=np.float32)
-    if include_interaction_tokens:
-        conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
-    else:
-        conflict = conflict_valid = None
+    conflict, conflict_valid = _online_conflict_tokens(agent_state, sdc_index, cand_traj, cand_valid, crit_idx, crit_valid, roadgraph, cfg)
     batch = {
         "state/history": hist[None],
         "state/agent_valid": agent_mask[None],
@@ -2470,16 +2481,12 @@ def build_online_batch(
         "cowp/candidates/collision_safe_prefix_steps": collision_safe_prefix_steps[None],
         "cowp/candidates/collision_min_clearance_margin_m": collision_min_clearance_margin_m[None],
         "cowp/candidates/rule_risk": rule_risk[None],
+        "cowp/critical/track_index": crit_idx[None],
+        "cowp/critical/input_index": crit_idx[None],
+        "cowp/critical/valid": crit_valid[None],
+        "map/conflict_regions": conflict[None],
+        "map/conflict_region_valid": conflict_valid[None],
     }
-    batch.update(_roadgraph_womd_batch_fields(roadgraph))
-    if include_interaction_tokens:
-        batch.update({
-            "cowp/critical/track_index": crit_idx[None],
-            "cowp/critical/input_index": crit_idx[None],
-            "cowp/critical/valid": crit_valid[None],
-            "map/conflict_regions": conflict[None],
-            "map/conflict_region_valid": conflict_valid[None],
-        })
     if include_training_targets:
         # Compatibility/debug-only targets.  They are intentionally omitted in the
         # default online path because the model inference keys above do not consume
@@ -3186,6 +3193,18 @@ class COWPWaymaxPolicy:
                 return_targets=True,
             )
             action_risk = self.torch.as_tensor(action_risk_np, device=self.dev, dtype=scores.dtype).clamp(0.0, 1.0)
+            traj_np_runtime = np.asarray(batch_np["cowp/candidates/trajectory"][0])
+            controller_transition_feasible_np = (
+                _controller_transition_feasible_np(
+                    agent_state[int(sdc_index)], traj_np_runtime[:, 0], self.cfg,
+                    self._previous_longitudinal_accel,
+                )
+                if traj_np_runtime.ndim >= 3 and traj_np_runtime.shape[1] > 0
+                else np.zeros((int(traj_np_runtime.shape[0]) if traj_np_runtime.ndim else 0,), dtype=bool)
+            )
+            controller_transition_feasible_np &= np.asarray(
+                batch_np["cowp/candidates/valid"][0], dtype=bool
+            )
 
             def _scene_norm(x):
                 x = self.torch.nan_to_num(x.float(), nan=0.0, posinf=1.0, neginf=0.0)
@@ -3436,7 +3455,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -3543,7 +3562,7 @@ class COWPWaymaxPolicy:
             recovery_commitment_entered = False
             recovery_commitment_continued = False
             recovery_commitment_cleared = False
-            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis"}
+            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"}
             recovery_hysteresis_active_before = bool(self._recovery_hysteresis_active) if hysteresis_method else False
             recovery_hysteresis_entered = False
             recovery_hysteresis_continued = False
@@ -3556,6 +3575,10 @@ class COWPWaymaxPolicy:
             option_profile_area_delta = 0
             option_profile_base_detail = {}
             option_profile_rvr_detail = {}
+            recovery_base_transition_feasible = False
+            recovery_rvr_transition_feasible = False
+            recovery_transition_delta = 0
+            executable_option_profile_used = False
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -3583,7 +3606,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"}:
                     # Every recovery probe uses the exact same controlled pair:
                     # original COWP least-coercive-valid vs v16.8.29 max-prefix RVR.
                     rvr_mask = _recursive_viability_recovery_mask(
@@ -3648,24 +3671,65 @@ class COWPWaymaxPolicy:
                                 if hysteresis_already_active:
                                     recovery_hysteresis_continued = True
                                     chosen = recovery_rvr_candidate
-                            elif method == "cowp_recovery_option_spectrum_hysteresis":
-                                # Main v16.8.33 branch: compare the complete
-                                # semantic recovery-option persistence profile at
-                                # the causal successor state, not only the single
-                                # longest safe prefix.
+                            elif method in {
+                                "cowp_recovery_option_spectrum_hysteresis",
+                                "cowp_transition_guarded_rosh",
+                                "cowp_executable_option_spectrum_hysteresis",
+                            }:
+                                # v16.8.33 ROSH keeps the nominal semantic option
+                                # spectrum.  v16.8.34 adds two controlled probes:
+                                #   TG-ROSH: same future spectrum + current hard
+                                #            controller-transition non-regression;
+                                #   EOSH:    additionally counts only successor
+                                #            options executable from the carried
+                                #            controller acceleration state.
                                 option_profile_probe_used = True
-                                base_profile, option_profile_base_detail = _successor_recovery_option_profile(
-                                    agent_state, sdc_index, bt, roadgraph, self.cfg
+                                recovery_base_transition_feasible = bool(
+                                    controller_transition_feasible_np[recovery_base_candidate]
                                 )
-                                rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
-                                    agent_state, sdc_index, rt, roadgraph, self.cfg
+                                recovery_rvr_transition_feasible = bool(
+                                    controller_transition_feasible_np[recovery_rvr_candidate]
                                 )
-                                (
-                                    option_profile_strict_dominates,
-                                    option_profile_weak_dominates,
-                                    option_profile_min_margin,
-                                    option_profile_area_delta,
-                                ) = _option_profile_relation(base_profile, rvr_profile)
+                                if method == "cowp_executable_option_spectrum_hysteresis":
+                                    executable_option_profile_used = True
+                                    base_profile, option_profile_base_detail = _successor_executable_recovery_option_profile(
+                                        agent_state, sdc_index, bt,
+                                        float(action_accels_np[recovery_base_candidate]),
+                                        roadgraph, self.cfg
+                                    )
+                                    rvr_profile, option_profile_rvr_detail = _successor_executable_recovery_option_profile(
+                                        agent_state, sdc_index, rt,
+                                        float(action_accels_np[recovery_rvr_candidate]),
+                                        roadgraph, self.cfg
+                                    )
+                                else:
+                                    base_profile, option_profile_base_detail = _successor_recovery_option_profile(
+                                        agent_state, sdc_index, bt, roadgraph, self.cfg
+                                    )
+                                    rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
+                                        agent_state, sdc_index, rt, roadgraph, self.cfg
+                                    )
+
+                                if method == "cowp_recovery_option_spectrum_hysteresis":
+                                    (
+                                        option_profile_strict_dominates,
+                                        option_profile_weak_dominates,
+                                        option_profile_min_margin,
+                                        option_profile_area_delta,
+                                    ) = _option_profile_relation(base_profile, rvr_profile)
+                                else:
+                                    (
+                                        option_profile_strict_dominates,
+                                        option_profile_weak_dominates,
+                                        recovery_transition_delta,
+                                        option_profile_min_margin,
+                                        option_profile_area_delta,
+                                    ) = _execution_spectrum_relation(
+                                        recovery_base_transition_feasible,
+                                        recovery_rvr_transition_feasible,
+                                        base_profile,
+                                        rvr_profile,
+                                    )
                                 (
                                     active_after, entered, continued, exited,
                                 ) = _dominance_hysteresis_transition(
@@ -3750,6 +3814,8 @@ class COWPWaymaxPolicy:
                                 if recovery_switch_applied and method not in {
                                     "cowp_sov_dominance_hysteresis",
                                     "cowp_recovery_option_spectrum_hysteresis",
+                                    "cowp_transition_guarded_rosh",
+                                    "cowp_executable_option_spectrum_hysteresis",
                                 }:
                                     chosen = recovery_rvr_candidate
                         select_mask = self.torch.zeros_like(cand_valid)
@@ -3767,6 +3833,10 @@ class COWPWaymaxPolicy:
                             fallback_reason = "no_conventional_use_sov_recovery_commitment"
                         elif method == "cowp_sov_dominance_hysteresis":
                             fallback_reason = "no_conventional_use_sov_dominance_hysteresis"
+                        elif method == "cowp_transition_guarded_rosh":
+                            fallback_reason = "no_conventional_use_transition_guarded_rosh"
+                        elif method == "cowp_executable_option_spectrum_hysteresis":
+                            fallback_reason = "no_conventional_use_executable_option_spectrum_hysteresis"
                         else:
                             fallback_reason = "no_conventional_use_recovery_option_spectrum_hysteresis"
                 else:
@@ -3972,6 +4042,17 @@ class COWPWaymaxPolicy:
                 "recovery_option_profile_rvr_area": int(option_profile_rvr_detail.get("recovery_profile_area", -1)),
                 "recovery_option_profile_base_valid_candidates": int(option_profile_base_detail.get("valid_candidates", -1)),
                 "recovery_option_profile_rvr_valid_candidates": int(option_profile_rvr_detail.get("valid_candidates", -1)),
+                "recovery_base_controller_transition_feasible": bool(recovery_base_transition_feasible),
+                "recovery_rvr_controller_transition_feasible": bool(recovery_rvr_transition_feasible),
+                "recovery_controller_transition_delta": int(recovery_transition_delta),
+                "recovery_executable_option_profile_used": bool(executable_option_profile_used),
+                "recovery_option_profile_base_transition_feasible_candidates": int(option_profile_base_detail.get("controller_transition_feasible_candidates", -1)),
+                "recovery_option_profile_rvr_transition_feasible_candidates": int(option_profile_rvr_detail.get("controller_transition_feasible_candidates", -1)),
+                "recovery_option_profile_base_executable_roadgraph_candidates": int(option_profile_base_detail.get("executable_roadgraph_candidates", -1)),
+                "recovery_option_profile_rvr_executable_roadgraph_candidates": int(option_profile_rvr_detail.get("executable_roadgraph_candidates", -1)),
+                "recovery_option_profile_base_transition_rejected_roadgraph_candidates": int(option_profile_base_detail.get("transition_rejected_roadgraph_candidates", -1)),
+                "recovery_option_profile_rvr_transition_rejected_roadgraph_candidates": int(option_profile_rvr_detail.get("transition_rejected_roadgraph_candidates", -1)),
+                "selected_controller_transition_feasible": bool(controller_transition_feasible_np[selected]) if has_valid and int(selected) < len(controller_transition_feasible_np) else False,
             })
             if recovery_base_candidate >= 0 and recovery_rvr_candidate >= 0:
                 diag.update({
