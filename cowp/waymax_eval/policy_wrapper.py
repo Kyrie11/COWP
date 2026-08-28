@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import importlib
 import time
 
 import numpy as np
@@ -113,7 +114,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -640,6 +641,336 @@ def _execution_spectrum_relation(
     transition_strict = transition_delta > 0
     weak = bool(transition_weak and profile_weak)
     strict = bool(weak and (transition_strict or profile_strict))
+    return strict, weak, int(transition_delta), int(min_margin), int(area_delta)
+
+
+
+
+_WAYMAX_KINEMATICS_CONTRACT_CACHE: tuple[float, float, float, str] | None = None
+
+
+def _waymax_kinematics_contract(cfg: dict) -> tuple[float, float, float, str]:
+    """Resolve the *actual evaluation* kinematics contract used by Waymax.
+
+    V16.8.34 filtered nominal waypoints with COWP's internal acceleration/jerk/
+    yaw/lateral-acceleration limits.  That predicate is useful for controller
+    projection diagnostics, but it is not the contract used by Waymax's
+    ``KinematicsInfeasibilityMetric``.  Current public Waymax evaluates the
+    inverse transition with acceleration magnitude and steering curvature.
+
+    The rollout constructs that metric with its default constructor, so we try to
+    introspect the installed class and use the exact private values carried by the
+    instantiated metric.  The documented public defaults are a fail-safe fallback
+    for unit-test environments where Waymax is not installed.  No value here is a
+    tunable COWP threshold.
+    """
+    pcfg = cfg.get("planning", {})
+    # Explicit overrides exist only for reproducibility across a deliberately
+    # pinned Waymax fork; the V16.8.35 launcher does not set them.
+    override_acc = pcfg.get("waymax_kinematics_max_acc_mps2")
+    override_steer = pcfg.get("waymax_kinematics_max_steering_curvature")
+    override_dt = pcfg.get("waymax_kinematics_dt_s")
+    if override_acc is not None or override_steer is not None or override_dt is not None:
+        return (
+            float(10.4 if override_acc is None else override_acc),
+            float(0.3 if override_steer is None else override_steer),
+            float(cfg.get("time", {}).get("dt", 0.1) if override_dt is None else override_dt),
+            "config_override",
+        )
+
+    global _WAYMAX_KINEMATICS_CONTRACT_CACHE
+    if _WAYMAX_KINEMATICS_CONTRACT_CACHE is not None:
+        return _WAYMAX_KINEMATICS_CONTRACT_CACHE
+
+    candidates = (
+        ("waymax.metrics", "KinematicsInfeasibilityMetric"),
+        ("waymax.metrics.comfort", "KinematicsInfeasibilityMetric"),
+    )
+    for module_name, class_name in candidates:
+        try:
+            module = importlib.import_module(module_name)
+            cls = getattr(module, class_name, None)
+            if cls is None:
+                continue
+            metric = cls()
+            max_acc = float(getattr(metric, "_max_acc"))
+            max_steering = float(getattr(metric, "_max_steering"))
+            dt = float(getattr(metric, "_dt"))
+            if all(np.isfinite([max_acc, max_steering, dt])) and max_acc > 0.0 and max_steering > 0.0 and dt > 0.0:
+                _WAYMAX_KINEMATICS_CONTRACT_CACHE = (max_acc, max_steering, dt, f"{module_name}.{class_name}")
+                return _WAYMAX_KINEMATICS_CONTRACT_CACHE
+        except Exception:
+            continue
+    _WAYMAX_KINEMATICS_CONTRACT_CACHE = (10.4, 0.3, 0.1, "public_waymax_default_fallback")
+    return _WAYMAX_KINEMATICS_CONTRACT_CACHE
+
+
+def _waymax_kinematic_transition_np(
+    current: np.ndarray,
+    target: np.ndarray,
+    cfg: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float | str]]:
+    """Reproduce Waymax KinematicsInfeasibilityMetric inverse-transition logic.
+
+    ``current`` can be shape ``(D,)`` or ``(K,D)``; ``target`` is ``(K,5)`` or
+    ``(5,)`` with ``[x,y,yaw,vx,vy]``.  The calculation intentionally mirrors
+    public Waymax ``bicycle_model.compute_inverse``: acceleration comes from
+    speed change, steering is yaw change divided by traveled arc length, and
+    steering is zeroed when either endpoint speed is below 0.6 m/s.
+
+    Position is not part of Waymax's kinematics-infeasibility test.  This helper
+    therefore checks the evaluator contract rather than inventing a COWP-specific
+    penalty.
+    """
+    cur = np.asarray(current, dtype=np.float64)
+    tgt = np.asarray(target, dtype=np.float64)
+    if cur.ndim == 1:
+        cur = cur[None, :]
+    if tgt.ndim == 1:
+        tgt = tgt[None, :]
+    k = int(tgt.shape[0]) if tgt.ndim == 2 else 0
+    if k <= 0 or cur.ndim != 2 or cur.shape[1] < 7 or tgt.shape[1] < 5:
+        z = np.zeros((max(k, 0),), dtype=np.float64)
+        return np.zeros((max(k, 0),), dtype=bool), z, z, {
+            "max_acc_mps2": 10.4, "max_steering_curvature": 0.3, "metric_dt_s": 0.1,
+            "contract_source": "invalid_input",
+        }
+    if cur.shape[0] == 1 and k > 1:
+        cur = np.repeat(cur, k, axis=0)
+    if cur.shape[0] != k:
+        raise ValueError(f"current/target batch mismatch: {cur.shape[0]} vs {k}")
+
+    max_acc, max_steering, metric_dt, source = _waymax_kinematics_contract(cfg)
+    metric_dt = max(float(metric_dt), 1.0e-6)
+    old_speed = np.linalg.norm(cur[:, 3:5], axis=-1)
+    new_speed = np.linalg.norm(tgt[:, 3:5], axis=-1)
+    accel = (new_speed - old_speed) / metric_dt
+
+    new_yaw_recorded = np.asarray(_wrap_angle(tgt[:, 2]), dtype=np.float64)
+    new_yaw_from_velocity = np.arctan2(tgt[:, 4], tgt[:, 3])
+    # Waymax uses velocity yaw when the *new* speed is not tiny, but keeps the
+    # recorded target yaw at very low new speed.  The old yaw is the trajectory
+    # state's recorded yaw.  It then zeros steering if either endpoint is slow.
+    speed_limit = 0.6
+    real_new_yaw = np.where(np.abs(new_speed) <= speed_limit, new_yaw_recorded, new_yaw_from_velocity)
+    delta_yaw = np.asarray(_wrap_angle(real_new_yaw - cur[:, 6]), dtype=np.float64)
+    denom = old_speed * metric_dt + 0.5 * accel * metric_dt * metric_dt
+    steering = np.divide(
+        delta_yaw, denom, out=np.full_like(delta_yaw, np.inf), where=np.abs(denom) > 1.0e-12
+    )
+    low_speed = (np.abs(old_speed) < speed_limit) | (np.abs(new_speed) < speed_limit)
+    steering = np.where(low_speed, 0.0, steering)
+    eps = 1.0e-3
+    finite = np.isfinite(accel) & np.isfinite(steering)
+    feasible = finite & (np.abs(accel) <= float(max_acc) + eps) & (np.abs(steering) <= float(max_steering) + eps)
+    return (
+        np.asarray(feasible, dtype=bool),
+        np.asarray(accel, dtype=np.float32),
+        np.asarray(steering, dtype=np.float32),
+        {
+            "max_acc_mps2": float(max_acc),
+            "max_steering_curvature": float(max_steering),
+            "metric_dt_s": float(metric_dt),
+            "contract_source": str(source),
+        },
+    )
+
+
+def _project_candidate_bank_through_controller_np(
+    current: np.ndarray,
+    nominal_traj: np.ndarray,
+    cfg: dict,
+    previous_longitudinal_accel: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project an entire candidate bank through the *same stateful controller*.
+
+    V16.8.34 asked whether the nominal first waypoint could be reached without
+    projection.  That rejects precisely the trajectories for which the online
+    controller is designed to apply a bounded correction.  V16.8.35 instead asks
+    what trajectory will actually be realized if that controller is applied
+    repeatedly, carrying longitudinal-acceleration memory at every step.
+
+    The loop is over horizon only; all candidates are propagated in parallel.
+    Returns ``(projected_traj, waymax_kinematic_ok[K,H], accel[K,H])``.
+    """
+    nominal = np.asarray(nominal_traj, dtype=np.float64)
+    cur0 = np.asarray(current, dtype=np.float64).reshape(-1)
+    if nominal.ndim != 3 or nominal.shape[2] < 5 or cur0.size < 7:
+        k = int(nominal.shape[0]) if nominal.ndim >= 1 else 0
+        h = int(nominal.shape[1]) if nominal.ndim >= 2 else 0
+        return np.asarray(nominal, dtype=np.float32), np.zeros((k, h), dtype=bool), np.zeros((k, h), dtype=np.float32)
+    K, H, D = nominal.shape
+    projected = np.asarray(nominal, dtype=np.float32).copy()
+    state = np.repeat(cur0[None, :], K, axis=0)
+    prev_accel = np.full((K,), float(previous_longitudinal_accel), dtype=np.float64)
+    kin_ok = np.zeros((K, H), dtype=bool)
+    accel_hist = np.zeros((K, H), dtype=np.float32)
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    cand_cfg = cfg.get("candidate", {})
+    wm_cfg = cfg.get("waymax", {})
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 1.0e-6)
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 1.0e-6)
+    max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1.0e-6)
+    max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1.0e-6)
+    max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
+
+    for t in range(H):
+        desired = nominal[:, t, :]
+        cur_xy = state[:, :2]
+        cur_vel = state[:, 3:5]
+        cur_yaw = state[:, 6]
+        cur_speed = np.maximum(np.linalg.norm(cur_vel, axis=-1), np.maximum(state[:, 5] if state.shape[1] > 5 else 0.0, 0.0))
+        desired_vel = desired[:, 3:5]
+        desired_speed = np.linalg.norm(desired_vel, axis=-1)
+        position_speed = np.linalg.norm(desired[:, :2] - cur_xy, axis=-1) / dt
+        desired_speed = np.where(desired_speed < 1.0e-3, position_speed, desired_speed)
+        raw_accel = np.clip((desired_speed - cur_speed) / dt, -max_decel, max_accel)
+        accel = np.clip(raw_accel, prev_accel - max_jerk * dt, prev_accel + max_jerk * dt)
+        next_speed = np.maximum(0.0, cur_speed + accel * dt)
+
+        yaw_from_vel = np.arctan2(desired_vel[:, 1], desired_vel[:, 0])
+        desired_yaw = np.where(desired_speed > 0.25, yaw_from_vel, desired[:, 2])
+        requested_dyaw = np.asarray(_wrap_angle(desired_yaw - cur_yaw), dtype=np.float64)
+        dyaw = np.clip(requested_dyaw, -max_dyaw, max_dyaw)
+        next_yaw = np.asarray(_wrap_angle(cur_yaw + dyaw), dtype=np.float64)
+        v0 = cur_speed[:, None] * np.stack([np.cos(cur_yaw), np.sin(cur_yaw)], axis=-1)
+        v1 = next_speed[:, None] * np.stack([np.cos(next_yaw), np.sin(next_yaw)], axis=-1)
+        next_xy = cur_xy + 0.5 * (v0 + v1) * dt
+        target = np.concatenate([next_xy, next_yaw[:, None], v1], axis=-1)
+
+        feasible, _inv_acc, _steer, _contract = _waymax_kinematic_transition_np(state, target, cfg)
+        kin_ok[:, t] = feasible
+        accel_hist[:, t] = accel.astype(np.float32)
+        projected[:, t, 0:2] = next_xy.astype(np.float32)
+        projected[:, t, 2] = next_yaw.astype(np.float32)
+        projected[:, t, 3:5] = v1.astype(np.float32)
+        if D > 5:
+            projected[:, t, 5] = nominal[:, t, 5].astype(np.float32)
+        if D > 6:
+            projected[:, t, 6] = nominal[:, t, 6].astype(np.float32)
+
+        state[:, 0:2] = next_xy
+        state[:, 3:5] = v1
+        state[:, 6] = next_yaw
+        if state.shape[1] > 5:
+            state[:, 5] = next_speed
+        prev_accel = accel
+    return projected, kin_ok, accel_hist
+
+
+def _successor_control_projected_option_profile(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    emitted_target: np.ndarray,
+    emitted_accel: float,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[tuple[int, ...], dict[str, int | float | str]]:
+    """Causal successor spectrum over *control-realized* recovery trajectories.
+
+    The candidate generator is unchanged.  Each nominal successor candidate is
+    propagated through the already-existing jerk/acceleration/yaw controller, with
+    the current emitted acceleration carried as controller memory.  Its semantic
+    macro survives horizon ``h`` only while the projected trajectory remains:
+
+      1) nominally valid under the frozen proposal contract;
+      2) drivable under the same roadgraph screen;
+      3) collision-free under the same causal constant-velocity screen; and
+      4) feasible under Waymax's own inverse acceleration/steering-curvature
+         kinematics metric for every realized transition up to ``h``.
+
+    This changes the *observable used by recovery selection*, not the proposal,
+    conventional-safe label, RCOT/BCOT certificate, or actual controller.
+    """
+    nxt = _counterfactual_successor_agent_state(agent_state, sdc_index, emitted_target, cfg)
+    (
+        traj, valid, conventional, macro, _utility, _road_safe_nominal, _collision_safe_nominal,
+        _prefix_nominal, _margin_nominal,
+    ) = _route_lane_aware_candidates(nxt, int(sdc_index), roadgraph, cfg, other_future_trajs=None)
+    traj = np.asarray(traj)
+    valid = np.asarray(valid, dtype=bool)
+    conventional = np.asarray(conventional, dtype=bool) & valid
+    macro = np.asarray(macro, dtype=np.int64)
+    if traj.ndim != 3 or traj.shape[0] != valid.shape[0] or traj.shape[1] <= 0:
+        return tuple(), {
+            "profile_horizon_steps": 0, "valid_candidates": int(valid.sum()),
+            "conventional_candidates": int(conventional.sum()), "control_projected_candidates": 0,
+        }
+
+    projected, kin_ok, _accel_hist = _project_candidate_bank_through_controller_np(
+        nxt[int(sdc_index)], traj, cfg, float(emitted_accel)
+    )
+    K, H = int(projected.shape[0]), int(projected.shape[1])
+    collision_ctx = _prepare_collision_check_context(
+        nxt, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None
+    )
+    road_ok = np.zeros((K,), dtype=bool)
+    collision_prefix = np.zeros((K,), dtype=np.int32)
+    kinematic_prefix = np.zeros((K,), dtype=np.int32)
+    realized_prefix = np.zeros((K,), dtype=np.int32)
+    for i in np.flatnonzero(valid):
+        road_ok[i] = bool(_roadgraph_drivable_mask(projected[i], roadgraph))
+        if road_ok[i]:
+            collision_prefix[i] = int(_collision_audit_against_context(projected[i], collision_ctx)["safe_prefix_steps"])
+        # Prefix is the number of consecutive evaluator-feasible realized
+        # transitions.  A later recovery option cannot be counted through an
+        # earlier kinematic contract violation.
+        bad = np.flatnonzero(~kin_ok[i])
+        kinematic_prefix[i] = int(bad[0]) if bad.size else H
+        realized_prefix[i] = int(min(collision_prefix[i], kinematic_prefix[i])) if road_ok[i] else 0
+
+    best_by_macro: dict[int, int] = {}
+    for i in np.flatnonzero(valid & road_ok):
+        m = int(macro[i])
+        if m == int(MacroType.PAD):
+            continue
+        p = int(max(realized_prefix[i], 0))
+        if p > best_by_macro.get(m, 0):
+            best_by_macro[m] = p
+    curve = tuple(
+        int(sum(int(p) >= h for p in best_by_macro.values())) for h in range(1, H + 1)
+    )
+    max_acc, max_steer, metric_dt, source = _waymax_kinematics_contract(cfg)
+    return curve, {
+        "profile_horizon_steps": int(H),
+        "recovery_macro_types_h1": int(curve[0]) if curve else 0,
+        "recovery_macro_types_full_horizon": int(curve[-1]) if curve else 0,
+        "recovery_profile_area": int(sum(curve)),
+        "recovery_macro_types_any": int(len(best_by_macro)),
+        "valid_candidates": int(valid.sum()),
+        "conventional_candidates": int(conventional.sum()),
+        "control_projected_candidates": int(valid.sum()),
+        "control_projected_roadgraph_safe_candidates": int((valid & road_ok).sum()),
+        "control_projected_h1_kinematic_feasible_candidates": int((valid & kin_ok[:, 0]).sum()),
+        "control_projected_full_kinematic_feasible_candidates": int((valid & np.all(kin_ok, axis=1)).sum()),
+        "control_projected_mean_kinematic_prefix_steps": float(np.mean(kinematic_prefix[valid])) if bool(valid.any()) else 0.0,
+        "control_projected_mean_collision_prefix_steps": float(np.mean(collision_prefix[valid & road_ok])) if bool((valid & road_ok).any()) else 0.0,
+        "control_projected_max_realized_prefix_steps": int(realized_prefix[valid & road_ok].max()) if bool((valid & road_ok).any()) else 0,
+        "waymax_kinematics_max_acc_mps2": float(max_acc),
+        "waymax_kinematics_max_steering_curvature": float(max_steer),
+        "waymax_kinematics_metric_dt_s": float(metric_dt),
+        "waymax_kinematics_contract_source": str(source),
+    }
+
+
+def _kinematic_guarded_profile_relation(
+    alt_transition_feasible: bool,
+    base_transition_feasible: bool,
+    base_profile: tuple[int, ...],
+    alt_profile: tuple[int, ...],
+) -> tuple[bool, bool, int, int, int]:
+    """Partial order with a hard *alternative itself is executable* invariant.
+
+    V16.8.34 allowed ``base=False, alt=False`` to tie on the current transition.
+    That is unsuitable once the predicate is the evaluator's actual kinematics
+    contract: a recovery action that is itself infeasible must never be entered or
+    continued.  Otherwise, profile support remains a pointwise partial order.
+    """
+    p_strict, p_weak, min_margin, area_delta = _option_profile_relation(base_profile, alt_profile)
+    transition_delta = int(bool(alt_transition_feasible)) - int(bool(base_transition_feasible))
+    weak = bool(alt_transition_feasible and p_weak)
+    strict = bool(weak and (p_strict or transition_delta > 0))
     return strict, weak, int(transition_delta), int(min_margin), int(area_delta)
 
 
@@ -3455,7 +3786,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -3562,7 +3893,7 @@ class COWPWaymaxPolicy:
             recovery_commitment_entered = False
             recovery_commitment_continued = False
             recovery_commitment_cleared = False
-            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"}
+            hysteresis_method = method in {"cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"}
             recovery_hysteresis_active_before = bool(self._recovery_hysteresis_active) if hysteresis_method else False
             recovery_hysteresis_entered = False
             recovery_hysteresis_continued = False
@@ -3579,6 +3910,15 @@ class COWPWaymaxPolicy:
             recovery_rvr_transition_feasible = False
             recovery_transition_delta = 0
             executable_option_profile_used = False
+            waymax_kinematic_guard_used = False
+            control_projected_option_profile_used = False
+            recovery_base_waymax_kinematic_feasible = False
+            recovery_rvr_waymax_kinematic_feasible = False
+            recovery_base_waymax_inverse_accel = 0.0
+            recovery_rvr_waymax_inverse_accel = 0.0
+            recovery_base_waymax_steering = 0.0
+            recovery_rvr_waymax_steering = 0.0
+            recovery_waymax_contract_detail = {}
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -3606,7 +3946,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis"}:
                     # Every recovery probe uses the exact same controlled pair:
                     # original COWP least-coercive-valid vs v16.8.29 max-prefix RVR.
                     rvr_mask = _recursive_viability_recovery_mask(
@@ -3671,6 +4011,74 @@ class COWPWaymaxPolicy:
                                 if hysteresis_already_active:
                                     recovery_hysteresis_continued = True
                                     chosen = recovery_rvr_candidate
+                            elif method in {
+                                "cowp_waymax_kinematic_guarded_rosh",
+                                "cowp_control_projected_option_spectrum_hysteresis",
+                            }:
+                                # v16.8.35 fixes the representation mismatch exposed
+                                # by v16.8.34.  The current-action guard now mirrors
+                                # Waymax's evaluated inverse acceleration/steering-
+                                # curvature contract.  The main branch additionally
+                                # builds the successor spectrum from trajectories
+                                # repeatedly projected through the same stateful
+                                # controller that emits online actions.
+                                option_profile_probe_used = True
+                                waymax_kinematic_guard_used = True
+                                current_pair = np.stack([bt, rt], axis=0)
+                                (
+                                    kim_ok_pair, kim_acc_pair, kim_steer_pair,
+                                    recovery_waymax_contract_detail,
+                                ) = _waymax_kinematic_transition_np(
+                                    agent_state[int(sdc_index)], current_pair, self.cfg
+                                )
+                                recovery_base_waymax_kinematic_feasible = bool(kim_ok_pair[0])
+                                recovery_rvr_waymax_kinematic_feasible = bool(kim_ok_pair[1])
+                                recovery_base_waymax_inverse_accel = float(kim_acc_pair[0])
+                                recovery_rvr_waymax_inverse_accel = float(kim_acc_pair[1])
+                                recovery_base_waymax_steering = float(kim_steer_pair[0])
+                                recovery_rvr_waymax_steering = float(kim_steer_pair[1])
+
+                                if method == "cowp_control_projected_option_spectrum_hysteresis":
+                                    control_projected_option_profile_used = True
+                                    base_profile, option_profile_base_detail = _successor_control_projected_option_profile(
+                                        agent_state, sdc_index, bt,
+                                        float(action_accels_np[recovery_base_candidate]),
+                                        roadgraph, self.cfg
+                                    )
+                                    rvr_profile, option_profile_rvr_detail = _successor_control_projected_option_profile(
+                                        agent_state, sdc_index, rt,
+                                        float(action_accels_np[recovery_rvr_candidate]),
+                                        roadgraph, self.cfg
+                                    )
+                                else:
+                                    base_profile, option_profile_base_detail = _successor_recovery_option_profile(
+                                        agent_state, sdc_index, bt, roadgraph, self.cfg
+                                    )
+                                    rvr_profile, option_profile_rvr_detail = _successor_recovery_option_profile(
+                                        agent_state, sdc_index, rt, roadgraph, self.cfg
+                                    )
+                                (
+                                    option_profile_strict_dominates,
+                                    option_profile_weak_dominates,
+                                    recovery_transition_delta,
+                                    option_profile_min_margin,
+                                    option_profile_area_delta,
+                                ) = _kinematic_guarded_profile_relation(
+                                    recovery_rvr_waymax_kinematic_feasible,
+                                    recovery_base_waymax_kinematic_feasible,
+                                    base_profile, rvr_profile,
+                                )
+                                (active_after, entered, continued, exited) = _dominance_hysteresis_transition(
+                                    hysteresis_already_active,
+                                    strict_alt_dominates=option_profile_strict_dominates,
+                                    weak_alt_dominates=option_profile_weak_dominates,
+                                )
+                                self._recovery_hysteresis_active = bool(active_after)
+                                recovery_hysteresis_entered = bool(entered)
+                                recovery_hysteresis_continued = bool(continued)
+                                recovery_hysteresis_exited = bool(exited)
+                                recovery_switch_applied = bool(active_after)
+                                chosen = recovery_rvr_candidate if active_after else recovery_base_candidate
                             elif method in {
                                 "cowp_recovery_option_spectrum_hysteresis",
                                 "cowp_transition_guarded_rosh",
@@ -3816,6 +4224,8 @@ class COWPWaymaxPolicy:
                                     "cowp_recovery_option_spectrum_hysteresis",
                                     "cowp_transition_guarded_rosh",
                                     "cowp_executable_option_spectrum_hysteresis",
+                                    "cowp_waymax_kinematic_guarded_rosh",
+                                    "cowp_control_projected_option_spectrum_hysteresis",
                                 }:
                                     chosen = recovery_rvr_candidate
                         select_mask = self.torch.zeros_like(cand_valid)
@@ -3837,6 +4247,10 @@ class COWPWaymaxPolicy:
                             fallback_reason = "no_conventional_use_transition_guarded_rosh"
                         elif method == "cowp_executable_option_spectrum_hysteresis":
                             fallback_reason = "no_conventional_use_executable_option_spectrum_hysteresis"
+                        elif method == "cowp_waymax_kinematic_guarded_rosh":
+                            fallback_reason = "no_conventional_use_waymax_kinematic_guarded_rosh"
+                        elif method == "cowp_control_projected_option_spectrum_hysteresis":
+                            fallback_reason = "no_conventional_use_control_projected_option_spectrum_hysteresis"
                         else:
                             fallback_reason = "no_conventional_use_recovery_option_spectrum_hysteresis"
                 else:
@@ -3863,6 +4277,19 @@ class COWPWaymaxPolicy:
             selected_macro_name = _macro_name(selected_macro_type) if has_valid else "EMERGENCY_BOUNDED_STOP"
             selected_candidate_valid = bool(cand_valid[selected].detach().cpu().item()) if has_valid else False
             selected_candidate_conventional_safe = bool(conventional[selected].detach().cpu().item()) if has_valid else False
+            selected_waymax_kinematic_feasible = False
+            selected_waymax_inverse_accel = 0.0
+            selected_waymax_steering = 0.0
+            if has_valid and method in {
+                "cowp_waymax_kinematic_guarded_rosh",
+                "cowp_control_projected_option_spectrum_hysteresis",
+            }:
+                _sel_ok, _sel_acc, _sel_steer, _sel_contract = _waymax_kinematic_transition_np(
+                    agent_state[int(sdc_index)], np.asarray(action_targets_np[selected]), self.cfg
+                )
+                selected_waymax_kinematic_feasible = bool(_sel_ok[0])
+                selected_waymax_inverse_accel = float(_sel_acc[0])
+                selected_waymax_steering = float(_sel_steer[0])
             if fallback_reason == "no_certificate_use_least_coercive_conventional" and not selected_candidate_conventional_safe:
                 raise RuntimeError(
                     "Conventional fallback integrity violation: selected candidate did not pass the "
@@ -4053,6 +4480,28 @@ class COWPWaymaxPolicy:
                 "recovery_option_profile_base_transition_rejected_roadgraph_candidates": int(option_profile_base_detail.get("transition_rejected_roadgraph_candidates", -1)),
                 "recovery_option_profile_rvr_transition_rejected_roadgraph_candidates": int(option_profile_rvr_detail.get("transition_rejected_roadgraph_candidates", -1)),
                 "selected_controller_transition_feasible": bool(controller_transition_feasible_np[selected]) if has_valid and int(selected) < len(controller_transition_feasible_np) else False,
+                "recovery_waymax_kinematic_guard_used": bool(waymax_kinematic_guard_used),
+                "recovery_control_projected_option_profile_used": bool(control_projected_option_profile_used),
+                "recovery_base_waymax_kinematic_feasible": bool(recovery_base_waymax_kinematic_feasible),
+                "recovery_rvr_waymax_kinematic_feasible": bool(recovery_rvr_waymax_kinematic_feasible),
+                "recovery_waymax_kinematic_transition_delta": int(bool(recovery_rvr_waymax_kinematic_feasible)) - int(bool(recovery_base_waymax_kinematic_feasible)),
+                "recovery_base_waymax_inverse_accel": float(recovery_base_waymax_inverse_accel),
+                "recovery_rvr_waymax_inverse_accel": float(recovery_rvr_waymax_inverse_accel),
+                "recovery_base_waymax_steering_curvature": float(recovery_base_waymax_steering),
+                "recovery_rvr_waymax_steering_curvature": float(recovery_rvr_waymax_steering),
+                "waymax_kinematics_contract_max_acc_mps2": float(recovery_waymax_contract_detail.get("max_acc_mps2", -1.0)),
+                "waymax_kinematics_contract_max_steering_curvature": float(recovery_waymax_contract_detail.get("max_steering_curvature", -1.0)),
+                "waymax_kinematics_contract_dt_s": float(recovery_waymax_contract_detail.get("metric_dt_s", -1.0)),
+                "waymax_kinematics_contract_source": str(recovery_waymax_contract_detail.get("contract_source", "not_used")),
+                "recovery_option_profile_base_control_projected_h1_kinematic_feasible_candidates": int(option_profile_base_detail.get("control_projected_h1_kinematic_feasible_candidates", -1)),
+                "recovery_option_profile_rvr_control_projected_h1_kinematic_feasible_candidates": int(option_profile_rvr_detail.get("control_projected_h1_kinematic_feasible_candidates", -1)),
+                "recovery_option_profile_base_control_projected_full_kinematic_feasible_candidates": int(option_profile_base_detail.get("control_projected_full_kinematic_feasible_candidates", -1)),
+                "recovery_option_profile_rvr_control_projected_full_kinematic_feasible_candidates": int(option_profile_rvr_detail.get("control_projected_full_kinematic_feasible_candidates", -1)),
+                "recovery_option_profile_base_control_projected_max_realized_prefix_steps": int(option_profile_base_detail.get("control_projected_max_realized_prefix_steps", -1)),
+                "recovery_option_profile_rvr_control_projected_max_realized_prefix_steps": int(option_profile_rvr_detail.get("control_projected_max_realized_prefix_steps", -1)),
+                "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
+                "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
+                "selected_waymax_steering_curvature": float(selected_waymax_steering),
             })
             if recovery_base_candidate >= 0 and recovery_rvr_candidate >= 0:
                 diag.update({

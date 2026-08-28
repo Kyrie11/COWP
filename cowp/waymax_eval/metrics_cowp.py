@@ -432,6 +432,15 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 valid &= mask
             return float(vals[valid].mean()) if valid.any() else None
 
+        def _mean_abs(key: str, *, mask: np.ndarray | None = None) -> float | None:
+            if not rows:
+                return None
+            vals = np.asarray([abs(float(r.get(key, np.nan))) for r in rows], dtype=np.float64)
+            valid = np.isfinite(vals)
+            if mask is not None:
+                valid &= mask
+            return float(vals[valid].mean()) if valid.any() else None
+
         first_fallback = next((j for j, r in enumerate(rows) if bool(r.get("fallback_used", False))), None)
         first_emergency = next((j for j, r in enumerate(rows) if bool(r.get("emergency_action_used", False))), None)
         first_zero_valid = next((j for j, count in enumerate(valid_counts) if int(count) <= 0), None)
@@ -450,7 +459,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis"} for x in reasons) / max(n, 1)),
+            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis"} for x in reasons) / max(n, 1)),
             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
@@ -462,6 +471,8 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "recovery_option_spectrum_hysteresis_step_rate": float(sum(x == "no_conventional_use_recovery_option_spectrum_hysteresis" for x in reasons) / max(n, 1)),
             "transition_guarded_rosh_step_rate": float(sum(x == "no_conventional_use_transition_guarded_rosh" for x in reasons) / max(n, 1)),
             "executable_option_spectrum_hysteresis_step_rate": float(sum(x == "no_conventional_use_executable_option_spectrum_hysteresis" for x in reasons) / max(n, 1)),
+            "waymax_kinematic_guarded_rosh_step_rate": float(sum(x == "no_conventional_use_waymax_kinematic_guarded_rosh" for x in reasons) / max(n, 1)),
+            "control_projected_option_spectrum_hysteresis_step_rate": float(sum(x == "no_conventional_use_control_projected_option_spectrum_hysteresis" for x in reasons) / max(n, 1)),
             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
@@ -490,6 +501,22 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "mean_recovery_base_transition_rejected_roadgraph_candidates_on_exec_probes": _mean("recovery_option_profile_base_transition_rejected_roadgraph_candidates", mask=np.asarray([bool(r.get("recovery_executable_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
             "mean_recovery_rvr_transition_rejected_roadgraph_candidates_on_exec_probes": _mean("recovery_option_profile_rvr_transition_rejected_roadgraph_candidates", mask=np.asarray([bool(r.get("recovery_executable_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
             "selected_controller_transition_feasible_step_rate": _mean("selected_controller_transition_feasible"),
+            "recovery_waymax_kinematic_guard_probe_step_rate": _mean("recovery_waymax_kinematic_guard_used"),
+            "recovery_control_projected_option_profile_probe_step_rate": _mean("recovery_control_projected_option_profile_used"),
+            "recovery_base_waymax_kinematic_feasible_rate_on_probes": _mean("recovery_base_waymax_kinematic_feasible", mask=np.asarray([bool(r.get("recovery_waymax_kinematic_guard_used", False)) for r in rows], dtype=bool)) if n else None,
+            "recovery_rvr_waymax_kinematic_feasible_rate_on_probes": _mean("recovery_rvr_waymax_kinematic_feasible", mask=np.asarray([bool(r.get("recovery_waymax_kinematic_guard_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_waymax_kinematic_transition_delta_on_probes": _mean("recovery_waymax_kinematic_transition_delta", mask=np.asarray([bool(r.get("recovery_waymax_kinematic_guard_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_base_waymax_abs_steering_curvature_on_probes": _mean_abs("recovery_base_waymax_steering_curvature", mask=np.asarray([bool(r.get("recovery_waymax_kinematic_guard_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_rvr_waymax_abs_steering_curvature_on_probes": _mean_abs("recovery_rvr_waymax_steering_curvature", mask=np.asarray([bool(r.get("recovery_waymax_kinematic_guard_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_base_control_projected_h1_kinematic_feasible_candidates": _mean("recovery_option_profile_base_control_projected_h1_kinematic_feasible_candidates", mask=np.asarray([bool(r.get("recovery_control_projected_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_rvr_control_projected_h1_kinematic_feasible_candidates": _mean("recovery_option_profile_rvr_control_projected_h1_kinematic_feasible_candidates", mask=np.asarray([bool(r.get("recovery_control_projected_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_base_control_projected_full_kinematic_feasible_candidates": _mean("recovery_option_profile_base_control_projected_full_kinematic_feasible_candidates", mask=np.asarray([bool(r.get("recovery_control_projected_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
+            "mean_recovery_rvr_control_projected_full_kinematic_feasible_candidates": _mean("recovery_option_profile_rvr_control_projected_full_kinematic_feasible_candidates", mask=np.asarray([bool(r.get("recovery_control_projected_option_profile_used", False)) for r in rows], dtype=bool)) if n else None,
+            "selected_waymax_kinematic_feasible_step_rate": _mean("selected_waymax_kinematic_feasible"),
+            "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps": _mean(
+                "selected_waymax_kinematic_feasible",
+                mask=np.asarray([bool(r.get("recovery_switch_applied", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "mean_recovery_prefix_gain_steps": _mean("recovery_prefix_gain_steps"),
             "mean_recovery_action_risk_delta": _mean("recovery_action_risk_delta"),
             "mean_recovery_rule_risk_delta": _mean("recovery_rule_risk_delta"),

@@ -1,0 +1,97 @@
+{
+  "equivalence16": {
+    "manifest_count": 16,
+    "manifest_unique": true,
+    "manifest_hash_recomputed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+    "shard_counts": [
+      8,
+      8
+    ],
+    "shard_overlap": 0,
+    "shard_union_equals_manifest": true,
+    "shard_order_partition_matches_manifest": false,
+    "all_declared_hashes_match_manifest": true,
+    "all_checkpoints_equal": true,
+    "all_online_gt_false": true,
+    "merged_row_count": 16,
+    "merged_rows_exactly_rebuilt_from_shards": true,
+    "max_standard_summary_abs_error": 0.0,
+    "summary_mismatch": {},
+    "fallback_rate_recomputed": 0.8078125,
+    "fallback_rate_merged": 0.8078125,
+    "fallback_abs_error": 0.0
+  },
+  "counterfactual48_transition_guarded": {
+    "manifest_count": 48,
+    "manifest_unique": true,
+    "manifest_hash_recomputed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+    "shard_counts": [
+      24,
+      24
+    ],
+    "shard_overlap": 0,
+    "shard_union_equals_manifest": true,
+    "shard_order_partition_matches_manifest": false,
+    "all_declared_hashes_match_manifest": true,
+    "all_checkpoints_equal": true,
+    "all_online_gt_false": true,
+    "merged_row_count": 48,
+    "merged_rows_exactly_rebuilt_from_shards": true,
+    "max_standard_summary_abs_error": 0.0,
+    "summary_mismatch": {},
+    "fallback_rate_recomputed": 0.8385416666666666,
+    "fallback_rate_merged": 0.8385416666666666,
+    "fallback_abs_error": 0.0
+  },
+  "counterfactual48_executable_spectrum": {
+    "manifest_count": 48,
+    "manifest_unique": true,
+    "manifest_hash_recomputed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+    "shard_counts": [
+      24,
+      24
+    ],
+    "shard_overlap": 0,
+    "shard_union_equals_manifest": true,
+    "shard_order_partition_matches_manifest": false,
+    "all_declared_hashes_match_manifest": true,
+    "all_checkpoints_equal": true,
+    "all_online_gt_false": true,
+    "merged_row_count": 48,
+    "merged_rows_exactly_rebuilt_from_shards": true,
+    "max_standard_summary_abs_error": 0.0,
+    "summary_mismatch": {},
+    "fallback_rate_recomputed": 0.8401041666666667,
+    "fallback_rate_merged": 0.8401041666666667,
+    "fallback_abs_error": 0.0
+  },
+  "same_counterfactual48_manifest_between_methods": true,
+  "base_equivalence_report": {
+    "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+    "scenarios": 16,
+    "fields_checked": 1120,
+    "atol": 1e-07,
+    "passed": true,
+    "mismatch_count_capped": 0,
+    "mismatches": []
+  },
+  "analyzer_reproduction": {
+    "recursive_json_exact_match": true
+  },
+  "focused_tests": {
+    "returncode": 0,
+    "stdout_tail": ".........                                                                [100%]\n9 passed in 2.04s",
+    "stderr_tail": ""
+  },
+  "static_semantic_checks": {
+    "exec_profile_carries_emitted_accel": true,
+    "exec_profile_filters_transition_ok": true,
+    "counterfactual_successor_used": true,
+    "no_logged_future_symbol_in_exec_profile_body": true
+  },
+  "overall": {
+    "reliability_pass": true,
+    "hard_checks_passed": 32,
+    "hard_checks_total": 32
+  }
+}
