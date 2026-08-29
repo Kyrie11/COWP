@@ -19,6 +19,8 @@ from cowp.data.dataset import collate_torch
 from cowp.external_baselines.adapters import ExternalCOWPDataset, best_candidate_to_logged_ego, make_external_batch
 from cowp.external_baselines.dtpp_cowp import COWPDTPP, dtpp_loss
 from cowp.external_baselines.gameformer_cowp import COWPGameFormer, gameformer_loss
+from cowp.external_baselines.pluto_cowp import COWPPLUTO, pluto_loss
+from cowp.external_baselines.plant2_cowp import COWPPlanT2, plant2_loss
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
 
@@ -67,7 +69,24 @@ def _build_model(args: argparse.Namespace):
             decoder_levels=args.gameformer_decoder_levels,
         )
     if args.baseline == "dtpp":
-        return COWPDTPP(neighbors=args.max_neighbors, max_branch=args.max_candidates, variable_cost=not args.dtpp_fixed_cost)
+        variable_cost = bool(getattr(args, "dtpp_variable_cost", False)) and not bool(getattr(args, "dtpp_fixed_cost", False))
+        return COWPDTPP(neighbors=args.max_neighbors, max_branch=args.max_candidates, variable_cost=variable_cost)
+    if args.baseline == "pluto":
+        return COWPPLUTO(
+            future_len=args.future_len,
+            d_model=args.pluto_d_model,
+            num_heads=args.pluto_num_heads,
+            encoder_layers=args.pluto_encoder_layers,
+            lateral_queries=args.pluto_lateral_queries,
+            longitudinal_queries=args.pluto_longitudinal_queries,
+        )
+    if args.baseline == "plant2":
+        return COWPPlanT2(
+            future_len=args.future_len,
+            d_model=args.plant2_d_model,
+            num_heads=args.plant2_num_heads,
+            layers=args.plant2_layers,
+        )
     raise ValueError(args.baseline)
 
 
@@ -104,6 +123,63 @@ def _autocast(device: torch.device, enabled: bool, dtype_name: str = "auto"):
         return torch.cuda.amp.autocast(enabled=enabled, dtype=dtype)
 
 
+def _clip_grad_norm_stable(parameters, max_norm: float) -> tuple[torch.Tensor, list[str], bool]:
+    """Clip global gradient norm with a float64 fallback for fp32 norm overflow.
+
+    Returns ``(pre_clip_norm, bad_gradient_parameter_names, used_fp64_fallback)``.
+    True NaN/Inf entries are reported and left unhidden; finite but extremely large
+    gradients are clipped using an fp64 accumulator so AMP/fp32 training can recover.
+    """
+    if isinstance(parameters, torch.nn.Module):
+        named = list(parameters.named_parameters())
+    else:
+        named = [(str(i), p) for i, p in enumerate(parameters)]
+    params = [p for _, p in named if p.grad is not None]
+    if not params:
+        ref = named[0][1] if named else None
+        device = ref.device if ref is not None else torch.device("cpu")
+        return torch.zeros((), dtype=torch.float32, device=device), [], False
+
+    def _bad_paths() -> list[str]:
+        bad: list[str] = []
+        for name, param in named:
+            grad = param.grad
+            if grad is None:
+                continue
+            try:
+                if not bool(torch.isfinite(grad.detach()).all().item()):
+                    bad.append(name)
+            except Exception:
+                bad.append(name)
+        return bad
+
+    max_norm = max(float(max_norm), 1.0e-6)
+    try:
+        norm = torch.nn.utils.clip_grad_norm_(params, max_norm, error_if_nonfinite=True)
+        return norm if torch.is_tensor(norm) else torch.tensor(float(norm), device=params[0].device), [], False
+    except TypeError:
+        bad = _bad_paths()
+        if bad:
+            return torch.full((), float("nan"), device=params[0].device), bad, False
+    except RuntimeError:
+        bad = _bad_paths()
+        if bad:
+            return torch.full((), float("inf"), device=params[0].device), bad, False
+
+    device = params[0].device
+    total_sq = torch.zeros((), dtype=torch.float64, device=device)
+    for param in params:
+        total_sq = total_sq + param.grad.detach().to(torch.float64).square().sum()
+    norm64 = total_sq.sqrt()
+    if not bool(torch.isfinite(norm64).item()):
+        return norm64, ["<finite entries but non-finite float64 norm>"], True
+    clip_coef = min(1.0, max_norm / (float(norm64.item()) + 1.0e-6))
+    if clip_coef < 1.0:
+        for param in params:
+            param.grad.mul_(clip_coef)
+    return norm64, [], True
+
+
 def _run_epoch(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -136,14 +212,21 @@ def _run_epoch(
     last_log = t0
     for batch_idx, batch in enumerate(iterator, start=1):
         try:
-            ext = make_external_batch(batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates, horizon=args.future_len)
+            require_candidates = args.baseline == "dtpp"
+            ext = make_external_batch(batch, cfg, device=device, max_neighbors=args.max_neighbors, max_candidates=args.max_candidates, horizon=args.future_len, baseline=args.baseline, require_candidates=require_candidates, require_future=True)
             with _autocast(device, amp_enabled, amp_dtype):
                 if args.baseline == "gameformer":
                     outputs = model(ext.gameformer_inputs)
                     loss, metrics = gameformer_loss(outputs, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid)
-                else:
+                elif args.baseline == "dtpp":
                     best_idx = best_candidate_to_logged_ego(ext.candidates, ext.candidate_valid, ext.ego_future_xy, ext.ego_future_valid)
                     loss, metrics = dtpp_loss(model, ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, best_idx, ext.ego_future_xy, ext.ego_future_valid, ext.neighbors_future_xy, ext.neighbors_future_valid, timesteps=args.future_len)
+                elif args.baseline == "pluto":
+                    loss, metrics = pluto_loss(model, ext.planner_inputs, ext.ego_future_xy, ext.ego_future_valid)
+                elif args.baseline == "plant2":
+                    loss, metrics = plant2_loss(model, ext.planner_inputs, ext.ego_future_xy, ext.ego_future_valid)
+                else:
+                    raise ValueError(f"Unsupported baseline: {args.baseline}")
             if not torch.isfinite(loss):
                 skipped += 1
                 if skipped <= 5 or (log_every and skipped % max(log_every, 1) == 0):
@@ -157,12 +240,12 @@ def _run_epoch(
                 if scaler is not None and amp_enabled:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    _clip_grad_norm_stable(model.parameters(), args.grad_clip)
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    _clip_grad_norm_stable(model.parameters(), args.grad_clip)
                     optimizer.step()
             bs = int(ext.candidate_valid.shape[0])
             n += bs
@@ -222,8 +305,8 @@ def _run_epoch(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Train GameFormer/DTPP external baselines on COWP tensor-cache data.")
-    ap.add_argument("--baseline", choices=["gameformer", "dtpp"], required=True)
+    ap = argparse.ArgumentParser(description="Train source-faithful external baselines on COWP tensor-cache data.")
+    ap.add_argument("--baseline", choices=["gameformer", "dtpp", "pluto", "plant2"], required=True)
     ap.add_argument("--data-config", default="configs/data.yaml")
     ap.add_argument("--label-config", default="configs/label.yaml")
     ap.add_argument("--train-config", default="configs/train.yaml")
@@ -245,6 +328,17 @@ def main() -> None:
     ap.add_argument("--gameformer-encoder-layers", type=int, default=6)
     ap.add_argument("--gameformer-decoder-levels", type=int, default=4)
     ap.add_argument("--dtpp-fixed-cost", action="store_true")
+    ap.add_argument("--dtpp-variable-cost", action="store_true", help="Enable DTPP variable-cost head/weights; default off to match the public-source reference recipe used by the launcher.")
+    ap.add_argument("--pluto-d-model", type=int, default=128)
+    ap.add_argument("--pluto-num-heads", type=int, default=8)
+    ap.add_argument("--pluto-encoder-layers", type=int, default=4)
+    ap.add_argument("--pluto-lateral-queries", type=int, default=4)
+    ap.add_argument("--pluto-longitudinal-queries", type=int, default=6)
+    ap.add_argument("--plant2-d-model", type=int, default=128)
+    ap.add_argument("--plant2-num-heads", type=int, default=8)
+    ap.add_argument("--plant2-layers", type=int, default=4)
+    ap.add_argument("--checkpoint-every", type=int, default=1)
+    ap.add_argument("--contract-version", default=None)
     ap.add_argument("--grad-clip", type=float, default=5.0)
     ap.add_argument("--amp", action="store_true", help="Use CUDA automatic mixed precision during training/validation.")
     ap.add_argument("--amp-dtype", choices=["auto", "bfloat16", "float16"], default="auto", help="AMP dtype; auto prefers BF16 to avoid FP16 overflow in trajectory/GMM losses.")
@@ -342,6 +436,30 @@ def main() -> None:
             _log(f"updated best checkpoint {best_path} best_metric={best_metric:.6f}")
         with (out_dir / f"external_{args.baseline}_history.json").open("w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+    complete_payload = {
+        "completed": True,
+        "baseline": args.baseline,
+        "best_checkpoint": str(best_path),
+        "best_metric": float(best_metric),
+        "epochs": int(args.epochs),
+        "training_signature": {
+            "contract_version": str(args.contract_version or os.environ.get("EXTERNAL_TRAINING_CONTRACT_VERSION", "v6_womd_map_topology_source_fidelity_20260827")),
+            "amp": bool(args.amp),
+            "amp_dtype": str(args.amp_dtype),
+            "batch_size": int(args.batch_size),
+            "seed": int(args.seed),
+            "lr": float(args.lr),
+            "weight_decay": float(args.weight_decay),
+            "dtpp_variable_cost": bool(args.baseline == "dtpp" and args.dtpp_variable_cost and not args.dtpp_fixed_cost),
+            "max_neighbors": int(args.max_neighbors),
+            "max_candidates": int(args.max_candidates),
+            "future_len": int(args.future_len),
+        },
+    }
+    complete_path = out_dir / f"external_{args.baseline}_training_complete.json"
+    with complete_path.open("w", encoding="utf-8") as f:
+        json.dump(complete_payload, f, indent=2)
+    _log(f"wrote training completion marker {complete_path}")
     _log(json.dumps({"best_checkpoint": str(best_path), "best_metric": best_metric}, indent=2))
 
 

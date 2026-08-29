@@ -16,6 +16,27 @@ from cowp.waymax_eval.policy_wrapper import (
 )
 
 
+def _resolve_execution_trajectory(candidates: np.ndarray, valid: np.ndarray, selected: int, *, fallback_horizon: int, current: np.ndarray) -> tuple[int, np.ndarray, bool, str]:
+    cand = np.asarray(candidates, dtype=np.float32)
+    mask = np.asarray(valid, dtype=bool).reshape(-1)
+    if 0 <= int(selected) < cand.shape[0] and int(selected) < mask.shape[0] and bool(mask[int(selected)]) and np.isfinite(cand[int(selected)]).all():
+        return int(selected), np.nan_to_num(cand[int(selected)], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32), False, "none"
+    valid_idx = np.flatnonzero(mask[: cand.shape[0]])
+    if valid_idx.size > 0:
+        idx = int(valid_idx[0])
+        return idx, np.nan_to_num(cand[idx], nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32), True, "selected_invalid_use_first_valid_candidate"
+    h = max(int(fallback_horizon), 1)
+    out = np.zeros((h, 7), dtype=np.float32)
+    cur = np.asarray(current, dtype=np.float32)
+    out[:, :2] = cur[:2]
+    out[:, 2] = cur[6] if cur.shape[0] > 6 else 0.0
+    if cur.shape[0] > 5:
+        out[:, 3:5] = cur[3:5]
+        out[:, 5] = float(np.linalg.norm(cur[3:5]))
+    out[:, 6] = 1.0
+    return -1, out, True, "no_valid_candidate_emergency_stop"
+
+
 @dataclass
 class RuleBasedWaymaxPolicy:
     method: str
@@ -82,10 +103,12 @@ class RuleBasedWaymaxPolicy:
         selected = int(selected_arr[0]) if selected_arr.size else -1
         cand = np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32)
         valid = np.asarray(batch_np["cowp/candidates/valid"][0], dtype=bool)
-        if selected < 0 or selected >= len(cand) or not bool(valid[selected]):
-            valid_idx = np.flatnonzero(valid)
-            selected = int(valid_idx[0]) if valid_idx.size else 0
+        selected, traj, fallback_used, fallback_reason = _resolve_execution_trajectory(
+            cand, valid, selected, fallback_horizon=int(self.cfg.get("time", {}).get("future_steps", 80)), current=agent_state[sdc_index]
+        )
         conventional = np.asarray(batch_np.get("cowp/candidates/conventional_safe", valid[None])[0], dtype=bool)
+        selected_valid = bool(0 <= selected < len(valid) and valid[selected])
+        selected_conv = bool(0 <= selected < len(conventional) and conventional[selected])
         self._last_diagnostics = {
             "baseline": self.baseline,
             "selected_idx": selected,
@@ -93,9 +116,13 @@ class RuleBasedWaymaxPolicy:
             "accepted_candidates": int(accept[0].sum()) if accept.ndim == 2 else 0,
             "conventional_candidates": int(conventional.sum()),
             "selected_score": float(scores[0, selected]) if selected >= 0 and scores.ndim == 2 else float("nan"),
-            "fallback": bool(selected < 0),
+            "fallback_used": bool(fallback_used),
+            "fallback_reason": fallback_reason,
+            "execution_trajectory_source": "candidate",
+            "selected_candidate_valid": selected_valid,
+            "selected_candidate_conventional_safe": selected_conv,
         }
-        return self._trajectory_to_action(agent_state, sdc_index, cand[selected])
+        return self._trajectory_to_action(agent_state, sdc_index, traj)
 
     def consume_diagnostics(self) -> dict[str, Any] | None:
         row = self._last_diagnostics

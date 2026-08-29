@@ -39,15 +39,27 @@ class VectorMapEncoder(nn.Module):
         self.point_net = nn.Sequential(nn.Linear(map_dim, 64), nn.ReLU(), nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, dim))
         self.position_encode = PositionalEncoding(dim, max_len=map_len)
 
-    def segment_map(self, map_tensor: torch.Tensor, map_encoding: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def segment_map(self, map_tensor: torch.Tensor, map_encoding: torch.Tensor, valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        stride = 10
         B, N_e, N_p, D = map_encoding.shape
-        enc = F.max_pool2d(map_encoding.permute(0, 3, 1, 2), kernel_size=(1, 10)).permute(0, 2, 3, 1).reshape(B, -1, D)
-        mask = torch.eq(map_tensor, 0)[:, :, :, 0].reshape(B, N_e, N_p // 10, N_p // (N_p // 10))
-        mask = torch.max(mask, dim=-1)[0].reshape(B, -1)
+        if valid is None:
+            valid = torch.ne(map_tensor.abs().sum(dim=-1), 0)
+        else:
+            valid = valid.bool()
+        n_seg = max((N_p + stride - 1) // stride, 1)
+        pad = n_seg * stride - N_p
+        if pad:
+            enc_pad = F.pad(map_encoding, (0, 0, 0, pad), value=0.0)
+            valid_pad = F.pad(valid, (0, pad), value=False)
+        else:
+            enc_pad = map_encoding
+            valid_pad = valid
+        enc = enc_pad.reshape(B, N_e, n_seg, stride, D).max(dim=3).values.reshape(B, -1, D)
+        mask = valid_pad.reshape(B, N_e, n_seg, stride).any(dim=-1).logical_not().reshape(B, -1)
         return enc, mask
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.segment_map(x, self.position_encode(self.point_net(x)))
+    def forward(self, x: torch.Tensor, valid: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.segment_map(x, self.position_encode(self.point_net(x)), valid)
 
 
 class CrossAttention(nn.Module):
@@ -165,8 +177,8 @@ class DTPPEncoder(nn.Module):
         encoded_neighbors = [self.agent_encoder(neighbors[:, i]) for i in range(neighbors.shape[1])]
         encoded_actors = torch.stack([encoded_ego] + encoded_neighbors, dim=1)
         actors_mask = torch.eq(actors[:, :, -1].sum(-1), 0)
-        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"])
-        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"])
+        lanes, lanes_mask = self.lane_encoder(inputs["map_lanes"], inputs.get("map_lanes_valid"))
+        cross, cross_mask = self.crosswalk_encoder(inputs["map_crosswalks"], inputs.get("map_crosswalks_valid"))
         inp = torch.cat([encoded_actors, lanes, cross], dim=1)
         mask = torch.cat([actors_mask, lanes_mask, cross_mask], dim=1)
         return {"encoding": self.fusion_encoder(inp, src_key_padding_mask=mask), "mask": mask}
@@ -295,13 +307,18 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     T = min(pred.shape[2], neighbors_future_xy.shape[2])
     pred_xy = pred[:, :, :T, :2]
     gt_xy = neighbors_future_xy[sample_valid, :, :T, :2]
-    valid = neighbors_future_valid[sample_valid, :, :T].float()
-    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy, reduction="none").sum(-1)
+    valid_b = neighbors_future_valid[sample_valid, :, :T].bool()
+    valid = valid_b.float()
+    gt_xy_safe = torch.where(valid_b[..., None], gt_xy, pred_xy.detach())
+    cmp_loss = F.smooth_l1_loss(pred_xy, gt_xy_safe, reduction="none").sum(-1)
     cmp_loss = (cmp_loss * valid).sum() / valid.sum().clamp_min(1.0)
 
     ego_T = min(ego_reg.shape[1], ego_future_xy.shape[1])
-    ego_valid = ego_future_valid[sample_valid, :ego_T].float()
-    reg = F.smooth_l1_loss(ego_reg[sample_valid, :ego_T, :2], ego_future_xy[sample_valid, :ego_T], reduction="none").sum(-1)
+    ego_valid_b = ego_future_valid[sample_valid, :ego_T].bool()
+    ego_valid = ego_valid_b.float()
+    ego_target = ego_future_xy[sample_valid, :ego_T]
+    ego_target_safe = torch.where(ego_valid_b[..., None], ego_target, ego_reg[sample_valid, :ego_T, :2].detach())
+    reg = F.smooth_l1_loss(ego_reg[sample_valid, :ego_T, :2], ego_target_safe, reduction="none").sum(-1)
     reg = (reg * ego_valid).sum() / ego_valid.sum().clamp_min(1.0)
     wreg = torch.square(weights[sample_valid]).mean()
     loss = ce + cmp_loss + 0.1 * reg + 0.01 * wreg
@@ -309,8 +326,10 @@ def dtpp_loss(model: COWPDTPP, inputs: Mapping[str, torch.Tensor], ego_traj_tree
     sel = torch.argmax(scores_masked[sample_valid], dim=1)
     plan = ego_traj_tree[sample_valid][torch.arange(sel.shape[0], device=scores.device), sel, :, :2]
     pt = min(plan.shape[1], ego_future_xy.shape[1])
-    valid_ego = ego_future_valid[sample_valid, :pt].float()
-    pde = torch.linalg.norm((plan[:, :pt] - ego_future_xy[sample_valid, :pt]) * valid_ego[:, :, None], dim=-1)
+    valid_ego_b = ego_future_valid[sample_valid, :pt].bool()
+    valid_ego = valid_ego_b.float()
+    metric_target = torch.where(valid_ego_b[..., None], ego_future_xy[sample_valid, :pt], plan[:, :pt].detach())
+    pde = torch.linalg.norm((plan[:, :pt] - metric_target) * valid_ego[:, :, None], dim=-1)
     metrics = {
         "plannerADE": float((pde.sum() / valid_ego.sum().clamp_min(1.0)).detach().cpu()),
         "score_ce": float(ce.detach().cpu()),

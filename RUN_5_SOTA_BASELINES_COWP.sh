@@ -84,6 +84,47 @@ ensure_index() {
     --reuse-if-exists
 }
 
+waymax_json_complete() {
+  local path="$1"
+  local method="$2"
+  [[ -s "$path" ]] || return 1
+  python - "$path" "$SCENARIO_IDS_FILE" "$method" <<'PY_WAYMAX_DONE'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = pathlib.Path(sys.argv[2])
+method = sys.argv[3]
+try:
+    ids = [x.strip() for x in manifest.read_text(encoding="utf-8").splitlines() if x.strip()]
+    target_n = len(ids)
+    target_hash = hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if int(payload.get("num_rollouts", -1)) != target_n:
+    raise SystemExit(1)
+seen_hash = payload.get("scenario_ids_sha256")
+if seen_hash and str(seen_hash) != target_hash:
+    raise SystemExit(1)
+std = payload.get("standard_metric_summary")
+if not isinstance(std, dict) or not std:
+    raise SystemExit(1)
+records = payload.get("scenario_results")
+resolved = payload.get("scenario_ids_resolved")
+if isinstance(records, list) and len(records) != target_n:
+    raise SystemExit(1)
+if isinstance(resolved, list) and len(resolved) != target_n:
+    raise SystemExit(1)
+# Accept both merged outputs (method=external_gameformer) and direct rule outputs
+# (method=pdm_closed), but reject obviously unrelated files.
+reported = str(payload.get("method", payload.get("baseline", "")))
+if method != "pdm_closed" and reported and method not in reported:
+    raise SystemExit(1)
+if method == "pdm_closed" and reported and "pdm" not in reported:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY_WAYMAX_DONE
+}
+
 train_one() {
   local m="$1"
   contains_method "$m" "${LEARNED[@]}" || { echo "$m has no learned training stage"; return 0; }
@@ -180,6 +221,7 @@ PY_DONE
     --prefetch-factor "$PREFETCH_FACTOR" \
     --val-prefetch-factor "$VAL_PREFETCH_FACTOR" \
     --checkpoint-every "$CHECKPOINT_EVERY" \
+    --contract-version "$EXTERNAL_TRAINING_CONTRACT_VERSION" \
     --lr "$lr" \
     --weight-decay "$wd" \
     --seed "$SEED" \
@@ -278,15 +320,23 @@ waymax_one_single() {
 
 waymax_one() {
   local m="$1"
+  local merged="$OUT_ROOT/$m/waymax.json"
   # Build the shared exact-ID index once in the parent process to avoid a
   # two-shard race when the index does not exist yet.
   require_path "$SCENARIO_IDS_FILE" "exact scenario manifest"
+  mkdir -p "$OUT_ROOT/$m"
+  if [[ "$SKIP_COMPLETED" == "1" ]] && waymax_json_complete "$merged" "$m"; then
+    echo "[Waymax closed loop] $m already completed on exact $(wc -l < "$SCENARIO_IDS_FILE") IDs; SKIP_COMPLETED=1, reusing $merged"
+    return 0
+  fi
+  # If the model-level result is absent or invalid, remove stale partial artifacts
+  # so a rerun cannot accidentally merge old and new shards.
+  rm -f "$merged" "$OUT_ROOT/$m/waymax_s0.json" "$OUT_ROOT/$m/waymax_s1.json"
   ensure_index
   if [[ "$PARALLEL2" != "1" ]]; then
-    waymax_one_single "$m"
+    waymax_one_single "$m" "" "" "$merged"
     return
   fi
-  mkdir -p "$OUT_ROOT/$m"
   local s0="$OUT_ROOT/$m/waymax_s0.json"
   local s1="$OUT_ROOT/$m/waymax_s1.json"
   echo "[Waymax parallel2] $m GPUs=$GPU0,$GPU1"
@@ -302,7 +352,7 @@ waymax_one() {
   fi
   python -m cowp.scripts.79_merge_waymax_exact_shards \
     --inputs "$s0" "$s1" \
-    --output "$OUT_ROOT/$m/waymax.json"
+    --output "$merged"
 }
 
 train_parallel2() {
@@ -361,24 +411,24 @@ summarize() {
 
 case "$MODE" in
   train)
-    for m in "${LEARNED[@]}"; do selected "$m" && train_one "$m"; done
+    for m in "${LEARNED[@]}"; do if selected "$m"; then train_one "$m"; fi; done
     ;;
   train_parallel2)
     train_parallel2
     ;;
   offline)
-    for m in "${ALL_METHODS[@]}"; do selected "$m" && offline_one "$m"; done
+    for m in "${ALL_METHODS[@]}"; do if selected "$m"; then offline_one "$m"; fi; done
     ;;
   waymax)
-    for m in "${ALL_METHODS[@]}"; do selected "$m" && waymax_one "$m"; done
+    for m in "${ALL_METHODS[@]}"; do if selected "$m"; then waymax_one "$m"; fi; done
     ;;
   profile)
-    for m in "${ALL_METHODS[@]}"; do selected "$m" && profile_one "$m"; done
+    for m in "${ALL_METHODS[@]}"; do if selected "$m"; then profile_one "$m"; fi; done
     ;;
   all)
-    for m in "${LEARNED[@]}"; do selected "$m" && train_one "$m"; done
-    for m in "${ALL_METHODS[@]}"; do selected "$m" && offline_one "$m"; done
-    for m in "${ALL_METHODS[@]}"; do selected "$m" && waymax_one "$m"; done
+    for m in "${LEARNED[@]}"; do if selected "$m"; then train_one "$m"; fi; done
+    for m in "${ALL_METHODS[@]}"; do if selected "$m"; then offline_one "$m"; fi; done
+    for m in "${ALL_METHODS[@]}"; do if selected "$m"; then waymax_one "$m"; fi; done
     summarize
     ;;
   summary)

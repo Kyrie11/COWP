@@ -1488,15 +1488,23 @@ def extract_agent_history_model_state(state: Any, cfg: dict) -> tuple[np.ndarray
     return hist, cur11, sdc
 
 def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
-    """Return best-effort roadgraph point tokens from Waymax state.
+    """Return best-effort WOMD/Waymax roadgraph point tokens.
 
-    Public/local Waymax builds expose roadgraph fields with slightly different
-    names.  The policy should not fail if roadgraph is unavailable; it simply
-    falls back to ego-heading proposals.
+    Keep feature ids, types and directions when Waymax exposes them; the external
+    baseline adapters need those fields to reconstruct lane/crosswalk polylines
+    instead of flattening unrelated map elements into one fake feature.
     """
     rg = _get_field(state, ("roadgraph_points", "roadgraph", "roadgraph_static_points"))
+    empty = {
+        "xy": np.zeros((0, 2), dtype=np.float32),
+        "heading": np.zeros(0, dtype=np.float32),
+        "valid": np.zeros(0, dtype=bool),
+        "types": np.zeros(0, dtype=np.int32),
+        "ids": np.zeros(0, dtype=np.int64),
+        "dir_xy": np.zeros((0, 2), dtype=np.float32),
+    }
     if rg is None:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
+        return dict(empty)
     x_field = _get_field(rg, ("x", "center_x"))
     y_field = _get_field(rg, ("y", "center_y"))
     xy_field = _get_field(rg, ("xy", "points", "xyz"))
@@ -1513,20 +1521,24 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
             arr = arr[0]
         xy = arr[..., :2].reshape(-1, 2).astype(np.float32)
     else:
-        return {"xy": np.zeros((0, 2), dtype=np.float32), "heading": np.zeros(0, dtype=np.float32), "valid": np.zeros(0, dtype=bool), "types": np.zeros(0, dtype=np.int32)}
+        return dict(empty)
     dir_x = _get_field(rg, ("dir_x", "direction_x", "dx"))
     dir_y = _get_field(rg, ("dir_y", "direction_y", "dy"))
+    dir_xy = np.zeros((len(xy), 2), dtype=np.float32)
     if dir_x is not None and dir_y is not None:
         dx = _to_numpy(dir_x)
         dy = _to_numpy(dir_y)
         while dx.ndim > 1:
             dx = dx[0]
             dy = dy[0]
-        heading = np.arctan2(dy.reshape(-1), dx.reshape(-1)).astype(np.float32)
+        dx = dx.reshape(-1)[: len(xy)]
+        dy = dy.reshape(-1)[: len(xy)]
+        dir_xy[: len(dx), 0] = dx
+        dir_xy[: len(dy), 1] = dy
+        heading = np.arctan2(dir_xy[:, 1], dir_xy[:, 0]).astype(np.float32)
     else:
-        # Local finite-difference heading.  It is noisy across polyline breaks but
-        # still better than all-zero map tokens for conflict-query conditioning.
         diff = np.gradient(xy, axis=0) if len(xy) > 1 else np.zeros_like(xy)
+        dir_xy = diff.astype(np.float32)
         heading = np.arctan2(diff[:, 1], diff[:, 0]).astype(np.float32)
     valid_field = _get_field(rg, ("valid",))
     if valid_field is not None:
@@ -1543,16 +1555,51 @@ def _extract_roadgraph_tokens(state: Any, cfg: dict) -> dict[str, np.ndarray]:
             types = types[0]
         types = types.reshape(-1).astype(np.int32)[: len(xy)]
     else:
-        types = np.zeros(len(xy), dtype=np.int32)
+        types = np.zeros(0, dtype=np.int32)
+    id_field = _get_field(rg, ("ids", "id", "roadgraph_id", "map_element_id"))
+    if id_field is not None:
+        ids = _to_numpy(id_field)
+        while ids.ndim > 1:
+            ids = ids[0]
+        ids = ids.reshape(-1).astype(np.int64)[: len(xy)]
+    else:
+        ids = np.zeros(0, dtype=np.int64)
     finite = np.isfinite(xy).all(axis=-1) & np.isfinite(heading)
     valid = valid & finite
     max_points = int(cfg.get("limits", {}).get("max_roadgraph_points", 20000))
     if len(xy) > max_points:
-        # Keep a deterministic spread of points; local filtering below selects
-        # only points near ego, so this mostly protects pathological states.
         idx = np.linspace(0, len(xy) - 1, max_points, dtype=np.int64)
-        xy, heading, valid, types = xy[idx], heading[idx], valid[idx], types[idx]
-    return {"xy": xy, "heading": heading, "valid": valid, "types": types}
+        xy, heading, valid, dir_xy = xy[idx], heading[idx], valid[idx], dir_xy[idx]
+        if len(types) == len(finite):
+            types = types[idx]
+        if len(ids) == len(finite):
+            ids = ids[idx]
+    return {"xy": xy, "heading": heading, "valid": valid, "types": types, "ids": ids, "dir_xy": dir_xy}
+
+
+def _roadgraph_womd_batch_fields(roadgraph: dict[str, np.ndarray] | None) -> dict[str, np.ndarray]:
+    """Convert extracted roadgraph tokens to the WOMD tensor-cache key layout."""
+    if roadgraph is None:
+        return {}
+    xy = np.asarray(roadgraph.get("xy", np.zeros((0, 2), dtype=np.float32)), dtype=np.float32).reshape(-1, 2)
+    n = int(xy.shape[0])
+    if n <= 0:
+        return {}
+    valid = np.asarray(roadgraph.get("valid", np.ones(n, dtype=bool)), dtype=bool).reshape(-1)[:n]
+    out: dict[str, np.ndarray] = {
+        "roadgraph_samples/xyz": np.concatenate([xy, np.zeros((n, 1), dtype=np.float32)], axis=-1)[None],
+        "roadgraph_samples/valid": valid[None],
+    }
+    dir_xy = np.asarray(roadgraph.get("dir_xy", np.zeros((n, 2), dtype=np.float32)), dtype=np.float32).reshape(-1, 2)
+    if dir_xy.shape[0] >= n:
+        out["roadgraph_samples/dir"] = np.concatenate([dir_xy[:n], np.zeros((n, 1), dtype=np.float32)], axis=-1)[None]
+    types = np.asarray(roadgraph.get("types", np.zeros(0, dtype=np.int32))).reshape(-1)
+    if types.shape[0] >= n:
+        out["roadgraph_samples/type"] = types[:n].astype(np.int64, copy=False)[None]
+    ids = np.asarray(roadgraph.get("ids", np.zeros(0, dtype=np.int64))).reshape(-1)
+    if ids.shape[0] >= n:
+        out["roadgraph_samples/id"] = ids[:n].astype(np.int64, copy=False)[None]
+    return out
 
 
 def _lane_centerline_mask(roadgraph: dict[str, np.ndarray]) -> np.ndarray:
@@ -3059,6 +3106,7 @@ def build_online_batch(
         "map/conflict_regions": conflict[None],
         "map/conflict_region_valid": conflict_valid[None],
     }
+    batch.update(_roadgraph_womd_batch_fields(roadgraph))
     if include_training_targets:
         # Compatibility/debug-only targets.  They are intentionally omitted in the
         # default online path because the model inference keys above do not consume

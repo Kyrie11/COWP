@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -15,10 +16,16 @@ from torch.utils.data import DataLoader
 from cowp.core.config import load_config
 from cowp.data.dataset import collate_torch
 from cowp.external_baselines.adapters import ExternalCOWPDataset, label_from_batch_item, make_external_batch
+from cowp.external_baselines.reference_metadata import baseline_reference_metadata
 from cowp.external_baselines.waymax_policy import build_external_model_from_checkpoint, make_external_waymax_policy
 from cowp.utils.progress import tqdm_iter
 from cowp.utils.dataloader_runtime import configure_dataloader_runtime
-from cowp.waymax_eval.metrics_cowp import policy_diagnostic_episode_summary, policy_diagnostic_summary
+from cowp.waymax_eval.metrics_cowp import (
+    physical_failure_attribution_summary,
+    policy_diagnostic_episode_summary,
+    policy_diagnostic_scenario_rows,
+    policy_diagnostic_summary,
+)
 from cowp.waymax_eval.metrics_standard import aggregate_waymax_standard_metrics
 from cowp.waymax_eval.rollout import _LearnedMetricsAccumulator, waymax_closed_loop_rollout
 
@@ -58,6 +65,51 @@ def _json_safe(obj):
     return str(obj)
 
 
+def _parse_metric_names(value: str | None):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"all", "default"}:
+        return None
+    if text.lower() == "none":
+        return []
+    return {x.strip() for x in text.split(",") if x.strip()}
+
+
+def _load_scenario_ids_file(path: str | None) -> list[str] | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"scenario id file not found: {p}")
+    ids = [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not ids:
+        raise ValueError(f"scenario id file is empty: {p}")
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"scenario id file contains duplicate ids: {p}")
+    return ids
+
+
+def _scenario_ids_requested_on_shard(scenario_ids: list[str] | None, num_shards: int, shard_index: int) -> int | None:
+    if scenario_ids is None:
+        return None
+    n = max(int(num_shards), 1)
+    s = int(shard_index) % n
+    return int(sum(1 for i in range(len(scenario_ids)) if (i % n) == s))
+
+
+def _augment_policy_summary_with_external_rates(summary: dict[str, float], rollouts: list[dict]) -> dict[str, float]:
+    rows: list[dict] = []
+    for item in rollouts:
+        rows.extend(item.get("policy_diagnostics", []) or [])
+    if not rows:
+        return summary
+    direct = [1.0 if str(r.get("execution_trajectory_source", "candidate")) == "direct" else 0.0 for r in rows]
+    if direct:
+        summary["ClosedLoopDirectExecutionStepRate"] = float(sum(direct) / len(direct))
+    return summary
+
+
 def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]:
     _log(f"loading checkpoint {args.checkpoint}")
     model, baseline, model_cfg, ckpt_args, device = build_external_model_from_checkpoint(args.checkpoint, cfg, args.device)
@@ -79,11 +131,15 @@ def learned_offline_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[
     t0 = time.time()
     with torch.inference_mode():
         for batch_idx, batch in enumerate(iterator, start=1):
-            ext = make_external_batch(batch, model_cfg, device=device, max_neighbors=max_neighbors, max_candidates=max_candidates, horizon=future_len)
+            ext = make_external_batch(batch, model_cfg, device=device, max_neighbors=max_neighbors, max_candidates=max_candidates, horizon=future_len, baseline=baseline, require_candidates=True, require_future=True)
             if baseline == "gameformer":
                 scores = model.score_candidates(ext.gameformer_inputs, ext.candidates, ext.candidate_valid)
-            else:
+            elif baseline == "dtpp":
                 scores = model.score_candidates(ext.dtpp_inputs, ext.dtpp_candidate_tree, ext.candidate_valid, timesteps=future_len)
+            elif baseline in {"pluto", "plant2"}:
+                scores = model.score_candidates(ext.planner_inputs, ext.candidates, ext.candidate_valid)
+            else:
+                raise ValueError(f"Unsupported external baseline for learned_offline eval: {baseline}")
             accept = ext.candidate_valid
             if args.require_conventional_safe:
                 accept2 = accept & ext.conventional_safe
@@ -125,11 +181,18 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         device=args.device,
         action_mode=args.waymax_action_mode,
         require_conventional_safe=args.require_conventional_safe,
+        execution_mode=args.execution_mode,
+        profile_policy_runtime=bool(getattr(args, "profile_policy_runtime", False)),
+        profile_policy_runtime_sync=bool(getattr(args, "profile_policy_sync", False)),
     )
     horizon = int(args.rollout_horizon_steps or cfg.get("eval", {}).get("rollout_horizon_steps", cfg.get("time", {}).get("future_steps", 80)))
+    scenario_ids = _load_scenario_ids_file(args.scenario_ids_file)
+    metric_names = _parse_metric_names(args.waymax_standard_metric_names)
     _log(
         f"waymax {policy.baseline} start split={args.waymax_split} tfexample_glob={args.tfexample_glob} "
-        f"num_scenarios={args.num_scenarios} horizon={horizon} progress={not args.no_progress} standard_metrics={args.waymax_standard_metrics}"
+        f"num_scenarios={args.num_scenarios} exact_ids={len(scenario_ids) if scenario_ids is not None else 0} "
+        f"shard={args.shard_index}/{args.num_shards} horizon={horizon} progress={not args.no_progress} "
+        f"standard_metrics={args.waymax_standard_metrics} metric_names={metric_names if metric_names is not None else 'default/all'}"
     )
     t0 = time.time()
     rollouts = waymax_closed_loop_rollout(
@@ -146,22 +209,76 @@ def waymax_eval(args: argparse.Namespace, cfg: dict[str, Any]) -> dict[str, Any]
         tfexample_glob=args.tfexample_glob,
         shard_index=args.shard_index,
         num_shards=args.num_shards,
+        reuse_env=bool(args.reuse_waymax_env),
+        prefilter_shards=bool(args.prefilter_waymax_shards),
+        jit_env=bool(args.jit_waymax_env),
+        jit_standard_metrics=bool(args.jit_waymax_metrics),
+        status_every=int(args.status_every),
+        standard_metric_names=metric_names,
+        scenario_ids=scenario_ids,
+        tfexample_index_jsonl=args.tfexample_index_jsonl,
+        profile_runtime=bool(args.profile_waymax_runtime),
+        profile_runtime_sync=bool(args.profile_waymax_sync),
     )
     _log(f"waymax {policy.baseline} rollout done episodes={len(rollouts)} seconds={time.time()-t0:.1f}")
+    metric_names_payload = sorted(metric_names) if isinstance(metric_names, set) else args.waymax_standard_metric_names
+    policy_summary = _augment_policy_summary_with_external_rates(policy_diagnostic_summary(rollouts), rollouts)
     payload: dict[str, Any] = {
         "mode": "waymax",
         "baseline": policy.baseline,
+        "method": f"external_{policy.baseline}",
+        "reference_metadata": baseline_reference_metadata(policy.baseline),
         "checkpoint": args.checkpoint,
+        "execution_mode": args.execution_mode,
         "waymax_split": args.waymax_split,
         "tfexample_glob": args.tfexample_glob,
+        "tfexample_index_jsonl": args.tfexample_index_jsonl,
+        "scenario_ids_file": args.scenario_ids_file,
+        "scenario_ids_requested": int(len(scenario_ids)) if scenario_ids is not None else None,
+        "scenario_ids_requested_on_shard": _scenario_ids_requested_on_shard(scenario_ids, args.num_shards, args.shard_index),
+        "scenario_ids_sha256": hashlib.sha256("\n".join(scenario_ids).encode("utf-8")).hexdigest() if scenario_ids is not None else None,
+        "scenario_ids_resolved": [str(x.get("scenario_id")) for x in rollouts if x.get("scenario_id") is not None],
+        "waymax_standard_metric_names": metric_names_payload,
+        "reuse_waymax_env": bool(args.reuse_waymax_env),
+        "prefilter_waymax_shards": bool(args.prefilter_waymax_shards),
+        "jit_waymax_env": bool(args.jit_waymax_env),
+        "jit_waymax_metrics": bool(args.jit_waymax_metrics),
+        "shard_index": int(args.shard_index),
+        "num_shards": int(args.num_shards),
         "num_rollouts": len(rollouts),
         "steps": [int(x.get("steps", 0)) for x in rollouts],
-        "policy_diagnostic_summary": policy_diagnostic_summary(rollouts),
+        "external_policy_runtime_summary": policy_summary,
+        "policy_diagnostic_summary": policy_summary,
         "closed_loop_cowp_metric_summary": policy_diagnostic_episode_summary(rollouts),
+        "scenario_diagnostics": policy_diagnostic_scenario_rows(rollouts),
+        "physical_failure_attribution_summary": physical_failure_attribution_summary(rollouts),
+        "closed_loop_mechanism_metric_status": {
+            "available": False,
+            "reason": "External planner rollout has no frozen counterfactual COWP auditor; run learned_offline audit for PBTR/FSR/OPR/BTE on cached labels.",
+        },
+        "profile_waymax_runtime": bool(args.profile_waymax_runtime),
+        "profile_waymax_sync": bool(args.profile_waymax_sync),
+        "profile_policy_runtime": bool(getattr(args, "profile_policy_runtime", False)),
+        "profile_policy_sync": bool(getattr(args, "profile_policy_sync", False)),
     }
     if args.waymax_standard_metrics:
         payload["standard_metrics"] = [x.get("standard_metrics", {}) for x in rollouts]
         payload["standard_metric_summary"] = aggregate_waymax_standard_metrics(rollouts)
+    runtime_rows = [x.get("runtime_profile", {}) for x in rollouts if x.get("runtime_profile")]
+    if runtime_rows:
+        keys = ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s", "scenario_total_s")
+        runtime_summary = {}
+        for key in keys:
+            vals = [float(r.get(key, 0.0)) for r in runtime_rows]
+            runtime_summary[f"mean/{key}"] = float(sum(vals) / max(len(vals), 1))
+            runtime_summary[f"sum/{key}"] = float(sum(vals))
+        total_component = sum(runtime_summary[f"sum/{k}"] for k in ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s"))
+        if total_component > 0.0:
+            for key in ("data_next_s", "env_reset_s", "policy_s", "env_step_s", "metric_s"):
+                runtime_summary[f"fraction/{key}"] = float(runtime_summary[f"sum/{key}"] / total_component)
+        runtime_summary["scenarios"] = int(len(runtime_rows))
+        payload["waymax_runtime_profile_summary"] = runtime_summary
+        payload["waymax_runtime_profiles"] = runtime_rows
     return payload
 
 
@@ -185,6 +302,8 @@ def main() -> None:
     ap.add_argument("--max-dump-rows", type=int, default=50)
     ap.add_argument("--waymax-split", choices=["training", "validation", "testing"], default="validation")
     ap.add_argument("--tfexample-glob", default=None)
+    ap.add_argument("--tfexample-index-jsonl", default=None)
+    ap.add_argument("--scenario-ids-file", default=None)
     ap.add_argument("--num-scenarios", type=int, default=None)
     ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--shard-index", type=int, default=0)
@@ -195,6 +314,18 @@ def main() -> None:
     ap.add_argument("--jax-preallocate", choices=["true", "false"], default="false")
     ap.add_argument("--jax-mem-fraction", type=float, default=None)
     ap.add_argument("--waymax-standard-metrics", action="store_true")
+    ap.add_argument("--waymax-standard-metric-names", default=None)
+    ap.add_argument("--execution-mode", choices=["auto", "direct", "candidate_tree"], default="auto")
+    ap.add_argument("--reuse-waymax-env", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--prefilter-waymax-shards", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--jit-waymax-env", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--jit-waymax-metrics", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--profile-waymax-runtime", action="store_true")
+    ap.add_argument("--profile-waymax-sync", action="store_true")
+    ap.add_argument("--profile-policy-runtime", action="store_true")
+    ap.add_argument("--profile-policy-timing", dest="profile_policy_runtime", action="store_true")
+    ap.add_argument("--profile-policy-sync", action="store_true")
+    ap.add_argument("--status-every", type=int, default=10)
     ap.add_argument("--keep-rollout-state", action="store_true")
     ap.add_argument("--clear-accelerator-cache", action="store_true")
     ap.add_argument("--output", required=True)

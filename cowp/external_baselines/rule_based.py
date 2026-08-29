@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover
     MacroType = None  # type: ignore
 
 
-RULE_BASELINES = {"idm_lattice", "frenet_optimal", "state_lattice"}
+RULE_BASELINES = {"idm_lattice", "frenet_optimal", "state_lattice", "pdm_closed"}
 
 
 @dataclass(frozen=True)
@@ -144,6 +144,21 @@ def _current_state_from_history(hist: np.ndarray) -> np.ndarray:
     if hist.ndim != 4:
         raise ValueError(f"history must be [B,N,T,D], got {hist.shape}")
     return hist[:, :, -1, :]
+
+
+
+
+def _current_np(batch: Mapping[str, Any], batch_size: int) -> tuple[np.ndarray, bool]:
+    hist = _history_np(batch)
+    if hist is not None:
+        return _current_state_from_history(hist), True
+    cur = _get(batch, "state/current", "womd/state/current")
+    if cur is not None:
+        arr = _to_numpy(cur).astype(np.float32, copy=False)
+        if arr.ndim == 2:
+            arr = arr[None]
+        return arr, False
+    return np.zeros((batch_size, 1, 11), dtype=np.float32), False
 
 
 def _candidate_arrays(batch: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
@@ -354,12 +369,27 @@ def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None
     method = str(method).lower()
     if method not in RULE_BASELINES:
         raise ValueError(f"Unsupported rule baseline: {method}. Expected one of {sorted(RULE_BASELINES)}")
+    canonical_method = "state_lattice" if method == "pdm_closed" else method
     p = params_from_cfg(cfg)
     candidates, valid, conventional, macro, utility = _candidate_arrays(batch)
     B, K = valid.shape[:2]
-    hist = _history_np(batch)
-    cur = _current_state_from_history(hist) if hist is not None else np.zeros((B, 1, 11), dtype=np.float32)
+    finite_geom = np.isfinite(candidates.reshape(B, candidates.shape[1], -1)).all(axis=-1)[:, :K]
+    valid = valid[:, :K] & finite_geom
+    conventional = conventional[:, :K] & valid
+    cur, cur_from_history = _current_np(batch, B)
     sdc = _sdc_indices_np(batch, B)
+    scene_valid = np.ones(B, dtype=bool)
+    for b in range(B):
+        cur_b = cur[b]
+        sdc_b = int(np.clip(sdc[b], 0, max(cur_b.shape[0] - 1, 0)))
+        ego = cur_b[sdc_b] if cur_b.size else np.zeros((11,), dtype=np.float32)
+        finite = bool(np.isfinite(ego).all())
+        declared_valid = True
+        if cur_from_history and ego.shape[0] > 10:
+            declared_valid = bool(ego[10] > 0.5)
+        scene_valid[b] = finite and declared_valid
+    valid = valid & scene_valid[:, None]
+    conventional = conventional & valid
     accept = valid.copy()
     if require_conventional_safe:
         accept &= conventional[:, :K]
@@ -370,9 +400,9 @@ def rule_costs_for_batch(batch: Mapping[str, Any], cfg: Mapping[str, Any] | None
         sdc_b = int(np.clip(sdc[b], 0, max(cur_b.shape[0] - 1, 0)))
         macro_b = macro[b, :K] if macro is not None and macro.ndim >= 2 else None
         utility_b = utility[b, :K] if utility is not None and utility.ndim >= 2 else None
-        if method == "idm_lattice":
+        if canonical_method == "idm_lattice":
             c = _idm_cost_for_scene(cand_b, cur_b, sdc_b, p)
-        elif method == "frenet_optimal":
+        elif canonical_method == "frenet_optimal":
             c = _frenet_cost_for_scene(cand_b, cur_b, sdc_b, p)
         else:
             c = _state_lattice_cost_for_scene(cand_b, cur_b, sdc_b, p, macro_b, utility_b)
