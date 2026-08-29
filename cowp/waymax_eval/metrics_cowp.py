@@ -572,6 +572,23 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 "recourse_rvr_macro_count",
                 mask=np.asarray([bool(r.get("recourse_returnability_probe_used", False)) for r in rows], dtype=bool),
             ) if n else None,
+            "recourse_current_action_survival_step_rate": _mean("recourse_current_action_survives_one_step"),
+            "mean_recourse_base_action_classes_available_on_probes": _mean(
+                "recourse_base_action_classes_available",
+                mask=np.asarray([bool(r.get("recourse_returnability_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_rvr_action_classes_available_on_probes": _mean(
+                "recourse_rvr_action_classes_available",
+                mask=np.asarray([bool(r.get("recourse_returnability_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_base_action_classes_evaluated_on_probes": _mean(
+                "recourse_base_action_classes_evaluated",
+                mask=np.asarray([bool(r.get("recourse_returnability_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_rvr_action_classes_evaluated_on_probes": _mean(
+                "recourse_rvr_action_classes_evaluated",
+                mask=np.asarray([bool(r.get("recourse_returnability_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "recovery_bridge_pending_step_rate": _mean("recovery_bridge_pending_after"),
             "recovery_bridge_entry_step_rate": _mean("recovery_bridge_entered"),
             "recovery_bridge_direct_entry_step_rate": _mean("recovery_bridge_direct_entry"),
@@ -579,6 +596,34 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "recovery_bridge_abort_step_rate": _mean("recovery_bridge_aborted"),
             "mean_direct_restoring_candidate_count_on_bridge_steps": _mean(
                 "recourse_direct_restoring_candidate_count",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_bridge_allowed_macro_count_on_bridge_steps": _mean(
+                "recovery_bridge_allowed_macro_count_before",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_bridge_candidate_pool_on_bridge_steps": _mean(
+                "recourse_bridge_candidate_pool",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_bridge_action_classes_available_on_bridge_steps": _mean(
+                "recourse_bridge_action_classes_available",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_bridge_action_classes_evaluated_on_bridge_steps": _mean(
+                "recourse_bridge_representatives_evaluated",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recourse_bridge_minimum_prefix_steps_on_bridge_steps": _mean(
+                "recourse_bridge_minimum_prefix_steps",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_bridge_execution_rate_on_bridge_steps": _mean(
+                "recovery_bridge_recourse_executed",
+                mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_bridge_abort_rate_on_bridge_steps": _mean(
+                "recovery_bridge_aborted",
                 mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
             ) if n else None,
             "selected_waymax_kinematic_feasible_step_rate": _mean("selected_waymax_kinematic_feasible"),

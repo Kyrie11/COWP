@@ -3764,210 +3764,225 @@ Only Stage-1 pass may run fresh37. Only fresh37 pass may run historical exact200
 - launcher `bash -n`: passed.
 - direct `fresh37_parallel2` without Stage-1 analysis exits fail-closed with code 4 before Waymax rollout.
 
-# ALGORITHM_CHANGELOG V16.8.37 — Recourse Returnability Bridge
+# ALGORITHM_CHANGELOG V16.8.37 — Recourse Returnability Bridge (Audited Revision)
 
-## Triggering evidence: V16.8.36 is reliable but the existing-bank semantic frontier fails decisively
+## Source/provenance note
 
-V16.8.36 passed a fresh result-integrity/attribution audit before any mechanism interpretation. The two 24-scene shards are disjoint and exactly cover the frozen counterfactual48 manifest; merged standard metrics are exactly reproducible from scenario rows; equivalence16 remains 16 scenes / 1120 fields / 0 mismatch; online ground-truth leakage flags remain false; the v16.8.28 no-valid execution invariant remains intact; the shipped v16.8.36 analyzer was independently rerun with zero recursive mismatches; and the focused semantic/integrity suite is clean. The result is therefore eligible for algorithm attribution rather than repair-only handling.
+The uploaded `COWP.zip` was described as V16.8.36 but already contained a V16.8.37 draft. That draft was treated as an untrusted candidate, not as an established result. V16.8.36 was independently re-audited first; only after reliability passed was the V37 mechanism reviewed and corrected. This changelog describes the final audited V16.8.37, not the draft as uploaded.
 
-The inherited Stage-1 gate is unchanged: retain >=5/10 old RVR collision rescues, avoid >=7/9 old RVR-induced collisions, remove >=3 net COWP collisions, kinematics net regression <=1 scene, paired mean EP delta >=-0.05, and nonzero intervention. No threshold is changed after observing v16.8.36.
+## Triggering evidence: V16.8.36 is reliable and fails the unchanged Stage-1 gate
 
-`cowp_control_projected_recovery_frontier` fails that gate:
+An independent V16.8.36 audit passes 71/71 hard checks:
 
-- COWP: 34/48 collision, 6/48 kinematics, 1/48 offroad, EP 1.002512.
-- V35 CPOSH reference: 27/48 collision, 7/48 kinematics, 0/48 offroad, EP 0.913987.
-- V36 frontier: 34/48 collision, 8/48 kinematics, 0/48 offroad, EP 0.978086.
-- versus COWP collision: 6 rescued / 6 induced, net 0, McNemar p=1.0.
-- old RVR rescues retained: 5/10 (pass at the exact lower bound).
-- old RVR induced avoided: 3/9 (fail; required >=7/9).
-- kinematics: +2 scenes (fail; allowed <=1).
-- paired mean EP delta versus COWP: approximately -0.02443 (pass).
-- intervention is nonzero (pass).
+- exact manifest copies and logical SHA256 values;
+- 24+24 counterfactual48 shards, disjoint and exactly covering the frozen manifest;
+- merged scenario rows identical to shard rows;
+- CR/Collision/Offroad/Kinematics/EP and fallback statistics independently recomputable;
+- identical checkpoint/protocol provenance and `mechanism_ground_truth_available_online=false`;
+- equivalence16 remains 16 scenes / 1120 fields / 0 mismatch;
+- the V16.8.28 no-valid execution invariant remains true;
+- the shipped analyzer is independently reproduced with 0 recursive mismatches at tolerance 1e-12.
 
-Relative to V35 CPOSH, V36 is not merely neutral: it produces 1 collision rescue and 8 induced collisions, a net +7 failure regression, with exact McNemar p≈0.0391. Therefore broadening the same fixed bank from a binary endpoint to a semantic recovery frontier is *not* the missing dominant mechanism.
+V16.8.36 is therefore eligible for algorithm attribution. It is not publication evidence because counterfactual48 is development-selected and logged replay has no counterfactual burden ground truth.
 
-## What V16.8.36 did successfully falsify
+The six preregistered Stage-1 checks are unchanged:
 
-V36 genuinely used the broader fixed-bank support. Approximately 62.85% of its recovery switches selected a representative that was **not** the historical global-RVR endpoint. Thus the negative result cannot be dismissed as an implementation that silently collapsed back to `base vs RVR`.
+- retain at least 5/10 historical RVR collision rescues;
+- avoid at least 7/9 historical RVR-induced collisions;
+- remove at least 3 net COWP collisions;
+- kinematics net regression no worse than +1 scene;
+- paired mean EP delta at least -0.05;
+- nonzero intervention.
 
-However, the support statistics do not separate beneficial from harmful switches:
+`cowp_control_projected_recovery_frontier` fails three checks:
 
-- rescued scenes select a non-historical RVR representative on roughly 77.4% of switches;
-- induced scenes do so on roughly 75.0%;
-- selected safe-prefix improvement is ~+5.20 steps in rescued scenes and ~+5.36 in induced scenes.
+- old rescues retained: 5/10 (pass);
+- old induced avoided: 3/9 (fail);
+- collision vs COWP: 6 rescued / 6 induced, net 0 (fail);
+- kinematics: +2 scenes (fail);
+- paired mean EP delta: -0.02443 (pass);
+- intervention: 20.57% policy steps (pass).
 
-So `more semantic support` and `larger current prefix` are not sufficient physical viability observables.
+V16.8.36 is archived and must not run fresh37.
 
-The strongest separating evidence is **returnability to the conventional feasible region**. In V36-induced scenes:
+## Mechanism attribution from V16.8.36
 
-- mean zero-conventional exposure is ~92.5%;
-- mean conventional candidate count is only ~0.79;
-- mean valid candidate count remains ~37.2.
+V36 genuinely exercised the broader existing-bank frontier:
 
-The controller therefore remains in a state with many nominal/un-certified choices while almost never recovering a full-conventional option. All six V36-induced collisions occur while the immediately preceding action is still `no_conventional_use_control_projected_recovery_frontier`; the selected candidate is valid but conventional=false and collision-safe=false, with selected safe-prefix already 0. The failures are not downstream accepted-path accidents after successful restoration.
+- 62.85% of recovery switches selected a non-historical-RVR representative;
+- mean semantic representatives per probe: 8.86;
+- mean control-projected profiles evaluated: 5.66.
 
-Two examples make the mode problem explicit:
+The failure is therefore not inactive code or binary-endpoint degeneration. Relative to V35 CPOSH, V36 produces 1 collision rescue and 8 induced collisions (McNemar exact p≈0.0391).
 
-- `d632f1919fe4bab`: recovery active for essentially the whole episode, entry ~1.25%, continuation ~98.75%, zero-conventional 100%, first collision around step 37.
-- `f8d4c735825e5d81`: recovery active 100%, entry ~1.25%, continuation ~98.75%, zero-conventional 100%, first collision around step 19.
+Rescued and induced groups have similar valid support, non-RVR selection, and prefix gain, but radically different return to conventional support:
 
-A single strict entry can therefore create an almost episode-long weak-dominance mode even though the system never returns to certified physical support.
+- rescued: zero-conventional 67.5%, mean conventional candidates 3.77;
+- induced: zero-conventional 92.5%, mean conventional candidates 0.79;
+- both groups retain roughly 35–37 valid candidates.
 
-## Dominant bottleneck after V16.8.36
+All six V36-induced collisions are immediately preceded by an uncertified recovery candidate that is valid but non-conventional, collision-unsafe, prefix 0, in a collision-empty zero-conventional state. Two scenes remain in recovery active/continue state for essentially the whole episode after one rare entry.
 
-The prior bottleneck `Existing-Bank Recovery Support Utilization / Binary-Endpoint Bottleneck` is falsified as the dominant next fix.
+The dominant bottleneck is therefore refined from existing-bank support utilization to:
 
-The new P0 bottleneck is:
+**Returnability to Full-Conventional Physical Feasibility under Uncertified Recovery**
 
-**Returnability to Certified Physical Feasibility under Uncertified Recovery**
-
-or, in the paper-level abstraction:
+Paper-level abstraction:
 
 **Control-Reachable Recourse-to-Feasibility**.
 
-The important distinction is:
+Option richness is not returnability.
 
-- **option richness:** how many semantic recovery modes remain nominally/control-realizably available;
-- **returnability:** whether executing a current recovery action preserves a causal replanning route back to the unchanged full-conventional feasible set.
+## New method: `cowp_recourse_returnability_bridge`
 
-V36 shows that the former can stay large while the latter is effectively absent.
-
-## V16.8.37 main method: `cowp_recourse_returnability_bridge`
-
-V16.8.37 follows the branch explicitly preregistered in the v16.8.36 changelog: after an existing-bank selector/frontier failure, stop adding ROSH/EOSH/CPOSH comparator variants and move to a higher-fidelity closed-loop returnability/reachable-set formulation.
-
-It does **not** add map/Frenet primitives, retrain a model, change RCOT/BCOT, change certificate semantics, tune the common controller, shorten the 8 s conventional horizon, or modify accepted-path execution.
+V37 is active only when the full conventional set is empty and at least one valid candidate exists. It does not change the dataset, checkpoint, proposal families, RCOT/BCOT, protected-priority certificate, set-preservation frontier, 8 s conventional contract, common controller, or accepted-path logic.
 
 ### 1. Frozen high-precision entry pre-gate
 
-The current controlled alternatives return to the clean V35 pair:
+The controlled pair returns to the strongest positive physical probe:
 
 - `base`: unchanged least-coercive-valid COWP fallback;
 - `alt`: historical global max-prefix RVR candidate.
 
-This is deliberate. V36 demonstrated that broad current semantic frontier expansion is harmful; V35 CPOSH remains the strongest positive physical signal so far.
+A returnability probe is allowed only when:
 
-An expensive returnability probe is considered only when:
+1. emitted actions are physically distinct;
+2. the alternative current causal prefix is not below the base;
+3. the alternative has at least one safe step, so it survives the next real replanning edge;
+4. the alternative strictly dominates under the frozen V35 control-projected option-spectrum plus benchmark-aligned current kinematic relation.
 
-1. base and RVR emit physically distinct current actions;
-2. RVR current causal collision-safe prefix is not below base;
-3. RVR strictly dominates base under the frozen V35 control-projected successor option-spectrum relation, including the benchmark-aligned emitted-action kinematics contract.
-
-This preserves the V35 high-recall signal while asking a new question only for its strict-positive entries.
+The new positive-edge condition is a hard feasibility invariant, not a tuned margin.
 
 ### 2. Direct restoration witness
 
-For each current alternative, execute its *actual emitted one-step action* in the same causal successor model used by previous recovery probes and rebuild the unchanged online physical candidate bank.
+Execute the actual emitted one-step action in the causal successor model and rebuild the unchanged online bank. `direct_restore=true` iff the successor contains any valid full-conventional candidate.
 
-If that successor contains any full-conventional candidate, the branch has a **direct restoration witness**.
+Only current state, actual emitted action, map state, controller memory, and the frozen causal constant-velocity surrounding-agent model are used. Logged future trajectories are never consumed by action selection.
 
-This uses no future Waymax logged trajectory; surrounding agents use the same frozen causal constant-velocity propagation as the conventional collision audit.
+### 3. One-new-replan semantic recourse witness
 
-### 3. One-replan semantic recourse witness
+If direct restoration is absent, build a new candidate bank at the causal successor. Keep candidates that are valid, roadgraph-safe, positive-prefix, non-PAD, and benchmark-kinematic-transition-feasible. Project them with the carried longitudinal-acceleration state.
 
-If direct restoration is absent at the first successor, V37 generates a **new candidate bank at that successor**, because the real planner will replan there. This is the key difference from THOP: the second edge is not waypoint `t+2` from the original candidate.
+The audited implementation evaluates every distinct `(semantic macro, actual emitted target)` action class. It does **not** keep only one max-prefix candidate per macro. A macro belongs to the witnessed recourse set if any of its action classes reaches a second causal state with a nonempty unchanged full-conventional set.
 
-From that successor bank, V37 forms one deterministic representative per non-PAD semantic macro from candidates that are valid, roadgraph-safe, have positive current causal safe-prefix, and whose actual emitted transition satisfies the Waymax kinematics contract. Each representative is projected through the unchanged stateful controller using the carried emitted longitudinal acceleration.
+The second action is a newly replanned successor action, not waypoint `t+2` of the original candidate.
 
-For each representative, V37 performs one more causal successor step and asks whether that state contains any full-conventional candidate. The set of semantic macros that succeed is the **witnessed recourse set** `R(a)`.
+### 4. Hard returnability partial order
 
-This is a finite one-replanning recourse witness, not an indefinite horizon score and not a new proposal primitive.
+No count, AUC, discount, risk weight, or utility scalar is used.
 
-### 4. Returnability partial order
+- alt direct / base non-direct: strict improvement;
+- base direct / alt non-direct: reject;
+- both direct: returnability tie, no strict entry from returnability alone;
+- neither direct: require strict semantic set inclusion `R_base ⊂ R_alt`;
+- incomparable recourse sets: reject.
 
-No count weight, area, discount, risk coefficient, or learned score is used.
+### 5. Witness-bound one-real-replanning bridge
 
-- alt direct-restores while base does not -> strict returnability improvement;
-- base direct-restores while alt does not -> reject;
-- both direct-restore -> returnability tie, so returnability itself cannot create a strict entry;
-- neither direct-restores -> require strict semantic set inclusion `R_base ⊂ R_alt`;
-- incomparable recourse sets -> reject.
+A non-direct entry stores both `bridge_pending=true` and the semantic recourse macros witnessed at entry.
 
-Thus a candidate cannot win merely because it has the same number of different recovery macros; it must preserve every witnessed base recourse macro and add at least one new one.
+At the next actual policy step:
 
-### 5. One-real-replanning bridge, not hysteresis continuation
-
-When an RVR entry wins because it has a strict non-direct recourse witness, V37 stores only `bridge_pending=True`.
-
-At the **next actual policy step**:
-
-- if the conventional/certificate path has already recovered, pending is cleared and ordinary COWP takes over;
-- otherwise, V37 recomputes the candidate bank from the actual observed simulator state;
-- one semantic representative per macro is tested for whether its actual emitted one-step transition produces a successor with any full-conventional candidate;
-- among those direct-restoring representatives, choose the one with minimum frozen COWP fallback score;
+- ordinary certificate/conventional recovery clears pending immediately;
+- otherwise rebuild the bank from the actual observed simulator state;
+- search only the macros witnessed at entry;
+- require positive current prefix and no prefix regression relative to the ordinary COWP fallback on that step;
+- evaluate every distinct emitted-action class for direct restoration;
+- select the minimum frozen COWP fallback score inside the hard restoring set;
 - execute at most this one bridge action, then clear pending unconditionally;
-- if no direct-restoring representative exists, abort the bridge and use the unchanged COWP fallback immediately.
+- abort to ordinary COWP if no witnessed direct-restoring action remains.
 
-There is no weak-equality continuation, dwell time, hysteresis epsilon, minimum recovery duration, or recurrent recovery mode. This specifically removes the v36 failure mode in which a single entry can continue for almost an entire zero-conventional episode.
+There is no weak-equality continuation, dwell duration, hysteresis epsilon, fixed commitment, or recurrent recovery mode.
 
-### 6. Diagnostics
+## Correctness fixes applied to the uploaded V37 draft
 
-New step/episode diagnostics include:
+1. **Existential recourse completeness:** replaced one-representative-per-macro probing with all distinct emitted-action classes, preventing a false negative when a non-max-prefix action in the same macro is the only restoring action.
+2. **Witness/execution consistency:** store the witnessed recourse macro set at entry; the actual bridge cannot execute an unrelated newly discovered macro.
+3. **Current-survival preservation:** actual bridge candidates must keep at least the ordinary COWP base prefix on the actual bridge state.
+4. **Positive-edge invariant:** an entry action must retain at least one causal collision-free step; a prefix-0 action cannot be certified by a future returnability surrogate.
+5. **Expanded diagnostics:** action classes available/evaluated, witnessed macro count, actual bridge pool, prefix floor, bridge execution/abort conditioned on pending, and selected bridge macro.
 
-- returnability probe rate;
+## Diagnostics (not additional outcome gates)
+
+- returnability probe and strict-dominance rates;
 - base/RVR direct-restoration rates;
 - base/RVR witnessed recourse macro counts;
-- strict/weak returnability relation;
-- action classes evaluated;
+- base/RVR action classes available/evaluated;
+- current-edge survival rate;
 - bridge pending/entry/direct-entry rates;
-- bridge recourse execution rate;
-- bridge abort rate;
-- direct-restoring representative count on the actual bridge step.
+- witnessed macro count on bridge steps;
+- bridge candidate pool/action classes/evaluated;
+- bridge execution and abort rates conditioned on pending;
+- direct-restoring candidate count and selected bridge macro.
 
-These are mechanism diagnostics, **not** post-hoc additional promotion conditions. The inherited six-item Stage-1 gate remains the only outcome gate.
-
-## Why this is not THOP or another tuned horizon
-
-V16.8.32 THOP evaluated the same incomplete viability representation at additional time indices along/derived from candidate continuation. V16.8.37 instead explicitly branches through a *new replanning action* at the causal successor and asks whether a full-conventional set becomes non-empty.
-
-The one-replan depth is fixed as the mechanism definition of this diagnostic probe; it is not tuned after seeing outcomes. If it fails, V37 is not extended to “2/3/4 bridge steps.” The next family must construct a genuine reachable-support/viability object rather than horizon-stack this probe.
-
-## CCF-A positioning
-
-Backup-plan MPC, contingency planning, recursive feasibility, safe-set recovery, and reachability are established research families. V16.8.37 must not claim novelty for “one backup action” or “returning to a safe set.”
-
-The candidate paper contribution remains **Orthogonal Option-Set Feasibility**:
-
-- social feasibility: an ego plan must not obtain safety by collapsing protected road users’ natural low-burden option sets;
-- physical feasibility: an uncertified ego recovery must not obtain short-term survival by collapsing the ego’s own **recourse paths back to certified control-realizable feasibility**.
-
-V37 is a mechanism probe that sharpens the physical axis from `option richness` to `recourse-to-feasibility`.
+These diagnostics support attribution only. The inherited six-item Stage-1 gate remains the only promotion gate.
 
 ## Frozen layers
 
-Freeze throughout V37:
+Freeze in V37:
 
-- compact-5k data and label contract;
+- compact-5k data/label contract;
 - Natural roots;
 - RCOT and BCOT;
 - protected-priority hard certificate;
-- post-certificate set-preservation frontier;
+- certificate-compatible set preservation;
 - outcome head/settings;
 - 8 s conventional-safe definition;
 - V27 conventional-integrity and V28 no-valid execution fixes;
-- current candidate families;
-- common online action controller;
+- candidate families;
+- common online controller;
 - accepted/certified path selection and execution.
 
-Accepted-path kinematics remains a real but secondary independent bottleneck. V36 fails primarily on collision recovery, so it is not mixed into V37.
+Accepted-path kinematics remains a real secondary bottleneck and is not modified in the same round.
 
 ## Newly prohibited directions
 
-All previous bans remain. Add:
+All prior bans remain. Add:
 
-1. **Do not continue V36 semantic frontier selection** or tune weak-dominance continuation. V36 significantly regresses collision relative to V35 CPOSH.
-2. **Do not interpret valid-candidate richness as physical viability.** V36 induced scenes retain ~37 valid candidates while conventional support is almost absent.
-3. **Do not tune recovery dwell/continuation thresholds.** V36 shows harmful near-episode-long continuation after rare entries; prior unconditional commitment was also negative.
-4. **Do not add V3/V4 returnability horizons if V37 fails.** The next branch must be genuine reachable-support construction, not another horizon stack.
-5. **Do not select recourse by number of macros, profile AUC, returnability count weight, or progress/collision scalarization.** V37 uses hard set inclusion and frozen COWP preference only.
-6. **Do not broaden the current candidate frontier in V37.** V36 already falsified that as the dominant fix.
-7. **Do not train a neural returnability head before the analytic witness is validated.**
-8. **Do not modify accepted-path kinematics in the same version.**
+1. Do not continue or tune V36 semantic frontier selection, weak dominance, fallback order, or macro hopping.
+2. Do not interpret valid-candidate count, macro count, profile area, or prefix gain as returnability.
+3. Do not tune fixed dwell, hysteresis epsilon/margin, or minimum recovery duration.
+4. Do not extend a failed V37 to 2/3/4 bridge depths; that would repeat horizon stacking.
+5. Do not scalarize recourse with macro count, profile AUC, discount, collision/progress weights, or risk coefficients.
+6. Do not relax the six preregistered gates.
+7. Do not train a neural returnability head before the analytic witness is validated.
+8. Do not retune the common controller or mix accepted-path kinematics into this recovery round.
+9. Do not claim counterfactual burden causality from the logged-replay Waymax protocol.
 
-## Promotion protocol
+## Experiment protocol
 
-Stage-1 counterfactual48 uses the exact same six conditions as V16.8.33–36. No returnability diagnostic is introduced as a seventh outcome gate.
+Run only:
 
-Only Stage-1 `pass=true` may run fresh37; only fresh37 pass may run historical exact200 development confirmation. The launcher remains fail-closed.
+1. sanity;
+2. make_ids;
+3. base_equivalence16_parallel2;
+4. counterfactual48_parallel2;
+5. analyze_counterfactual48.
 
-If V37 fails Stage-1, stop the ROSH/EOSH/CPOSH/frontier/bridge selector family. The next algorithm family should be a **genuine control-reachable recovery support / viability construction**, potentially with explicit reachable tubes/sets or learned dynamics only after an honest analytic target is defined.
+Stop unless `preregistered_gate.recourse_returnability_bridge.pass == true`.
+
+Only a Stage-1 pass may run fresh37. Only a fresh37 pass may run historical exact200 development confirmation. Launcher checks remain fail-closed and have been verified to terminate with exit code 4 before any rollout when the preceding analysis is missing or failed.
+
+## Validation
+
+Final audited V37 validation:
+
+- V37 dedicated tests: 8/8 passed;
+- V16.8.25→37 focused semantic/integrity suite: 61/61 passed;
+- Python compile: passed;
+- launcher bash syntax: passed;
+- manifest hashes: passed;
+- analyzer v2 smoke: passed;
+- fail-closed promotion probe: passed;
+- conventional-safety bypass grep: passed.
+
+The repository-wide suite still stops during collection because historical `tests/test_v16_8_29_recovery_viability.py` imports the already-absent `_recovery_bridge_viability_mask`. The same failure is reproduced in the unmodified uploaded source and is not introduced by V37.
+
+## CCF-A positioning and failure branch
+
+A one-step backup/bridge or return to a safe set is not claimed as novelty by itself. The candidate paper structure remains **Orthogonal Option-Set Feasibility**:
+
+- social feasibility protects other agents' natural low-burden option sets;
+- physical feasibility protects ego recourse paths back to certified control-realizable feasibility.
+
+If V37 fails Stage-1, stop the RVR/SOV/BHOV/THOP/ROSH/EOSH/CPOSH/frontier/bridge selector family. The next algorithm family must construct genuine control-reachable recovery support or an explicit viability/reachable-set approximation, with an unbiased paired proposal probe before any dataset reconstruction or learned amortization.

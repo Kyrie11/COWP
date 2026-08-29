@@ -65,9 +65,18 @@ def _aggregate(rows: dict[str, dict[str, Any]], ids: list[str]) -> dict[str, Any
         "recourse_returnability_strict_dominance_rate_on_probes",
         "recourse_base_direct_restore_rate_on_probes", "recourse_rvr_direct_restore_rate_on_probes",
         "mean_recourse_base_macro_count_on_probes", "mean_recourse_rvr_macro_count_on_probes",
+        "recourse_current_action_survival_step_rate",
+        "mean_recourse_base_action_classes_available_on_probes", "mean_recourse_rvr_action_classes_available_on_probes",
+        "mean_recourse_base_action_classes_evaluated_on_probes", "mean_recourse_rvr_action_classes_evaluated_on_probes",
         "recovery_bridge_pending_step_rate", "recovery_bridge_entry_step_rate",
         "recovery_bridge_direct_entry_step_rate", "recovery_bridge_recourse_execution_step_rate",
         "recovery_bridge_abort_step_rate", "mean_direct_restoring_candidate_count_on_bridge_steps",
+        "mean_recovery_bridge_allowed_macro_count_on_bridge_steps",
+        "mean_recourse_bridge_candidate_pool_on_bridge_steps",
+        "mean_recourse_bridge_action_classes_available_on_bridge_steps",
+        "mean_recourse_bridge_action_classes_evaluated_on_bridge_steps",
+        "mean_recourse_bridge_minimum_prefix_steps_on_bridge_steps",
+        "recovery_bridge_execution_rate_on_bridge_steps", "recovery_bridge_abort_rate_on_bridge_steps",
         "selected_waymax_kinematic_feasible_step_rate", "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps",
     ]
     for key in diag_keys:
@@ -127,7 +136,7 @@ def main() -> None:
     if mismatch: raise SystemExit(f"scenario set mismatch: {mismatch}")
 
     out: dict[str, Any] = {
-        "schema_version": "cowp_recourse_returnability_bridge_analysis_v1", "development_selected": bool(args.development_selected),
+        "schema_version": "cowp_recourse_returnability_bridge_analysis_v2", "development_selected": bool(args.development_selected),
         "paper_evidence": False, "scenario_count": len(ids), "stage": str(args.stage), "methods": {}, "paired_vs_cowp": {},
     }
     for name, rows in rowmap.items():
@@ -184,9 +193,16 @@ def main() -> None:
         "returnability_strict_rate_on_probes": out["methods"][name].get("recourse_returnability_strict_dominance_rate_on_probes"),
         "rvr_direct_restore_rate_on_probes": out["methods"][name].get("recourse_rvr_direct_restore_rate_on_probes"),
         "mean_rvr_recourse_macro_count_on_probes": out["methods"][name].get("mean_recourse_rvr_macro_count_on_probes"),
+        "mean_rvr_recourse_action_classes_available_on_probes": out["methods"][name].get("mean_recourse_rvr_action_classes_available_on_probes"),
+        "mean_rvr_recourse_action_classes_evaluated_on_probes": out["methods"][name].get("mean_recourse_rvr_action_classes_evaluated_on_probes"),
+        "current_action_survival_step_rate": out["methods"][name].get("recourse_current_action_survival_step_rate"),
         "bridge_entry_step_rate": out["methods"][name].get("recovery_bridge_entry_step_rate"),
         "bridge_recourse_execution_step_rate": out["methods"][name].get("recovery_bridge_recourse_execution_step_rate"),
         "bridge_abort_step_rate": out["methods"][name].get("recovery_bridge_abort_step_rate"),
+        "bridge_execution_rate_conditioned_on_pending": out["methods"][name].get("recovery_bridge_execution_rate_on_bridge_steps"),
+        "bridge_abort_rate_conditioned_on_pending": out["methods"][name].get("recovery_bridge_abort_rate_on_bridge_steps"),
+        "mean_witnessed_macro_count_on_bridge_steps": out["methods"][name].get("mean_recovery_bridge_allowed_macro_count_on_bridge_steps"),
+        "mean_bridge_action_classes_evaluated": out["methods"][name].get("mean_recourse_bridge_action_classes_evaluated_on_bridge_steps"),
         "interpretation": "Outcome gain is attributable to the v37 mechanism only if returnability probes/entries are nonzero; the inherited six-item promotion gate remains unchanged.",
     }
     Path(args.output).write_text(json.dumps(out, indent=2, ensure_ascii=False))

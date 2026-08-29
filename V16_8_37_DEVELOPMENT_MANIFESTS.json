@@ -1,5 +1,5 @@
 {
-  "schema_version": "v16.8.37-development-manifests-v1",
+  "schema_version": "v16.8.37-development-manifests-v2",
   "version": "V16.8.37",
   "algorithm_family": "Recourse Returnability Bridge",
   "exact200": {
@@ -16,7 +16,9 @@
     "count": 48,
     "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
     "role": "mechanism-selected Stage-1 gate; not publication evidence",
-    "v16_8_37_methods": ["cowp_recourse_returnability_bridge"]
+    "v16_8_37_methods": [
+      "cowp_recourse_returnability_bridge"
+    ]
   },
   "fresh37": {
     "count": 37,
@@ -24,7 +26,6 @@
     "role": "lineage-cleanest Stage-2 development generalization gate inside historical exact200 universe"
   },
   "promotion_discipline": {
-    "stage1_gate_unchanged_from_v16_8_33_through_v16_8_36": true,
     "counterfactual48_old_rvr_rescues_retained_min": 5,
     "counterfactual48_old_rvr_induced_avoided_min": 7,
     "counterfactual48_cowp_collision_net_removed_min": 3,
@@ -35,6 +36,8 @@
     "exact200_requires_fresh37_pass": true,
     "launcher_fail_closed": true,
     "returnability_diagnostics_are_not_new_outcome_gates": true,
-    "publication_holdout": false
-  }
+    "publication_holdout": false,
+    "stage1_gate_unchanged_from_v16_8_33_through_v16_8_37": true
+  },
+  "audited_revision": true
 }

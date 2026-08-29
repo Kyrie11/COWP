@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 import importlib
+import math
 import time
 
 import numpy as np
@@ -1091,6 +1092,28 @@ def _option_profile_relation(
 
 
 
+def _returnability_current_edge_admissible(
+    base_prefix_steps: float,
+    alt_prefix_steps: float,
+) -> bool:
+    """Require the alternative to survive the next real replanning edge.
+
+    Returnability is meaningless if the selected recovery control is already
+    collision-unsafe before the next policy invocation.  The alternative must
+    therefore retain at least one causal collision-free step and may not reduce
+    the current prefix relative to the unchanged COWP fallback.  This is a hard
+    feasibility relation, not a tuned prefix margin.
+    """
+    bp = float(base_prefix_steps)
+    ap = float(alt_prefix_steps)
+    return bool(
+        math.isfinite(bp)
+        and math.isfinite(ap)
+        and ap >= 1.0 - 1.0e-9
+        and ap >= bp - 1.0e-9
+    )
+
+
 def _returnability_relation(
     base_direct_restore: bool,
     base_recourse_macros: frozenset[int],
@@ -1118,6 +1141,68 @@ def _returnability_relation(
     return strict, weak
 
 
+def _semantic_action_class_representatives_np(
+    pool: np.ndarray,
+    macro_types: np.ndarray,
+    action_targets: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    fallback_scores: np.ndarray | None = None,
+    *,
+    prefer_fallback: bool = False,
+    atol: float = 1.0e-6,
+) -> list[int]:
+    """Return deterministic representatives of distinct emitted-action classes.
+
+    A semantic macro can contain several physically different emitted controls.  A
+    one-representative-per-macro probe is therefore not an existential recourse
+    test: its chosen representative may fail even though another action in the
+    same macro restores conventional support.  V16.8.37 keeps every distinct
+    ``(macro, emitted target)`` class and removes only controls that are physically
+    identical up to ``atol``.
+
+    ``prefer_fallback=False`` orders classes by longer current causal prefix and
+    then index, which is used for the counterfactual witness.  On the actual bridge
+    step, ``prefer_fallback=True`` keeps the frozen COWP fallback preference among
+    physically equivalent candidates after all hard gates have passed.
+    """
+    keep = np.asarray(pool, dtype=bool).reshape(-1)
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    targets = np.asarray(action_targets, dtype=np.float32)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
+    scores = None if fallback_scores is None else np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+    n = min(keep.size, macro.size, targets.shape[0] if targets.ndim >= 2 else 0, prefix.size)
+    if scores is not None:
+        n = min(n, scores.size)
+    if n <= 0:
+        return []
+    keep, macro, targets, prefix = keep[:n], macro[:n], targets[:n], prefix[:n]
+    if scores is not None:
+        scores = scores[:n]
+
+    reps: list[int] = []
+    for m in sorted(int(x) for x in np.unique(macro[keep])):
+        idx = np.flatnonzero(keep & (macro == int(m))).tolist()
+        if prefer_fallback and scores is not None:
+            idx.sort(key=lambda i: (
+                float(scores[i]) if np.isfinite(scores[i]) else float("inf"),
+                -float(prefix[i]) if np.isfinite(prefix[i]) else float("inf"),
+                int(i),
+            ))
+        else:
+            idx.sort(key=lambda i: (
+                -float(prefix[i]) if np.isfinite(prefix[i]) else float("inf"),
+                int(i),
+            ))
+        chosen_for_macro: list[int] = []
+        for i in idx:
+            target = np.asarray(targets[int(i)], dtype=np.float32)
+            if any(np.allclose(target, targets[int(j)], rtol=0.0, atol=float(atol)) for j in chosen_for_macro):
+                continue
+            chosen_for_macro.append(int(i))
+            reps.append(int(i))
+    return reps
+
+
 def _returnability_witness_signature(
     agent_state: np.ndarray,
     sdc_index: int,
@@ -1126,19 +1211,19 @@ def _returnability_witness_signature(
     roadgraph: dict[str, np.ndarray],
     cfg: dict,
 ) -> tuple[bool, frozenset[int], dict[str, int | float]]:
-    """One-replan causal recourse witness used by v16.8.37.
+    """One-real-replan causal recourse witness used by v16.8.37.
 
     The first successor uses the *actually emitted* control target.  If the
-    unchanged online bank already contains a full-conventional option, the
-    branch directly restores the certified physical region.  Otherwise we take
-    one deterministic representative per semantic macro from the same fixed
-    bank, project its first action through the existing stateful controller, and
-    ask whether that one additional real replanning transition reaches a state
-    with any full-conventional proposal.
+    unchanged online bank already contains a full-conventional option, the branch
+    directly restores the physical feasible region.  Otherwise every distinct
+    emitted-action class in each non-PAD semantic macro is tested.  A macro enters
+    the witnessed recourse set when at least one of its newly replanned actions,
+    projected with the carried controller acceleration, reaches a second causal
+    state with a non-empty unchanged full-conventional bank.
 
-    This is intentionally different from THOP-style horizon stacking: the
-    second edge is a newly generated action at s_{t+1}, not waypoint t+2 of the
-    original candidate.  No logged future state is consumed.
+    The second edge is a newly generated action at ``s_{t+1}``, never waypoint
+    ``t+2`` of the original candidate.  Surrounding agents use the same frozen
+    causal propagation as the conventional audit; no logged future is consumed.
     """
     s1 = _counterfactual_successor_agent_state(agent_state, sdc_index, emitted_target, cfg)
     (
@@ -1154,36 +1239,38 @@ def _returnability_witness_signature(
     detail: dict[str, int | float] = {
         "successor_valid_candidates": int(valid1.sum()),
         "successor_conventional_candidates": int(conv1.sum()),
+        "recourse_candidate_pool": 0,
         "recourse_representatives": 0,
+        "recourse_action_classes_available": 0,
         "recourse_action_classes_evaluated": 0,
         "recourse_macros_restoring": 0,
     }
     if direct or traj1.ndim != 3 or traj1.shape[0] == 0:
         return direct, frozenset(), detail
 
-    action_targets1, action_accels1, _projection_risk1 = _consistent_one_step_targets_np(
+    action_targets1, _action_accels1, _projection_risk1 = _consistent_one_step_targets_np(
         s1[int(sdc_index)], traj1[:, 0, :], cfg, float(emitted_accel)
     )
     kin1, _ia1, _st1, _contract1 = _waymax_kinematic_transition_np(
         s1[int(sdc_index)], action_targets1, cfg
     )
     pool = valid1 & road1 & (prefix1 > 0.0) & np.asarray(kin1, dtype=bool) & (macro1 != int(MacroType.PAD))
-    # One deterministic witness per semantic macro.  This is a support probe,
-    # not proposal expansion; tie-breaking is prefix then candidate index.
-    zero_score = np.zeros_like(prefix1, dtype=np.float64)
-    reps = _macro_recovery_representatives_np(pool, pool, prefix1, macro1, zero_score)
-    detail["recourse_representatives"] = int(len(reps))
+    detail["recourse_candidate_pool"] = int(pool.sum())
+    detail["recourse_representatives"] = int(np.unique(macro1[pool]).size) if bool(pool.any()) else 0
+    reps = _semantic_action_class_representatives_np(
+        pool, macro1, action_targets1, prefix1, fallback_scores=None, prefer_fallback=False
+    )
+    detail["recourse_action_classes_available"] = int(len(reps))
     restoring: set[int] = set()
-    # Deduplicate physically identical control targets inside each semantic macro.
-    seen: list[tuple[int, np.ndarray]] = []
     for rep in reps:
         rep = int(rep)
-        target = np.asarray(action_targets1[rep], dtype=np.float32)
         m = int(macro1[rep])
-        if any(m == sm and np.allclose(target, st, rtol=0.0, atol=1.0e-6) for sm, st in seen):
+        # Once existence is witnessed for a macro, remaining controls in that
+        # macro cannot change the semantic recourse set and are skipped.
+        if m in restoring:
             continue
-        seen.append((m, target.copy()))
         detail["recourse_action_classes_evaluated"] = int(detail["recourse_action_classes_evaluated"]) + 1
+        target = np.asarray(action_targets1[rep], dtype=np.float32)
         s2 = _counterfactual_successor_agent_state(s1, int(sdc_index), target, cfg)
         _t2, v2, c2, _m2, _u2, _r2, _cs2, _p2, _mg2 = _route_lane_aware_candidates(
             s2, int(sdc_index), roadgraph, cfg, other_future_trajs=None
@@ -1194,7 +1281,7 @@ def _returnability_witness_signature(
     return False, frozenset(restoring), detail
 
 
-def _direct_restoring_representatives_np(
+def _direct_restoring_candidates_np(
     agent_state: np.ndarray,
     sdc_index: int,
     roadgraph: dict[str, np.ndarray],
@@ -1205,13 +1292,23 @@ def _direct_restoring_representatives_np(
     macro: np.ndarray,
     fallback_score: np.ndarray,
     action_targets: np.ndarray,
-) -> tuple[np.ndarray, dict[str, int]]:
-    """Find same-bank semantic representatives that restore conventional support.
+    *,
+    allowed_macros: frozenset[int] | set[int] | None = None,
+    minimum_prefix_steps: float | None = None,
+) -> tuple[np.ndarray, dict[str, int | float]]:
+    """Find same-bank action classes that directly restore conventional support.
 
-    Used only on the single replanning step after a v16.8.37 bridge entry.  A
-    candidate is a bridge witness only if its actual emitted one-step transition
-    is evaluator-kinematically feasible and the resulting causal successor has at
-    least one unchanged full-conventional proposal.
+    This helper runs only on the single actual replanning step after a non-direct
+    returnability entry.  It fixes two important witness-consistency requirements:
+
+    1. search every distinct emitted-action class, not only one max-prefix member
+       per semantic macro;
+    2. never trade away current causal survival relative to the ordinary COWP
+       fallback on that actual state.
+
+    When ``allowed_macros`` is supplied, the executed bridge must belong to the
+    semantic recourse set witnessed at entry; an arbitrary newly discovered macro
+    cannot be substituted post hoc.
     """
     valid = np.asarray(cand_valid, dtype=bool)
     road = np.asarray(roadgraph_safe, dtype=bool)
@@ -1223,7 +1320,15 @@ def _direct_restoring_representatives_np(
         agent_state[int(sdc_index)], targets, cfg
     )
     pool = valid & road & (prefix > 0.0) & np.asarray(kin, dtype=bool) & (macro != int(MacroType.PAD))
-    reps = _macro_recovery_representatives_np(pool, pool, prefix, macro, scores)
+    if minimum_prefix_steps is not None and math.isfinite(float(minimum_prefix_steps)):
+        pool &= prefix >= (float(minimum_prefix_steps) - 1.0e-9)
+    allowed = None if allowed_macros is None else frozenset(int(x) for x in allowed_macros)
+    if allowed is not None:
+        pool &= np.asarray([int(m) in allowed for m in macro], dtype=bool)
+
+    reps = _semantic_action_class_representatives_np(
+        pool, macro, targets, prefix, scores, prefer_fallback=True
+    )
     mask = np.zeros_like(valid, dtype=bool)
     evaluated = 0
     for rep in reps:
@@ -1237,8 +1342,35 @@ def _direct_restoring_representatives_np(
         )
         if bool((np.asarray(v1, dtype=bool) & np.asarray(c1, dtype=bool)).any()):
             mask[rep] = True
-    return mask, {"representatives": int(len(reps)), "evaluated": int(evaluated), "restoring": int(mask.sum())}
+    return mask, {
+        "candidate_pool": int(pool.sum()),
+        "representatives": int(np.unique(macro[pool]).size) if bool(pool.any()) else 0,
+        "action_classes": int(len(reps)),
+        "evaluated": int(evaluated),
+        "restoring": int(mask.sum()),
+        "minimum_prefix_steps": float(minimum_prefix_steps) if minimum_prefix_steps is not None else -1.0,
+        "allowed_macro_count": int(len(allowed)) if allowed is not None else -1,
+    }
 
+
+def _direct_restoring_representatives_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    cand_valid: np.ndarray,
+    roadgraph_safe: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    macro: np.ndarray,
+    fallback_score: np.ndarray,
+    action_targets: np.ndarray,
+    **kwargs: Any,
+) -> tuple[np.ndarray, dict[str, int | float]]:
+    """Backward-compatible alias for historical focused tests."""
+    return _direct_restoring_candidates_np(
+        agent_state, sdc_index, roadgraph, cfg, cand_valid, roadgraph_safe,
+        collision_prefix_steps, macro, fallback_score, action_targets, **kwargs,
+    )
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
@@ -3425,8 +3557,11 @@ class COWPWaymaxPolicy:
         self._recovery_hysteresis_active: bool = False
         # v16.8.36: semantic recovery mode for the control-projected recovery frontier.
         self._recovery_frontier_macro: int = -1
-        # v16.8.37: at most one pending real-replan bridge action.
+        # v16.8.37: at most one pending real-replan bridge action.  The
+        # witnessed semantic recourse set is persisted so the actual bridge
+        # cannot substitute an unrelated macro after observing the next state.
         self._recovery_bridge_pending: bool = False
+        self._recovery_bridge_allowed_macros: frozenset[int] = frozenset()
         self._cached_roadgraph_scenario_index: int | None = None
         self._cached_roadgraph: dict[str, np.ndarray] | None = None
         self._cached_sdc_scenario_index: int | None = None
@@ -3499,6 +3634,7 @@ class COWPWaymaxPolicy:
             self._recovery_hysteresis_active = False
             self._recovery_frontier_macro = -1
             self._recovery_bridge_pending = False
+            self._recovery_bridge_allowed_macros = frozenset()
         self._previous_scenario_index = scenario_index
         method, gate_mode = _canonical_online_method(getattr(self, "method", "cowp"), self.ncf_gate_mode)
         needs_cowp_risk = method not in {"planner_score_only", "conventional_safety", "idm_lattice"}
@@ -4228,6 +4364,10 @@ class COWPWaymaxPolicy:
             recovery_frontier_selected_is_non_rvr = False
             recovery_frontier_selected_fallback_score_delta = 0.0
             recovery_bridge_pending_before = bool(self._recovery_bridge_pending) if method == "cowp_recourse_returnability_bridge" else False
+            recovery_bridge_allowed_macros_before = (
+                frozenset(self._recovery_bridge_allowed_macros)
+                if method == "cowp_recourse_returnability_bridge" else frozenset()
+            )
             recovery_bridge_entered = False
             recovery_bridge_direct_entry = False
             recovery_bridge_recourse_executed = False
@@ -4243,7 +4383,12 @@ class COWPWaymaxPolicy:
             recourse_rvr_detail: dict[str, int | float] = {}
             recourse_direct_restoring_candidate_count = 0
             recourse_bridge_representatives_evaluated = 0
+            recourse_bridge_action_classes_available = 0
+            recourse_bridge_candidate_pool = 0
+            recourse_bridge_selected_macro = -1
+            recourse_bridge_minimum_prefix_steps = -1.0
             recourse_current_prefix_nonregressive = False
+            recourse_current_action_survives_one_step = False
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -4255,6 +4400,7 @@ class COWPWaymaxPolicy:
                     self._recovery_frontier_macro = -1
                 if method == "cowp_recourse_returnability_bridge":
                     self._recovery_bridge_pending = False
+                    self._recovery_bridge_allowed_macros = frozenset()
                 select_mask = selection_mask
                 select_score = adjusted_scores
                 fallback_used = False
@@ -4273,6 +4419,7 @@ class COWPWaymaxPolicy:
                     self._recovery_frontier_macro = -1
                 if method == "cowp_recourse_returnability_bridge":
                     self._recovery_bridge_pending = False
+                    self._recovery_bridge_allowed_macros = frozenset()
                 select_mask = cand_valid & conventional
                 select_score = fallback_score
                 fallback_used = True
@@ -4322,19 +4469,30 @@ class COWPWaymaxPolicy:
                         fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
 
                         if bool(self._recovery_bridge_pending):
-                            restore_mask, bridge_detail = _direct_restoring_representatives_np(
+                            # The actual bridge must be consistent with the semantic
+                            # recourse set witnessed at entry and may not reduce the
+                            # current causal survival prefix below ordinary COWP.
+                            recourse_bridge_minimum_prefix_steps = float(prefix_np[int(recovery_base_candidate)])
+                            restore_mask, bridge_detail = _direct_restoring_candidates_np(
                                 agent_state, int(sdc_index), roadgraph, self.cfg,
                                 valid_np, road_np, prefix_np, macro_np_bridge, fallback_np,
                                 np.asarray(action_targets_np, dtype=np.float32),
+                                allowed_macros=recovery_bridge_allowed_macros_before,
+                                minimum_prefix_steps=recourse_bridge_minimum_prefix_steps,
                             )
                             recourse_direct_restoring_candidate_count = int(np.asarray(restore_mask, dtype=bool).sum())
                             recourse_bridge_representatives_evaluated = int(bridge_detail.get("evaluated", 0))
+                            recourse_bridge_action_classes_available = int(bridge_detail.get("action_classes", 0))
+                            recourse_bridge_candidate_pool = int(bridge_detail.get("candidate_pool", 0))
                             restoring_idx = np.flatnonzero(restore_mask)
                             if restoring_idx.size:
                                 chosen = int(min(
                                     restoring_idx.tolist(),
                                     key=lambda i: (float(fallback_np[int(i)]) if np.isfinite(fallback_np[int(i)]) else float("inf"), int(i)),
                                 ))
+                                recourse_bridge_selected_macro = int(macro_np_bridge[int(chosen)])
+                                if recovery_bridge_allowed_macros_before and recourse_bridge_selected_macro not in recovery_bridge_allowed_macros_before:
+                                    raise RuntimeError("Recourse bridge witness-consistency violation: selected macro was not witnessed at entry")
                                 recovery_bridge_recourse_executed = True
                                 recovery_switch_applied = bool(chosen != int(recovery_base_candidate))
                             else:
@@ -4342,11 +4500,13 @@ class COWPWaymaxPolicy:
                             # One-replan bridge is structural, not a dwell-time
                             # hyperparameter: it always terminates after this edge.
                             self._recovery_bridge_pending = False
+                            self._recovery_bridge_allowed_macros = frozenset()
                         else:
                             bp = int(round(float(prefix_np[int(recovery_base_candidate)])))
                             rp = int(round(float(prefix_np[int(recovery_rvr_candidate)])))
                             recourse_current_prefix_nonregressive = bool(rp >= bp)
-                            if recovery_rvr_candidate != recovery_base_candidate and recourse_current_prefix_nonregressive:
+                            recourse_current_action_survives_one_step = _returnability_current_edge_admissible(bp, rp)
+                            if recovery_rvr_candidate != recovery_base_candidate and recourse_current_action_survives_one_step:
                                 bt = np.asarray(action_targets_np[recovery_base_candidate], dtype=np.float32)
                                 rt = np.asarray(action_targets_np[recovery_rvr_candidate], dtype=np.float32)
                                 recovery_action_target_equal = bool(np.allclose(bt, rt, rtol=0.0, atol=1.0e-6))
@@ -4419,6 +4579,10 @@ class COWPWaymaxPolicy:
                                             recovery_bridge_entered = True
                                             recovery_bridge_direct_entry = bool(recourse_rvr_direct_restore)
                                             self._recovery_bridge_pending = bool(not recourse_rvr_direct_restore)
+                                            self._recovery_bridge_allowed_macros = (
+                                                frozenset(recourse_rvr_macros)
+                                                if self._recovery_bridge_pending else frozenset()
+                                            )
                                             recovery_switch_applied = bool(chosen != int(recovery_base_candidate))
 
                         select_mask = self.torch.zeros_like(cand_valid)
@@ -4837,6 +5001,7 @@ class COWPWaymaxPolicy:
                     self._recovery_frontier_macro = -1
                 if method == "cowp_recourse_returnability_bridge":
                     self._recovery_bridge_pending = False
+                    self._recovery_bridge_allowed_macros = frozenset()
                 select_mask = cand_valid
                 select_score = fallback_score
                 fallback_used = True
@@ -5087,6 +5252,8 @@ class COWPWaymaxPolicy:
                 "recovery_frontier_selected_fallback_score_delta": float(recovery_frontier_selected_fallback_score_delta),
                 "recovery_bridge_pending_before": bool(recovery_bridge_pending_before),
                 "recovery_bridge_pending_after": bool(self._recovery_bridge_pending) if method == "cowp_recourse_returnability_bridge" else False,
+                "recovery_bridge_allowed_macro_count_before": int(len(recovery_bridge_allowed_macros_before)),
+                "recovery_bridge_allowed_macro_count_after": int(len(self._recovery_bridge_allowed_macros)) if method == "cowp_recourse_returnability_bridge" else 0,
                 "recovery_bridge_entered": bool(recovery_bridge_entered),
                 "recovery_bridge_direct_entry": bool(recovery_bridge_direct_entry),
                 "recovery_bridge_recourse_executed": bool(recovery_bridge_recourse_executed),
@@ -5098,13 +5265,20 @@ class COWPWaymaxPolicy:
                 "recourse_rvr_macro_count": int(len(recourse_rvr_macros)),
                 "recourse_returnability_strict_dominates": bool(recourse_returnability_strict_dominates),
                 "recourse_returnability_weak_dominates": bool(recourse_returnability_weak_dominates),
+                "recourse_base_action_classes_available": int(recourse_base_detail.get("recourse_action_classes_available", 0)),
+                "recourse_rvr_action_classes_available": int(recourse_rvr_detail.get("recourse_action_classes_available", 0)),
                 "recourse_base_action_classes_evaluated": int(recourse_base_detail.get("recourse_action_classes_evaluated", 0)),
                 "recourse_rvr_action_classes_evaluated": int(recourse_rvr_detail.get("recourse_action_classes_evaluated", 0)),
                 "recourse_base_successor_conventional_candidates": int(recourse_base_detail.get("successor_conventional_candidates", -1)),
                 "recourse_rvr_successor_conventional_candidates": int(recourse_rvr_detail.get("successor_conventional_candidates", -1)),
                 "recourse_direct_restoring_candidate_count": int(recourse_direct_restoring_candidate_count),
                 "recourse_bridge_representatives_evaluated": int(recourse_bridge_representatives_evaluated),
+                "recourse_bridge_action_classes_available": int(recourse_bridge_action_classes_available),
+                "recourse_bridge_candidate_pool": int(recourse_bridge_candidate_pool),
+                "recourse_bridge_selected_macro": int(recourse_bridge_selected_macro),
+                "recourse_bridge_minimum_prefix_steps": float(recourse_bridge_minimum_prefix_steps),
                 "recourse_current_prefix_nonregressive": bool(recourse_current_prefix_nonregressive),
+                "recourse_current_action_survives_one_step": bool(recourse_current_action_survives_one_step),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
