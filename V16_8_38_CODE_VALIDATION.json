@@ -1,0 +1,106 @@
+{
+  "schema_version": "cowp_v16_8_38_code_validation_v1",
+  "version": "V16.8.38",
+  "method": "cowp_shift_closed_control_reachable_tube",
+  "validated_utc": "2026-08-29T09:22:39.614879+00:00",
+  "dedicated_tests": {
+    "passed": true,
+    "summary": "7 passed in 1.09s",
+    "returncode": 0
+  },
+  "focused_semantic_integrity_suite": {
+    "passed": true,
+    "summary": "68 passed in 1.20s",
+    "returncode": 0
+  },
+  "python_compile": {
+    "passed": true,
+    "files": [
+      "cowp/waymax_eval/policy_wrapper.py",
+      "cowp/waymax_eval/rollout.py",
+      "cowp/waymax_eval/metrics_cowp.py",
+      "cowp/scripts/04_eval_closed_loop.py",
+      "cowp/scripts/79_merge_waymax_exact_shards.py",
+      "cowp/scripts/82_verify_cowp_equivalence.py",
+      "cowp/scripts/91_analyze_shift_closed_control_reachable_tube.py"
+    ],
+    "stderr": ""
+  },
+  "launcher_bash_syntax": {
+    "passed": true,
+    "returncode": 0,
+    "stderr": ""
+  },
+  "manifests": {
+    "reference_manifests/waymax_probe_200_ids.txt": {
+      "count": 200,
+      "unique": 200,
+      "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "expected_count": 200,
+      "expected_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "passed": true
+    },
+    "reference_manifests/waymax_v16_8_30_equivalence16_ids.txt": {
+      "count": 16,
+      "unique": 16,
+      "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected_count": 16,
+      "expected_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "passed": true
+    },
+    "reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt": {
+      "count": 48,
+      "unique": 48,
+      "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected_count": 48,
+      "expected_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "passed": true
+    },
+    "reference_manifests/waymax_v16_8_32_fresh37_ids.txt": {
+      "count": 37,
+      "unique": 37,
+      "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "expected_count": 37,
+      "expected_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "passed": true
+    }
+  },
+  "analyzer_smoke": {
+    "passed": true,
+    "returncode": 0,
+    "schema_version": "cowp_shift_closed_control_reachable_tube_analysis_v1",
+    "scenario_count": 48,
+    "note": "V37 result is used only as an input-schema/CLI fixture; this is not a V38 outcome test."
+  },
+  "fail_closed_promotion": {
+    "passed": true,
+    "returncode": 4,
+    "stderr": "[warning] TFExample ID index missing: /nonexistent/tfexample_id_index_validation.jsonl\nERROR: missing counterfactual48 analysis: /mnt/data/v38_fail_closed_probe_final/counterfactual48_v38_shift_closed_control_reachable_tube_analysis.json",
+    "rollout_artifacts": []
+  },
+  "conventional_safety_bypass_grep": {
+    "passed": true,
+    "matches": []
+  },
+  "causality_static_audit": {
+    "passed": true,
+    "v38_helper_log_trajectory_mentions": 0,
+    "v38_helper_explicit_causal_collision_calls": 2
+  },
+  "execution_invariants": {
+    "mode0_first_target_equivalence_tested": true,
+    "shift_certificate_fail_closed_tested": true,
+    "selected_projected_target_is_executed_via_override": true
+  },
+  "full_repository_suite": {
+    "status": "historical_collection_failure_reproduced",
+    "v38_error": "tests/test_v16_8_29_recovery_viability.py imports absent _recovery_bridge_viability_mask",
+    "same_error_reproduced_in_unmodified_uploaded_v37": true,
+    "not_attributed_to_v38": true
+  },
+  "waymax_closed_loop_runtime": {
+    "executed_here": false,
+    "reason": "The local environment does not contain the user server dataset/index/checkpoint/GPU runtime. V38 outcomes must be produced by the supplied launcher."
+  },
+  "overall_pass": true
+}

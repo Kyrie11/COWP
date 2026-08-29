@@ -459,7 +459,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge"} for x in reasons) / max(n, 1)),
+            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube"} for x in reasons) / max(n, 1)),
             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
@@ -475,6 +475,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "control_projected_option_spectrum_hysteresis_step_rate": float(sum(x == "no_conventional_use_control_projected_option_spectrum_hysteresis" for x in reasons) / max(n, 1)),
             "control_projected_recovery_frontier_step_rate": float(sum(x == "no_conventional_use_control_projected_recovery_frontier" for x in reasons) / max(n, 1)),
             "recourse_returnability_bridge_step_rate": float(sum(x == "no_conventional_use_recourse_returnability_bridge" for x in reasons) / max(n, 1)),
+            "shift_closed_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_shift_closed_control_reachable_tube" for x in reasons) / max(n, 1)),
             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
@@ -625,6 +626,69 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "recovery_bridge_abort_rate_on_bridge_steps": _mean(
                 "recovery_bridge_aborted",
                 mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_tube_probe_step_rate": _mean("recovery_tube_probe_used"),
+            "recovery_tube_certificate_step_rate": _mean("recovery_tube_selected"),
+            "recovery_tube_action_change_step_rate": _mean("recovery_tube_action_changed"),
+            "recovery_tube_lifted_selection_rate_on_certified_steps": _mean(
+                "recovery_tube_selected_is_lifted",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_parent_pool_on_probes": _mean(
+                "recovery_tube_parent_pool",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_parent_action_classes_on_probes": _mean(
+                "recovery_tube_parent_action_classes",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_hypotheses_generated_on_probes": _mean(
+                "recovery_tube_hypotheses_generated",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_unique_action_hypotheses_on_probes": _mean(
+                "recovery_tube_unique_action_hypotheses",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_full_physically_safe_on_probes": _mean(
+                "recovery_tube_full_physically_safe",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_shift_closed_on_probes": _mean(
+                "recovery_tube_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_nominal_shift_closed_on_probes": _mean(
+                "recovery_tube_nominal_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_lower_envelope_shift_closed_on_probes": _mean(
+                "recovery_tube_lower_envelope_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_upper_envelope_shift_closed_on_probes": _mean(
+                "recovery_tube_upper_envelope_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_lifted_only_parent_count_on_probes": _mean(
+                "recovery_tube_lifted_only_parent_count",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_abs_first_accel_delta_on_certified_steps": _mean_abs(
+                "recovery_tube_selected_first_accel_delta",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_collision_margin_on_certified_steps": _mean(
+                "recovery_tube_selected_collision_min_margin_m",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps": _mean(
+                "recovery_tube_selected_shift_collision_min_margin_m",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_fallback_score_delta_on_action_changes": _mean(
+                "recovery_tube_selected_fallback_score_delta",
+                mask=np.asarray([bool(r.get("recovery_tube_action_changed", False)) for r in rows], dtype=bool),
             ) if n else None,
             "selected_waymax_kinematic_feasible_step_rate": _mean("selected_waymax_kinematic_feasible"),
             "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps": _mean(

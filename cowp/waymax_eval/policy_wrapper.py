@@ -115,7 +115,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -872,6 +872,8 @@ def _project_candidate_bank_through_controller_np(
     nominal_traj: np.ndarray,
     cfg: dict,
     previous_longitudinal_accel: float,
+    first_accel_override: np.ndarray | None = None,
+    longitudinal_envelope_mode: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Project an entire candidate bank through the *same stateful controller*.
 
@@ -883,6 +885,15 @@ def _project_candidate_bank_through_controller_np(
 
     The loop is over horizon only; all candidates are propagated in parallel.
     Returns ``(projected_traj, waymax_kinematic_ok[K,H], accel[K,H])``.
+
+    ``first_accel_override`` and ``longitudinal_envelope_mode`` are v16.8.38
+    support-construction hooks.  The former may provide one finite acceleration
+    per candidate for only the first emitted edge.  The latter uses {-1,0,+1}
+    to follow, at every projected edge, the lower reachable acceleration
+    endpoint, the unchanged nominal controller, or the upper endpoint.  Both
+    are clipped by the *already-existing* acceleration/jerk limits.  No
+    controller limit is relaxed and all historical callers use both default
+    ``None`` paths byte-for-byte.
     """
     nominal = np.asarray(nominal_traj, dtype=np.float64)
     cur0 = np.asarray(current, dtype=np.float64).reshape(-1)
@@ -905,6 +916,24 @@ def _project_candidate_bank_through_controller_np(
     max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1.0e-6)
     max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1.0e-6)
     max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
+    override = None
+    if first_accel_override is not None:
+        override = np.asarray(first_accel_override, dtype=np.float64).reshape(-1)
+        if override.size != K:
+            raise ValueError(
+                "first_accel_override must contain one value per candidate: "
+                f"got {override.size}, expected {K}"
+            )
+    envelope_mode = None
+    if longitudinal_envelope_mode is not None:
+        envelope_mode = np.asarray(longitudinal_envelope_mode, dtype=np.int8).reshape(-1)
+        if envelope_mode.size != K:
+            raise ValueError(
+                "longitudinal_envelope_mode must contain one value per candidate: "
+                f"got {envelope_mode.size}, expected {K}"
+            )
+        if bool(np.any(~np.isin(envelope_mode, np.asarray([-1, 0, 1], dtype=np.int8)))):
+            raise ValueError("longitudinal_envelope_mode values must be in {-1,0,+1}")
 
     for t in range(H):
         desired = nominal[:, t, :]
@@ -917,7 +946,15 @@ def _project_candidate_bank_through_controller_np(
         position_speed = np.linalg.norm(desired[:, :2] - cur_xy, axis=-1) / dt
         desired_speed = np.where(desired_speed < 1.0e-3, position_speed, desired_speed)
         raw_accel = np.clip((desired_speed - cur_speed) / dt, -max_decel, max_accel)
-        accel = np.clip(raw_accel, prev_accel - max_jerk * dt, prev_accel + max_jerk * dt)
+        lo = np.maximum(-max_decel, prev_accel - max_jerk * dt)
+        hi = np.minimum(max_accel, prev_accel + max_jerk * dt)
+        accel = np.clip(raw_accel, lo, hi)
+        if envelope_mode is not None:
+            accel = np.where(envelope_mode < 0, lo, np.where(envelope_mode > 0, hi, accel))
+        if t == 0 and override is not None:
+            finite_override = np.isfinite(override)
+            bounded_override = np.clip(override, lo, hi)
+            accel = np.where(finite_override, bounded_override, accel)
         next_speed = np.maximum(0.0, cur_speed + accel * dt)
 
         yaw_from_vel = np.arctan2(desired_vel[:, 1], desired_vel[:, 0])
@@ -1371,6 +1408,351 @@ def _direct_restoring_representatives_np(
         agent_state, sdc_index, roadgraph, cfg, cand_valid, roadgraph_safe,
         collision_prefix_steps, macro, fallback_score, action_targets, **kwargs,
     )
+
+
+
+def _shift_append_terminal_reference_np(trajectory: np.ndarray, dt: float) -> np.ndarray:
+    """Shift one realized recovery tube and append a causal terminal edge.
+
+    The appended state is a constant-velocity continuation of the final realized
+    state.  It is not a logged future and introduces no learned/tuned terminal
+    target.  The shifted reference is re-projected from the causal successor before
+    it can certify a first action.
+    """
+    tr = np.asarray(trajectory, dtype=np.float32)
+    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 5:
+        return np.asarray(tr, dtype=np.float32).copy()
+    out = np.asarray(tr, dtype=np.float32).copy()
+    if tr.shape[0] > 1:
+        out[:-1] = tr[1:]
+    last = np.asarray(tr[-1], dtype=np.float32).copy()
+    step_dt = max(float(dt), 1.0e-6)
+    last[0:2] = last[0:2] + last[3:5] * step_dt
+    speed = float(np.linalg.norm(last[3:5]))
+    if speed > 0.25:
+        last[2] = np.float32(np.arctan2(float(last[4]), float(last[3])))
+    out[-1] = last
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+
+def _physical_recovery_tube_certificate_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    trajectory: np.ndarray,
+    waymax_kinematic_ok: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    *,
+    collision_context: dict[str, Any] | None = None,
+) -> tuple[bool, dict[str, int | float | bool | str]]:
+    """Audit one realized tube against the frozen physical contracts.
+
+    This certificate is intentionally orthogonal to COWP's social certificate.  It
+    never relabels the parent candidate as conventional-safe or NCF.  It checks the
+    realized control tube under the unchanged roadgraph screen, causal CV collision
+    model, and Waymax-aligned inverse-dynamics feasibility.
+    """
+    tr = np.asarray(trajectory, dtype=np.float32)
+    kin = np.asarray(waymax_kinematic_ok, dtype=bool).reshape(-1)
+    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 5:
+        return False, {
+            "finite": False,
+            "roadgraph_safe": False,
+            "collision_safe": False,
+            "kinematic_safe": False,
+            "collision_prefix_steps": 0,
+            "collision_min_margin_m": float("-inf"),
+            "collision_violation_source": "invalid_trajectory",
+        }
+    finite = bool(np.isfinite(tr[:, :5]).all())
+    road_safe = bool(finite and _roadgraph_drivable_mask(tr, roadgraph))
+    ctx = collision_context
+    if ctx is None:
+        ctx = _prepare_collision_check_context(
+            np.asarray(agent_state, dtype=np.float32), int(sdc_index), cfg,
+            horizon_steps=int(tr.shape[0]), other_future_trajs=None,
+        )
+    coll = _collision_audit_against_context(tr, ctx) if finite else {
+        "safe": False,
+        "safe_prefix_steps": 0,
+        "min_clearance_margin_m": float("-inf"),
+        "violation_source": "nonfinite_ego",
+    }
+    kin_safe = bool(kin.size >= tr.shape[0] and np.all(kin[: tr.shape[0]]))
+    certified = bool(finite and road_safe and bool(coll.get("safe", False)) and kin_safe)
+    return certified, {
+        "finite": bool(finite),
+        "roadgraph_safe": bool(road_safe),
+        "collision_safe": bool(coll.get("safe", False)),
+        "kinematic_safe": bool(kin_safe),
+        "collision_prefix_steps": int(coll.get("safe_prefix_steps", 0)),
+        "collision_min_margin_m": float(coll.get("min_clearance_margin_m", float("-inf"))),
+        "collision_violation_source": str(coll.get("violation_source", "unknown")),
+    }
+
+
+def _construct_shift_closed_control_reachable_tube_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    nominal_trajectories: np.ndarray,
+    cand_valid: np.ndarray,
+    nominal_roadgraph_safe: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    action_targets: np.ndarray,
+    action_accels: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    previous_longitudinal_accel: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Construct a shift-closed, control-reachable recovery tube.
+
+    V16.8.37 asked whether an existing action returns to a non-empty conventional
+    bank within at most one newly replanned edge.  The witness was precise but
+    almost always empty.  V16.8.38 instead constructs explicit backup support in
+    the *current control-reachable set*:
+
+      * one representative is retained for every distinct (semantic macro,
+        actually emitted target) class in the unchanged fixed bank;
+      * each parent geometry is realized under three parameter-free longitudinal
+        policies: unchanged controller, lower acceleration-reachable envelope, and
+        upper acceleration-reachable envelope;
+      * a first action is admissible only if its full realized tube is physically
+        certified and the one-step-shifted tube can be re-projected and certified
+        again from the causal successor with carried controller memory.
+
+    The lower/upper envelopes are endpoints of the existing acceleration/jerk
+    limits, not new proposal hyperparameters.  Selection is hard-certificate first,
+    then the frozen COWP fallback preference, then minimum deviation from the
+    nominal emitted acceleration.  No future Waymax state, scalar risk trade-off,
+    relaxed conventional threshold, or dwell-time state is used.
+    """
+    state = np.asarray(agent_state, dtype=np.float32)
+    traj = np.asarray(nominal_trajectories, dtype=np.float32)
+    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
+    nominal_road = np.asarray(nominal_roadgraph_safe, dtype=bool).reshape(-1)
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
+    targets = np.asarray(action_targets, dtype=np.float32)
+    nominal_accels = np.asarray(action_accels, dtype=np.float64).reshape(-1)
+
+    detail: dict[str, Any] = {
+        "probe_used": True,
+        "parent_pool": 0,
+        "parent_action_classes": 0,
+        "tube_hypotheses_generated": 0,
+        "tube_hypotheses_unique_action": 0,
+        "tube_full_physically_safe": 0,
+        "tube_shift_closed": 0,
+        "tube_nominal_shift_closed": 0,
+        "tube_lower_envelope_shift_closed": 0,
+        "tube_upper_envelope_shift_closed": 0,
+        "tube_lifted_only_parent_count": 0,
+        "nominal_first_target_max_abs_error": 0.0,
+        "selected": False,
+        "selected_is_lifted": False,
+        "selected_envelope_mode": 0,
+        "selected_parent_candidate": -1,
+        "selected_parent_macro": -1,
+        "selected_parent_macro_name": "NONE",
+        "selected_first_accel_delta": 0.0,
+        "selected_collision_min_margin_m": -999.0,
+        "selected_shift_collision_min_margin_m": -999.0,
+        "selected_fallback_score": 0.0,
+    }
+    if (
+        state.ndim != 2 or not (0 <= int(sdc_index) < state.shape[0])
+        or traj.ndim != 3 or traj.shape[0] <= 0 or traj.shape[1] <= 0 or traj.shape[2] < 5
+    ):
+        detail["invalid_input"] = True
+        return None, detail
+    n = min(
+        traj.shape[0], valid.size, nominal_road.size, macro.size, scores.size,
+        prefix.size, targets.shape[0] if targets.ndim == 2 else 0, nominal_accels.size,
+    )
+    if n <= 0:
+        detail["invalid_input"] = True
+        return None, detail
+    traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
+    scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
+
+    # Preserve the historical roadgraph-first recovery pool.  If no nominal parent
+    # survives it, fall back to all valid parents and re-audit every realized tube.
+    pool = valid & nominal_road
+    if not bool(pool.any()):
+        pool = valid.copy()
+    pad_value = int(MacroType.PAD)
+    pool &= macro != pad_value
+    detail["parent_pool"] = int(pool.sum())
+    if not bool(pool.any()):
+        return None, detail
+
+    reps = _semantic_action_class_representatives_np(
+        pool, macro, targets, prefix, scores, prefer_fallback=True,
+    )
+    detail["parent_action_classes"] = int(len(reps))
+    if not reps:
+        return None, detail
+
+    parent_indices: list[int] = []
+    modes: list[int] = []
+    for idx in reps:
+        for mode in (0, -1, 1):
+            parent_indices.append(int(idx))
+            modes.append(int(mode))
+    parent_arr = np.asarray(parent_indices, dtype=np.int64)
+    mode_arr = np.asarray(modes, dtype=np.int8)
+    expanded_nominal = np.asarray(traj[parent_arr], dtype=np.float32)
+    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
+        state[int(sdc_index)], expanded_nominal, cfg,
+        float(previous_longitudinal_accel),
+        longitudinal_envelope_mode=mode_arr,
+    )
+    detail["tube_hypotheses_generated"] = int(projected.shape[0])
+
+    # The mode-0 first edge must remain exactly aligned with the online controller.
+    mode0 = np.flatnonzero(mode_arr == 0)
+    if mode0.size:
+        err = np.max(np.abs(projected[mode0, 0, :5] - targets[parent_arr[mode0], :5]), axis=1)
+        detail["nominal_first_target_max_abs_error"] = float(np.max(err)) if err.size else 0.0
+        if bool(np.any(err > 2.0e-5)):
+            raise RuntimeError(
+                "Shift-closed tube projector mismatch: nominal first edge differs "
+                "from the unchanged online controller target"
+            )
+
+    # Several semantic parents can emit the same physical first action.  Keep the
+    # best certified witness per actual action so duplicated macro labels cannot
+    # fabricate support.
+    action_groups: list[list[int]] = []
+    for j in range(projected.shape[0]):
+        first = np.asarray(projected[j, 0, :5], dtype=np.float32)
+        placed = False
+        for group in action_groups:
+            if np.allclose(first, projected[group[0], 0, :5], rtol=0.0, atol=1.0e-6):
+                group.append(int(j))
+                placed = True
+                break
+        if not placed:
+            action_groups.append([int(j)])
+    detail["tube_hypotheses_unique_action"] = int(len(action_groups))
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    certified_records: list[dict[str, Any]] = []
+    current_collision_context = _prepare_collision_check_context(
+        state, int(sdc_index), cfg,
+        horizon_steps=int(projected.shape[1]), other_future_trajs=None,
+    )
+    full_safe_count = 0
+    shift_closed_count = 0
+    shift_closed_by_mode = {-1: 0, 0: 0, 1: 0}
+    nominal_closed_parents: set[int] = set()
+    lifted_closed_parents: set[int] = set()
+
+    for group in action_groups:
+        group_records: list[dict[str, Any]] = []
+        for j in group:
+            current_ok, current_detail = _physical_recovery_tube_certificate_np(
+                state, int(sdc_index), projected[j], kin_ok[j], roadgraph, cfg,
+                collision_context=current_collision_context,
+            )
+            if not current_ok:
+                continue
+            full_safe_count += 1
+            first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
+            first_accel = float(accel_hist[j, 0])
+            successor = _counterfactual_successor_agent_state(
+                state, int(sdc_index), first_target, cfg,
+            )
+            shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+            shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+                successor[int(sdc_index)], shifted_reference[None, ...], cfg,
+                first_accel,
+                longitudinal_envelope_mode=np.asarray([int(mode_arr[j])], dtype=np.int8),
+            )
+            shifted_ok, shifted_detail = _physical_recovery_tube_certificate_np(
+                successor, int(sdc_index), shifted_projected[0], shifted_kin_ok[0],
+                roadgraph, cfg,
+            )
+            if not shifted_ok:
+                continue
+            shift_closed_count += 1
+            parent = int(parent_arr[j])
+            mode = int(mode_arr[j])
+            shift_closed_by_mode[mode] = int(shift_closed_by_mode.get(mode, 0)) + 1
+            if mode == 0:
+                nominal_closed_parents.add(parent)
+            else:
+                lifted_closed_parents.add(parent)
+            nominal_accel = float(nominal_accels[parent])
+            record = {
+                "expanded_index": int(j),
+                "parent_index": parent,
+                "macro": int(macro[parent]),
+                "mode": mode,
+                "trajectory": np.asarray(projected[j], dtype=np.float32),
+                "target": first_target,
+                "accel": first_accel,
+                "accel_history": np.asarray(accel_hist[j], dtype=np.float32),
+                "shifted_trajectory": np.asarray(shifted_projected[0], dtype=np.float32),
+                "shifted_accel_history": np.asarray(shifted_accel_hist[0], dtype=np.float32),
+                "fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
+                "first_accel_delta": float(first_accel - nominal_accel),
+                "current_certificate": current_detail,
+                "shifted_certificate": shifted_detail,
+            }
+            group_records.append(record)
+
+        if group_records:
+            # One physical first action may have several backup witnesses.  Keep the
+            # mature COWP preference and the least-distorting control lift.
+            chosen_group = min(
+                group_records,
+                key=lambda r: (
+                    float(r["fallback_score"]),
+                    abs(float(r["first_accel_delta"])),
+                    0 if int(r["mode"]) == 0 else 1,
+                    int(r["parent_index"]),
+                    int(r["mode"]),
+                ),
+            )
+            certified_records.append(chosen_group)
+
+    detail["tube_full_physically_safe"] = int(full_safe_count)
+    detail["tube_shift_closed"] = int(shift_closed_count)
+    detail["tube_nominal_shift_closed"] = int(shift_closed_by_mode.get(0, 0))
+    detail["tube_lower_envelope_shift_closed"] = int(shift_closed_by_mode.get(-1, 0))
+    detail["tube_upper_envelope_shift_closed"] = int(shift_closed_by_mode.get(1, 0))
+    detail["tube_lifted_only_parent_count"] = int(len(lifted_closed_parents - nominal_closed_parents))
+    if not certified_records:
+        return None, detail
+
+    selected = min(
+        certified_records,
+        key=lambda r: (
+            float(r["fallback_score"]),
+            abs(float(r["first_accel_delta"])),
+            0 if int(r["mode"]) == 0 else 1,
+            int(r["parent_index"]),
+            int(r["mode"]),
+        ),
+    )
+    detail.update({
+        "selected": True,
+        "selected_is_lifted": bool(int(selected["mode"]) != 0),
+        "selected_envelope_mode": int(selected["mode"]),
+        "selected_parent_candidate": int(selected["parent_index"]),
+        "selected_parent_macro": int(selected["macro"]),
+        "selected_parent_macro_name": _macro_name(int(selected["macro"])),
+        "selected_first_accel_delta": float(selected["first_accel_delta"]),
+        "selected_collision_min_margin_m": float(selected["current_certificate"].get("collision_min_margin_m", -999.0)),
+        "selected_shift_collision_min_margin_m": float(selected["shifted_certificate"].get("collision_min_margin_m", -999.0)),
+        "selected_fallback_score": float(selected["fallback_score"]),
+    })
+    return selected, detail
+
 
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
@@ -3696,6 +4078,12 @@ class COWPWaymaxPolicy:
         )
         batch = {k: self.torch.as_tensor(batch_np[k], device=self.dev) for k in online_keys if k in batch_np}
         profile_t_h2d = self._profile_stamp() if profile_enabled else 0.0
+        # Execution overrides are populated only by the v16.8.38 recovery branch.
+        # Define them before the shared inference block so historical baselines keep
+        # their unchanged path without unbound local state.
+        recovery_tube_trajectory_override: np.ndarray | None = None
+        recovery_tube_target_override: np.ndarray | None = None
+        recovery_tube_accel_override: float | None = None
         with self.torch.inference_mode():
             pred = self.model(batch, stage="planner")
             profile_t_model = self._profile_stamp() if profile_enabled else 0.0
@@ -4217,7 +4605,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -4389,6 +4777,14 @@ class COWPWaymaxPolicy:
             recourse_bridge_minimum_prefix_steps = -1.0
             recourse_current_prefix_nonregressive = False
             recourse_current_action_survives_one_step = False
+            recovery_tube_probe_used = False
+            recovery_tube_selected = False
+            recovery_tube_action_changed = False
+            recovery_tube_detail: dict[str, Any] = {}
+            recovery_tube_trajectory_override: np.ndarray | None = None
+            recovery_tube_target_override: np.ndarray | None = None
+            recovery_tube_accel_override: float | None = None
+            recovery_tube_selected_fallback_score_delta = 0.0
             if bool(fallback_flags[0]):
                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
                     self._recovery_commitment_active = False
@@ -4426,7 +4822,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -4456,6 +4852,64 @@ class COWPWaymaxPolicy:
                         select_mask[chosen] = True
                         select_score = fallback_score
                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
+                    elif method == "cowp_shift_closed_control_reachable_tube":
+                        # V16.8.38 follows the preregistered V37 failure branch.
+                        # Exact return to a non-empty conventional bank within one
+                        # new replan was too sparse, so construct explicit support in
+                        # the current controller-reachable set and require one-step
+                        # shift closure of the complete physical backup tube.
+                        recovery_tube_probe_used = True
+                        valid_np = cand_valid.detach().cpu().numpy().astype(bool)
+                        road_np = roadgraph_safe.detach().cpu().numpy().astype(bool)
+                        prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
+                        macro_np_tube = macro_t.detach().cpu().numpy().astype(np.int64)
+                        fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
+                        selected_tube, recovery_tube_detail = _construct_shift_closed_control_reachable_tube_np(
+                            agent_state,
+                            int(sdc_index),
+                            np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32),
+                            valid_np,
+                            road_np,
+                            macro_np_tube,
+                            fallback_np,
+                            prefix_np,
+                            np.asarray(action_targets_np, dtype=np.float32),
+                            np.asarray(action_accels_np, dtype=np.float32),
+                            roadgraph,
+                            self.cfg,
+                            float(self._previous_longitudinal_accel),
+                        )
+                        chosen = int(recovery_base_candidate)
+                        if selected_tube is not None:
+                            chosen = int(selected_tube["parent_index"])
+                            recovery_tube_selected = True
+                            recovery_tube_trajectory_override = np.asarray(
+                                selected_tube["trajectory"], dtype=np.float32
+                            )
+                            recovery_tube_target_override = np.asarray(
+                                selected_tube["target"], dtype=np.float32
+                            )
+                            recovery_tube_accel_override = float(selected_tube["accel"])
+                            base_target = np.asarray(
+                                action_targets_np[int(recovery_base_candidate)], dtype=np.float32
+                            )
+                            recovery_tube_action_changed = bool(
+                                not np.allclose(
+                                    recovery_tube_target_override,
+                                    base_target,
+                                    rtol=0.0,
+                                    atol=1.0e-6,
+                                )
+                            )
+                            recovery_switch_applied = bool(recovery_tube_action_changed)
+                            recovery_tube_selected_fallback_score_delta = float(
+                                fallback_np[int(chosen)]
+                                - fallback_np[int(recovery_base_candidate)]
+                            )
+                        select_mask = self.torch.zeros_like(cand_valid)
+                        select_mask[int(chosen)] = True
+                        select_score = fallback_score
+                        fallback_reason = "no_conventional_use_shift_closed_control_reachable_tube"
                     elif method == "cowp_recourse_returnability_bridge":
                         # V16.8.37 follows the preregistered V36 failure branch:
                         # stop enlarging/tuning spectrum selectors and test an
@@ -5020,9 +5474,15 @@ class COWPWaymaxPolicy:
                 "cowp_control_projected_option_spectrum_hysteresis",
                 "cowp_control_projected_recovery_frontier",
                 "cowp_recourse_returnability_bridge",
+                "cowp_shift_closed_control_reachable_tube",
             }:
+                selected_contract_target = (
+                    np.asarray(recovery_tube_target_override, dtype=np.float32)
+                    if recovery_tube_target_override is not None
+                    else np.asarray(action_targets_np[selected], dtype=np.float32)
+                )
                 _sel_ok, _sel_acc, _sel_steer, _sel_contract = _waymax_kinematic_transition_np(
-                    agent_state[int(sdc_index)], np.asarray(action_targets_np[selected]), self.cfg
+                    agent_state[int(sdc_index)], selected_contract_target, self.cfg
                 )
                 selected_waymax_kinematic_feasible = bool(_sel_ok[0])
                 selected_waymax_inverse_accel = float(_sel_acc[0])
@@ -5279,6 +5739,29 @@ class COWPWaymaxPolicy:
                 "recourse_bridge_minimum_prefix_steps": float(recourse_bridge_minimum_prefix_steps),
                 "recourse_current_prefix_nonregressive": bool(recourse_current_prefix_nonregressive),
                 "recourse_current_action_survives_one_step": bool(recourse_current_action_survives_one_step),
+                "recovery_tube_probe_used": bool(recovery_tube_probe_used),
+                "recovery_tube_selected": bool(recovery_tube_selected),
+                "recovery_tube_action_changed": bool(recovery_tube_action_changed),
+                "recovery_tube_parent_pool": int(recovery_tube_detail.get("parent_pool", 0)),
+                "recovery_tube_parent_action_classes": int(recovery_tube_detail.get("parent_action_classes", 0)),
+                "recovery_tube_hypotheses_generated": int(recovery_tube_detail.get("tube_hypotheses_generated", 0)),
+                "recovery_tube_unique_action_hypotheses": int(recovery_tube_detail.get("tube_hypotheses_unique_action", 0)),
+                "recovery_tube_full_physically_safe": int(recovery_tube_detail.get("tube_full_physically_safe", 0)),
+                "recovery_tube_shift_closed": int(recovery_tube_detail.get("tube_shift_closed", 0)),
+                "recovery_tube_nominal_shift_closed": int(recovery_tube_detail.get("tube_nominal_shift_closed", 0)),
+                "recovery_tube_lower_envelope_shift_closed": int(recovery_tube_detail.get("tube_lower_envelope_shift_closed", 0)),
+                "recovery_tube_upper_envelope_shift_closed": int(recovery_tube_detail.get("tube_upper_envelope_shift_closed", 0)),
+                "recovery_tube_lifted_only_parent_count": int(recovery_tube_detail.get("tube_lifted_only_parent_count", 0)),
+                "recovery_tube_nominal_first_target_max_abs_error": float(recovery_tube_detail.get("nominal_first_target_max_abs_error", 0.0)),
+                "recovery_tube_selected_is_lifted": bool(recovery_tube_detail.get("selected_is_lifted", False)),
+                "recovery_tube_selected_envelope_mode": int(recovery_tube_detail.get("selected_envelope_mode", 0)),
+                "recovery_tube_selected_parent_candidate": int(recovery_tube_detail.get("selected_parent_candidate", -1)),
+                "recovery_tube_selected_parent_macro": int(recovery_tube_detail.get("selected_parent_macro", -1)),
+                "recovery_tube_selected_parent_macro_name": str(recovery_tube_detail.get("selected_parent_macro_name", "NONE")),
+                "recovery_tube_selected_first_accel_delta": float(recovery_tube_detail.get("selected_first_accel_delta", 0.0)),
+                "recovery_tube_selected_collision_min_margin_m": float(recovery_tube_detail.get("selected_collision_min_margin_m", -999.0)),
+                "recovery_tube_selected_shift_collision_min_margin_m": float(recovery_tube_detail.get("selected_shift_collision_min_margin_m", -999.0)),
+                "recovery_tube_selected_fallback_score_delta": float(recovery_tube_selected_fallback_score_delta),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
@@ -5310,6 +5793,18 @@ class COWPWaymaxPolicy:
         traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
             batch_np["cowp/candidates/trajectory"][0], selected, has_valid, agent_state[sdc_index], self.cfg
         )
+        execution_target = None if emergency_action_used else np.asarray(action_targets_np[selected], dtype=np.float32)
+        execution_accel = None if emergency_action_used else float(action_accels_np[selected])
+        if (
+            not emergency_action_used
+            and recovery_tube_trajectory_override is not None
+            and recovery_tube_target_override is not None
+            and recovery_tube_accel_override is not None
+        ):
+            traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
+            execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
+            execution_accel = float(recovery_tube_accel_override)
+            execution_source = "shift_closed_control_reachable_tube"
         diag["emergency_action_used"] = bool(emergency_action_used)
         diag["execution_trajectory_source"] = str(execution_source)
         self._last_diagnostics = diag
@@ -5322,8 +5817,8 @@ class COWPWaymaxPolicy:
                 agent_state,
                 sdc_index,
                 traj,
-                precomputed_target=None if emergency_action_used else action_targets_np[selected],
-                precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
+                precomputed_target=execution_target,
+                precomputed_accel=execution_accel,
             )
             profile_t_action = self._profile_stamp()
             diag.update({
@@ -5343,8 +5838,8 @@ class COWPWaymaxPolicy:
             agent_state,
             sdc_index,
             traj,
-            precomputed_target=None if emergency_action_used else action_targets_np[selected],
-            precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
+            precomputed_target=execution_target,
+            precomputed_accel=execution_accel,
         )
 
     def consume_diagnostics(self) -> dict[str, Any] | None:

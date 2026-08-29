@@ -1,0 +1,1690 @@
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -115,7 +115,7 @@
+             "Use a separately retrained ablation checkpoint/config for Waymax."
+         )
+     g = str(gate_mode or "priority").lower()
+-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and g == "hard":
++    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and g == "hard":
+         g = "priority"
+     if m == "universal_ncf":
+         g = "hard"
+@@ -872,6 +872,8 @@
+     nominal_traj: np.ndarray,
+     cfg: dict,
+     previous_longitudinal_accel: float,
++    first_accel_override: np.ndarray | None = None,
++    longitudinal_envelope_mode: np.ndarray | None = None,
+ ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+     """Project an entire candidate bank through the *same stateful controller*.
+ 
+@@ -883,6 +885,15 @@
+ 
+     The loop is over horizon only; all candidates are propagated in parallel.
+     Returns ``(projected_traj, waymax_kinematic_ok[K,H], accel[K,H])``.
++
++    ``first_accel_override`` and ``longitudinal_envelope_mode`` are v16.8.38
++    support-construction hooks.  The former may provide one finite acceleration
++    per candidate for only the first emitted edge.  The latter uses {-1,0,+1}
++    to follow, at every projected edge, the lower reachable acceleration
++    endpoint, the unchanged nominal controller, or the upper endpoint.  Both
++    are clipped by the *already-existing* acceleration/jerk limits.  No
++    controller limit is relaxed and all historical callers use both default
++    ``None`` paths byte-for-byte.
+     """
+     nominal = np.asarray(nominal_traj, dtype=np.float64)
+     cur0 = np.asarray(current, dtype=np.float64).reshape(-1)
+@@ -905,6 +916,24 @@
+     max_jerk = max(float(cand_cfg.get("max_jerk_mps3", 8.0)), 1.0e-6)
+     max_yaw_rate = max(float(cand_cfg.get("max_yaw_rate_rad_s", 1.2)), 1.0e-6)
+     max_dyaw = min(float(wm_cfg.get("max_delta_yaw_rad", 0.12)), max_yaw_rate * dt)
++    override = None
++    if first_accel_override is not None:
++        override = np.asarray(first_accel_override, dtype=np.float64).reshape(-1)
++        if override.size != K:
++            raise ValueError(
++                "first_accel_override must contain one value per candidate: "
++                f"got {override.size}, expected {K}"
++            )
++    envelope_mode = None
++    if longitudinal_envelope_mode is not None:
++        envelope_mode = np.asarray(longitudinal_envelope_mode, dtype=np.int8).reshape(-1)
++        if envelope_mode.size != K:
++            raise ValueError(
++                "longitudinal_envelope_mode must contain one value per candidate: "
++                f"got {envelope_mode.size}, expected {K}"
++            )
++        if bool(np.any(~np.isin(envelope_mode, np.asarray([-1, 0, 1], dtype=np.int8)))):
++            raise ValueError("longitudinal_envelope_mode values must be in {-1,0,+1}")
+ 
+     for t in range(H):
+         desired = nominal[:, t, :]
+@@ -917,7 +946,15 @@
+         position_speed = np.linalg.norm(desired[:, :2] - cur_xy, axis=-1) / dt
+         desired_speed = np.where(desired_speed < 1.0e-3, position_speed, desired_speed)
+         raw_accel = np.clip((desired_speed - cur_speed) / dt, -max_decel, max_accel)
+-        accel = np.clip(raw_accel, prev_accel - max_jerk * dt, prev_accel + max_jerk * dt)
++        lo = np.maximum(-max_decel, prev_accel - max_jerk * dt)
++        hi = np.minimum(max_accel, prev_accel + max_jerk * dt)
++        accel = np.clip(raw_accel, lo, hi)
++        if envelope_mode is not None:
++            accel = np.where(envelope_mode < 0, lo, np.where(envelope_mode > 0, hi, accel))
++        if t == 0 and override is not None:
++            finite_override = np.isfinite(override)
++            bounded_override = np.clip(override, lo, hi)
++            accel = np.where(finite_override, bounded_override, accel)
+         next_speed = np.maximum(0.0, cur_speed + accel * dt)
+ 
+         yaw_from_vel = np.arctan2(desired_vel[:, 1], desired_vel[:, 0])
+@@ -1372,6 +1409,351 @@
+         collision_prefix_steps, macro, fallback_score, action_targets, **kwargs,
+     )
+ 
++
++
++def _shift_append_terminal_reference_np(trajectory: np.ndarray, dt: float) -> np.ndarray:
++    """Shift one realized recovery tube and append a causal terminal edge.
++
++    The appended state is a constant-velocity continuation of the final realized
++    state.  It is not a logged future and introduces no learned/tuned terminal
++    target.  The shifted reference is re-projected from the causal successor before
++    it can certify a first action.
++    """
++    tr = np.asarray(trajectory, dtype=np.float32)
++    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 5:
++        return np.asarray(tr, dtype=np.float32).copy()
++    out = np.asarray(tr, dtype=np.float32).copy()
++    if tr.shape[0] > 1:
++        out[:-1] = tr[1:]
++    last = np.asarray(tr[-1], dtype=np.float32).copy()
++    step_dt = max(float(dt), 1.0e-6)
++    last[0:2] = last[0:2] + last[3:5] * step_dt
++    speed = float(np.linalg.norm(last[3:5]))
++    if speed > 0.25:
++        last[2] = np.float32(np.arctan2(float(last[4]), float(last[3])))
++    out[-1] = last
++    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
++
++
++def _physical_recovery_tube_certificate_np(
++    agent_state: np.ndarray,
++    sdc_index: int,
++    trajectory: np.ndarray,
++    waymax_kinematic_ok: np.ndarray,
++    roadgraph: dict[str, np.ndarray],
++    cfg: dict,
++    *,
++    collision_context: dict[str, Any] | None = None,
++) -> tuple[bool, dict[str, int | float | bool | str]]:
++    """Audit one realized tube against the frozen physical contracts.
++
++    This certificate is intentionally orthogonal to COWP's social certificate.  It
++    never relabels the parent candidate as conventional-safe or NCF.  It checks the
++    realized control tube under the unchanged roadgraph screen, causal CV collision
++    model, and Waymax-aligned inverse-dynamics feasibility.
++    """
++    tr = np.asarray(trajectory, dtype=np.float32)
++    kin = np.asarray(waymax_kinematic_ok, dtype=bool).reshape(-1)
++    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 5:
++        return False, {
++            "finite": False,
++            "roadgraph_safe": False,
++            "collision_safe": False,
++            "kinematic_safe": False,
++            "collision_prefix_steps": 0,
++            "collision_min_margin_m": float("-inf"),
++            "collision_violation_source": "invalid_trajectory",
++        }
++    finite = bool(np.isfinite(tr[:, :5]).all())
++    road_safe = bool(finite and _roadgraph_drivable_mask(tr, roadgraph))
++    ctx = collision_context
++    if ctx is None:
++        ctx = _prepare_collision_check_context(
++            np.asarray(agent_state, dtype=np.float32), int(sdc_index), cfg,
++            horizon_steps=int(tr.shape[0]), other_future_trajs=None,
++        )
++    coll = _collision_audit_against_context(tr, ctx) if finite else {
++        "safe": False,
++        "safe_prefix_steps": 0,
++        "min_clearance_margin_m": float("-inf"),
++        "violation_source": "nonfinite_ego",
++    }
++    kin_safe = bool(kin.size >= tr.shape[0] and np.all(kin[: tr.shape[0]]))
++    certified = bool(finite and road_safe and bool(coll.get("safe", False)) and kin_safe)
++    return certified, {
++        "finite": bool(finite),
++        "roadgraph_safe": bool(road_safe),
++        "collision_safe": bool(coll.get("safe", False)),
++        "kinematic_safe": bool(kin_safe),
++        "collision_prefix_steps": int(coll.get("safe_prefix_steps", 0)),
++        "collision_min_margin_m": float(coll.get("min_clearance_margin_m", float("-inf"))),
++        "collision_violation_source": str(coll.get("violation_source", "unknown")),
++    }
++
++
++def _construct_shift_closed_control_reachable_tube_np(
++    agent_state: np.ndarray,
++    sdc_index: int,
++    nominal_trajectories: np.ndarray,
++    cand_valid: np.ndarray,
++    nominal_roadgraph_safe: np.ndarray,
++    macro_types: np.ndarray,
++    fallback_scores: np.ndarray,
++    collision_prefix_steps: np.ndarray,
++    action_targets: np.ndarray,
++    action_accels: np.ndarray,
++    roadgraph: dict[str, np.ndarray],
++    cfg: dict,
++    previous_longitudinal_accel: float,
++) -> tuple[dict[str, Any] | None, dict[str, Any]]:
++    """Construct a shift-closed, control-reachable recovery tube.
++
++    V16.8.37 asked whether an existing action returns to a non-empty conventional
++    bank within at most one newly replanned edge.  The witness was precise but
++    almost always empty.  V16.8.38 instead constructs explicit backup support in
++    the *current control-reachable set*:
++
++      * one representative is retained for every distinct (semantic macro,
++        actually emitted target) class in the unchanged fixed bank;
++      * each parent geometry is realized under three parameter-free longitudinal
++        policies: unchanged controller, lower acceleration-reachable envelope, and
++        upper acceleration-reachable envelope;
++      * a first action is admissible only if its full realized tube is physically
++        certified and the one-step-shifted tube can be re-projected and certified
++        again from the causal successor with carried controller memory.
++
++    The lower/upper envelopes are endpoints of the existing acceleration/jerk
++    limits, not new proposal hyperparameters.  Selection is hard-certificate first,
++    then the frozen COWP fallback preference, then minimum deviation from the
++    nominal emitted acceleration.  No future Waymax state, scalar risk trade-off,
++    relaxed conventional threshold, or dwell-time state is used.
++    """
++    state = np.asarray(agent_state, dtype=np.float32)
++    traj = np.asarray(nominal_trajectories, dtype=np.float32)
++    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
++    nominal_road = np.asarray(nominal_roadgraph_safe, dtype=bool).reshape(-1)
++    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
++    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
++    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
++    targets = np.asarray(action_targets, dtype=np.float32)
++    nominal_accels = np.asarray(action_accels, dtype=np.float64).reshape(-1)
++
++    detail: dict[str, Any] = {
++        "probe_used": True,
++        "parent_pool": 0,
++        "parent_action_classes": 0,
++        "tube_hypotheses_generated": 0,
++        "tube_hypotheses_unique_action": 0,
++        "tube_full_physically_safe": 0,
++        "tube_shift_closed": 0,
++        "tube_nominal_shift_closed": 0,
++        "tube_lower_envelope_shift_closed": 0,
++        "tube_upper_envelope_shift_closed": 0,
++        "tube_lifted_only_parent_count": 0,
++        "nominal_first_target_max_abs_error": 0.0,
++        "selected": False,
++        "selected_is_lifted": False,
++        "selected_envelope_mode": 0,
++        "selected_parent_candidate": -1,
++        "selected_parent_macro": -1,
++        "selected_parent_macro_name": "NONE",
++        "selected_first_accel_delta": 0.0,
++        "selected_collision_min_margin_m": -999.0,
++        "selected_shift_collision_min_margin_m": -999.0,
++        "selected_fallback_score": 0.0,
++    }
++    if (
++        state.ndim != 2 or not (0 <= int(sdc_index) < state.shape[0])
++        or traj.ndim != 3 or traj.shape[0] <= 0 or traj.shape[1] <= 0 or traj.shape[2] < 5
++    ):
++        detail["invalid_input"] = True
++        return None, detail
++    n = min(
++        traj.shape[0], valid.size, nominal_road.size, macro.size, scores.size,
++        prefix.size, targets.shape[0] if targets.ndim == 2 else 0, nominal_accels.size,
++    )
++    if n <= 0:
++        detail["invalid_input"] = True
++        return None, detail
++    traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
++    scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
++
++    # Preserve the historical roadgraph-first recovery pool.  If no nominal parent
++    # survives it, fall back to all valid parents and re-audit every realized tube.
++    pool = valid & nominal_road
++    if not bool(pool.any()):
++        pool = valid.copy()
++    pad_value = int(MacroType.PAD)
++    pool &= macro != pad_value
++    detail["parent_pool"] = int(pool.sum())
++    if not bool(pool.any()):
++        return None, detail
++
++    reps = _semantic_action_class_representatives_np(
++        pool, macro, targets, prefix, scores, prefer_fallback=True,
++    )
++    detail["parent_action_classes"] = int(len(reps))
++    if not reps:
++        return None, detail
++
++    parent_indices: list[int] = []
++    modes: list[int] = []
++    for idx in reps:
++        for mode in (0, -1, 1):
++            parent_indices.append(int(idx))
++            modes.append(int(mode))
++    parent_arr = np.asarray(parent_indices, dtype=np.int64)
++    mode_arr = np.asarray(modes, dtype=np.int8)
++    expanded_nominal = np.asarray(traj[parent_arr], dtype=np.float32)
++    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
++        state[int(sdc_index)], expanded_nominal, cfg,
++        float(previous_longitudinal_accel),
++        longitudinal_envelope_mode=mode_arr,
++    )
++    detail["tube_hypotheses_generated"] = int(projected.shape[0])
++
++    # The mode-0 first edge must remain exactly aligned with the online controller.
++    mode0 = np.flatnonzero(mode_arr == 0)
++    if mode0.size:
++        err = np.max(np.abs(projected[mode0, 0, :5] - targets[parent_arr[mode0], :5]), axis=1)
++        detail["nominal_first_target_max_abs_error"] = float(np.max(err)) if err.size else 0.0
++        if bool(np.any(err > 2.0e-5)):
++            raise RuntimeError(
++                "Shift-closed tube projector mismatch: nominal first edge differs "
++                "from the unchanged online controller target"
++            )
++
++    # Several semantic parents can emit the same physical first action.  Keep the
++    # best certified witness per actual action so duplicated macro labels cannot
++    # fabricate support.
++    action_groups: list[list[int]] = []
++    for j in range(projected.shape[0]):
++        first = np.asarray(projected[j, 0, :5], dtype=np.float32)
++        placed = False
++        for group in action_groups:
++            if np.allclose(first, projected[group[0], 0, :5], rtol=0.0, atol=1.0e-6):
++                group.append(int(j))
++                placed = True
++                break
++        if not placed:
++            action_groups.append([int(j)])
++    detail["tube_hypotheses_unique_action"] = int(len(action_groups))
++
++    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
++    certified_records: list[dict[str, Any]] = []
++    current_collision_context = _prepare_collision_check_context(
++        state, int(sdc_index), cfg,
++        horizon_steps=int(projected.shape[1]), other_future_trajs=None,
++    )
++    full_safe_count = 0
++    shift_closed_count = 0
++    shift_closed_by_mode = {-1: 0, 0: 0, 1: 0}
++    nominal_closed_parents: set[int] = set()
++    lifted_closed_parents: set[int] = set()
++
++    for group in action_groups:
++        group_records: list[dict[str, Any]] = []
++        for j in group:
++            current_ok, current_detail = _physical_recovery_tube_certificate_np(
++                state, int(sdc_index), projected[j], kin_ok[j], roadgraph, cfg,
++                collision_context=current_collision_context,
++            )
++            if not current_ok:
++                continue
++            full_safe_count += 1
++            first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
++            first_accel = float(accel_hist[j, 0])
++            successor = _counterfactual_successor_agent_state(
++                state, int(sdc_index), first_target, cfg,
++            )
++            shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
++            shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
++                successor[int(sdc_index)], shifted_reference[None, ...], cfg,
++                first_accel,
++                longitudinal_envelope_mode=np.asarray([int(mode_arr[j])], dtype=np.int8),
++            )
++            shifted_ok, shifted_detail = _physical_recovery_tube_certificate_np(
++                successor, int(sdc_index), shifted_projected[0], shifted_kin_ok[0],
++                roadgraph, cfg,
++            )
++            if not shifted_ok:
++                continue
++            shift_closed_count += 1
++            parent = int(parent_arr[j])
++            mode = int(mode_arr[j])
++            shift_closed_by_mode[mode] = int(shift_closed_by_mode.get(mode, 0)) + 1
++            if mode == 0:
++                nominal_closed_parents.add(parent)
++            else:
++                lifted_closed_parents.add(parent)
++            nominal_accel = float(nominal_accels[parent])
++            record = {
++                "expanded_index": int(j),
++                "parent_index": parent,
++                "macro": int(macro[parent]),
++                "mode": mode,
++                "trajectory": np.asarray(projected[j], dtype=np.float32),
++                "target": first_target,
++                "accel": first_accel,
++                "accel_history": np.asarray(accel_hist[j], dtype=np.float32),
++                "shifted_trajectory": np.asarray(shifted_projected[0], dtype=np.float32),
++                "shifted_accel_history": np.asarray(shifted_accel_hist[0], dtype=np.float32),
++                "fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
++                "first_accel_delta": float(first_accel - nominal_accel),
++                "current_certificate": current_detail,
++                "shifted_certificate": shifted_detail,
++            }
++            group_records.append(record)
++
++        if group_records:
++            # One physical first action may have several backup witnesses.  Keep the
++            # mature COWP preference and the least-distorting control lift.
++            chosen_group = min(
++                group_records,
++                key=lambda r: (
++                    float(r["fallback_score"]),
++                    abs(float(r["first_accel_delta"])),
++                    0 if int(r["mode"]) == 0 else 1,
++                    int(r["parent_index"]),
++                    int(r["mode"]),
++                ),
++            )
++            certified_records.append(chosen_group)
++
++    detail["tube_full_physically_safe"] = int(full_safe_count)
++    detail["tube_shift_closed"] = int(shift_closed_count)
++    detail["tube_nominal_shift_closed"] = int(shift_closed_by_mode.get(0, 0))
++    detail["tube_lower_envelope_shift_closed"] = int(shift_closed_by_mode.get(-1, 0))
++    detail["tube_upper_envelope_shift_closed"] = int(shift_closed_by_mode.get(1, 0))
++    detail["tube_lifted_only_parent_count"] = int(len(lifted_closed_parents - nominal_closed_parents))
++    if not certified_records:
++        return None, detail
++
++    selected = min(
++        certified_records,
++        key=lambda r: (
++            float(r["fallback_score"]),
++            abs(float(r["first_accel_delta"])),
++            0 if int(r["mode"]) == 0 else 1,
++            int(r["parent_index"]),
++            int(r["mode"]),
++        ),
++    )
++    detail.update({
++        "selected": True,
++        "selected_is_lifted": bool(int(selected["mode"]) != 0),
++        "selected_envelope_mode": int(selected["mode"]),
++        "selected_parent_candidate": int(selected["parent_index"]),
++        "selected_parent_macro": int(selected["macro"]),
++        "selected_parent_macro_name": _macro_name(int(selected["macro"])),
++        "selected_first_accel_delta": float(selected["first_accel_delta"]),
++        "selected_collision_min_margin_m": float(selected["current_certificate"].get("collision_min_margin_m", -999.0)),
++        "selected_shift_collision_min_margin_m": float(selected["shifted_certificate"].get("collision_min_margin_m", -999.0)),
++        "selected_fallback_score": float(selected["fallback_score"]),
++    })
++    return selected, detail
++
++
+ def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
+     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
+     return 1.0 / (1.0 + np.exp(x_arr))
+@@ -3696,6 +4078,12 @@
+         )
+         batch = {k: self.torch.as_tensor(batch_np[k], device=self.dev) for k in online_keys if k in batch_np}
+         profile_t_h2d = self._profile_stamp() if profile_enabled else 0.0
++        # Execution overrides are populated only by the v16.8.38 recovery branch.
++        # Define them before the shared inference block so historical baselines keep
++        # their unchanged path without unbound local state.
++        recovery_tube_trajectory_override: np.ndarray | None = None
++        recovery_tube_target_override: np.ndarray | None = None
++        recovery_tube_accel_override: float | None = None
+         with self.torch.inference_mode():
+             pred = self.model(batch, stage="planner")
+             profile_t_model = self._profile_stamp() if profile_enabled else 0.0
+@@ -4217,7 +4605,7 @@
+                     selection_mask = certificate_accepted
+                 adjusted_scores = scores
+ 
+-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and gate_mode in {"priority", "soft"}:
++            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and gate_mode in {"priority", "soft"}:
+                 pcfg_selector = self.cfg.get("planning", {})
+                 physical_ok = (
+                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
+@@ -4389,6 +4777,14 @@
+             recourse_bridge_minimum_prefix_steps = -1.0
+             recourse_current_prefix_nonregressive = False
+             recourse_current_action_survives_one_step = False
++            recovery_tube_probe_used = False
++            recovery_tube_selected = False
++            recovery_tube_action_changed = False
++            recovery_tube_detail: dict[str, Any] = {}
++            recovery_tube_trajectory_override: np.ndarray | None = None
++            recovery_tube_target_override: np.ndarray | None = None
++            recovery_tube_accel_override: float | None = None
++            recovery_tube_selected_fallback_score_delta = 0.0
+             if bool(fallback_flags[0]):
+                 if method == "cowp_sov_recovery_commitment" and self._recovery_commitment_active:
+                     self._recovery_commitment_active = False
+@@ -4426,7 +4822,7 @@
+                 fallback_reason = "no_certificate_use_least_coercive_conventional"
+             elif bool(fallback_flags[2]):
+                 fallback_used = True
+-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"}:
++                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"}:
+                     # Historical v16.8.29--35 recovery probes use the same controlled
+                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
+                     # references but expands the *current* support to one existing-bank
+@@ -4456,6 +4852,64 @@
+                         select_mask[chosen] = True
+                         select_score = fallback_score
+                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
++                    elif method == "cowp_shift_closed_control_reachable_tube":
++                        # V16.8.38 follows the preregistered V37 failure branch.
++                        # Exact return to a non-empty conventional bank within one
++                        # new replan was too sparse, so construct explicit support in
++                        # the current controller-reachable set and require one-step
++                        # shift closure of the complete physical backup tube.
++                        recovery_tube_probe_used = True
++                        valid_np = cand_valid.detach().cpu().numpy().astype(bool)
++                        road_np = roadgraph_safe.detach().cpu().numpy().astype(bool)
++                        prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
++                        macro_np_tube = macro_t.detach().cpu().numpy().astype(np.int64)
++                        fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
++                        selected_tube, recovery_tube_detail = _construct_shift_closed_control_reachable_tube_np(
++                            agent_state,
++                            int(sdc_index),
++                            np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32),
++                            valid_np,
++                            road_np,
++                            macro_np_tube,
++                            fallback_np,
++                            prefix_np,
++                            np.asarray(action_targets_np, dtype=np.float32),
++                            np.asarray(action_accels_np, dtype=np.float32),
++                            roadgraph,
++                            self.cfg,
++                            float(self._previous_longitudinal_accel),
++                        )
++                        chosen = int(recovery_base_candidate)
++                        if selected_tube is not None:
++                            chosen = int(selected_tube["parent_index"])
++                            recovery_tube_selected = True
++                            recovery_tube_trajectory_override = np.asarray(
++                                selected_tube["trajectory"], dtype=np.float32
++                            )
++                            recovery_tube_target_override = np.asarray(
++                                selected_tube["target"], dtype=np.float32
++                            )
++                            recovery_tube_accel_override = float(selected_tube["accel"])
++                            base_target = np.asarray(
++                                action_targets_np[int(recovery_base_candidate)], dtype=np.float32
++                            )
++                            recovery_tube_action_changed = bool(
++                                not np.allclose(
++                                    recovery_tube_target_override,
++                                    base_target,
++                                    rtol=0.0,
++                                    atol=1.0e-6,
++                                )
++                            )
++                            recovery_switch_applied = bool(recovery_tube_action_changed)
++                            recovery_tube_selected_fallback_score_delta = float(
++                                fallback_np[int(chosen)]
++                                - fallback_np[int(recovery_base_candidate)]
++                            )
++                        select_mask = self.torch.zeros_like(cand_valid)
++                        select_mask[int(chosen)] = True
++                        select_score = fallback_score
++                        fallback_reason = "no_conventional_use_shift_closed_control_reachable_tube"
+                     elif method == "cowp_recourse_returnability_bridge":
+                         # V16.8.37 follows the preregistered V36 failure branch:
+                         # stop enlarging/tuning spectrum selectors and test an
+@@ -5020,9 +5474,15 @@
+                 "cowp_control_projected_option_spectrum_hysteresis",
+                 "cowp_control_projected_recovery_frontier",
+                 "cowp_recourse_returnability_bridge",
++                "cowp_shift_closed_control_reachable_tube",
+             }:
++                selected_contract_target = (
++                    np.asarray(recovery_tube_target_override, dtype=np.float32)
++                    if recovery_tube_target_override is not None
++                    else np.asarray(action_targets_np[selected], dtype=np.float32)
++                )
+                 _sel_ok, _sel_acc, _sel_steer, _sel_contract = _waymax_kinematic_transition_np(
+-                    agent_state[int(sdc_index)], np.asarray(action_targets_np[selected]), self.cfg
++                    agent_state[int(sdc_index)], selected_contract_target, self.cfg
+                 )
+                 selected_waymax_kinematic_feasible = bool(_sel_ok[0])
+                 selected_waymax_inverse_accel = float(_sel_acc[0])
+@@ -5279,6 +5739,29 @@
+                 "recourse_bridge_minimum_prefix_steps": float(recourse_bridge_minimum_prefix_steps),
+                 "recourse_current_prefix_nonregressive": bool(recourse_current_prefix_nonregressive),
+                 "recourse_current_action_survives_one_step": bool(recourse_current_action_survives_one_step),
++                "recovery_tube_probe_used": bool(recovery_tube_probe_used),
++                "recovery_tube_selected": bool(recovery_tube_selected),
++                "recovery_tube_action_changed": bool(recovery_tube_action_changed),
++                "recovery_tube_parent_pool": int(recovery_tube_detail.get("parent_pool", 0)),
++                "recovery_tube_parent_action_classes": int(recovery_tube_detail.get("parent_action_classes", 0)),
++                "recovery_tube_hypotheses_generated": int(recovery_tube_detail.get("tube_hypotheses_generated", 0)),
++                "recovery_tube_unique_action_hypotheses": int(recovery_tube_detail.get("tube_hypotheses_unique_action", 0)),
++                "recovery_tube_full_physically_safe": int(recovery_tube_detail.get("tube_full_physically_safe", 0)),
++                "recovery_tube_shift_closed": int(recovery_tube_detail.get("tube_shift_closed", 0)),
++                "recovery_tube_nominal_shift_closed": int(recovery_tube_detail.get("tube_nominal_shift_closed", 0)),
++                "recovery_tube_lower_envelope_shift_closed": int(recovery_tube_detail.get("tube_lower_envelope_shift_closed", 0)),
++                "recovery_tube_upper_envelope_shift_closed": int(recovery_tube_detail.get("tube_upper_envelope_shift_closed", 0)),
++                "recovery_tube_lifted_only_parent_count": int(recovery_tube_detail.get("tube_lifted_only_parent_count", 0)),
++                "recovery_tube_nominal_first_target_max_abs_error": float(recovery_tube_detail.get("nominal_first_target_max_abs_error", 0.0)),
++                "recovery_tube_selected_is_lifted": bool(recovery_tube_detail.get("selected_is_lifted", False)),
++                "recovery_tube_selected_envelope_mode": int(recovery_tube_detail.get("selected_envelope_mode", 0)),
++                "recovery_tube_selected_parent_candidate": int(recovery_tube_detail.get("selected_parent_candidate", -1)),
++                "recovery_tube_selected_parent_macro": int(recovery_tube_detail.get("selected_parent_macro", -1)),
++                "recovery_tube_selected_parent_macro_name": str(recovery_tube_detail.get("selected_parent_macro_name", "NONE")),
++                "recovery_tube_selected_first_accel_delta": float(recovery_tube_detail.get("selected_first_accel_delta", 0.0)),
++                "recovery_tube_selected_collision_min_margin_m": float(recovery_tube_detail.get("selected_collision_min_margin_m", -999.0)),
++                "recovery_tube_selected_shift_collision_min_margin_m": float(recovery_tube_detail.get("selected_shift_collision_min_margin_m", -999.0)),
++                "recovery_tube_selected_fallback_score_delta": float(recovery_tube_selected_fallback_score_delta),
+                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
+                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
+                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
+@@ -5310,6 +5793,18 @@
+         traj, emergency_action_used, execution_source = _resolve_execution_trajectory(
+             batch_np["cowp/candidates/trajectory"][0], selected, has_valid, agent_state[sdc_index], self.cfg
+         )
++        execution_target = None if emergency_action_used else np.asarray(action_targets_np[selected], dtype=np.float32)
++        execution_accel = None if emergency_action_used else float(action_accels_np[selected])
++        if (
++            not emergency_action_used
++            and recovery_tube_trajectory_override is not None
++            and recovery_tube_target_override is not None
++            and recovery_tube_accel_override is not None
++        ):
++            traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
++            execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
++            execution_accel = float(recovery_tube_accel_override)
++            execution_source = "shift_closed_control_reachable_tube"
+         diag["emergency_action_used"] = bool(emergency_action_used)
+         diag["execution_trajectory_source"] = str(execution_source)
+         self._last_diagnostics = diag
+@@ -5322,8 +5817,8 @@
+                 agent_state,
+                 sdc_index,
+                 traj,
+-                precomputed_target=None if emergency_action_used else action_targets_np[selected],
+-                precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
++                precomputed_target=execution_target,
++                precomputed_accel=execution_accel,
+             )
+             profile_t_action = self._profile_stamp()
+             diag.update({
+@@ -5343,8 +5838,8 @@
+             agent_state,
+             sdc_index,
+             traj,
+-            precomputed_target=None if emergency_action_used else action_targets_np[selected],
+-            precomputed_accel=None if emergency_action_used else float(action_accels_np[selected]),
++            precomputed_target=execution_target,
++            precomputed_accel=execution_accel,
+         )
+ 
+     def consume_diagnostics(self) -> dict[str, Any] | None:
+--- a/cowp/waymax_eval/rollout.py
++++ b/cowp/waymax_eval/rollout.py
+@@ -66,7 +66,7 @@
+         "no_ncf": "planner_score_only",
+     }
+     m = aliases.get(m, m)
+-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and g == "hard":
++    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and g == "hard":
+         # The paper/code treats the primary COWP certificate as priority-aware NCF.
+         # ``cowp_cert_utility`` shares the exact same certificate and changes only
+         # the post-certificate selector, so it must inherit the same gate semantics.
+@@ -866,7 +866,7 @@
+         selection_mask = torch.where(has_shielded, shielded, certificate_accepted)
+         adjusted_scores = scores
+ 
+-    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge"} and gate_mode in {"priority", "soft"}:
++    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and gate_mode in {"priority", "soft"}:
+         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
+         # explanatory evidence, but selection is anchored by a candidate-level NCF
+         # certificate trained from the dataset's noncoercive_feasible/false_safe
+--- a/cowp/waymax_eval/metrics_cowp.py
++++ b/cowp/waymax_eval/metrics_cowp.py
+@@ -459,7 +459,7 @@
+             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
+             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
+             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
+-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge"} for x in reasons) / max(n, 1)),
++            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube"} for x in reasons) / max(n, 1)),
+             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
+             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
+             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
+@@ -475,6 +475,7 @@
+             "control_projected_option_spectrum_hysteresis_step_rate": float(sum(x == "no_conventional_use_control_projected_option_spectrum_hysteresis" for x in reasons) / max(n, 1)),
+             "control_projected_recovery_frontier_step_rate": float(sum(x == "no_conventional_use_control_projected_recovery_frontier" for x in reasons) / max(n, 1)),
+             "recourse_returnability_bridge_step_rate": float(sum(x == "no_conventional_use_recourse_returnability_bridge" for x in reasons) / max(n, 1)),
++            "shift_closed_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_shift_closed_control_reachable_tube" for x in reasons) / max(n, 1)),
+             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
+             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
+             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
+@@ -626,6 +627,69 @@
+                 "recovery_bridge_aborted",
+                 mask=np.asarray([bool(r.get("recovery_bridge_pending_before", False)) for r in rows], dtype=bool),
+             ) if n else None,
++            "recovery_tube_probe_step_rate": _mean("recovery_tube_probe_used"),
++            "recovery_tube_certificate_step_rate": _mean("recovery_tube_selected"),
++            "recovery_tube_action_change_step_rate": _mean("recovery_tube_action_changed"),
++            "recovery_tube_lifted_selection_rate_on_certified_steps": _mean(
++                "recovery_tube_selected_is_lifted",
++                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_parent_pool_on_probes": _mean(
++                "recovery_tube_parent_pool",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_parent_action_classes_on_probes": _mean(
++                "recovery_tube_parent_action_classes",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_hypotheses_generated_on_probes": _mean(
++                "recovery_tube_hypotheses_generated",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_unique_action_hypotheses_on_probes": _mean(
++                "recovery_tube_unique_action_hypotheses",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_full_physically_safe_on_probes": _mean(
++                "recovery_tube_full_physically_safe",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_shift_closed_on_probes": _mean(
++                "recovery_tube_shift_closed",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_nominal_shift_closed_on_probes": _mean(
++                "recovery_tube_nominal_shift_closed",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_lower_envelope_shift_closed_on_probes": _mean(
++                "recovery_tube_lower_envelope_shift_closed",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_upper_envelope_shift_closed_on_probes": _mean(
++                "recovery_tube_upper_envelope_shift_closed",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_lifted_only_parent_count_on_probes": _mean(
++                "recovery_tube_lifted_only_parent_count",
++                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_abs_first_accel_delta_on_certified_steps": _mean_abs(
++                "recovery_tube_selected_first_accel_delta",
++                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_selected_collision_margin_on_certified_steps": _mean(
++                "recovery_tube_selected_collision_min_margin_m",
++                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps": _mean(
++                "recovery_tube_selected_shift_collision_min_margin_m",
++                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_selected_fallback_score_delta_on_action_changes": _mean(
++                "recovery_tube_selected_fallback_score_delta",
++                mask=np.asarray([bool(r.get("recovery_tube_action_changed", False)) for r in rows], dtype=bool),
++            ) if n else None,
+             "selected_waymax_kinematic_feasible_step_rate": _mean("selected_waymax_kinematic_feasible"),
+             "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps": _mean(
+                 "selected_waymax_kinematic_feasible",
+--- a/cowp/scripts/04_eval_closed_loop.py
++++ b/cowp/scripts/04_eval_closed_loop.py
+@@ -110,7 +110,7 @@
+     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
+     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
+     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
+-    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
++    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, cowp_shift_closed_control_reachable_tube, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+     ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
+     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
+     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
+--- /dev/null
++++ b/cowp/scripts/91_analyze_shift_closed_control_reachable_tube.py
+@@ -0,0 +1,238 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++import numpy as np
++
++
++def _load(path: str | None) -> dict[str, Any] | None:
++    return json.loads(Path(path).read_text()) if path else None
++
++
++def _rows(d: dict[str, Any]) -> dict[str, dict[str, Any]]:
++    return {str(r["scenario_id"]): r for r in d.get("scenario_results", [])}
++
++
++def _metric(row: dict[str, Any], key: str) -> float:
++    v = (row.get("standard_metrics", {}) or {}).get(key)
++    return float(v) if isinstance(v, (int, float)) and math.isfinite(float(v)) else float("nan")
++
++
++def _event(row: dict[str, Any], key: str) -> bool:
++    v = _metric(row, key)
++    return bool(math.isfinite(v) and v > 0.0)
++
++
++def _mcnemar_exact(rescued: int, induced: int) -> float:
++    n = int(rescued + induced)
++    if n <= 0:
++        return 1.0
++    k = min(int(rescued), int(induced))
++    tail = sum(math.comb(n, i) for i in range(k + 1)) / float(2**n)
++    return min(1.0, 2.0 * tail)
++
++
++def _bootstrap_mean_ci(x: np.ndarray, seed: int = 16838, draws: int = 10000) -> list[float] | None:
++    x = np.asarray(x, dtype=np.float64)
++    x = x[np.isfinite(x)]
++    if x.size == 0:
++        return None
++    rng = np.random.default_rng(seed)
++    vals = np.empty(draws, dtype=np.float64)
++    for i in range(draws):
++        vals[i] = float(rng.choice(x, size=x.size, replace=True).mean())
++    return [float(np.quantile(vals, 0.025)), float(np.quantile(vals, 0.975))]
++
++
++def _aggregate(rows: dict[str, dict[str, Any]], ids: list[str]) -> dict[str, Any]:
++    event_keys = {"CR": "CR", "Collision": "CollisionRate", "Offroad": "OffroadRate", "Kinematics": "KinematicsInfeasibilityRate"}
++    out: dict[str, Any] = {"n": len(ids)}
++    for label, key in event_keys.items():
++        out[label] = float(np.mean([_event(rows[s], key) for s in ids])) if ids else 0.0
++    ep = np.asarray([_metric(rows[s], "EP") for s in ids], dtype=np.float64)
++    ep = ep[np.isfinite(ep)]
++    out["EP"] = float(ep.mean()) if ep.size else None
++    diag_keys = [
++        "fallback_step_rate", "zero_conventional_candidate_step_rate", "mean_conventional_candidates", "mean_valid_candidates",
++        "mean_max_collision_safe_prefix_steps", "mean_selected_collision_safe_prefix_steps", "recovery_switch_step_rate",
++        "recovery_hysteresis_active_step_rate", "recovery_hysteresis_entry_step_rate", "recovery_hysteresis_continue_step_rate",
++        "recovery_hysteresis_exit_step_rate", "recovery_hysteresis_clear_step_rate",
++        "recourse_returnability_bridge_step_rate", "recourse_returnability_probe_step_rate",
++        "recourse_returnability_strict_dominance_rate_on_probes",
++        "recourse_base_direct_restore_rate_on_probes", "recourse_rvr_direct_restore_rate_on_probes",
++        "mean_recourse_base_macro_count_on_probes", "mean_recourse_rvr_macro_count_on_probes",
++        "recourse_current_action_survival_step_rate",
++        "mean_recourse_base_action_classes_available_on_probes", "mean_recourse_rvr_action_classes_available_on_probes",
++        "mean_recourse_base_action_classes_evaluated_on_probes", "mean_recourse_rvr_action_classes_evaluated_on_probes",
++        "recovery_bridge_pending_step_rate", "recovery_bridge_entry_step_rate",
++        "recovery_bridge_direct_entry_step_rate", "recovery_bridge_recourse_execution_step_rate",
++        "recovery_bridge_abort_step_rate", "mean_direct_restoring_candidate_count_on_bridge_steps",
++        "mean_recovery_bridge_allowed_macro_count_on_bridge_steps",
++        "mean_recourse_bridge_candidate_pool_on_bridge_steps",
++        "mean_recourse_bridge_action_classes_available_on_bridge_steps",
++        "mean_recourse_bridge_action_classes_evaluated_on_bridge_steps",
++        "mean_recourse_bridge_minimum_prefix_steps_on_bridge_steps",
++        "recovery_bridge_execution_rate_on_bridge_steps", "recovery_bridge_abort_rate_on_bridge_steps",
++        "selected_waymax_kinematic_feasible_step_rate", "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps",
++        "shift_closed_control_reachable_tube_step_rate", "recovery_tube_probe_step_rate",
++        "recovery_tube_certificate_step_rate", "recovery_tube_action_change_step_rate",
++        "recovery_tube_lifted_selection_rate_on_certified_steps",
++        "mean_recovery_tube_parent_pool_on_probes", "mean_recovery_tube_parent_action_classes_on_probes",
++        "mean_recovery_tube_hypotheses_generated_on_probes", "mean_recovery_tube_unique_action_hypotheses_on_probes",
++        "mean_recovery_tube_full_physically_safe_on_probes", "mean_recovery_tube_shift_closed_on_probes",
++        "mean_recovery_tube_nominal_shift_closed_on_probes",
++        "mean_recovery_tube_lower_envelope_shift_closed_on_probes",
++        "mean_recovery_tube_upper_envelope_shift_closed_on_probes",
++        "mean_recovery_tube_lifted_only_parent_count_on_probes",
++        "mean_recovery_tube_abs_first_accel_delta_on_certified_steps",
++        "mean_recovery_tube_selected_collision_margin_on_certified_steps",
++        "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps",
++        "mean_recovery_tube_selected_fallback_score_delta_on_action_changes",
++    ]
++    for key in diag_keys:
++        vals = []
++        for s in ids:
++            v = (rows[s].get("diagnostics", {}) or {}).get(key)
++            if isinstance(v, (int, float)) and math.isfinite(float(v)):
++                vals.append(float(v))
++        out[key] = float(np.mean(vals)) if vals else None
++    return out
++
++
++def _paired(base: dict[str, dict[str, Any]], alt: dict[str, dict[str, Any]], ids: list[str]) -> dict[str, Any]:
++    out: dict[str, Any] = {}
++    for label, key in {"CR": "CR", "Collision": "CollisionRate", "Offroad": "OffroadRate", "Kinematics": "KinematicsInfeasibilityRate"}.items():
++        rescued = [s for s in ids if _event(base[s], key) and not _event(alt[s], key)]
++        induced = [s for s in ids if not _event(base[s], key) and _event(alt[s], key)]
++        shared = [s for s in ids if _event(base[s], key) and _event(alt[s], key)]
++        out[label] = {
++            "rescued": len(rescued), "induced": len(induced), "shared_failure": len(shared),
++            "net_failures_removed": len(rescued) - len(induced), "mcnemar_exact_p": _mcnemar_exact(len(rescued), len(induced)),
++            "rescued_ids": rescued, "induced_ids": induced,
++        }
++    dep = []
++    for s in ids:
++        a, b = _metric(base[s], "EP"), _metric(alt[s], "EP")
++        if math.isfinite(a) and math.isfinite(b): dep.append(b - a)
++    arr = np.asarray(dep, dtype=np.float64)
++    out["EP"] = {"paired_n": int(arr.size), "delta_mean": float(arr.mean()) if arr.size else None,
++                 "delta_median": float(np.median(arr)) if arr.size else None, "bootstrap95": _bootstrap_mean_ci(arr)}
++    return out
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser()
++    ap.add_argument("--cowp", required=True)
++    ap.add_argument("--rvr")
++    ap.add_argument("--v33-rosh")
++    ap.add_argument("--v35-control-projected-spectrum")
++    ap.add_argument("--v36-recovery-frontier")
++    ap.add_argument("--v37-recourse-returnability-bridge")
++    ap.add_argument("--shift-closed-control-reachable-tube", required=True)
++    ap.add_argument("--development-selected", action="store_true")
++    ap.add_argument("--stage", choices=["counterfactual48", "fresh37", "exact200"], default="counterfactual48")
++    ap.add_argument("--output", required=True)
++    args = ap.parse_args()
++
++    data = {
++        "cowp": _load(args.cowp), "rvr": _load(args.rvr), "v33_rosh": _load(args.v33_rosh),
++        "v35_control_projected_spectrum": _load(args.v35_control_projected_spectrum),
++        "v36_recovery_frontier": _load(args.v36_recovery_frontier),
++        "v37_recourse_returnability_bridge": _load(args.v37_recourse_returnability_bridge),
++        "shift_closed_control_reachable_tube": _load(args.shift_closed_control_reachable_tube),
++    }
++    data = {k: v for k, v in data.items() if v is not None}
++    rowmap = {k: _rows(v) for k, v in data.items()}
++    ids = list(rowmap["cowp"].keys()); idset = set(ids)
++    mismatch = {k: sorted(idset.symmetric_difference(set(rows))) for k, rows in rowmap.items() if set(rows) != idset}
++    if mismatch: raise SystemExit(f"scenario set mismatch: {mismatch}")
++
++    out: dict[str, Any] = {
++        "schema_version": "cowp_shift_closed_control_reachable_tube_analysis_v1", "development_selected": bool(args.development_selected),
++        "paper_evidence": False, "scenario_count": len(ids), "stage": str(args.stage), "methods": {}, "paired_vs_cowp": {},
++    }
++    for name, rows in rowmap.items():
++        out["methods"][name] = _aggregate(rows, ids)
++        if name != "cowp": out["paired_vs_cowp"][name] = _paired(rowmap["cowp"], rows, ids)
++
++    name = "shift_closed_control_reachable_tube"
++    if "rvr" in rowmap:
++        old_rescued = set(out["paired_vs_cowp"]["rvr"]["Collision"]["rescued_ids"])
++        old_induced = set(out["paired_vs_cowp"]["rvr"]["Collision"]["induced_ids"])
++        out["rvr_counterexample_retention"] = {
++            name: {
++                "old_rvr_rescues_total": len(old_rescued),
++                "old_rvr_rescues_retained": int(sum(not _event(rowmap[name][s], "CollisionRate") for s in old_rescued)),
++                "old_rvr_induced_total": len(old_induced),
++                "old_rvr_induced_avoided": int(sum(not _event(rowmap[name][s], "CollisionRate") for s in old_induced)),
++            }
++        }
++    if "v35_control_projected_spectrum" in rowmap:
++        out["paired_vs_v35_control_projected_spectrum"] = _paired(rowmap["v35_control_projected_spectrum"], rowmap[name], ids)
++    if "v36_recovery_frontier" in rowmap:
++        out["paired_vs_v36_recovery_frontier"] = _paired(rowmap["v36_recovery_frontier"], rowmap[name], ids)
++    if "v37_recourse_returnability_bridge" in rowmap:
++        out["paired_vs_v37_recourse_returnability_bridge"] = _paired(
++            rowmap["v37_recourse_returnability_bridge"], rowmap[name], ids
++        )
++    if "v33_rosh" in rowmap:
++        out["paired_vs_v33_rosh"] = _paired(rowmap["v33_rosh"], rowmap[name], ids)
++
++    pc = out["paired_vs_cowp"][name]
++    ep_delta = pc["EP"]["delta_mean"]
++    switch_rate = out["methods"][name].get("recovery_tube_action_change_step_rate")
++    if args.stage == "counterfactual48":
++        ret = out["rvr_counterexample_retention"][name]
++        checks = {
++            "retain_at_least_5_of_10_old_rvr_rescues": ret["old_rvr_rescues_retained"] >= 5,
++            "avoid_at_least_7_of_9_old_rvr_induced": ret["old_rvr_induced_avoided"] >= 7,
++            "net_remove_at_least_3_cowp_collisions": pc["Collision"]["net_failures_removed"] >= 3,
++            "kinematics_net_regression_at_most_1_scene": pc["Kinematics"]["net_failures_removed"] >= -1,
++            "mean_ep_delta_not_below_minus_0_05": ep_delta is not None and ep_delta >= -0.05,
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    elif args.stage == "fresh37":
++        checks = {
++            "no_net_collision_harm": pc["Collision"]["net_failures_removed"] >= 0,
++            "no_net_cr_harm": pc["CR"]["net_failures_removed"] >= 0,
++            "offroad_net_regression_at_most_1_scene": pc["Offroad"]["net_failures_removed"] >= -1,
++            "kinematics_net_regression_at_most_1_scene": pc["Kinematics"]["net_failures_removed"] >= -1,
++            "mean_ep_delta_not_below_minus_0_03": ep_delta is not None and ep_delta >= -0.03,
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    else:
++        checks = {"development_confirmation_only": True}
++    out["preregistered_gate"] = {name: {"checks": checks, "pass": bool(all(checks.values())), "paper_evidence": False}}
++    # Mechanism diagnostics are deliberately NOT new outcome gates.  In
++    # particular, a near-zero lifted-selection rate would mean that any outcome
++    # gain came from the terminal tube certificate rather than newly constructed
++    # control support; this affects the claim, not the frozen six-item gate.
++    out["control_reachable_tube_mechanism_diagnostic"] = {
++        "tube_probe_step_rate": out["methods"][name].get("recovery_tube_probe_step_rate"),
++        "tube_certificate_step_rate": out["methods"][name].get("recovery_tube_certificate_step_rate"),
++        "tube_action_change_step_rate": out["methods"][name].get("recovery_tube_action_change_step_rate"),
++        "lifted_selection_rate_on_certified_steps": out["methods"][name].get("recovery_tube_lifted_selection_rate_on_certified_steps"),
++        "mean_parent_action_classes_on_probes": out["methods"][name].get("mean_recovery_tube_parent_action_classes_on_probes"),
++        "mean_generated_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_hypotheses_generated_on_probes"),
++        "mean_unique_first_actions_on_probes": out["methods"][name].get("mean_recovery_tube_unique_action_hypotheses_on_probes"),
++        "mean_full_safe_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_full_physically_safe_on_probes"),
++        "mean_shift_closed_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_shift_closed_on_probes"),
++        "mean_nominal_shift_closed_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_nominal_shift_closed_on_probes"),
++        "mean_lower_envelope_shift_closed_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_lower_envelope_shift_closed_on_probes"),
++        "mean_upper_envelope_shift_closed_tubes_on_probes": out["methods"][name].get("mean_recovery_tube_upper_envelope_shift_closed_on_probes"),
++        "mean_lifted_only_parent_count_on_probes": out["methods"][name].get("mean_recovery_tube_lifted_only_parent_count_on_probes"),
++        "mean_abs_first_accel_delta_on_certified_steps": out["methods"][name].get("mean_recovery_tube_abs_first_accel_delta_on_certified_steps"),
++        "interpretation": (
++            "The inherited six-item promotion gate is unchanged. A nonzero lifted-selection/lifted-only-support signal is required only to attribute success specifically to constructive control-support expansion; it is not a post-hoc seventh outcome gate."
++        ),
++    }
++    Path(args.output).write_text(json.dumps(out, indent=2, ensure_ascii=False))
++    print(json.dumps(out, indent=2, ensure_ascii=False))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/tests/test_v16_8_38_shift_closed_control_reachable_tube.py
+@@ -0,0 +1,261 @@
++from __future__ import annotations
++
++
++def _state(speed: float = 5.0):
++    import numpy as np
++
++    x = np.zeros((11,), dtype=np.float32)
++    x[3] = speed
++    x[5] = speed
++    x[6] = 0.0
++    x[7] = 4.5
++    x[8] = 1.9
++    x[10] = 1.0
++    return x
++
++
++def _cfg():
++    return {
++        "time": {"dt": 0.1},
++        "limits": {"max_candidates": 16},
++        "candidate": {
++            "max_accel_mps2": 4.0,
++            "max_decel_mps2": 6.0,
++            "max_jerk_mps3": 8.0,
++            "max_yaw_rate_rad_s": 1.2,
++            "max_lateral_accel_mps2": 4.0,
++        },
++        "waymax": {"max_delta_yaw_rad": 0.12},
++        "planning": {
++            "online_collision_check_horizon_steps": 8,
++            "online_collision_check_stride": 1,
++            "online_collision_max_agents": 24,
++            "online_collision_agent_radius_m": 60.0,
++            "waymax_kinematics_max_acc_mps2": 10.4,
++            "waymax_kinematics_max_steering_curvature": 0.3,
++            "waymax_kinematics_dt_s": 0.1,
++        },
++    }
++
++
++def test_longitudinal_envelopes_are_existing_control_reachable_endpoints():
++    import numpy as np
++    from cowp.waymax_eval.policy_wrapper import _project_candidate_bank_through_controller_np
++
++    cfg = _cfg()
++    cur = _state(5.0)
++    nominal = np.zeros((3, 3, 7), dtype=np.float32)
++    nominal[:, :, 5] = 4.5
++    nominal[:, :, 6] = 1.9
++    for t in range(3):
++        nominal[:, t, 0] = 0.5 * (t + 1)
++        nominal[:, t, 3] = 5.0
++
++    projected, kin_ok, accel = _project_candidate_bank_through_controller_np(
++        cur,
++        nominal,
++        cfg,
++        previous_longitudinal_accel=0.0,
++        longitudinal_envelope_mode=np.asarray([0, -1, 1], dtype=np.int8),
++    )
++    assert projected.shape == nominal.shape
++    assert np.all(kin_ok)
++    assert np.allclose(accel[0], [0.0, 0.0, 0.0], atol=1.0e-6)
++    assert np.allclose(accel[1], [-0.8, -1.6, -2.4], atol=1.0e-6)
++    assert np.allclose(accel[2], [0.8, 1.6, 2.4], atol=1.0e-6)
++
++    # Historical default path must be unchanged.
++    default, default_kin, default_accel = _project_candidate_bank_through_controller_np(
++        cur, nominal[:1], cfg, previous_longitudinal_accel=0.0
++    )
++    assert np.allclose(default, projected[:1], atol=1.0e-6, rtol=0.0)
++    assert np.array_equal(default_kin, kin_ok[:1])
++    assert np.allclose(default_accel, accel[:1], atol=1.0e-6, rtol=0.0)
++
++
++def test_shifted_reference_appends_only_causal_constant_velocity_terminal_edge():
++    import numpy as np
++    from cowp.waymax_eval.policy_wrapper import _shift_append_terminal_reference_np
++
++    tr = np.zeros((3, 7), dtype=np.float32)
++    tr[:, 0] = [1.0, 2.0, 3.0]
++    tr[:, 3] = 10.0
++    tr[:, 5] = 4.5
++    tr[:, 6] = 1.9
++    shifted = _shift_append_terminal_reference_np(tr, 0.1)
++    assert np.allclose(shifted[0], tr[1])
++    assert np.allclose(shifted[1], tr[2])
++    assert abs(float(shifted[2, 0]) - 4.0) < 1.0e-6
++    assert abs(float(shifted[2, 3]) - 10.0) < 1.0e-6
++
++
++def test_shift_closed_constructor_prefers_frozen_cowp_score_then_nominal_control():
++    import numpy as np
++    from cowp.label.trajectory_primitives import constant_accel_trajectory
++    from cowp.waymax_eval.policy_wrapper import (
++        _consistent_one_step_targets_np,
++        _construct_shift_closed_control_reachable_tube_np,
++    )
++
++    cfg = _cfg()
++    state = _state(4.0)[None, :]
++    nominal = np.stack(
++        [
++            constant_accel_trajectory(state[0], 8, 0.1, accel=0.0),
++            constant_accel_trajectory(state[0], 8, 0.1, accel=-0.5),
++        ],
++        axis=0,
++    )
++    targets, accels, _ = _consistent_one_step_targets_np(
++        state[0], nominal[:, 0], cfg, previous_longitudinal_accel=0.0
++    )
++    selected, detail = _construct_shift_closed_control_reachable_tube_np(
++        state,
++        0,
++        nominal,
++        np.asarray([True, True]),
++        np.asarray([True, True]),
++        np.asarray([1, 2], dtype=np.int64),
++        np.asarray([0.4, 0.1], dtype=np.float64),
++        np.asarray([8, 8], dtype=np.float32),
++        targets,
++        accels,
++        {},
++        cfg,
++        previous_longitudinal_accel=0.0,
++    )
++    assert selected is not None
++    assert int(selected["parent_index"]) == 1
++    assert int(selected["mode"]) == 0
++    assert not detail["selected_is_lifted"]
++    assert detail["tube_shift_closed"] > 0
++    assert detail["tube_shift_closed"] == (
++        detail["tube_nominal_shift_closed"]
++        + detail["tube_lower_envelope_shift_closed"]
++        + detail["tube_upper_envelope_shift_closed"]
++    )
++    assert detail["nominal_first_target_max_abs_error"] <= 2.0e-5
++
++
++def test_constructor_can_create_lifted_support_missing_from_nominal_bank(monkeypatch):
++    import numpy as np
++    import cowp.waymax_eval.policy_wrapper as pw
++    from cowp.label.trajectory_primitives import constant_accel_trajectory
++
++    cfg = _cfg()
++    state = _state(5.0)[None, :]
++    nominal = constant_accel_trajectory(state[0], 8, 0.1, accel=0.0)[None, ...]
++    targets, accels, _ = pw._consistent_one_step_targets_np(
++        state[0], nominal[:, 0], cfg, previous_longitudinal_accel=0.0
++    )
++
++    # Only a trajectory whose first realized speed is below the current speed is
++    # physically certified.  The unchanged bank has no such tube; the lower
++    # reachable acceleration envelope constructs it without relaxing limits.
++    def fake_certificate(agent_state, sdc_index, trajectory, waymax_ok, roadgraph, cfg, **kwargs):
++        first_speed = float(np.linalg.norm(np.asarray(trajectory)[0, 3:5]))
++        ok = first_speed < 4.99
++        return ok, {
++            "collision_min_margin_m": 1.0 if ok else -1.0,
++            "collision_safe": ok,
++            "roadgraph_safe": ok,
++            "kinematic_safe": ok,
++        }
++
++    monkeypatch.setattr(pw, "_physical_recovery_tube_certificate_np", fake_certificate)
++    selected, detail = pw._construct_shift_closed_control_reachable_tube_np(
++        state,
++        0,
++        nominal,
++        np.asarray([True]),
++        np.asarray([True]),
++        np.asarray([1], dtype=np.int64),
++        np.asarray([0.1], dtype=np.float64),
++        np.asarray([0], dtype=np.float32),
++        targets,
++        accels,
++        {},
++        cfg,
++        previous_longitudinal_accel=0.0,
++    )
++    assert selected is not None
++    assert int(selected["mode"]) == -1
++    assert detail["selected_is_lifted"]
++    assert detail["tube_lifted_only_parent_count"] == 1
++    assert float(selected["accel"]) < float(accels[0])
++    assert not np.allclose(selected["target"], targets[0], rtol=0.0, atol=1.0e-6)
++
++
++def test_tube_collision_checks_never_request_logged_future(monkeypatch):
++    import numpy as np
++    import cowp.waymax_eval.policy_wrapper as pw
++    from cowp.label.trajectory_primitives import constant_accel_trajectory
++
++    cfg = _cfg()
++    state = _state(3.0)[None, :]
++    nominal = constant_accel_trajectory(state[0], 8, 0.1, accel=0.0)[None, ...]
++    targets, accels, _ = pw._consistent_one_step_targets_np(
++        state[0], nominal[:, 0], cfg, previous_longitudinal_accel=0.0
++    )
++    original = pw._prepare_collision_check_context
++    seen = {"calls": 0}
++
++    def guarded(*args, **kwargs):
++        assert kwargs.get("other_future_trajs", None) is None
++        seen["calls"] += 1
++        return original(*args, **kwargs)
++
++    monkeypatch.setattr(pw, "_prepare_collision_check_context", guarded)
++    selected, _detail = pw._construct_shift_closed_control_reachable_tube_np(
++        state, 0, nominal,
++        np.asarray([True]), np.asarray([True]), np.asarray([1], dtype=np.int64),
++        np.asarray([0.1]), np.asarray([8]), targets, accels, {}, cfg, 0.0,
++    )
++    assert selected is not None
++    assert seen["calls"] > 0
++
++
++def test_v38_method_keeps_priority_gate_defaults():
++    from cowp.waymax_eval.policy_wrapper import _canonical_online_method
++    from cowp.waymax_eval.rollout import _method_gate_defaults
++
++    method = "cowp_shift_closed_control_reachable_tube"
++    assert _canonical_online_method(method, "hard") == (method, "priority")
++    assert _method_gate_defaults(method, "hard") == (method, "priority")
++
++
++def test_constructor_fails_closed_when_shift_certificate_is_missing(monkeypatch):
++    import numpy as np
++    import cowp.waymax_eval.policy_wrapper as pw
++    from cowp.label.trajectory_primitives import constant_accel_trajectory
++
++    cfg = _cfg()
++    state = _state(4.0)[None, :]
++    nominal = constant_accel_trajectory(state[0], 8, 0.1, accel=0.0)[None, ...]
++    targets, accels, _ = pw._consistent_one_step_targets_np(
++        state[0], nominal[:, 0], cfg, previous_longitudinal_accel=0.0
++    )
++    calls = {"n": 0}
++
++    def current_only_certificate(*args, **kwargs):
++        calls["n"] += 1
++        # Every hypothesis passes its current-tube audit but fails the immediately
++        # following shifted-tube audit. No first action may therefore be emitted.
++        ok = (calls["n"] % 2) == 1
++        return ok, {
++            "collision_min_margin_m": 1.0 if ok else -1.0,
++            "collision_safe": ok,
++            "roadgraph_safe": ok,
++            "kinematic_safe": ok,
++        }
++
++    monkeypatch.setattr(pw, "_physical_recovery_tube_certificate_np", current_only_certificate)
++    selected, detail = pw._construct_shift_closed_control_reachable_tube_np(
++        state, 0, nominal,
++        np.asarray([True]), np.asarray([True]), np.asarray([1], dtype=np.int64),
++        np.asarray([0.1]), np.asarray([8]), targets, accels, {}, cfg, 0.0,
++    )
++    assert selected is None
++    assert not detail["selected"]
++    assert detail["tube_full_physically_safe"] > 0
++    assert detail["tube_shift_closed"] == 0
+--- /dev/null
++++ b/NEXT_RUN_COMMANDS_V16_8_38_SHIFT_CLOSED_CONTROL_REACHABLE_TUBE_CN.sh
+@@ -0,0 +1,225 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# v16.8.38: Shift-Closed Control-Reachable Recovery Tube (SCRT)
++# Preregistered branch after v16.8.37's high-precision/low-recall returnability
++# failure: construct explicit support inside the existing controller-reachable
++# set, then require a full physical tube and one-step shift closure.
++#
++# Frozen: compact-5k data/labels/checkpoint, natural roots, RCOT, BCOT,
++# protected-priority certificate, post-certificate set-preservation frontier,
++# candidate families, common controller, outcome settings, and the 8 s
++# conventional-safety contract. No result below is final paper evidence.
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_38_shift_closed_control_reachable_tube}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35_CPOSH="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36_FRONTIER="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37_RRB="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
++REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++REF_EXACT_RVR="$SCRIPT_DIR/reference_results/v16_8_29_exact200_rvr_reference.json"
++
++EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
++EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
++EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
++EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
++mkdir -p "$OUT_ROOT"
++
++export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
++export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
++export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
++export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
++export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
++
++validate_manifest() {
++  local p="$1" n="$2" expected="$3"
++  [[ -s "$p" ]] || { echo "Missing ID manifest: $p" >&2; exit 2; }
++  python - "$p" "$n" "$expected" <<'PY'
++import hashlib,sys
++p,n,expected=sys.argv[1],int(sys.argv[2]),sys.argv[3]
++ids=[x.strip() for x in open(p,encoding='utf-8') if x.strip()]
++if len(ids)!=n: raise SystemExit(f"expected {n} IDs, got {len(ids)} in {p}")
++if len(set(ids))!=n: raise SystemExit(f"duplicate IDs in {p}")
++h=hashlib.sha256("\n".join(ids).encode()).hexdigest()
++if h!=expected: raise SystemExit(f"logical ID SHA mismatch: {h} != {expected}")
++print(f"manifest OK: n={n} logical_sha256={h} path={p}")
++PY
++}
++ensure_ids() {
++  validate_manifest "$EXACT_IDS" 200 "$EXPECTED_EXACT_SHA"
++  validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
++  validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
++  validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
++  cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
++  cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++  cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
++  cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
++}
++
++require_gate_pass() {
++  local analysis_json="$1" methods="$2" stage_label="$3"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing $stage_label analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" "$methods" "$stage_label" <<'PY'
++import json,sys
++p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
++d=json.load(open(p,encoding='utf-8'))
++gates=d.get('preregistered_gate',{})
++for method in [x.strip() for x in methods.split(',') if x.strip()]:
++    if method!='cowp_shift_closed_control_reachable_tube':
++        raise SystemExit(f'ERROR: {method} is not a v16.8.38 promotion candidate')
++    g=gates.get('shift_closed_control_reachable_tube')
++    if not g or g.get('pass') is not True:
++        failed=[k for k,v in (g or {}).get('checks',{}).items() if not v]
++        raise SystemExit(f'ERROR: {method} did not pass {stage} preregistered gate; failed={failed}')
++print(f'promotion gate OK for {methods} at {stage}')
++PY
++}
++
++index_arg=()
++if [[ -s "$TFEX_INDEX" ]]; then
++  index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++else
++  echo "[warning] TFExample ID index missing: $TFEX_INDEX" >&2
++fi
++common_waymax=(
++  --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax --checkpoint "$BASE_CKPT" --waymax-split validation --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0 --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++run_colocated_shard() {
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5"
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    --no-progress --status-every 2 --output "$out"
++}
++run_parallel_methods() {
++  local tag="$1" ids="$2" methods="$3"
++  IFS=',' read -r -a arr <<< "$methods"
++  for method in "${arr[@]}"; do
++    echo "=== $tag method: $method ==="
++    local start end; start=$(date +%s)
++    run_colocated_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++    run_colocated_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++    wait "$p0"; wait "$p1"
++    end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++    python -m cowp.scripts.79_merge_waymax_exact_shards \
++      --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++      --output "$OUT_ROOT/${tag}_${method}_merged.json"
++  done
++}
++analyze_set() {
++  local stage="$1" tag="$2" cowp="$3" rvr="$4"
++  local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
++    --shift-closed-control-reachable-tube "$OUT_ROOT/${tag}_cowp_shift_closed_control_reachable_tube_merged.json" \
++    --output "$OUT_ROOT/${tag}_shift_closed_control_reachable_tube_analysis.json")
++  if [[ "$stage" == "counterfactual48" ]]; then
++    args+=(--v33-rosh "$REF_CF48_V33_ROSH" \
++      --v35-control-projected-spectrum "$REF_CF48_V35_CPOSH" \
++      --v36-recovery-frontier "$REF_CF48_V36_FRONTIER" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37_RRB")
++  fi
++  python -m cowp.scripts.91_analyze_shift_closed_control_reachable_tube "${args[@]}"
++}
++
++case "$MODE" in
++  sanity)
++    python -m py_compile cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
++      cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
++      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/88_analyze_control_projected_option_spectrum.py \
++      cowp/scripts/89_analyze_control_projected_recovery_frontier.py cowp/scripts/90_analyze_recourse_returnability_bridge.py \
++      cowp/scripts/91_analyze_shift_closed_control_reachable_tube.py
++    python -m pytest -q \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py tests/test_v16_8_28_execution_integrity.py \
++      tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    if grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py; then
++      echo "ERROR: conventional-safety bypass exists" >&2; exit 3
++    fi
++    ensure_ids
++    echo "v16.8.38 focused semantic/integrity sanity passed"
++    ;;
++  make_ids) ensure_ids ;;
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++  base_equivalence16_parallel2)
++    ensure_ids; run_parallel_methods "equivalence16" "$EQ16_IDS" "cowp"
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++  counterfactual48_parallel2)
++    ensure_ids
++    run_parallel_methods "counterfactual48_v38" "$CF48_IDS" "${METHODS:-cowp_shift_closed_control_reachable_tube}" ;;
++  analyze_counterfactual48)
++    analyze_set "counterfactual48" "counterfactual48_v38" "$REF_CF48_COWP" "$REF_CF48_RVR" ;;
++  fresh37_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_shift_closed_control_reachable_tube}"
++    require_gate_pass "$OUT_ROOT/counterfactual48_v38_shift_closed_control_reachable_tube_analysis.json" "$promoted" "counterfactual48"
++    run_parallel_methods "fresh37_v38" "$FRESH37_IDS" "$promoted" ;;
++  analyze_fresh37)
++    analyze_set "fresh37" "fresh37_v38" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR" ;;
++  confirm200_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_shift_closed_control_reachable_tube}"
++    require_gate_pass "$OUT_ROOT/fresh37_v38_shift_closed_control_reachable_tube_analysis.json" "$promoted" "fresh37"
++    run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted" ;;
++  analyze_confirm200)
++    analyze_set "exact200" "confirm_exact200" "$REF_EXACT_COWP" "$REF_EXACT_RVR" ;;
++  help|*)
++    cat <<EOF
++v16.8.38 recommended order
++
++1) $0 sanity
++2) $0 make_ids
++3) $0 base_equivalence16_parallel2
++4) $0 counterfactual48_parallel2
++5) $0 analyze_counterfactual48
++
++STOP here unless preregistered_gate.shift_closed_control_reachable_tube.pass == true.
++The six Stage-1 GO conditions are unchanged from v16.8.33--37.
++
++Only after Stage-1 pass:
++  PROMOTED_METHODS=cowp_shift_closed_control_reachable_tube $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only after fresh37 pass:
++  PROMOTED_METHODS=cowp_shift_closed_control_reachable_tube $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Do NOT relax the tube certificate, shorten the frozen 8 s collision contract,
++add weighted profile/risk scores, stack lookahead depth, or introduce dwell time
++after a failed gate. A nonzero lifted-support rate is a mechanism-attribution
++diagnostic, not a post-hoc seventh promotion threshold.
++EOF
++    ;;
++esac
+--- a/ALGORITHM_CHANGELOG.md
++++ b/ALGORITHM_CHANGELOG.md
+@@ -3986,3 +3986,205 @@
+ - physical feasibility protects ego recourse paths back to certified control-realizable feasibility.
+ 
+ If V37 fails Stage-1, stop the RVR/SOV/BHOV/THOP/ROSH/EOSH/CPOSH/frontier/bridge selector family. The next algorithm family must construct genuine control-reachable recovery support or an explicit viability/reachable-set approximation, with an unbiased paired proposal probe before any dataset reconstruction or learned amortization.
++
++
++# ALGORITHM_CHANGELOG V16.8.38 — Shift-Closed Control-Reachable Recovery Tube
++
++## Triggering evidence: V16.8.37 is reliable but fails Stage-1
++
++V16.8.37 passes an independent 71/71 hard-check reliability audit, so its result is valid for algorithm attribution. It fails the unchanged six-item counterfactual48 promotion gate:
++
++- historical RVR rescues retained: 1/10 (fail; minimum 5/10);
++- historical RVR-induced collisions avoided: 9/9 (pass; minimum 7/9);
++- net COWP collisions removed: 1 (fail; minimum 3);
++- kinematics net regression: +1 scene (pass; maximum +1);
++- paired mean EP delta: -0.065162 (fail; minimum -0.05);
++- intervention: 8/3840 policy steps (pass; nonzero).
++
++`cowp_recourse_returnability_bridge` is archived and must not run fresh37.
++
++The only collision rescue, `fccd9a25a2a57a73`, simultaneously induces kinematics infeasibility and changes EP from 3.67633 to 0.51512. Removing this single development scene leaves mean EP delta about +0.00071 across the other 47 scenes, but the preregistered Gate is not recomputed after excluding it.
++
++## V37 mechanism attribution
++
++V37 is active and causal, not dead code:
++
++- 144 returnability probes;
++- 7 bridge entries;
++- 1 direct entry;
++- 2 actual bridge executions;
++- 1 abort;
++- 8 recovery switch steps.
++
++The branch is high precision but unusably low recall. Per probe, roughly 35 distinct emitted-action classes are available/evaluated, but only 0.28–0.31 restoring semantic macros are witnessed on average. Exact return to a non-empty unchanged full-conventional bank within the direct/one-new-replan bridge is therefore almost always an empty-set comparison.
++
++V37 validates the need for explicit terminal/returnability semantics and actual emitted-action reasoning, but falsifies exact short-horizon full-conventional restoration as the sole recovery-entry certificate.
++
++The dominant bottleneck is updated to:
++
++**Constructive Control-Reachable Backup Support under Zero-Conventional Collapse**
++
++Paper-level name:
++
++**Shift-Closed Control-Reachable Physical Feasibility**.
++
++## New method
++
++`cowp_shift_closed_control_reachable_tube`
++
++The method is active only when the full conventional set is empty and at least one valid candidate exists. It does not change data, checkpoint, candidate semantic families, Natural roots, RCOT, BCOT, protected-priority certificate, certificate-compatible set preservation, the 8 s conventional contract, common controller limits, or accepted-path behavior.
++
++### 1. Existing semantic parent support
++
++Use the historical roadgraph-first recovery parent pool. If no valid+roadgraph-safe parent exists, use all valid parents and re-audit every realized tube. Exclude PAD.
++
++Deduplicate by `(semantic macro, actual emitted first target)` so one macro may retain multiple physically distinct actions while duplicate labels cannot fabricate support.
++
++### 2. Constructive control lifting
++
++For every parent geometry, propagate three longitudinal controller realizations:
++
++- mode 0: unchanged nominal stateful controller;
++- mode -1: lower endpoint of the existing acceleration/jerk reachable interval at every edge;
++- mode +1: upper endpoint of the same interval at every edge.
++
++For previous acceleration `a_{t-1}`:
++
++```text
++lo_t = max(-max_decel, a_{t-1} - max_jerk*dt)
++hi_t = min( max_accel, a_{t-1} + max_jerk*dt)
++```
++
++These are endpoints of the already-frozen controller envelope, not relaxed constraints or tuned proposal offsets. Lateral/yaw realization continues to use the unchanged online projection.
++
++Historical callers of `_project_candidate_bank_through_controller_np` use the original `None` defaults. A regression requires the mode-0 first target to match the unchanged online one-step controller within 2e-5.
++
++### 3. Full physical tube certificate
++
++A control-realized tube is admissible only if it passes, over the full frozen horizon:
++
++- finite-state check;
++- unchanged roadgraph drivable screen;
++- unchanged causal constant-velocity collision screen;
++- Waymax-aligned inverse acceleration/steering-curvature feasibility on every edge.
++
++The tube is not relabeled conventional-safe or NCF. Social feasibility semantics remain untouched.
++
++### 4. One-step shift closure
++
++After executing the actual first target:
++
++1. construct the causal successor state;
++2. shift the realized tube left by one edge;
++3. append only a constant-velocity terminal edge;
++4. carry the emitted longitudinal acceleration as successor controller memory;
++5. re-project the shifted reference through the same controller envelope mode;
++6. require the complete shifted tube to pass the same physical certificate.
++
++This is an invariant-like one-replanning closure test on the same backup tube, not V2/V3/V4 returnability-tree depth or future logged-state access.
++
++### 5. Hard-certified selection
++
++If no shift-closed tube exists, execute the unchanged COWP least-coercive-valid fallback.
++
++Otherwise select:
++
++```text
++hard shift-closed physical set
++→ minimum frozen COWP fallback score
++→ minimum absolute first-acceleration deviation
++→ prefer nominal mode on exact tie
++→ deterministic parent/mode index
++```
++
++No risk/progress/collision scalarization, profile area/AUC, horizon discount, relaxed threshold, fixed dwell time, mode commitment, or learned viability head is introduced.
++
++The selected projected trajectory/first target/acceleration is passed to execution through an explicit override; the mechanism is not analysis-only.
++
++### 6. No persistent recovery mode
++
++Each changed action must own a complete shift-closed tube certificate at the current observed state. The next real planning step reconstructs and recertifies. Continuity is supplied by shift closure, not heuristic hysteresis or unconditional commitment.
++
++## Added diagnostics
++
++- recovery-tube probe/certificate/action-change rates;
++- parent pool and distinct action classes;
++- generated tube hypotheses and unique physical first actions;
++- full-safe and shift-closed counts;
++- nominal/lower/upper envelope shift-closed counts;
++- lifted-only parent support;
++- selected lifted rate, envelope mode, parent candidate/macro;
++- selected first-acceleration delta;
++- current and shifted collision margins;
++- selected fallback-score delta.
++
++A nonzero lifted-selection or lifted-only-support signal is required to attribute any successful outcome specifically to constructive support expansion, but it is not a post-hoc seventh promotion Gate.
++
++## Frozen layers
++
++Freeze:
++
++- compact-5k data/labels/checkpoint;
++- Natural roots;
++- RCOT and BCOT;
++- protected-priority hard certificate;
++- certificate-compatible set-preservation frontier;
++- outcome head/settings;
++- 8 s conventional-safe definition;
++- V27/V28 integrity fixes;
++- semantic candidate families and map/Frenet primitives;
++- common controller limits and ordinary execution path;
++- accepted/certified-path selection.
++
++Accepted-path execution viability remains a separate secondary bottleneck.
++
++## Newly prohibited directions
++
++All previous prohibitions remain. Add:
++
++1. Do not relax the V37 rescue/EP Gate or exclude `fccd...` after seeing the result.
++2. Do not continue direct/indirect returnability as a 2/3/4-step bridge tree; this repeats failed horizon stacking.
++3. Do not replace exact restoration with a weighted proxy over conventional count, prefix, macro count, time-to-return, risk, collision, or progress.
++4. Do not continue the base-vs-RVR or same-bank selector/frontier family after V36/V37.
++5. Do not relax the full V38 tube certificate, shorten the 8 s collision contract, or widen controller limits after a failed Gate.
++6. Do not introduce fixed dwell, hysteresis epsilon, minimum commitment, or release threshold.
++7. Do not use nominal first-waypoint exact reachability as executable support.
++8. Do not globally retune the common controller or mix accepted-path kinematics into V38.
++9. Do not train a neural reachable-tube/returnability head before the analytic tube target is validated.
++10. Do not claim strong social-burden causality from logged-replay Waymax outcomes.
++
++## Promotion protocol
++
++Stage-1 retains the exact six gates from V16.8.33–37:
++
++- retain at least 5/10 old RVR rescues;
++- avoid at least 7/9 old RVR-induced collisions;
++- remove at least 3 net COWP collisions;
++- kinematics net regression no worse than +1 scene;
++- paired mean EP delta at least -0.05;
++- nonzero action-changing intervention.
++
++Only Stage-1 pass may launch fresh37. The launcher is fail-closed. Fresh37 then requires no net collision/CR harm, offroad and kinematics regressions no worse than +1 scene, mean EP delta at least -0.03, and nonzero intervention before historical exact200 development confirmation.
++
++All panels remain development evidence, not publication holdout.
++
++## Validation
++
++- V16.8.38 dedicated tests: 7/7 passed;
++- V16.8.25→38 focused semantic/integrity suite: 68/68 passed;
++- Python compilation: passed;
++- launcher bash syntax: passed;
++- exact200/equivalence16/counterfactual48/fresh37 manifest hashes: passed;
++- analyzer smoke: passed;
++- direct fresh37 without Stage-1 analysis exits with code 4 before rollout;
++- conventional-safety bypass grep: none;
++- V38 support-construction helper does not consume logged future.
++
++## CCF-A positioning
++
++The tube and shift-closure device is not claimed as standalone novelty. The candidate paper contribution remains **Orthogonal Option-Set Feasibility**:
++
++- social axis: preserve protected agents' natural low-burden response sets;
++- physical axis: preserve ego control-reachable, shift-closed backup support during uncertified recovery.
++
++The shared principle remains: **safety must not be obtained through critical option-set collapse**.
