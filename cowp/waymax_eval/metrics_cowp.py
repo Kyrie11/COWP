@@ -476,6 +476,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "control_projected_recovery_frontier_step_rate": float(sum(x == "no_conventional_use_control_projected_recovery_frontier" for x in reasons) / max(n, 1)),
             "recourse_returnability_bridge_step_rate": float(sum(x == "no_conventional_use_recourse_returnability_bridge" for x in reasons) / max(n, 1)),
             "shift_closed_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_shift_closed_control_reachable_tube" for x in reasons) / max(n, 1)),
+            "conflict_window_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_conflict_window_control_reachable_tube" for x in reasons) / max(n, 1)),
             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
@@ -634,12 +635,28 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 "recovery_tube_selected_is_lifted",
                 mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
             ) if n else None,
+            "recovery_tube_event_release_selection_rate_on_certified_steps": _mean(
+                "recovery_tube_selected_is_event_release",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "mean_recovery_tube_parent_pool_on_probes": _mean(
                 "recovery_tube_parent_pool",
                 mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
             ) if n else None,
             "mean_recovery_tube_parent_action_classes_on_probes": _mean(
                 "recovery_tube_parent_action_classes",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_parents_with_nominal_conflict_on_probes": _mean(
+                "recovery_tube_parents_with_nominal_conflict",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_parent_first_conflict_step_on_probes": _mean(
+                "recovery_tube_mean_parent_first_conflict_step",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_parent_last_conflict_step_on_probes": _mean(
+                "recovery_tube_mean_parent_last_conflict_step",
                 mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
             ) if n else None,
             "mean_recovery_tube_hypotheses_generated_on_probes": _mean(
@@ -670,12 +687,36 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 "recovery_tube_upper_envelope_shift_closed",
                 mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
             ) if n else None,
+            "mean_recovery_tube_event_release_shift_closed_on_probes": _mean(
+                "recovery_tube_event_release_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_lower_event_release_shift_closed_on_probes": _mean(
+                "recovery_tube_lower_event_release_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_upper_event_release_shift_closed_on_probes": _mean(
+                "recovery_tube_upper_event_release_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "mean_recovery_tube_lifted_only_parent_count_on_probes": _mean(
                 "recovery_tube_lifted_only_parent_count",
                 mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
             ) if n else None,
+            "mean_recovery_tube_event_release_only_parent_count_on_probes": _mean(
+                "recovery_tube_event_release_only_parent_count",
+                mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "mean_recovery_tube_abs_first_accel_delta_on_certified_steps": _mean_abs(
                 "recovery_tube_selected_first_accel_delta",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_release_edge_on_certified_steps": _mean(
+                "recovery_tube_selected_release_edge",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_nonnominal_edges_on_certified_steps": _mean(
+                "recovery_tube_selected_nonnominal_edges",
                 mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
             ) if n else None,
             "mean_recovery_tube_selected_collision_margin_on_certified_steps": _mean(

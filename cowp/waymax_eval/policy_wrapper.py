@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 import importlib
@@ -115,7 +116,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -874,6 +875,7 @@ def _project_candidate_bank_through_controller_np(
     previous_longitudinal_accel: float,
     first_accel_override: np.ndarray | None = None,
     longitudinal_envelope_mode: np.ndarray | None = None,
+    longitudinal_envelope_schedule: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Project an entire candidate bank through the *same stateful controller*.
 
@@ -887,13 +889,13 @@ def _project_candidate_bank_through_controller_np(
     Returns ``(projected_traj, waymax_kinematic_ok[K,H], accel[K,H])``.
 
     ``first_accel_override`` and ``longitudinal_envelope_mode`` are v16.8.38
-    support-construction hooks.  The former may provide one finite acceleration
-    per candidate for only the first emitted edge.  The latter uses {-1,0,+1}
-    to follow, at every projected edge, the lower reachable acceleration
-    endpoint, the unchanged nominal controller, or the upper endpoint.  Both
-    are clipped by the *already-existing* acceleration/jerk limits.  No
-    controller limit is relaxed and all historical callers use both default
-    ``None`` paths byte-for-byte.
+    support-construction hooks.  V16.8.39 adds
+    ``longitudinal_envelope_schedule[K,H]`` so a causal, event-derived recovery
+    policy can use an existing reachable-interval endpoint only through the
+    predicted conflict window and then return to the nominal controller.  Every
+    schedule entry is still one of {-1,0,+1}; it never widens acceleration or
+    jerk limits.  Historical callers leave all hooks as ``None`` and retain the
+    original path byte-for-byte.
     """
     nominal = np.asarray(nominal_traj, dtype=np.float64)
     cur0 = np.asarray(current, dtype=np.float64).reshape(-1)
@@ -934,6 +936,28 @@ def _project_candidate_bank_through_controller_np(
             )
         if bool(np.any(~np.isin(envelope_mode, np.asarray([-1, 0, 1], dtype=np.int8)))):
             raise ValueError("longitudinal_envelope_mode values must be in {-1,0,+1}")
+    envelope_schedule = None
+    if longitudinal_envelope_schedule is not None:
+        envelope_schedule = np.asarray(longitudinal_envelope_schedule, dtype=np.int8)
+        if envelope_schedule.ndim == 1:
+            if K != 1 or envelope_schedule.size != H:
+                raise ValueError(
+                    "one-dimensional longitudinal_envelope_schedule is only "
+                    f"valid for K=1 and must have H={H} entries"
+                )
+            envelope_schedule = envelope_schedule[None, :]
+        if envelope_schedule.shape != (K, H):
+            raise ValueError(
+                "longitudinal_envelope_schedule must have shape [K,H]: "
+                f"got {envelope_schedule.shape}, expected {(K, H)}"
+            )
+        if bool(np.any(~np.isin(envelope_schedule, np.asarray([-1, 0, 1], dtype=np.int8)))):
+            raise ValueError("longitudinal_envelope_schedule values must be in {-1,0,+1}")
+        if envelope_mode is not None:
+            raise ValueError(
+                "provide either longitudinal_envelope_mode or "
+                "longitudinal_envelope_schedule, not both"
+            )
 
     for t in range(H):
         desired = nominal[:, t, :]
@@ -949,8 +973,11 @@ def _project_candidate_bank_through_controller_np(
         lo = np.maximum(-max_decel, prev_accel - max_jerk * dt)
         hi = np.minimum(max_accel, prev_accel + max_jerk * dt)
         accel = np.clip(raw_accel, lo, hi)
-        if envelope_mode is not None:
-            accel = np.where(envelope_mode < 0, lo, np.where(envelope_mode > 0, hi, accel))
+        active_envelope = envelope_mode
+        if envelope_schedule is not None:
+            active_envelope = envelope_schedule[:, t]
+        if active_envelope is not None:
+            accel = np.where(active_envelope < 0, lo, np.where(active_envelope > 0, hi, accel))
         if t == 0 and override is not None:
             finite_override = np.isfinite(override)
             bounded_override = np.clip(override, lo, hi)
@@ -1754,6 +1781,393 @@ def _construct_shift_closed_control_reachable_tube_np(
     return selected, detail
 
 
+def _conflict_window_envelope_schedule_family(
+    horizon_steps: int,
+    first_violation_step: int,
+    last_violation_step: int,
+) -> list[dict[str, Any]]:
+    """Parameter-free control schedules anchored to causal conflict events.
+
+    The V38 constant policies are retained exactly.  If the nominal realized tube
+    violates the frozen collision screen, V39 additionally applies the lower or
+    upper reachable acceleration endpoint from the current edge through either the
+    first or the last sampled violation, then releases to the unchanged nominal
+    controller.  Duplicate schedules (for example a one-sample conflict window)
+    are removed exactly rather than inflated as separate support.
+    """
+    H = max(int(horizon_steps), 0)
+    if H <= 0:
+        return []
+    records: list[dict[str, Any]] = []
+    seen: set[bytes] = set()
+
+    def add(policy_id: int, policy_name: str, schedule: np.ndarray, release_edge: int) -> None:
+        sch = np.asarray(schedule, dtype=np.int8).reshape(-1)
+        if sch.size != H:
+            raise ValueError(f"conflict-window schedule has {sch.size} edges, expected {H}")
+        if bool(np.any(~np.isin(sch, np.asarray([-1, 0, 1], dtype=np.int8)))):
+            raise ValueError("conflict-window schedule values must be in {-1,0,+1}")
+        key = sch.tobytes()
+        if key in seen:
+            return
+        seen.add(key)
+        records.append({
+            "policy_id": int(policy_id),
+            "policy_name": str(policy_name),
+            "schedule": sch,
+            "release_edge": int(release_edge),
+            "nonnominal_edges": int(np.count_nonzero(sch)),
+            "event_release": bool(abs(int(policy_id)) >= 2),
+        })
+
+    zero = np.zeros((H,), dtype=np.int8)
+    add(0, "NOMINAL", zero, 0)
+    add(-1, "LOWER_ALL", -np.ones((H,), dtype=np.int8), H)
+    add(1, "UPPER_ALL", np.ones((H,), dtype=np.int8), H)
+
+    if int(first_violation_step) >= 0:
+        event_specs = (
+            ("FIRST_CONFLICT", -2, 2, int(first_violation_step) + 1),
+            ("LAST_CONFLICT", -3, 3, int(last_violation_step) + 1),
+        )
+        for tag, lower_id, upper_id, raw_release in event_specs:
+            release = int(min(max(raw_release, 1), H))
+            lower = np.zeros((H,), dtype=np.int8)
+            upper = np.zeros((H,), dtype=np.int8)
+            lower[:release] = -1
+            upper[:release] = 1
+            add(lower_id, f"LOWER_TO_{tag}", lower, release)
+            add(upper_id, f"UPPER_TO_{tag}", upper, release)
+    return records
+
+
+def _construct_conflict_window_control_reachable_tube_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    nominal_trajectories: np.ndarray,
+    cand_valid: np.ndarray,
+    nominal_roadgraph_safe: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    action_targets: np.ndarray,
+    action_accels: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    previous_longitudinal_accel: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Construct a full-horizon, shift-closed conflict-window recovery tube.
+
+    V38 established that controller-lifted support is real but extremely sparse:
+    its three longitudinal policies hold nominal/lower/upper behavior for the
+    entire frozen horizon.  V39 retains those exact controls as a nested baseline
+    and adds a causal one-switch family.  The switch time is not tuned: it is the
+    first or last violation of the nominal realized tube under the unchanged
+    sampled CV collision contract.  Endpoint control is applied pre-emptively from
+    the current edge through that event and then released to the nominal
+    controller.  Every emitted action still requires both the unchanged full
+    physical tube certificate and one-step shift closure.
+    """
+    state = np.asarray(agent_state, dtype=np.float32)
+    traj = np.asarray(nominal_trajectories, dtype=np.float32)
+    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
+    nominal_road = np.asarray(nominal_roadgraph_safe, dtype=bool).reshape(-1)
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
+    targets = np.asarray(action_targets, dtype=np.float32)
+    nominal_accels = np.asarray(action_accels, dtype=np.float64).reshape(-1)
+
+    detail: dict[str, Any] = {
+        "probe_used": True,
+        "parent_pool": 0,
+        "parent_action_classes": 0,
+        "parents_with_nominal_conflict": 0,
+        "mean_parent_first_conflict_step": 0.0,
+        "mean_parent_last_conflict_step": 0.0,
+        "tube_hypotheses_generated": 0,
+        "tube_hypotheses_unique_action": 0,
+        "tube_full_physically_safe": 0,
+        "tube_shift_closed": 0,
+        "tube_nominal_shift_closed": 0,
+        "tube_lower_envelope_shift_closed": 0,
+        "tube_upper_envelope_shift_closed": 0,
+        "tube_event_release_shift_closed": 0,
+        "tube_lower_event_release_shift_closed": 0,
+        "tube_upper_event_release_shift_closed": 0,
+        "tube_lifted_only_parent_count": 0,
+        "tube_event_release_only_parent_count": 0,
+        "nominal_first_target_max_abs_error": 0.0,
+        "selected": False,
+        "selected_is_lifted": False,
+        "selected_is_event_release": False,
+        "selected_policy_id": 0,
+        "selected_policy_name": "NONE",
+        "selected_envelope_mode": 0,
+        "selected_release_edge": 0,
+        "selected_nonnominal_edges": 0,
+        "selected_parent_candidate": -1,
+        "selected_parent_macro": -1,
+        "selected_parent_macro_name": "NONE",
+        "selected_first_accel_delta": 0.0,
+        "selected_collision_min_margin_m": -999.0,
+        "selected_shift_collision_min_margin_m": -999.0,
+        "selected_fallback_score": 0.0,
+    }
+    if (
+        state.ndim != 2 or not (0 <= int(sdc_index) < state.shape[0])
+        or traj.ndim != 3 or traj.shape[0] <= 0 or traj.shape[1] <= 0 or traj.shape[2] < 5
+    ):
+        detail["invalid_input"] = True
+        return None, detail
+    n = min(
+        traj.shape[0], valid.size, nominal_road.size, macro.size, scores.size,
+        prefix.size, targets.shape[0] if targets.ndim == 2 else 0, nominal_accels.size,
+    )
+    if n <= 0:
+        detail["invalid_input"] = True
+        return None, detail
+    traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
+    scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
+
+    pool = valid & nominal_road
+    if not bool(pool.any()):
+        pool = valid.copy()
+    pool &= macro != int(MacroType.PAD)
+    detail["parent_pool"] = int(pool.sum())
+    if not bool(pool.any()):
+        return None, detail
+
+    reps = _semantic_action_class_representatives_np(
+        pool, macro, targets, prefix, scores, prefer_fallback=True,
+    )
+    detail["parent_action_classes"] = int(len(reps))
+    if not reps:
+        return None, detail
+
+    H = int(traj.shape[1])
+    current_collision_context = _prepare_collision_check_context(
+        state, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+    )
+    rep_arr = np.asarray(reps, dtype=np.int64)
+    nominal_projected, _nominal_kin, _nominal_accel_hist = _project_candidate_bank_through_controller_np(
+        state[int(sdc_index)], traj[rep_arr], cfg, float(previous_longitudinal_accel),
+    )
+    nominal_err = np.max(
+        np.abs(nominal_projected[:, 0, :5] - targets[rep_arr, :5]), axis=1,
+    )
+    detail["nominal_first_target_max_abs_error"] = float(np.max(nominal_err)) if nominal_err.size else 0.0
+    if bool(np.any(nominal_err > 2.0e-5)):
+        raise RuntimeError(
+            "Conflict-window tube projector mismatch: nominal first edge differs "
+            "from the unchanged online controller target"
+        )
+
+    parent_indices: list[int] = []
+    policy_ids: list[int] = []
+    policy_names: list[str] = []
+    release_edges: list[int] = []
+    nonnominal_edges: list[int] = []
+    schedules: list[np.ndarray] = []
+    first_events: list[int] = []
+    last_events: list[int] = []
+    for local_i, parent in enumerate(reps):
+        window = _collision_violation_window_against_context(
+            nominal_projected[local_i], current_collision_context,
+        )
+        first_event = int(window.get("first_violation_step", -1))
+        last_event = int(window.get("last_violation_step", -1))
+        if bool(window.get("has_violation", False)):
+            first_events.append(first_event)
+            last_events.append(last_event)
+        family = _conflict_window_envelope_schedule_family(H, first_event, last_event)
+        for rec in family:
+            parent_indices.append(int(parent))
+            policy_ids.append(int(rec["policy_id"]))
+            policy_names.append(str(rec["policy_name"]))
+            release_edges.append(int(rec["release_edge"]))
+            nonnominal_edges.append(int(rec["nonnominal_edges"]))
+            schedules.append(np.asarray(rec["schedule"], dtype=np.int8))
+    detail["parents_with_nominal_conflict"] = int(len(first_events))
+    if first_events:
+        detail["mean_parent_first_conflict_step"] = float(np.mean(first_events))
+        detail["mean_parent_last_conflict_step"] = float(np.mean(last_events))
+
+    parent_arr = np.asarray(parent_indices, dtype=np.int64)
+    policy_arr = np.asarray(policy_ids, dtype=np.int8)
+    schedule_arr = np.stack(schedules, axis=0).astype(np.int8)
+    release_arr = np.asarray(release_edges, dtype=np.int32)
+    nonnominal_arr = np.asarray(nonnominal_edges, dtype=np.int32)
+    expanded_nominal = np.asarray(traj[parent_arr], dtype=np.float32)
+    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
+        state[int(sdc_index)], expanded_nominal, cfg,
+        float(previous_longitudinal_accel),
+        longitudinal_envelope_schedule=schedule_arr,
+    )
+    detail["tube_hypotheses_generated"] = int(projected.shape[0])
+
+    action_groups: list[list[int]] = []
+    for j in range(projected.shape[0]):
+        first = np.asarray(projected[j, 0, :5], dtype=np.float32)
+        placed = False
+        for group in action_groups:
+            if np.allclose(first, projected[group[0], 0, :5], rtol=0.0, atol=1.0e-6):
+                group.append(int(j))
+                placed = True
+                break
+        if not placed:
+            action_groups.append([int(j)])
+    detail["tube_hypotheses_unique_action"] = int(len(action_groups))
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    certified_records: list[dict[str, Any]] = []
+    full_safe_count = 0
+    shift_closed_count = 0
+    closed_by_policy: Counter[str] = Counter()
+    nominal_closed_parents: set[int] = set()
+    v38_closed_parents: set[int] = set()
+    lifted_closed_parents: set[int] = set()
+    event_closed_parents: set[int] = set()
+
+    for group in action_groups:
+        group_records: list[dict[str, Any]] = []
+        for j in group:
+            current_ok, current_detail = _physical_recovery_tube_certificate_np(
+                state, int(sdc_index), projected[j], kin_ok[j], roadgraph, cfg,
+                collision_context=current_collision_context,
+            )
+            if not current_ok:
+                continue
+            full_safe_count += 1
+            first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
+            first_accel = float(accel_hist[j, 0])
+            successor = _counterfactual_successor_agent_state(
+                state, int(sdc_index), first_target, cfg,
+            )
+            shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+            shifted_schedule = np.zeros((H,), dtype=np.int8)
+            if H > 1:
+                shifted_schedule[:-1] = schedule_arr[j, 1:]
+            if int(policy_arr[j]) in {-1, 1}:
+                shifted_schedule[-1] = int(np.sign(int(policy_arr[j])))
+            shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+                successor[int(sdc_index)], shifted_reference[None, ...], cfg,
+                first_accel,
+                longitudinal_envelope_schedule=shifted_schedule[None, :],
+            )
+            shifted_ok, shifted_detail = _physical_recovery_tube_certificate_np(
+                successor, int(sdc_index), shifted_projected[0], shifted_kin_ok[0],
+                roadgraph, cfg,
+            )
+            if not shifted_ok:
+                continue
+            shift_closed_count += 1
+            parent = int(parent_arr[j])
+            policy_id = int(policy_arr[j])
+            policy_name = str(policy_names[j])
+            closed_by_policy[policy_name] += 1
+            if policy_id == 0:
+                nominal_closed_parents.add(parent)
+                v38_closed_parents.add(parent)
+            elif abs(policy_id) == 1:
+                v38_closed_parents.add(parent)
+                lifted_closed_parents.add(parent)
+            else:
+                lifted_closed_parents.add(parent)
+                event_closed_parents.add(parent)
+            nominal_accel = float(nominal_accels[parent])
+            record = {
+                "expanded_index": int(j),
+                "parent_index": parent,
+                "macro": int(macro[parent]),
+                "policy_id": policy_id,
+                "policy_name": policy_name,
+                "mode": int(schedule_arr[j, 0]),
+                "schedule": np.asarray(schedule_arr[j], dtype=np.int8),
+                "release_edge": int(release_arr[j]),
+                "nonnominal_edges": int(nonnominal_arr[j]),
+                "event_release": bool(abs(policy_id) >= 2),
+                "trajectory": np.asarray(projected[j], dtype=np.float32),
+                "target": first_target,
+                "accel": first_accel,
+                "accel_history": np.asarray(accel_hist[j], dtype=np.float32),
+                "shifted_trajectory": np.asarray(shifted_projected[0], dtype=np.float32),
+                "shifted_accel_history": np.asarray(shifted_accel_hist[0], dtype=np.float32),
+                "fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
+                "first_accel_delta": float(first_accel - nominal_accel),
+                "current_certificate": current_detail,
+                "shifted_certificate": shifted_detail,
+            }
+            group_records.append(record)
+
+        if group_records:
+            # Same actual first action can own several terminal witnesses.  Frozen
+            # COWP preference remains primary; event-release duration only resolves
+            # an otherwise identical action/witness tie.
+            chosen_group = min(
+                group_records,
+                key=lambda r: (
+                    float(r["fallback_score"]),
+                    abs(float(r["first_accel_delta"])),
+                    int(r["nonnominal_edges"]),
+                    0 if int(r["policy_id"]) == 0 else (1 if bool(r["event_release"]) else 2),
+                    int(r["parent_index"]),
+                    int(r["policy_id"]),
+                ),
+            )
+            certified_records.append(chosen_group)
+
+    detail["tube_full_physically_safe"] = int(full_safe_count)
+    detail["tube_shift_closed"] = int(shift_closed_count)
+    detail["tube_nominal_shift_closed"] = int(closed_by_policy.get("NOMINAL", 0))
+    detail["tube_lower_envelope_shift_closed"] = int(closed_by_policy.get("LOWER_ALL", 0))
+    detail["tube_upper_envelope_shift_closed"] = int(closed_by_policy.get("UPPER_ALL", 0))
+    lower_event = int(sum(v for k, v in closed_by_policy.items() if k.startswith("LOWER_TO_")))
+    upper_event = int(sum(v for k, v in closed_by_policy.items() if k.startswith("UPPER_TO_")))
+    detail["tube_lower_event_release_shift_closed"] = lower_event
+    detail["tube_upper_event_release_shift_closed"] = upper_event
+    detail["tube_event_release_shift_closed"] = int(lower_event + upper_event)
+    detail["tube_lifted_only_parent_count"] = int(
+        len(lifted_closed_parents - nominal_closed_parents)
+    )
+    # V38-support means nominal plus all-horizon lower/upper.  This diagnostic
+    # isolates parent geometries rescued only by the new event-release family.
+    detail["tube_event_release_only_parent_count"] = int(
+        len(event_closed_parents - v38_closed_parents)
+    )
+
+    if not certified_records:
+        return None, detail
+    selected = min(
+        certified_records,
+        key=lambda r: (
+            float(r["fallback_score"]),
+            abs(float(r["first_accel_delta"])),
+            int(r["nonnominal_edges"]),
+            0 if int(r["policy_id"]) == 0 else (1 if bool(r["event_release"]) else 2),
+            int(r["parent_index"]),
+            int(r["policy_id"]),
+        ),
+    )
+    detail.update({
+        "selected": True,
+        "selected_is_lifted": bool(int(selected["policy_id"]) != 0),
+        "selected_is_event_release": bool(selected["event_release"]),
+        "selected_policy_id": int(selected["policy_id"]),
+        "selected_policy_name": str(selected["policy_name"]),
+        "selected_envelope_mode": int(selected["mode"]),
+        "selected_release_edge": int(selected["release_edge"]),
+        "selected_nonnominal_edges": int(selected["nonnominal_edges"]),
+        "selected_parent_candidate": int(selected["parent_index"]),
+        "selected_parent_macro": int(selected["macro"]),
+        "selected_parent_macro_name": _macro_name(int(selected["macro"])),
+        "selected_first_accel_delta": float(selected["first_accel_delta"]),
+        "selected_collision_min_margin_m": float(selected["current_certificate"].get("collision_min_margin_m", -999.0)),
+        "selected_shift_collision_min_margin_m": float(selected["shifted_certificate"].get("collision_min_margin_m", -999.0)),
+        "selected_fallback_score": float(selected["fallback_score"]),
+    })
+    return selected, detail
+
 def _stable_logistic_np(x: np.ndarray | float) -> np.ndarray | float:
     x_arr = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
     return 1.0 / (1.0 + np.exp(x_arr))
@@ -2500,6 +2914,98 @@ def _collision_audit_against_context(traj: np.ndarray, context: dict[str, Any]) 
         "safe_prefix_steps": int(min(max(earliest, 0), H)),
         "min_clearance_margin_m": float(min_margin),
         "violation_source": str(source),
+    }
+
+
+def _collision_violation_window_against_context(
+    traj: np.ndarray,
+    context: dict[str, Any],
+) -> dict[str, int | bool | str]:
+    """Return the first/last sampled violation of the frozen collision screen.
+
+    V16.8.39 uses this only to derive *when* an endpoint control envelope may be
+    released back to the unchanged nominal controller.  The inequalities,
+    sampled indices, priority-agent CV buffer, and causal predictions are exactly
+    those used by :func:`_collision_audit_against_context`.  No outcome label or
+    logged future enters this event detector.
+    """
+    tr = np.asarray(traj, dtype=np.float32)
+    idx = np.asarray(context.get("idx", np.asarray([0], dtype=np.int64)), dtype=np.int64)
+    H = int(context.get("horizon_steps", len(tr)))
+    if idx.size == 0:
+        idx = np.asarray([0], dtype=np.int64)
+    if tr.ndim != 2 or tr.shape[0] <= int(np.max(idx, initial=0)) or tr.shape[1] < 2:
+        return {
+            "has_violation": True,
+            "first_violation_step": 0,
+            "last_violation_step": 0,
+            "violation_sample_count": 1,
+            "source": "invalid_trajectory",
+        }
+    traj_xy = np.asarray(tr[idx, :2], dtype=np.float32)
+    if not np.isfinite(traj_xy).all():
+        bad = ~np.isfinite(traj_xy).all(axis=-1)
+        cols = np.flatnonzero(bad)
+        first = int(idx[int(cols[0])]) if cols.size else 0
+        last = int(idx[int(cols[-1])]) if cols.size else first
+        return {
+            "has_violation": True,
+            "first_violation_step": first,
+            "last_violation_step": last,
+            "violation_sample_count": int(max(cols.size, 1)),
+            "source": "nonfinite_ego",
+        }
+
+    base_xy = np.asarray(
+        context.get("base_xy", np.zeros((0, idx.size, 2), dtype=np.float32)),
+        dtype=np.float32,
+    )
+    if base_xy.shape[0] == 0:
+        return {
+            "has_violation": False,
+            "first_violation_step": -1,
+            "last_violation_step": -1,
+            "violation_sample_count": 0,
+            "source": "none",
+        }
+
+    base_thr = np.asarray(context["base_threshold_m"], dtype=np.float32)[:, None]
+    base_bad_by_time = np.any(
+        np.linalg.norm(traj_xy[None, :, :] - base_xy, axis=-1) - base_thr < 0.0,
+        axis=0,
+    )
+    priority_bad_by_time = np.zeros((idx.size,), dtype=bool)
+    require_cv = bool(context.get("require_cv", True))
+    priority_like = np.asarray(
+        context.get("priority_like", np.zeros((base_xy.shape[0],), dtype=bool)),
+        dtype=bool,
+    )
+    if require_cv and bool(np.any(priority_like)):
+        cv_xy = np.asarray(context["cv_xy"], dtype=np.float32)[priority_like]
+        cv_thr = np.asarray(context["priority_threshold_m"], dtype=np.float32)[priority_like, None]
+        priority_bad_by_time = np.any(
+            np.linalg.norm(traj_xy[None, :, :] - cv_xy, axis=-1) - cv_thr < 0.0,
+            axis=0,
+        )
+    bad_by_time = np.asarray(base_bad_by_time | priority_bad_by_time, dtype=bool)
+    cols = np.flatnonzero(bad_by_time)
+    if cols.size == 0:
+        return {
+            "has_violation": False,
+            "first_violation_step": -1,
+            "last_violation_step": -1,
+            "violation_sample_count": 0,
+            "source": "none",
+        }
+    first_col = int(cols[0])
+    last_col = int(cols[-1])
+    source = "priority_cv_buffer" if bool(priority_bad_by_time[first_col]) and not bool(base_bad_by_time[first_col]) else "base_cv"
+    return {
+        "has_violation": True,
+        "first_violation_step": int(min(max(int(idx[first_col]), 0), max(H - 1, 0))),
+        "last_violation_step": int(min(max(int(idx[last_col]), 0), max(H - 1, 0))),
+        "violation_sample_count": int(cols.size),
+        "source": str(source),
     }
 
 def _collision_free_against_constant_velocity(
@@ -4078,7 +4584,8 @@ class COWPWaymaxPolicy:
         )
         batch = {k: self.torch.as_tensor(batch_np[k], device=self.dev) for k in online_keys if k in batch_np}
         profile_t_h2d = self._profile_stamp() if profile_enabled else 0.0
-        # Execution overrides are populated only by the v16.8.38 recovery branch.
+        # Execution overrides are populated only by the v16.8.38/v16.8.39
+        # physically certified recovery branches.
         # Define them before the shared inference block so historical baselines keep
         # their unchanged path without unbound local state.
         recovery_tube_trajectory_override: np.ndarray | None = None
@@ -4605,7 +5112,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -4822,7 +5329,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -4852,19 +5359,27 @@ class COWPWaymaxPolicy:
                         select_mask[chosen] = True
                         select_score = fallback_score
                         fallback_reason = "no_conventional_use_rvr_pareto_guard"
-                    elif method == "cowp_shift_closed_control_reachable_tube":
-                        # V16.8.38 follows the preregistered V37 failure branch.
-                        # Exact return to a non-empty conventional bank within one
-                        # new replan was too sparse, so construct explicit support in
-                        # the current controller-reachable set and require one-step
-                        # shift closure of the complete physical backup tube.
+                    elif method in {
+                        "cowp_shift_closed_control_reachable_tube",
+                        "cowp_conflict_window_control_reachable_tube",
+                    }:
+                        # V38 constructs nominal/all-horizon lower/all-horizon upper
+                        # controller tubes. V39 keeps that support nested and adds
+                        # causal first/last-conflict envelope-release schedules.
+                        # Both methods retain the same full physical certificate and
+                        # one-step shift closure.
                         recovery_tube_probe_used = True
                         valid_np = cand_valid.detach().cpu().numpy().astype(bool)
                         road_np = roadgraph_safe.detach().cpu().numpy().astype(bool)
                         prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
                         macro_np_tube = macro_t.detach().cpu().numpy().astype(np.int64)
                         fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
-                        selected_tube, recovery_tube_detail = _construct_shift_closed_control_reachable_tube_np(
+                        tube_constructor = (
+                            _construct_conflict_window_control_reachable_tube_np
+                            if method == "cowp_conflict_window_control_reachable_tube"
+                            else _construct_shift_closed_control_reachable_tube_np
+                        )
+                        selected_tube, recovery_tube_detail = tube_constructor(
                             agent_state,
                             int(sdc_index),
                             np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32),
@@ -4909,7 +5424,11 @@ class COWPWaymaxPolicy:
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[int(chosen)] = True
                         select_score = fallback_score
-                        fallback_reason = "no_conventional_use_shift_closed_control_reachable_tube"
+                        fallback_reason = (
+                            "no_conventional_use_conflict_window_control_reachable_tube"
+                            if method == "cowp_conflict_window_control_reachable_tube"
+                            else "no_conventional_use_shift_closed_control_reachable_tube"
+                        )
                     elif method == "cowp_recourse_returnability_bridge":
                         # V16.8.37 follows the preregistered V36 failure branch:
                         # stop enlarging/tuning spectrum selectors and test an
@@ -5475,6 +5994,7 @@ class COWPWaymaxPolicy:
                 "cowp_control_projected_recovery_frontier",
                 "cowp_recourse_returnability_bridge",
                 "cowp_shift_closed_control_reachable_tube",
+                "cowp_conflict_window_control_reachable_tube",
             }:
                 selected_contract_target = (
                     np.asarray(recovery_tube_target_override, dtype=np.float32)
@@ -5751,10 +6271,22 @@ class COWPWaymaxPolicy:
                 "recovery_tube_nominal_shift_closed": int(recovery_tube_detail.get("tube_nominal_shift_closed", 0)),
                 "recovery_tube_lower_envelope_shift_closed": int(recovery_tube_detail.get("tube_lower_envelope_shift_closed", 0)),
                 "recovery_tube_upper_envelope_shift_closed": int(recovery_tube_detail.get("tube_upper_envelope_shift_closed", 0)),
+                "recovery_tube_parents_with_nominal_conflict": int(recovery_tube_detail.get("parents_with_nominal_conflict", 0)),
+                "recovery_tube_mean_parent_first_conflict_step": float(recovery_tube_detail.get("mean_parent_first_conflict_step", 0.0)),
+                "recovery_tube_mean_parent_last_conflict_step": float(recovery_tube_detail.get("mean_parent_last_conflict_step", 0.0)),
+                "recovery_tube_event_release_shift_closed": int(recovery_tube_detail.get("tube_event_release_shift_closed", 0)),
+                "recovery_tube_lower_event_release_shift_closed": int(recovery_tube_detail.get("tube_lower_event_release_shift_closed", 0)),
+                "recovery_tube_upper_event_release_shift_closed": int(recovery_tube_detail.get("tube_upper_event_release_shift_closed", 0)),
                 "recovery_tube_lifted_only_parent_count": int(recovery_tube_detail.get("tube_lifted_only_parent_count", 0)),
+                "recovery_tube_event_release_only_parent_count": int(recovery_tube_detail.get("tube_event_release_only_parent_count", 0)),
                 "recovery_tube_nominal_first_target_max_abs_error": float(recovery_tube_detail.get("nominal_first_target_max_abs_error", 0.0)),
                 "recovery_tube_selected_is_lifted": bool(recovery_tube_detail.get("selected_is_lifted", False)),
+                "recovery_tube_selected_is_event_release": bool(recovery_tube_detail.get("selected_is_event_release", False)),
+                "recovery_tube_selected_policy_id": int(recovery_tube_detail.get("selected_policy_id", 0)),
+                "recovery_tube_selected_policy_name": str(recovery_tube_detail.get("selected_policy_name", "NONE")),
                 "recovery_tube_selected_envelope_mode": int(recovery_tube_detail.get("selected_envelope_mode", 0)),
+                "recovery_tube_selected_release_edge": int(recovery_tube_detail.get("selected_release_edge", 0)),
+                "recovery_tube_selected_nonnominal_edges": int(recovery_tube_detail.get("selected_nonnominal_edges", 0)),
                 "recovery_tube_selected_parent_candidate": int(recovery_tube_detail.get("selected_parent_candidate", -1)),
                 "recovery_tube_selected_parent_macro": int(recovery_tube_detail.get("selected_parent_macro", -1)),
                 "recovery_tube_selected_parent_macro_name": str(recovery_tube_detail.get("selected_parent_macro_name", "NONE")),
@@ -5804,7 +6336,11 @@ class COWPWaymaxPolicy:
             traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
             execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
             execution_accel = float(recovery_tube_accel_override)
-            execution_source = "shift_closed_control_reachable_tube"
+            execution_source = (
+                "conflict_window_control_reachable_tube"
+                if method == "cowp_conflict_window_control_reachable_tube"
+                else "shift_closed_control_reachable_tube"
+            )
         diag["emergency_action_used"] = bool(emergency_action_used)
         diag["execution_trajectory_source"] = str(execution_source)
         self._last_diagnostics = diag

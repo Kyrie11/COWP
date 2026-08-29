@@ -1,0 +1,1343 @@
+{
+  "schema_version": "cowp_v16_8_38_result_reliability_audit_independent_v1",
+  "audited_version": "V16.8.38",
+  "method": "cowp_shift_closed_control_reachable_tube",
+  "reliability_verdict": "PASS_ATTRIBUTION_ALLOWED",
+  "hard_checks_total": 169,
+  "hard_checks_passed": 169,
+  "hard_checks_failed": 0,
+  "failed_checks": [],
+  "checks": [
+    {
+      "name": "result artifact exists: counterfactual48_v38_cowp_shift_closed_control_reachable_tube_s0.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v38_cowp_shift_closed_control_reachable_tube_s1.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v38_cowp_shift_closed_control_reachable_tube_merged.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v38_shift_closed_control_reachable_tube_analysis.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_s0.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_s1.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_merged.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_vs_v16_8_29.json",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: waymax_exact_200_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: waymax_equivalence16_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: waymax_counterfactual48_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "result artifact exists: waymax_v16_8_32_fresh37_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "fresh37 rollout artifacts absent after Stage-1 failure",
+      "category": "fail_closed_protocol",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "uploaded V38 release hash: cowp/waymax_eval/policy_wrapper.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "91e2ab389c2557f694dfe3ee4c09dc5d24cd8437558b51ec92c2b830f3d85c6a",
+      "expected": "91e2ab389c2557f694dfe3ee4c09dc5d24cd8437558b51ec92c2b830f3d85c6a"
+    },
+    {
+      "name": "uploaded V38 release hash: cowp/waymax_eval/rollout.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "9071dfc927660294d13207f808d31200fb3c190ce3356c9876a7ab2913147222",
+      "expected": "9071dfc927660294d13207f808d31200fb3c190ce3356c9876a7ab2913147222"
+    },
+    {
+      "name": "uploaded V38 release hash: cowp/waymax_eval/metrics_cowp.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "05fb61c2d283ce6eac7339593761105baabc55f60d20a95e6187503f4683a489",
+      "expected": "05fb61c2d283ce6eac7339593761105baabc55f60d20a95e6187503f4683a489"
+    },
+    {
+      "name": "uploaded V38 release hash: cowp/scripts/04_eval_closed_loop.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "6d2af54814f10d1695799c45ab268668762c61e4847e353c30e19af4a095f5b3",
+      "expected": "6d2af54814f10d1695799c45ab268668762c61e4847e353c30e19af4a095f5b3"
+    },
+    {
+      "name": "uploaded V38 release hash: cowp/scripts/91_analyze_shift_closed_control_reachable_tube.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "83c6a5175bae7c02868c99477e2405f6b6c6c282cb9c5aedf97ee1229d07eb18",
+      "expected": "83c6a5175bae7c02868c99477e2405f6b6c6c282cb9c5aedf97ee1229d07eb18"
+    },
+    {
+      "name": "uploaded V38 release hash: tests/test_v16_8_38_shift_closed_control_reachable_tube.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "24eba8e384e78f764ce76618df668ad73cbbeb801449e5d25fdc9dd1b919e314",
+      "expected": "24eba8e384e78f764ce76618df668ad73cbbeb801449e5d25fdc9dd1b919e314"
+    },
+    {
+      "name": "uploaded V38 release hash: NEXT_RUN_COMMANDS_V16_8_38_SHIFT_CLOSED_CONTROL_REACHABLE_TUBE_CN.sh",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "958ef2187c9b0bef1560a58a784f234c7433db3c0971771d0a099ba5105d3c5c",
+      "expected": "958ef2187c9b0bef1560a58a784f234c7433db3c0971771d0a099ba5105d3c5c"
+    },
+    {
+      "name": "uploaded V38 release hash: CURRENT_ANALYSIS_V16_8_38_CN.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "574d76807cbcdb79116ec60a4e4d28a64fac8513adb11fc41848d2f615a5be5e",
+      "expected": "574d76807cbcdb79116ec60a4e4d28a64fac8513adb11fc41848d2f615a5be5e"
+    },
+    {
+      "name": "uploaded V38 release hash: ALGORITHM_CHANGELOG_V16_8_38.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "c01de19ef35aec94c58aceaa8233f834cb4dc362cfe0a1f93aadab05792f54db",
+      "expected": "c01de19ef35aec94c58aceaa8233f834cb4dc362cfe0a1f93aadab05792f54db"
+    },
+    {
+      "name": "uploaded V38 release hash: ALGORITHM_CHANGELOG.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "45032c322f0de6ce70a7a03c7cba604d8b9c56ecd6d47fbc3d91d415730bcca8",
+      "expected": "45032c322f0de6ce70a7a03c7cba604d8b9c56ecd6d47fbc3d91d415730bcca8"
+    },
+    {
+      "name": "uploaded V38 release hash: V16_8_37_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT_INDEPENDENT.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "76ec479031caedfcd76e7cc8b405092f95ce7f1950031f8a5a0db6fac9eb58fc",
+      "expected": "76ec479031caedfcd76e7cc8b405092f95ce7f1950031f8a5a0db6fac9eb58fc"
+    },
+    {
+      "name": "uploaded V38 release hash: V16_8_37_RESULT_ATTRIBUTION_AND_MECHANISM_SUMMARY.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "873a81794d5c86ece5c750a7baac8bf6ef2589c1bec133717d18c87e6ea2c616",
+      "expected": "873a81794d5c86ece5c750a7baac8bf6ef2589c1bec133717d18c87e6ea2c616"
+    },
+    {
+      "name": "uploaded V38 release hash: V16_8_38_CODE_VALIDATION.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "3219f9600475c6d986bfbe782c1ad7055b8bc89dc6a09a63a11e1a11550e73c6",
+      "expected": "3219f9600475c6d986bfbe782c1ad7055b8bc89dc6a09a63a11e1a11550e73c6"
+    },
+    {
+      "name": "uploaded V38 release hash: V16_8_38_DEVELOPMENT_MANIFESTS.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "4f7ce2c10b5fd6db581de80f1979f39985cc2f837d2b371a3a434eaca2d281e6",
+      "expected": "4f7ce2c10b5fd6db581de80f1979f39985cc2f837d2b371a3a434eaca2d281e6"
+    },
+    {
+      "name": "uploaded V38 release hash: COWP_V16_8_37_TO_V16_8_38_SHIFT_CLOSED_CONTROL_REACHABLE_TUBE_CODE.patch",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "240d41aaa9332ee36ba4576c66ebf284505d4e257248d867826a2113d29097ac",
+      "expected": "240d41aaa9332ee36ba4576c66ebf284505d4e257248d867826a2113d29097ac"
+    },
+    {
+      "name": "uploaded V38 release hash: reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "37401c4293ddf6c877e7d49d20b9dbd15905f9125a9f25455c01c7e9030da84a",
+      "expected": "37401c4293ddf6c877e7d49d20b9dbd15905f9125a9f25455c01c7e9030da84a"
+    },
+    {
+      "name": "exact200 manifest count",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 200,
+      "expected": 200
+    },
+    {
+      "name": "exact200 manifest uniqueness",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 200,
+      "expected": 200
+    },
+    {
+      "name": "exact200 logical SHA256",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "expected": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+    },
+    {
+      "name": "exact200 result manifest equals frozen repository manifest",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 manifest count",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 manifest uniqueness",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 logical SHA256",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16 result manifest equals frozen repository manifest",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 manifest count",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 manifest uniqueness",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 logical SHA256",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48 result manifest equals frozen repository manifest",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "fresh37 manifest count",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 37,
+      "expected": 37
+    },
+    {
+      "name": "fresh37 manifest uniqueness",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": 37,
+      "expected": 37
+    },
+    {
+      "name": "fresh37 logical SHA256",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "expected": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+    },
+    {
+      "name": "fresh37 result manifest equals frozen repository manifest",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard sizes",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        24,
+        24
+      ],
+      "expected": [
+        24,
+        24
+      ]
+    },
+    {
+      "name": "counterfactual48 shards disjoint",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "counterfactual48 shard union equals frozen manifest",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard0 method",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "cowp_shift_closed_control_reachable_tube",
+      "expected": "cowp_shift_closed_control_reachable_tube"
+    },
+    {
+      "name": "counterfactual48 shard0 mode",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "waymax",
+      "expected": "waymax"
+    },
+    {
+      "name": "counterfactual48 shard0 priority gate",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "priority",
+      "expected": "priority"
+    },
+    {
+      "name": "counterfactual48 shard0 validation split",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "validation",
+      "expected": "validation"
+    },
+    {
+      "name": "counterfactual48 shard0 shard coordinates",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        0,
+        2
+      ],
+      "expected": [
+        0,
+        2
+      ]
+    },
+    {
+      "name": "counterfactual48 shard0 rollout count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard0 80-step rollouts",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard0 standard metric set",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": [
+        "KinematicsInfeasibilityMetric",
+        "OffroadMetric",
+        "OverlapMetric",
+        "ProgressionMetric"
+      ],
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard0 reusable/prefiltered/JIT protocol",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard0 BCOT budget frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.5,
+      "expected": 0.5
+    },
+    {
+      "name": "counterfactual48 shard0 witness threshold frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.7,
+      "expected": 0.7
+    },
+    {
+      "name": "counterfactual48 shard0 logged-replay non-ego policy declared",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": "logged_replay",
+      "expected": "logged_replay"
+    },
+    {
+      "name": "counterfactual48 shard0 no reactive-mixture claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard0 no online mechanism-GT claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard0 manifest hash",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48 shard0 resolved IDs length matches metrics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard0 resolved IDs length matches diagnostics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard1 method",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "cowp_shift_closed_control_reachable_tube",
+      "expected": "cowp_shift_closed_control_reachable_tube"
+    },
+    {
+      "name": "counterfactual48 shard1 mode",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "waymax",
+      "expected": "waymax"
+    },
+    {
+      "name": "counterfactual48 shard1 priority gate",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "priority",
+      "expected": "priority"
+    },
+    {
+      "name": "counterfactual48 shard1 validation split",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "validation",
+      "expected": "validation"
+    },
+    {
+      "name": "counterfactual48 shard1 shard coordinates",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        1,
+        2
+      ],
+      "expected": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "counterfactual48 shard1 rollout count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard1 80-step rollouts",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard1 standard metric set",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": [
+        "KinematicsInfeasibilityMetric",
+        "OffroadMetric",
+        "OverlapMetric",
+        "ProgressionMetric"
+      ],
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard1 reusable/prefiltered/JIT protocol",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard1 BCOT budget frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.5,
+      "expected": 0.5
+    },
+    {
+      "name": "counterfactual48 shard1 witness threshold frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.7,
+      "expected": 0.7
+    },
+    {
+      "name": "counterfactual48 shard1 logged-replay non-ego policy declared",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": "logged_replay",
+      "expected": "logged_replay"
+    },
+    {
+      "name": "counterfactual48 shard1 no reactive-mixture claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard1 no online mechanism-GT claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard1 manifest hash",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48 shard1 resolved IDs length matches metrics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 shard1 resolved IDs length matches diagnostics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard sizes",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        8,
+        8
+      ],
+      "expected": [
+        8,
+        8
+      ]
+    },
+    {
+      "name": "equivalence16 shards disjoint",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "equivalence16 shard union equals frozen manifest",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard0 method",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "cowp",
+      "expected": "cowp"
+    },
+    {
+      "name": "equivalence16 shard0 mode",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "waymax",
+      "expected": "waymax"
+    },
+    {
+      "name": "equivalence16 shard0 priority gate",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "priority",
+      "expected": "priority"
+    },
+    {
+      "name": "equivalence16 shard0 validation split",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "validation",
+      "expected": "validation"
+    },
+    {
+      "name": "equivalence16 shard0 shard coordinates",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        0,
+        2
+      ],
+      "expected": [
+        0,
+        2
+      ]
+    },
+    {
+      "name": "equivalence16 shard0 rollout count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard0 80-step rollouts",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard0 standard metric set",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": [
+        "KinematicsInfeasibilityMetric",
+        "OffroadMetric",
+        "OverlapMetric",
+        "ProgressionMetric"
+      ],
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard0 reusable/prefiltered/JIT protocol",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard0 BCOT budget frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.5,
+      "expected": 0.5
+    },
+    {
+      "name": "equivalence16 shard0 witness threshold frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.7,
+      "expected": 0.7
+    },
+    {
+      "name": "equivalence16 shard0 logged-replay non-ego policy declared",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": "logged_replay",
+      "expected": "logged_replay"
+    },
+    {
+      "name": "equivalence16 shard0 no reactive-mixture claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "equivalence16 shard0 no online mechanism-GT claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "equivalence16 shard0 manifest hash",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16 shard0 resolved IDs length matches metrics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard0 resolved IDs length matches diagnostics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard1 method",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "cowp",
+      "expected": "cowp"
+    },
+    {
+      "name": "equivalence16 shard1 mode",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "waymax",
+      "expected": "waymax"
+    },
+    {
+      "name": "equivalence16 shard1 priority gate",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "priority",
+      "expected": "priority"
+    },
+    {
+      "name": "equivalence16 shard1 validation split",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": "validation",
+      "expected": "validation"
+    },
+    {
+      "name": "equivalence16 shard1 shard coordinates",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        1,
+        2
+      ],
+      "expected": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "equivalence16 shard1 rollout count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard1 80-step rollouts",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard1 standard metric set",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": [
+        "KinematicsInfeasibilityMetric",
+        "OffroadMetric",
+        "OverlapMetric",
+        "ProgressionMetric"
+      ],
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard1 reusable/prefiltered/JIT protocol",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard1 BCOT budget frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.5,
+      "expected": 0.5
+    },
+    {
+      "name": "equivalence16 shard1 witness threshold frozen",
+      "category": "execution_protocol",
+      "pass": true,
+      "observed": 0.7,
+      "expected": 0.7
+    },
+    {
+      "name": "equivalence16 shard1 logged-replay non-ego policy declared",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": "logged_replay",
+      "expected": "logged_replay"
+    },
+    {
+      "name": "equivalence16 shard1 no reactive-mixture claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "equivalence16 shard1 no online mechanism-GT claim",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "equivalence16 shard1 manifest hash",
+      "category": "manifest_integrity",
+      "pass": true,
+      "observed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16 shard1 resolved IDs length matches metrics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 shard1 resolved IDs length matches diagnostics",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "all shards use one checkpoint logical path",
+      "category": "checkpoint_protocol",
+      "pass": true,
+      "observed": [
+        "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+      ],
+      "expected": null
+    },
+    {
+      "name": "checkpoint basename is cowp_all_best.pt",
+      "category": "checkpoint_protocol",
+      "pass": true,
+      "observed": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+      "expected": "cowp_all_best.pt"
+    },
+    {
+      "name": "counterfactual48 merged schema",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": "cowp_waymax_exact_shard_merge_v1",
+      "expected": "cowp_waymax_exact_shard_merge_v1"
+    },
+    {
+      "name": "counterfactual48 merged rollout count",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 merged scenario rows exactly equal independent shard reconstruction",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "counterfactual48 standard metric summary independently recomputed",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": {
+        "mismatch_count": 0,
+        "examples": []
+      },
+      "expected": {
+        "mismatch_count": 0
+      }
+    },
+    {
+      "name": "counterfactual48 fallback step rate independently recomputed",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.83984375,
+      "expected": 0.83984375
+    },
+    {
+      "name": "counterfactual48 merged IDs unique",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 merged schema",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": "cowp_waymax_exact_shard_merge_v1",
+      "expected": "cowp_waymax_exact_shard_merge_v1"
+    },
+    {
+      "name": "equivalence16 merged rollout count",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 merged scenario rows exactly equal independent shard reconstruction",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "equivalence16 standard metric summary independently recomputed",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": {
+        "mismatch_count": 0,
+        "examples": []
+      },
+      "expected": {
+        "mismatch_count": 0
+      }
+    },
+    {
+      "name": "equivalence16 fallback step rate independently recomputed",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.8078125,
+      "expected": 0.8078125
+    },
+    {
+      "name": "equivalence16 merged IDs unique",
+      "category": "merge_reconstruction",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "V38 headline collision count",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 33,
+      "expected": 33
+    },
+    {
+      "name": "V38 headline offroad count",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 1,
+      "expected": 1
+    },
+    {
+      "name": "V38 headline kinematics count",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 6,
+      "expected": 6
+    },
+    {
+      "name": "V38 headline EP",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.9977662743379673,
+      "expected": 0.9977662743379673
+    },
+    {
+      "name": "V16.8.28 no-valid/emergency execution invariant has no recurrence",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "equivalence16 passed",
+      "category": "common_path_equivalence",
+      "pass": true,
+      "observed": true,
+      "expected": true
+    },
+    {
+      "name": "equivalence16 scenarios",
+      "category": "common_path_equivalence",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 fields checked",
+      "category": "common_path_equivalence",
+      "pass": true,
+      "observed": 1120,
+      "expected": 1120
+    },
+    {
+      "name": "equivalence16 mismatch count",
+      "category": "common_path_equivalence",
+      "pass": true,
+      "observed": {
+        "count": 0,
+        "examples": []
+      },
+      "expected": {
+        "count": 0,
+        "examples": []
+      }
+    },
+    {
+      "name": "V38 analyzer independently rerun with exact recursive equality",
+      "category": "analyzer_reproduction",
+      "pass": true,
+      "observed": {
+        "mismatch_count": 0,
+        "examples": [],
+        "tolerance": 1e-12
+      },
+      "expected": {
+        "mismatch_count": 0
+      }
+    },
+    {
+      "name": "analysis marks development-selected",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": true,
+      "expected": true
+    },
+    {
+      "name": "analysis does not claim paper evidence",
+      "category": "evidence_boundary",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "Stage-1 gate is fail",
+      "category": "preregistered_gate",
+      "pass": true,
+      "observed": false,
+      "expected": false
+    },
+    {
+      "name": "pooled V38 mechanism count: policy_steps",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 3840,
+      "expected": 3840
+    },
+    {
+      "name": "pooled V38 mechanism count: probe_steps",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 2695,
+      "expected": 2695
+    },
+    {
+      "name": "pooled V38 mechanism count: certificate_steps",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 56,
+      "expected": 56
+    },
+    {
+      "name": "pooled V38 mechanism count: action_change_steps",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 55,
+      "expected": 55
+    },
+    {
+      "name": "pooled V38 mechanism count: lifted_selected_certificate_steps",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 55,
+      "expected": 55
+    },
+    {
+      "name": "pooled V38 tube witness total: parent_pool",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 98045,
+      "expected": 98045
+    },
+    {
+      "name": "pooled V38 tube witness total: parent_action_classes",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 86880,
+      "expected": 86880
+    },
+    {
+      "name": "pooled V38 tube witness total: hypotheses_generated",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 260640,
+      "expected": 260640
+    },
+    {
+      "name": "pooled V38 tube witness total: unique_first_actions",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 161472,
+      "expected": 161472
+    },
+    {
+      "name": "pooled V38 tube witness total: full_safe",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 522,
+      "expected": 522
+    },
+    {
+      "name": "pooled V38 tube witness total: shift_closed",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 486,
+      "expected": 486
+    },
+    {
+      "name": "pooled V38 tube witness total: nominal_closed",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 3,
+      "expected": 3
+    },
+    {
+      "name": "pooled V38 tube witness total: lower_closed",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 425,
+      "expected": 425
+    },
+    {
+      "name": "pooled V38 tube witness total: upper_closed",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 58,
+      "expected": 58
+    },
+    {
+      "name": "pooled V38 tube witness total: lifted_only_parent",
+      "category": "mechanism_reconstruction",
+      "pass": true,
+      "observed": 481,
+      "expected": 481
+    },
+    {
+      "name": "V38 tube helper contains no logged-future symbol",
+      "category": "causal_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "V38 tube helper uses causal successor",
+      "category": "causal_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "V38 helper requires full physical certificate twice",
+      "category": "causal_integrity",
+      "pass": true,
+      "observed": 2,
+      "expected": ">=2"
+    },
+    {
+      "name": "V38 helper carries controller acceleration memory into shift",
+      "category": "causal_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "controller lifting uses frozen jerk interval endpoints",
+      "category": "mechanism_implementation",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "V38 method registered in policy wrapper",
+      "category": "mechanism_implementation",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "V38 explicit trajectory execution override present",
+      "category": "mechanism_implementation",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    },
+    {
+      "name": "no conventional-safety bypass string",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": null,
+      "expected": null
+    }
+  ],
+  "manifest_summary": {
+    "exact200": {
+      "count": 200,
+      "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+    },
+    "equivalence16": {
+      "count": 16,
+      "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    "counterfactual48": {
+      "count": 48,
+      "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    "fresh37": {
+      "count": 37,
+      "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+    }
+  },
+  "headline_reconstruction": {
+    "scenarios": 48,
+    "collision_scenes": 33,
+    "offroad_scenes": 1,
+    "kinematics_scenes": 6,
+    "EP": 0.9977662743379673
+  },
+  "pooled_mechanism_reconstruction": {
+    "policy_steps": 3840,
+    "probe_steps": 2695,
+    "certificate_steps": 56,
+    "action_change_steps": 55,
+    "lifted_selected_certificate_steps": 55,
+    "probe_step_rate": 0.7018229166666666,
+    "certificate_step_rate": 0.014583333333333334,
+    "certificate_rate_on_probes": 0.02077922077922078,
+    "action_change_step_rate": 0.014322916666666666,
+    "lifted_selection_rate_on_certified_steps_pooled": 0.9821428571428571,
+    "probe_weighted_totals": {
+      "parent_pool": 98045,
+      "parent_action_classes": 86880,
+      "hypotheses_generated": 260640,
+      "unique_first_actions": 161472,
+      "full_safe": 522,
+      "shift_closed": 486,
+      "nominal_closed": 3,
+      "lower_closed": 425,
+      "upper_closed": 58,
+      "lifted_only_parent": 481
+    },
+    "shift_closure_retention_of_full_safe_witnesses": 0.9310344827586207
+  },
+  "nonblocking_evidence_boundaries": [
+    {
+      "item": "checkpoint byte hash unavailable",
+      "detail": "The result archive records one consistent logical checkpoint path, but does not include cowp_all_best.pt bytes; checkpoint content hash cannot be independently recomputed from the uploaded result bundle."
+    },
+    {
+      "item": "development-selected panel",
+      "detail": "counterfactual48 has been used by multiple algorithm iterations and is not a fresh paper holdout."
+    },
+    {
+      "item": "logged-replay non-ego agents",
+      "detail": "Closed-loop physical outcomes are auditable under the frozen Waymax logged-replay protocol, but are not counterfactual social-burden ground truth."
+    },
+    {
+      "item": "V38 analyzer conditional-mean aggregation ambiguity",
+      "detail": "V38 mechanism means are scenario-unweighted averages of per-scenario conditional means. Independent pooled reconstruction gives 55/56=98.214% lifted selection, not the analyzer macro-average 94.118%. This does not alter any headline metric or the six-item preregistered Gate. V39 analyzer fixes the reporting."
+    }
+  ]
+}

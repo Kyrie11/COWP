@@ -1,0 +1,699 @@
+{
+  "schema_version": "cowp_v16_8_38_result_attribution_and_mechanism_summary_v1",
+  "audited_version": "V16.8.38",
+  "reliability_verdict": "PASS_ATTRIBUTION_ALLOWED",
+  "attribution_allowed": true,
+  "stage1_preregistered_gate": {
+    "checks": {
+      "retain_at_least_5_of_10_old_rvr_rescues": {
+        "threshold": ">=5/10",
+        "observed": "0/10",
+        "pass": false
+      },
+      "avoid_at_least_7_of_9_old_rvr_induced": {
+        "threshold": ">=7/9",
+        "observed": "9/9",
+        "pass": true
+      },
+      "net_remove_at_least_3_cowp_collisions": {
+        "threshold": ">=3",
+        "observed": 1,
+        "pass": false
+      },
+      "kinematics_net_regression_at_most_1_scene": {
+        "threshold": "net regression <=1",
+        "observed_net_failures_removed": 0,
+        "pass": true
+      },
+      "mean_ep_delta_not_below_minus_0_05": {
+        "threshold": ">=-0.05",
+        "observed": -0.004745774902403355,
+        "pass": true
+      },
+      "nonzero_intervention": {
+        "threshold": ">0 action changes",
+        "observed_action_change_steps": 55,
+        "pass": true
+      }
+    },
+    "passed_checks": 4,
+    "total_checks": 6,
+    "pass": false,
+    "decision": "ARCHIVE_NO_FRESH37"
+  },
+  "headline_table": {
+    "COWP": {
+      "scenarios": 48,
+      "Collision": 34,
+      "Offroad": 1,
+      "Kinematics": 6,
+      "EP": 1.0025120492403705
+    },
+    "RVR": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 1,
+      "Kinematics": 9,
+      "EP": 0.8236185433343053
+    },
+    "V33_ROSH": {
+      "scenarios": 48,
+      "Collision": 29,
+      "Offroad": 1,
+      "Kinematics": 8,
+      "EP": 0.9746472767243782
+    },
+    "V35_CPOSH": {
+      "scenarios": 48,
+      "Collision": 27,
+      "Offroad": 0,
+      "Kinematics": 7,
+      "EP": 0.913986936211586
+    },
+    "V36_FRONTIER": {
+      "scenarios": 48,
+      "Collision": 34,
+      "Offroad": 0,
+      "Kinematics": 8,
+      "EP": 0.9780857378306488
+    },
+    "V37_RRB": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 0,
+      "Kinematics": 7,
+      "EP": 0.9373499828701218
+    },
+    "V38_SCRT": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 1,
+      "Kinematics": 6,
+      "EP": 0.9977662743379673
+    }
+  },
+  "paired_V38_vs_COWP": {
+    "Collision": {
+      "rescued": 1,
+      "induced": 0,
+      "net_failures_removed": 1,
+      "rescued_ids": [
+        "6992366c5c998d00"
+      ],
+      "induced_ids": []
+    },
+    "Offroad": {
+      "rescued": 0,
+      "induced": 0,
+      "net_failures_removed": 0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "Kinematics": {
+      "rescued": 0,
+      "induced": 0,
+      "net_failures_removed": 0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "EP": {
+      "delta_mean": -0.004745774902403355,
+      "delta_median": 0.0,
+      "nonzero_scene_count": 9
+    }
+  },
+  "paired_V38_vs_previous": {
+    "V33_ROSH": {
+      "Collision": {
+        "rescued": 3,
+        "induced": 7,
+        "net_failures_removed": -4,
+        "rescued_ids": [
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "6992366c5c998d00"
+        ],
+        "induced_ids": [
+          "9e3e5f19ee38f2e3",
+          "ad7d72d8adca3e25",
+          "9ccf60966ec93c20",
+          "2c2395ec28c6a158",
+          "84196f1d9198b616",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ]
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 0,
+        "net_failures_removed": 0,
+        "rescued_ids": [],
+        "induced_ids": []
+      },
+      "Kinematics": {
+        "rescued": 2,
+        "induced": 0,
+        "net_failures_removed": 2,
+        "rescued_ids": [
+          "6992366c5c998d00",
+          "29cd2aca8ae5e222"
+        ],
+        "induced_ids": []
+      },
+      "EP": {
+        "delta_mean": 0.02311899761358897,
+        "delta_median": 0.0,
+        "nonzero_scene_count": 24
+      }
+    },
+    "V35_CPOSH": {
+      "Collision": {
+        "rescued": 4,
+        "induced": 10,
+        "net_failures_removed": -6,
+        "rescued_ids": [
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "6992366c5c998d00",
+          "c34fe8e79cdf1161"
+        ],
+        "induced_ids": [
+          "9e3e5f19ee38f2e3",
+          "ad7d72d8adca3e25",
+          "fccd9a25a2a57a73",
+          "9ccf60966ec93c20",
+          "2c2395ec28c6a158",
+          "7c6ac47c0deee2af",
+          "84196f1d9198b616",
+          "f8d5d2f0f7cf5825",
+          "72a34ea361a39c22",
+          "40f2d8b336a3dafc"
+        ]
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 1,
+        "net_failures_removed": -1,
+        "rescued_ids": [],
+        "induced_ids": [
+          "fccd9a25a2a57a73"
+        ]
+      },
+      "Kinematics": {
+        "rescued": 2,
+        "induced": 1,
+        "net_failures_removed": 1,
+        "rescued_ids": [
+          "fccd9a25a2a57a73",
+          "29cd2aca8ae5e222"
+        ],
+        "induced_ids": [
+          "fb9d8277036a53f3"
+        ]
+      },
+      "EP": {
+        "delta_mean": 0.08377933812638123,
+        "delta_median": 0.0,
+        "nonzero_scene_count": 23
+      }
+    },
+    "V36_FRONTIER": {
+      "Collision": {
+        "rescued": 7,
+        "induced": 6,
+        "net_failures_removed": 1,
+        "rescued_ids": [
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "d632f1919fe4bab",
+          "6992366c5c998d00",
+          "c34fe8e79cdf1161",
+          "f8d4c735825e5d81",
+          "6418b0c9e2e4b093"
+        ],
+        "induced_ids": [
+          "c9b1c562b6ff31e5",
+          "ad7d72d8adca3e25",
+          "fccd9a25a2a57a73",
+          "84196f1d9198b616",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ]
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 1,
+        "net_failures_removed": -1,
+        "rescued_ids": [],
+        "induced_ids": [
+          "fccd9a25a2a57a73"
+        ]
+      },
+      "Kinematics": {
+        "rescued": 2,
+        "induced": 0,
+        "net_failures_removed": 2,
+        "rescued_ids": [
+          "fccd9a25a2a57a73",
+          "d632f1919fe4bab"
+        ],
+        "induced_ids": []
+      },
+      "EP": {
+        "delta_mean": 0.01968053650731842,
+        "delta_median": 0.0,
+        "nonzero_scene_count": 30
+      }
+    },
+    "V37_RRB": {
+      "Collision": {
+        "rescued": 1,
+        "induced": 1,
+        "net_failures_removed": 0,
+        "rescued_ids": [
+          "6992366c5c998d00"
+        ],
+        "induced_ids": [
+          "fccd9a25a2a57a73"
+        ]
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 1,
+        "net_failures_removed": -1,
+        "rescued_ids": [],
+        "induced_ids": [
+          "fccd9a25a2a57a73"
+        ]
+      },
+      "Kinematics": {
+        "rescued": 1,
+        "induced": 0,
+        "net_failures_removed": 1,
+        "rescued_ids": [
+          "fccd9a25a2a57a73"
+        ],
+        "induced_ids": []
+      },
+      "EP": {
+        "delta_mean": 0.06041629146784544,
+        "delta_median": 0.0,
+        "nonzero_scene_count": 9
+      }
+    }
+  },
+  "old_RVR_counterexamples": {
+    "old_rescues": [
+      "c9b1c562b6ff31e5",
+      "9e3e5f19ee38f2e3",
+      "ad7d72d8adca3e25",
+      "fccd9a25a2a57a73",
+      "b85168f48c8c9970",
+      "9ccf60966ec93c20",
+      "2c2395ec28c6a158",
+      "7c6ac47c0deee2af",
+      "f8d5d2f0f7cf5825",
+      "40f2d8b336a3dafc"
+    ],
+    "retained_by_V38": [],
+    "old_induced": [
+      "fe51445d725b8b8b",
+      "3919ccd73c0fabd7",
+      "fb9d8277036a53f3",
+      "d632f1919fe4bab",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886",
+      "f8d4c735825e5d81",
+      "6418b0c9e2e4b093",
+      "1e015170763b9002"
+    ],
+    "avoided_by_V38": [
+      "fe51445d725b8b8b",
+      "3919ccd73c0fabd7",
+      "fb9d8277036a53f3",
+      "d632f1919fe4bab",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886",
+      "f8d4c735825e5d81",
+      "6418b0c9e2e4b093",
+      "1e015170763b9002"
+    ]
+  },
+  "pooled_mechanism": {
+    "policy_steps": 3840,
+    "probe_steps": 2695,
+    "certificate_steps": 56,
+    "action_change_steps": 55,
+    "lifted_selected_certificate_steps": 55,
+    "probe_step_rate": 0.7018229166666666,
+    "certificate_step_rate": 0.014583333333333334,
+    "certificate_rate_on_probes": 0.02077922077922078,
+    "action_change_step_rate": 0.014322916666666666,
+    "lifted_selection_rate_on_certified_steps_pooled": 0.9821428571428571,
+    "probe_weighted_totals": {
+      "parent_pool": 98045,
+      "parent_action_classes": 86880,
+      "hypotheses_generated": 260640,
+      "unique_first_actions": 161472,
+      "full_safe": 522,
+      "shift_closed": 486,
+      "nominal_closed": 3,
+      "lower_closed": 425,
+      "upper_closed": 58,
+      "lifted_only_parent": 481
+    },
+    "shift_closure_retention_of_full_safe_witnesses": 0.9310344827586207
+  },
+  "V38_analyzer_macro_average_correction": {
+    "reported_scenario_macro_lifted_selection_rate": 0.9411764705882353,
+    "correct_pooled_lifted_selection_rate": 0.9821428571428571,
+    "effect_on_outcome_or_gate": "none"
+  },
+  "clean_constructive_support_rescue": {
+    "scenario_id": "6992366c5c998d00",
+    "COWP": {
+      "Collision": true,
+      "Offroad": false,
+      "Kinematics": false,
+      "EP": 0.334335595369339
+    },
+    "V38": {
+      "Collision": false,
+      "Offroad": false,
+      "Kinematics": false,
+      "EP": 0.38759645819664
+    },
+    "EP_delta": 0.053260862827301025,
+    "certificate_steps": 5,
+    "action_change_steps": 5,
+    "interpretation": "A clean 1->0 collision rescue with no offroad/kinematics conversion and positive EP delta; all selected tube interventions are controller-lifted. This proves the constructive support branch is not intrinsically dead, but one scene does not satisfy the preregistered recall requirement."
+  },
+  "nonzero_EP_scenes_sorted": [
+    {
+      "scenario_id": "1e015170763b9002",
+      "EP_delta_vs_COWP": -0.10339319705963135,
+      "COWP_collision": false,
+      "V38_collision": false,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 14,
+      "action_change_steps": 14
+    },
+    {
+      "scenario_id": "da87744bcf7613db",
+      "EP_delta_vs_COWP": -0.08395491540431976,
+      "COWP_collision": true,
+      "V38_collision": true,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": true,
+      "V38_kinematics": true,
+      "certificate_steps": 8,
+      "action_change_steps": 7
+    },
+    {
+      "scenario_id": "7721ff4800156886",
+      "EP_delta_vs_COWP": -0.0835268497467041,
+      "COWP_collision": false,
+      "V38_collision": false,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 2,
+      "action_change_steps": 2
+    },
+    {
+      "scenario_id": "fccd9a25a2a57a73",
+      "EP_delta_vs_COWP": -0.021568775177001953,
+      "COWP_collision": true,
+      "V38_collision": true,
+      "COWP_offroad": true,
+      "V38_offroad": true,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 4,
+      "action_change_steps": 4
+    },
+    {
+      "scenario_id": "51a742674d23f1e3",
+      "EP_delta_vs_COWP": -0.016197144985198975,
+      "COWP_collision": false,
+      "V38_collision": false,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 1,
+      "action_change_steps": 1
+    },
+    {
+      "scenario_id": "f8d5d2f0f7cf5825",
+      "EP_delta_vs_COWP": -0.0053566694259643555,
+      "COWP_collision": true,
+      "V38_collision": true,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 3,
+      "action_change_steps": 3
+    },
+    {
+      "scenario_id": "57f3f03f7e7967f9",
+      "EP_delta_vs_COWP": 0.015989601612091064,
+      "COWP_collision": true,
+      "V38_collision": true,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 6,
+      "action_change_steps": 6
+    },
+    {
+      "scenario_id": "fe51445d725b8b8b",
+      "EP_delta_vs_COWP": 0.016949892044067383,
+      "COWP_collision": false,
+      "V38_collision": false,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 2,
+      "action_change_steps": 2
+    },
+    {
+      "scenario_id": "6992366c5c998d00",
+      "EP_delta_vs_COWP": 0.053260862827301025,
+      "COWP_collision": true,
+      "V38_collision": false,
+      "COWP_offroad": false,
+      "V38_offroad": false,
+      "COWP_kinematics": false,
+      "V38_kinematics": false,
+      "certificate_steps": 5,
+      "action_change_steps": 5
+    }
+  ],
+  "certificate_scenes": [
+    {
+      "scenario_id": "1e015170763b9002",
+      "certificate_steps": 14,
+      "action_change_steps": 14,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 4.863636363636363,
+      "mean_shift_closed_witnesses_on_probes": 4.318181818181818,
+      "mean_lower_closed_witnesses_on_probes": 3.6363636363636362,
+      "mean_upper_closed_witnesses_on_probes": 0.6818181818181818
+    },
+    {
+      "scenario_id": "da87744bcf7613db",
+      "certificate_steps": 8,
+      "action_change_steps": 7,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 5.349206349206349,
+      "mean_shift_closed_witnesses_on_probes": 5.349206349206349,
+      "mean_lower_closed_witnesses_on_probes": 5.349206349206349,
+      "mean_upper_closed_witnesses_on_probes": 0.0
+    },
+    {
+      "scenario_id": "57f3f03f7e7967f9",
+      "certificate_steps": 6,
+      "action_change_steps": 6,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.2926829268292683,
+      "mean_shift_closed_witnesses_on_probes": 0.2926829268292683,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.2926829268292683
+    },
+    {
+      "scenario_id": "6992366c5c998d00",
+      "certificate_steps": 5,
+      "action_change_steps": 5,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.5,
+      "mean_shift_closed_witnesses_on_probes": 0.45,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.45
+    },
+    {
+      "scenario_id": "fccd9a25a2a57a73",
+      "certificate_steps": 4,
+      "action_change_steps": 4,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.2413793103448276,
+      "mean_shift_closed_witnesses_on_probes": 0.2413793103448276,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.2413793103448276
+    },
+    {
+      "scenario_id": "a25edfa42510bdb4",
+      "certificate_steps": 3,
+      "action_change_steps": 3,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.10256410256410256,
+      "mean_shift_closed_witnesses_on_probes": 0.0641025641025641,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.0641025641025641
+    },
+    {
+      "scenario_id": "f8d5d2f0f7cf5825",
+      "certificate_steps": 3,
+      "action_change_steps": 3,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.1323529411764706,
+      "mean_shift_closed_witnesses_on_probes": 0.07352941176470588,
+      "mean_lower_closed_witnesses_on_probes": 0.07352941176470588,
+      "mean_upper_closed_witnesses_on_probes": 0.0
+    },
+    {
+      "scenario_id": "7721ff4800156886",
+      "certificate_steps": 2,
+      "action_change_steps": 2,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.05714285714285714,
+      "mean_shift_closed_witnesses_on_probes": 0.05714285714285714,
+      "mean_lower_closed_witnesses_on_probes": 0.05714285714285714,
+      "mean_upper_closed_witnesses_on_probes": 0.0
+    },
+    {
+      "scenario_id": "89806e50f692c453",
+      "certificate_steps": 2,
+      "action_change_steps": 2,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.05357142857142857,
+      "mean_shift_closed_witnesses_on_probes": 0.03571428571428571,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.03571428571428571
+    },
+    {
+      "scenario_id": "fe51445d725b8b8b",
+      "certificate_steps": 2,
+      "action_change_steps": 2,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.043478260869565216,
+      "mean_shift_closed_witnesses_on_probes": 0.043478260869565216,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.043478260869565216
+    },
+    {
+      "scenario_id": "51a742674d23f1e3",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 2.75,
+      "mean_shift_closed_witnesses_on_probes": 0.25,
+      "mean_lower_closed_witnesses_on_probes": 0.25,
+      "mean_upper_closed_witnesses_on_probes": 0.0
+    },
+    {
+      "scenario_id": "6418b0c9e2e4b093",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.01639344262295082,
+      "mean_shift_closed_witnesses_on_probes": 0.01639344262295082,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.01639344262295082
+    },
+    {
+      "scenario_id": "84196f1d9198b616",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.0125,
+      "mean_shift_closed_witnesses_on_probes": 0.0125,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.0125
+    },
+    {
+      "scenario_id": "a525f87ac454a88c",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.012658227848101266,
+      "mean_shift_closed_witnesses_on_probes": 0.012658227848101266,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.012658227848101266
+    },
+    {
+      "scenario_id": "a6f8b2b348015743",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.06818181818181818,
+      "mean_shift_closed_witnesses_on_probes": 0.06818181818181818,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.022727272727272728
+    },
+    {
+      "scenario_id": "eeab096e35093acf",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 1.0,
+      "mean_full_safe_witnesses_on_probes": 0.04,
+      "mean_shift_closed_witnesses_on_probes": 0.04,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.04
+    },
+    {
+      "scenario_id": "fb9d8277036a53f3",
+      "certificate_steps": 1,
+      "action_change_steps": 1,
+      "lifted_selection_rate_on_certified_steps_scenario": 0.0,
+      "mean_full_safe_witnesses_on_probes": 0.02564102564102564,
+      "mean_shift_closed_witnesses_on_probes": 0.02564102564102564,
+      "mean_lower_closed_witnesses_on_probes": 0.0,
+      "mean_upper_closed_witnesses_on_probes": 0.0
+    }
+  ],
+  "mechanism_attribution": {
+    "successful_facts_to_retain": [
+      "The branch is live: 2695/3840 policy steps probed, 56 steps obtained a hard tube certificate, and 55 actions changed.",
+      "Constructive lifting is causally active: 55/56 certified selections use a lifted controller endpoint; only 3 nominal shift-closed witnesses exist versus 425 lower and 58 upper witnesses.",
+      "The full physical plus one-step shift-closure certificate is high precision: no net collision/kinematics harm and all 9 historical RVR-induced collisions are avoided.",
+      "Scenario 6992366c5c998d00 is a clean collision rescue without failure conversion and with positive progress, showing the support-construction idea is not intrinsically invalid."
+    ],
+    "failed_facts_to_archive": [
+      "Policy-level V38 does not meet recall: it retains 0/10 historical RVR rescues and removes only one net COWP collision.",
+      "The three all-horizon control sequences are structurally impoverished: nominal, lower endpoint for all 80 edges, or upper endpoint for all 80 edges.",
+      "All-horizon lower/upper policies create avoidable progress loss in several safe scenes; the largest EP regressions are concentrated in long lower-envelope interventions."
+    ],
+    "bottleneck_localization": {
+      "not_primary": "one-step shift closure",
+      "evidence": "486/522=93.10% of full-safe witnesses survive shift closure; closure removes only 36 witnesses.",
+      "primary": "constructive control-sequence support before the full physical certificate",
+      "evidence_detail": "Only 522 full-safe witnesses arise from 260640 generated hypotheses, and only 56/2695 probe steps have any certified action. The bank has many geometries/actions, but the constant all-horizon nominal/lower/upper sequence family is too coarse to negotiate finite conflict windows."
+    }
+  },
+  "dominant_bottleneck": "finite-duration, control-reachable backup support under zero-conventional collapse",
+  "recommended_V39_branch": {
+    "name": "Conflict-Window Control-Reachable Recovery Tube",
+    "decision": "expand causal control-sequence construction, not selector/certificate relaxation",
+    "mechanism": "retain V38 nominal/lower-all/upper-all as a nested baseline; add lower/upper reachable endpoints only through the nominal causal first/last collision-violation edge, then release to the unchanged controller; require the unchanged full physical certificate and one-step shift closure.",
+    "falsification": "If event-release-only support is near zero or the six-item Gate still fails, stop finite hand-enumerated schedule patches and move to constrained reachable-set optimization / interaction-aware response envelopes."
+  }
+}
