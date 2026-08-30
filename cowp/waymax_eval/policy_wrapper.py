@@ -1462,6 +1462,31 @@ def _shift_append_terminal_reference_np(trajectory: np.ndarray, dt: float) -> np
     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
 
+def _shift_longitudinal_envelope_schedule_np(
+    schedule: np.ndarray,
+    policy_id: int,
+) -> np.ndarray:
+    """Shift one envelope schedule with the same terminal semantics as V39.
+
+    A finite event-release policy returns to the nominal controller after its
+    release event, so the newly appended terminal edge is zero.  In contrast,
+    ``LOWER_ALL``/``UPPER_ALL`` are all-horizon policies: after executing one
+    edge, their shifted witness must append the same reachable endpoint.
+
+    Centralising this rule prevents a hard-certificate mismatch between the V39
+    nested constructor and V40 interval completion.  The helper changes no
+    controller limit and consumes no future simulator state.
+    """
+    sch = np.asarray(schedule, dtype=np.int8).reshape(-1)
+    shifted = np.zeros_like(sch, dtype=np.int8)
+    if sch.size > 1:
+        shifted[:-1] = sch[1:]
+    pid = int(policy_id)
+    if sch.size and pid in {-1, 1}:
+        shifted[-1] = np.int8(-1 if pid < 0 else 1)
+    return shifted
+
+
 def _physical_recovery_tube_certificate_np(
     agent_state: np.ndarray,
     sdc_index: int,
@@ -2045,11 +2070,9 @@ def _construct_conflict_window_control_reachable_tube_np(
                 state, int(sdc_index), first_target, cfg,
             )
             shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
-            shifted_schedule = np.zeros((H,), dtype=np.int8)
-            if H > 1:
-                shifted_schedule[:-1] = schedule_arr[j, 1:]
-            if int(policy_arr[j]) in {-1, 1}:
-                shifted_schedule[-1] = int(np.sign(int(policy_arr[j])))
+            shifted_schedule = _shift_longitudinal_envelope_schedule_np(
+                schedule_arr[j], int(policy_arr[j])
+            )
             shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
                 successor[int(sdc_index)], shifted_reference[None, ...], cfg,
                 first_accel,
@@ -2534,9 +2557,9 @@ def _construct_shift_closed_first_action_viability_interval_np(
             state, int(sdc_index), first_target, cfg
         )
         shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
-        shifted_schedule = np.zeros((H,), dtype=np.int8)
-        if H > 1:
-            shifted_schedule[:-1] = schedule_arr[j, 1:]
+        shifted_schedule = _shift_longitudinal_envelope_schedule_np(
+            schedule_arr[j], int(meta[j]["policy_id"])
+        )
         shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
             successor[int(sdc_index)],
             shifted_reference[None, ...],

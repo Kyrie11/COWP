@@ -1,0 +1,940 @@
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -1462,6 +1462,31 @@
+     return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+ 
+ 
++def _shift_longitudinal_envelope_schedule_np(
++    schedule: np.ndarray,
++    policy_id: int,
++) -> np.ndarray:
++    """Shift one envelope schedule with the same terminal semantics as V39.
++
++    A finite event-release policy returns to the nominal controller after its
++    release event, so the newly appended terminal edge is zero.  In contrast,
++    ``LOWER_ALL``/``UPPER_ALL`` are all-horizon policies: after executing one
++    edge, their shifted witness must append the same reachable endpoint.
++
++    Centralising this rule prevents a hard-certificate mismatch between the V39
++    nested constructor and V40 interval completion.  The helper changes no
++    controller limit and consumes no future simulator state.
++    """
++    sch = np.asarray(schedule, dtype=np.int8).reshape(-1)
++    shifted = np.zeros_like(sch, dtype=np.int8)
++    if sch.size > 1:
++        shifted[:-1] = sch[1:]
++    pid = int(policy_id)
++    if sch.size and pid in {-1, 1}:
++        shifted[-1] = np.int8(-1 if pid < 0 else 1)
++    return shifted
++
++
+ def _physical_recovery_tube_certificate_np(
+     agent_state: np.ndarray,
+     sdc_index: int,
+@@ -2045,11 +2070,9 @@
+                 state, int(sdc_index), first_target, cfg,
+             )
+             shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+-            shifted_schedule = np.zeros((H,), dtype=np.int8)
+-            if H > 1:
+-                shifted_schedule[:-1] = schedule_arr[j, 1:]
+-            if int(policy_arr[j]) in {-1, 1}:
+-                shifted_schedule[-1] = int(np.sign(int(policy_arr[j])))
++            shifted_schedule = _shift_longitudinal_envelope_schedule_np(
++                schedule_arr[j], int(policy_arr[j])
++            )
+             shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+                 successor[int(sdc_index)], shifted_reference[None, ...], cfg,
+                 first_accel,
+@@ -2534,9 +2557,9 @@
+             state, int(sdc_index), first_target, cfg
+         )
+         shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+-        shifted_schedule = np.zeros((H,), dtype=np.int8)
+-        if H > 1:
+-            shifted_schedule[:-1] = schedule_arr[j, 1:]
++        shifted_schedule = _shift_longitudinal_envelope_schedule_np(
++            schedule_arr[j], int(meta[j]["policy_id"])
++        )
+         shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+             successor[int(sdc_index)],
+             shifted_reference[None, ...],
+--- /dev/null
++++ b/tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py
+@@ -0,0 +1,82 @@
++from __future__ import annotations
++
++
++def test_shift_schedule_preserves_v39_terminal_policy_semantics():
++    import numpy as np
++    from cowp.waymax_eval.policy_wrapper import (
++        _shift_longitudinal_envelope_schedule_np,
++    )
++
++    lower_all = -np.ones((6,), dtype=np.int8)
++    upper_all = np.ones((6,), dtype=np.int8)
++    lower_release = np.asarray([-1, -1, -1, 0, 0, 0], dtype=np.int8)
++    upper_release = np.asarray([1, 1, 0, 0, 0, 0], dtype=np.int8)
++
++    assert np.array_equal(
++        _shift_longitudinal_envelope_schedule_np(lower_all, -1),
++        -np.ones((6,), dtype=np.int8),
++    )
++    assert np.array_equal(
++        _shift_longitudinal_envelope_schedule_np(upper_all, 1),
++        np.ones((6,), dtype=np.int8),
++    )
++    assert np.array_equal(
++        _shift_longitudinal_envelope_schedule_np(lower_release, -3),
++        np.asarray([-1, -1, 0, 0, 0, 0], dtype=np.int8),
++    )
++    assert np.array_equal(
++        _shift_longitudinal_envelope_schedule_np(upper_release, 2),
++        np.asarray([1, 0, 0, 0, 0, 0], dtype=np.int8),
++    )
++
++
++def test_v39_and_v40_constructors_share_the_same_shift_helper_source():
++    import inspect
++    import cowp.waymax_eval.policy_wrapper as pw
++
++    v39 = inspect.getsource(pw._construct_conflict_window_control_reachable_tube_np)
++    v40 = inspect.getsource(pw._construct_shift_closed_first_action_viability_interval_np)
++    call = "_shift_longitudinal_envelope_schedule_np("
++    assert call in v39
++    assert call in v40
++    assert "shifted_schedule[-1]" not in v39
++    assert "shifted_schedule[-1]" not in v40
++
++
++def test_repair_does_not_widen_or_modify_any_controller_limit():
++    import numpy as np
++    from cowp.waymax_eval.policy_wrapper import (
++        _shift_longitudinal_envelope_schedule_np,
++    )
++
++    for pid, schedule in (
++        (-1, -np.ones((8,), dtype=np.int8)),
++        (1, np.ones((8,), dtype=np.int8)),
++        (-2, np.asarray([-1, -1, 0, 0, 0, 0, 0, 0], dtype=np.int8)),
++        (3, np.asarray([1, 1, 1, 0, 0, 0, 0, 0], dtype=np.int8)),
++    ):
++        shifted = _shift_longitudinal_envelope_schedule_np(schedule, pid)
++        assert shifted.shape == schedule.shape
++        assert set(np.unique(shifted)).issubset({-1, 0, 1})
++
++
++def test_helper_is_exactly_equivalent_to_literal_frozen_v39_rule():
++    import numpy as np
++    from cowp.waymax_eval.policy_wrapper import (
++        _shift_longitudinal_envelope_schedule_np,
++    )
++
++    rng = np.random.default_rng(16841)
++    for horizon in (1, 2, 3, 8, 80):
++        for policy_id in (-3, -2, -1, 0, 1, 2, 3):
++            for _ in range(20):
++                schedule = rng.integers(-1, 2, size=horizon, dtype=np.int8)
++                literal = np.zeros_like(schedule, dtype=np.int8)
++                if horizon > 1:
++                    literal[:-1] = schedule[1:]
++                if policy_id in {-1, 1}:
++                    literal[-1] = np.int8(np.sign(policy_id))
++                actual = _shift_longitudinal_envelope_schedule_np(
++                    schedule, policy_id
++                )
++                assert np.array_equal(actual, literal)
+--- /dev/null
++++ b/cowp/scripts/94_analyze_shift_closure_semantic_fidelity_repair.py
+@@ -0,0 +1,553 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++import numpy as np
++
++
++def _load(path: str | None) -> dict[str, Any] | None:
++    return json.loads(Path(path).read_text()) if path else None
++
++
++def _rows(d: dict[str, Any]) -> dict[str, dict[str, Any]]:
++    return {str(r["scenario_id"]): r for r in d.get("scenario_results", [])}
++
++
++def _metric(row: dict[str, Any], key: str) -> float:
++    value = (row.get("standard_metrics", {}) or {}).get(key)
++    if isinstance(value, (int, float)) and math.isfinite(float(value)):
++        return float(value)
++    return float("nan")
++
++
++def _event(row: dict[str, Any], key: str) -> bool:
++    value = _metric(row, key)
++    return bool(math.isfinite(value) and value > 0.0)
++
++
++def _mcnemar_exact(rescued: int, induced: int) -> float:
++    n = int(rescued + induced)
++    if n <= 0:
++        return 1.0
++    k = min(int(rescued), int(induced))
++    tail = sum(math.comb(n, i) for i in range(k + 1)) / float(2**n)
++    return min(1.0, 2.0 * tail)
++
++
++def _bootstrap_mean_ci(
++    x: np.ndarray,
++    *,
++    seed: int = 16841,
++    draws: int = 10_000,
++) -> list[float] | None:
++    arr = np.asarray(x, dtype=np.float64)
++    arr = arr[np.isfinite(arr)]
++    if arr.size == 0:
++        return None
++    rng = np.random.default_rng(seed)
++    values = np.empty(draws, dtype=np.float64)
++    for i in range(draws):
++        values[i] = float(rng.choice(arr, size=arr.size, replace=True).mean())
++    return [float(np.quantile(values, 0.025)), float(np.quantile(values, 0.975))]
++
++
++def _diag_value(row: dict[str, Any], key: str) -> float | None:
++    value = (row.get("diagnostics", {}) or {}).get(key)
++    if isinstance(value, (int, float)) and math.isfinite(float(value)):
++        return float(value)
++    return None
++
++
++def _aggregate(rows: dict[str, dict[str, Any]], ids: list[str]) -> dict[str, Any]:
++    event_keys = {
++        "CR": "CR",
++        "Collision": "CollisionRate",
++        "Offroad": "OffroadRate",
++        "Kinematics": "KinematicsInfeasibilityRate",
++    }
++    out: dict[str, Any] = {"n": len(ids)}
++    for label, key in event_keys.items():
++        out[label] = float(np.mean([_event(rows[s], key) for s in ids])) if ids else 0.0
++    ep = np.asarray([_metric(rows[s], "EP") for s in ids], dtype=np.float64)
++    ep = ep[np.isfinite(ep)]
++    out["EP"] = float(ep.mean()) if ep.size else None
++
++    # These are explicitly scenario-macro averages. Mechanism attribution below
++    # separately reconstructs probe/certificate-weighted pooled quantities, avoiding
++    # the V38 reporting ambiguity in which a scenario with one probe and a scenario
++    # with eighty probes received the same weight.
++    diag_keys = [
++        "fallback_step_rate",
++        "zero_conventional_candidate_step_rate",
++        "mean_conventional_candidates",
++        "mean_valid_candidates",
++        "mean_max_collision_safe_prefix_steps",
++        "mean_selected_collision_safe_prefix_steps",
++        "recovery_switch_step_rate",
++        "selected_waymax_kinematic_feasible_step_rate",
++        "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps",
++        "shift_closed_first_action_viability_interval_step_rate",
++        "recovery_tube_probe_step_rate",
++        "recovery_tube_certificate_step_rate",
++        "recovery_tube_action_change_step_rate",
++        "recovery_tube_lifted_selection_rate_on_certified_steps",
++        "recovery_tube_event_release_selection_rate_on_certified_steps",
++        "recovery_tube_nested_v39_selection_rate_on_certified_steps",
++        "recovery_tube_first_action_interval_attempt_step_rate",
++        "recovery_tube_first_action_interval_selection_rate_on_certified_steps",
++        "recovery_tube_new_first_action_selection_rate_on_certified_steps",
++        "mean_recovery_tube_first_action_interval_basis_count_on_attempts",
++        "mean_recovery_tube_first_action_interval_seed_evaluations_on_attempts",
++        "mean_recovery_tube_first_action_interval_boundary_proposals_on_attempts",
++        "mean_recovery_tube_first_action_interval_hypotheses_on_attempts",
++        "mean_recovery_tube_first_action_interval_unique_actions_on_attempts",
++        "mean_recovery_tube_first_action_interval_new_actions_on_attempts",
++        "mean_recovery_tube_first_action_interval_full_safe_on_attempts",
++        "mean_recovery_tube_first_action_interval_shift_closed_on_attempts",
++        "mean_recovery_tube_first_action_interval_only_parent_count_on_attempts",
++        "mean_recovery_tube_selected_first_accel_fraction_on_interval_steps",
++        "mean_recovery_tube_parent_pool_on_probes",
++        "mean_recovery_tube_parent_action_classes_on_probes",
++        "mean_recovery_tube_parents_with_nominal_conflict_on_probes",
++        "mean_recovery_tube_parent_first_conflict_step_on_probes",
++        "mean_recovery_tube_parent_last_conflict_step_on_probes",
++        "mean_recovery_tube_hypotheses_generated_on_probes",
++        "mean_recovery_tube_unique_action_hypotheses_on_probes",
++        "mean_recovery_tube_full_physically_safe_on_probes",
++        "mean_recovery_tube_shift_closed_on_probes",
++        "mean_recovery_tube_nominal_shift_closed_on_probes",
++        "mean_recovery_tube_lower_envelope_shift_closed_on_probes",
++        "mean_recovery_tube_upper_envelope_shift_closed_on_probes",
++        "mean_recovery_tube_event_release_shift_closed_on_probes",
++        "mean_recovery_tube_lower_event_release_shift_closed_on_probes",
++        "mean_recovery_tube_upper_event_release_shift_closed_on_probes",
++        "mean_recovery_tube_lifted_only_parent_count_on_probes",
++        "mean_recovery_tube_event_release_only_parent_count_on_probes",
++        "mean_recovery_tube_abs_first_accel_delta_on_certified_steps",
++        "mean_recovery_tube_selected_release_edge_on_certified_steps",
++        "mean_recovery_tube_selected_nonnominal_edges_on_certified_steps",
++        "mean_recovery_tube_selected_collision_margin_on_certified_steps",
++        "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps",
++        "mean_recovery_tube_selected_fallback_score_delta_on_action_changes",
++    ]
++    macro: dict[str, float | None] = {}
++    for key in diag_keys:
++        values = [_diag_value(rows[s], key) for s in ids]
++        finite = [v for v in values if v is not None]
++        macro[key] = float(np.mean(finite)) if finite else None
++    out["scenario_macro_average_diagnostics"] = macro
++    return out
++
++
++def _paired(
++    base: dict[str, dict[str, Any]],
++    alt: dict[str, dict[str, Any]],
++    ids: list[str],
++) -> dict[str, Any]:
++    out: dict[str, Any] = {}
++    for label, key in {
++        "CR": "CR",
++        "Collision": "CollisionRate",
++        "Offroad": "OffroadRate",
++        "Kinematics": "KinematicsInfeasibilityRate",
++    }.items():
++        rescued = [s for s in ids if _event(base[s], key) and not _event(alt[s], key)]
++        induced = [s for s in ids if not _event(base[s], key) and _event(alt[s], key)]
++        shared = [s for s in ids if _event(base[s], key) and _event(alt[s], key)]
++        out[label] = {
++            "rescued": len(rescued),
++            "induced": len(induced),
++            "shared_failure": len(shared),
++            "net_failures_removed": len(rescued) - len(induced),
++            "mcnemar_exact_p": _mcnemar_exact(len(rescued), len(induced)),
++            "rescued_ids": rescued,
++            "induced_ids": induced,
++        }
++    deltas: list[float] = []
++    per_scene: dict[str, float] = {}
++    for s in ids:
++        a, b = _metric(base[s], "EP"), _metric(alt[s], "EP")
++        if math.isfinite(a) and math.isfinite(b):
++            delta = float(b - a)
++            deltas.append(delta)
++            per_scene[s] = delta
++    arr = np.asarray(deltas, dtype=np.float64)
++    out["EP"] = {
++        "paired_n": int(arr.size),
++        "delta_mean": float(arr.mean()) if arr.size else None,
++        "delta_median": float(np.median(arr)) if arr.size else None,
++        "bootstrap95": _bootstrap_mean_ci(arr),
++        "per_scene_delta": per_scene,
++    }
++    return out
++
++
++def _weighted_total(
++    rows: dict[str, dict[str, Any]],
++    ids: list[str],
++    mean_key: str,
++    denominator_counts: dict[str, int],
++) -> tuple[float, int]:
++    total = 0.0
++    denominator = 0
++    for s in ids:
++        n = int(denominator_counts.get(s, 0))
++        if n <= 0:
++            continue
++        value = _diag_value(rows[s], mean_key)
++        if value is None:
++            continue
++        total += float(value) * n
++        denominator += n
++    return total, denominator
++
++
++def _pooled_tube_mechanism(
++    rows: dict[str, dict[str, Any]],
++    ids: list[str],
++) -> dict[str, Any]:
++    steps: dict[str, int] = {}
++    probes: dict[str, int] = {}
++    certificates: dict[str, int] = {}
++    changes: dict[str, int] = {}
++    interval_attempts: dict[str, int] = {}
++    for s in ids:
++        diag = rows[s].get("diagnostics", {}) or {}
++        n = int(diag.get("steps", 0) or 0)
++        steps[s] = n
++        probes[s] = int(round(float(diag.get("recovery_tube_probe_step_rate", 0.0) or 0.0) * n))
++        certificates[s] = int(round(float(diag.get("recovery_tube_certificate_step_rate", 0.0) or 0.0) * n))
++        changes[s] = int(round(float(diag.get("recovery_tube_action_change_step_rate", 0.0) or 0.0) * n))
++        interval_attempts[s] = int(round(float(
++            diag.get("recovery_tube_first_action_interval_attempt_step_rate", 0.0) or 0.0
++        ) * n))
++
++    total_steps = int(sum(steps.values()))
++    total_probes = int(sum(probes.values()))
++    total_certificates = int(sum(certificates.values()))
++    total_changes = int(sum(changes.values()))
++    total_interval_attempts = int(sum(interval_attempts.values()))
++
++    def conditional_count(rate_key: str, den: dict[str, int]) -> int:
++        total = 0
++        for s in ids:
++            n = int(den.get(s, 0))
++            if n <= 0:
++                continue
++            value = _diag_value(rows[s], rate_key)
++            if value is not None:
++                total += int(round(value * n))
++        return int(total)
++
++    lifted_selected = conditional_count(
++        "recovery_tube_lifted_selection_rate_on_certified_steps", certificates
++    )
++    event_selected = conditional_count(
++        "recovery_tube_event_release_selection_rate_on_certified_steps", certificates
++    )
++    nested_v39_selected = conditional_count(
++        "recovery_tube_nested_v39_selection_rate_on_certified_steps", certificates
++    )
++    interval_selected = conditional_count(
++        "recovery_tube_first_action_interval_selection_rate_on_certified_steps",
++        certificates,
++    )
++    new_first_action_selected = conditional_count(
++        "recovery_tube_new_first_action_selection_rate_on_certified_steps",
++        certificates,
++    )
++
++    probe_mean_keys = {
++        "parent_pool": "mean_recovery_tube_parent_pool_on_probes",
++        "parent_action_classes": "mean_recovery_tube_parent_action_classes_on_probes",
++        "parents_with_nominal_conflict": "mean_recovery_tube_parents_with_nominal_conflict_on_probes",
++        "parent_first_conflict_step": "mean_recovery_tube_parent_first_conflict_step_on_probes",
++        "parent_last_conflict_step": "mean_recovery_tube_parent_last_conflict_step_on_probes",
++        "hypotheses_generated": "mean_recovery_tube_hypotheses_generated_on_probes",
++        "unique_first_actions": "mean_recovery_tube_unique_action_hypotheses_on_probes",
++        "full_physically_safe_witnesses": "mean_recovery_tube_full_physically_safe_on_probes",
++        "shift_closed_witnesses": "mean_recovery_tube_shift_closed_on_probes",
++        "nominal_shift_closed_witnesses": "mean_recovery_tube_nominal_shift_closed_on_probes",
++        "lower_all_shift_closed_witnesses": "mean_recovery_tube_lower_envelope_shift_closed_on_probes",
++        "upper_all_shift_closed_witnesses": "mean_recovery_tube_upper_envelope_shift_closed_on_probes",
++        "event_release_shift_closed_witnesses": "mean_recovery_tube_event_release_shift_closed_on_probes",
++        "lower_event_release_shift_closed_witnesses": "mean_recovery_tube_lower_event_release_shift_closed_on_probes",
++        "upper_event_release_shift_closed_witnesses": "mean_recovery_tube_upper_event_release_shift_closed_on_probes",
++        "lifted_only_parent_support": "mean_recovery_tube_lifted_only_parent_count_on_probes",
++        "event_release_only_parent_support": "mean_recovery_tube_event_release_only_parent_count_on_probes",
++    }
++    pooled_probe: dict[str, Any] = {}
++    totals: dict[str, float] = {}
++    for label, key in probe_mean_keys.items():
++        total, den = _weighted_total(rows, ids, key, probes)
++        totals[label] = float(total)
++        pooled_probe[label] = float(total / den) if den else None
++
++    interval_mean_keys = {
++        "basis_count": "mean_recovery_tube_first_action_interval_basis_count_on_attempts",
++        "seed_evaluations": "mean_recovery_tube_first_action_interval_seed_evaluations_on_attempts",
++        "boundary_proposals": "mean_recovery_tube_first_action_interval_boundary_proposals_on_attempts",
++        "hypotheses_evaluated": "mean_recovery_tube_first_action_interval_hypotheses_on_attempts",
++        "unique_certified_actions": "mean_recovery_tube_first_action_interval_unique_actions_on_attempts",
++        "new_certified_first_actions": "mean_recovery_tube_first_action_interval_new_actions_on_attempts",
++        "full_physically_safe": "mean_recovery_tube_first_action_interval_full_safe_on_attempts",
++        "shift_closed": "mean_recovery_tube_first_action_interval_shift_closed_on_attempts",
++        "interval_only_parent_support": "mean_recovery_tube_first_action_interval_only_parent_count_on_attempts",
++    }
++    pooled_interval: dict[str, Any] = {}
++    interval_totals: dict[str, float] = {}
++    for label, key in interval_mean_keys.items():
++        total, den = _weighted_total(rows, ids, key, interval_attempts)
++        interval_totals[label] = float(total)
++        pooled_interval[label] = float(total / den) if den else None
++
++    cert_mean_keys = {
++        "abs_first_accel_delta": "mean_recovery_tube_abs_first_accel_delta_on_certified_steps",
++        "selected_release_edge": "mean_recovery_tube_selected_release_edge_on_certified_steps",
++        "selected_nonnominal_edges": "mean_recovery_tube_selected_nonnominal_edges_on_certified_steps",
++        "selected_collision_margin": "mean_recovery_tube_selected_collision_margin_on_certified_steps",
++        "selected_shift_collision_margin": "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps",
++    }
++    pooled_cert: dict[str, Any] = {}
++    for label, key in cert_mean_keys.items():
++        total, den = _weighted_total(rows, ids, key, certificates)
++        pooled_cert[label] = float(total / den) if den else None
++
++    fallback_delta_sum, fallback_delta_den = _weighted_total(
++        rows,
++        ids,
++        "mean_recovery_tube_selected_fallback_score_delta_on_action_changes",
++        changes,
++    )
++    full_witnesses = float(totals.get("full_physically_safe_witnesses", 0.0))
++    shifted_witnesses = float(totals.get("shift_closed_witnesses", 0.0))
++    interval_selected_den = {
++        s: int(round(float(
++            (rows[s].get("diagnostics", {}) or {}).get(
++                "recovery_tube_first_action_interval_selection_rate_on_certified_steps",
++                0.0,
++            ) or 0.0
++        ) * certificates[s]))
++        for s in ids
++    }
++    fraction_sum, fraction_den = _weighted_total(
++        rows,
++        ids,
++        "mean_recovery_tube_selected_first_accel_fraction_on_interval_steps",
++        interval_selected_den,
++    )
++
++    return {
++        "aggregation": "probe/certificate/action-change weighted pooled reconstruction from scenario diagnostics",
++        "total_policy_steps": total_steps,
++        "total_probe_steps": total_probes,
++        "total_certificate_steps": total_certificates,
++        "total_action_change_steps": total_changes,
++        "total_interval_attempt_steps": total_interval_attempts,
++        "probe_step_rate": float(total_probes / total_steps) if total_steps else None,
++        "certificate_step_rate": float(total_certificates / total_steps) if total_steps else None,
++        "certificate_rate_on_probes": float(total_certificates / total_probes) if total_probes else None,
++        "action_change_step_rate": float(total_changes / total_steps) if total_steps else None,
++        "lifted_selected_certificate_steps": lifted_selected,
++        "lifted_selection_rate_on_certified_steps": (
++            float(lifted_selected / total_certificates) if total_certificates else None
++        ),
++        "event_release_selected_certificate_steps": event_selected,
++        "event_release_selection_rate_on_certified_steps": (
++            float(event_selected / total_certificates) if total_certificates else None
++        ),
++        "nested_v39_selected_certificate_steps": nested_v39_selected,
++        "nested_v39_selection_rate_on_certified_steps": (
++            float(nested_v39_selected / total_certificates) if total_certificates else None
++        ),
++        "interval_selected_certificate_steps": interval_selected,
++        "interval_selection_rate_on_certified_steps": (
++            float(interval_selected / total_certificates) if total_certificates else None
++        ),
++        "new_first_action_selected_certificate_steps": new_first_action_selected,
++        "new_first_action_selection_rate_on_certified_steps": (
++            float(new_first_action_selected / total_certificates) if total_certificates else None
++        ),
++        "interval_attempt_step_rate": (
++            float(total_interval_attempts / total_steps) if total_steps else None
++        ),
++        "interval_completion_rate_on_attempts": (
++            float(interval_selected / total_interval_attempts)
++            if total_interval_attempts else None
++        ),
++        "probe_weighted_means": pooled_probe,
++        "interval_attempt_weighted_means": pooled_interval,
++        "interval_attempt_weighted_totals": interval_totals,
++        "mean_selected_first_accel_fraction_on_interval_steps": (
++            float(fraction_sum / fraction_den) if fraction_den else None
++        ),
++        "probe_weighted_totals": totals,
++        "certificate_weighted_means": pooled_cert,
++        "mean_fallback_score_delta_on_action_changes": (
++            float(fallback_delta_sum / fallback_delta_den) if fallback_delta_den else None
++        ),
++        "shift_closure_retention_of_full_safe_witnesses": (
++            float(shifted_witnesses / full_witnesses) if full_witnesses > 0 else None
++        ),
++    }
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--cowp", required=True)
++    parser.add_argument("--rvr")
++    parser.add_argument("--v33-rosh")
++    parser.add_argument("--v35-control-projected-spectrum")
++    parser.add_argument("--v36-recovery-frontier")
++    parser.add_argument("--v37-recourse-returnability-bridge")
++    parser.add_argument("--v38-shift-closed-tube")
++    parser.add_argument("--v39-conflict-window-tube")
++    parser.add_argument("--shift-closure-semantic-fidelity-repair", required=True)
++    parser.add_argument("--development-selected", action="store_true")
++    parser.add_argument(
++        "--stage",
++        choices=["counterfactual48", "fresh37", "exact200"],
++        default="counterfactual48",
++    )
++    parser.add_argument("--output", required=True)
++    args = parser.parse_args()
++
++    data = {
++        "cowp": _load(args.cowp),
++        "rvr": _load(args.rvr),
++        "v33_rosh": _load(args.v33_rosh),
++        "v35_control_projected_spectrum": _load(args.v35_control_projected_spectrum),
++        "v36_recovery_frontier": _load(args.v36_recovery_frontier),
++        "v37_recourse_returnability_bridge": _load(args.v37_recourse_returnability_bridge),
++        "v38_shift_closed_tube": _load(args.v38_shift_closed_tube),
++        "v39_conflict_window_tube": _load(args.v39_conflict_window_tube),
++        "shift_closure_semantic_fidelity_repair": _load(
++            args.shift_closure_semantic_fidelity_repair
++        ),
++    }
++    data = {k: v for k, v in data.items() if v is not None}
++    rowmap = {k: _rows(v) for k, v in data.items()}
++    ids = list(rowmap["cowp"].keys())
++    idset = set(ids)
++    mismatch = {
++        k: sorted(idset.symmetric_difference(set(rows)))
++        for k, rows in rowmap.items()
++        if set(rows) != idset
++    }
++    if mismatch:
++        raise SystemExit(f"scenario set mismatch: {mismatch}")
++
++    out: dict[str, Any] = {
++        "schema_version": "cowp_shift_closure_semantic_fidelity_repair_analysis_v1",
++        "development_selected": bool(args.development_selected),
++        "paper_evidence": False,
++        "scenario_count": len(ids),
++        "stage": str(args.stage),
++        "methods": {},
++        "paired_vs_cowp": {},
++    }
++    for name, rows in rowmap.items():
++        out["methods"][name] = _aggregate(rows, ids)
++        if name != "cowp":
++            out["paired_vs_cowp"][name] = _paired(rowmap["cowp"], rows, ids)
++
++    name = "shift_closure_semantic_fidelity_repair"
++    if "rvr" in rowmap:
++        old_rescued = set(out["paired_vs_cowp"]["rvr"]["Collision"]["rescued_ids"])
++        old_induced = set(out["paired_vs_cowp"]["rvr"]["Collision"]["induced_ids"])
++        out["rvr_counterexample_retention"] = {
++            name: {
++                "old_rvr_rescues_total": len(old_rescued),
++                "old_rvr_rescues_retained": int(
++                    sum(not _event(rowmap[name][s], "CollisionRate") for s in old_rescued)
++                ),
++                "old_rvr_induced_total": len(old_induced),
++                "old_rvr_induced_avoided": int(
++                    sum(not _event(rowmap[name][s], "CollisionRate") for s in old_induced)
++                ),
++            }
++        }
++
++    for previous in (
++        "v33_rosh",
++        "v35_control_projected_spectrum",
++        "v36_recovery_frontier",
++        "v37_recourse_returnability_bridge",
++        "v38_shift_closed_tube",
++        "v39_conflict_window_tube",
++    ):
++        if previous in rowmap:
++            out[f"paired_vs_{previous}"] = _paired(rowmap[previous], rowmap[name], ids)
++
++    paired = out["paired_vs_cowp"][name]
++    ep_delta = paired["EP"]["delta_mean"]
++    pooled = _pooled_tube_mechanism(rowmap[name], ids)
++    switch_rate = pooled.get("action_change_step_rate")
++
++    if args.stage == "counterfactual48":
++        retention = out["rvr_counterexample_retention"][name]
++        checks = {
++            "retain_at_least_5_of_10_old_rvr_rescues": (
++                retention["old_rvr_rescues_retained"] >= 5
++            ),
++            "avoid_at_least_7_of_9_old_rvr_induced": (
++                retention["old_rvr_induced_avoided"] >= 7
++            ),
++            "net_remove_at_least_3_cowp_collisions": (
++                paired["Collision"]["net_failures_removed"] >= 3
++            ),
++            "kinematics_net_regression_at_most_1_scene": (
++                paired["Kinematics"]["net_failures_removed"] >= -1
++            ),
++            "mean_ep_delta_not_below_minus_0_05": (
++                ep_delta is not None and ep_delta >= -0.05
++            ),
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    elif args.stage == "fresh37":
++        checks = {
++            "no_net_collision_harm": paired["Collision"]["net_failures_removed"] >= 0,
++            "no_net_cr_harm": paired["CR"]["net_failures_removed"] >= 0,
++            "offroad_net_regression_at_most_1_scene": (
++                paired["Offroad"]["net_failures_removed"] >= -1
++            ),
++            "kinematics_net_regression_at_most_1_scene": (
++                paired["Kinematics"]["net_failures_removed"] >= -1
++            ),
++            "mean_ep_delta_not_below_minus_0_03": (
++                ep_delta is not None and ep_delta >= -0.03
++            ),
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    else:
++        checks = {"development_confirmation_only": True}
++
++    out["preregistered_gate"] = {
++        name: {
++            "checks": checks,
++            "pass": bool(all(checks.values())),
++            "paper_evidence": False,
++        }
++    }
++    out["shift_closure_semantic_fidelity_repair_mechanism_diagnostic"] = {
++        **pooled,
++        "new_first_action_support_is_attribution_not_gate": True,
++        "interpretation": (
++            "The inherited six-item outcome gate is unchanged. Interval-only/new-first-"
++            "action support and actual new-first-action selection are required to "
++            "attribute any gain specifically to the repaired V40 first-action interval "
++            "mechanism. V41 changes only all-horizon shift-terminal semantics; "
++            "it is a reliability rerun, not a new algorithmic contribution or a "
++            "post-hoc additional promotion threshold."
++        ),
++    }
++    Path(args.output).write_text(json.dumps(out, indent=2, ensure_ascii=False))
++    print(json.dumps(out, indent=2, ensure_ascii=False))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null
++++ b/NEXT_RUN_COMMANDS_V16_8_41_SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR_CN.sh
+@@ -0,0 +1,234 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# v16.8.41: Shift-Closure Semantic Fidelity Repair (SC-FAVI-R)
++# Reliability-repair release only. The uploaded V40 changed all-horizon shift
++# terminal semantics inside interval completion: LOWER_ALL/UPPER_ALL appended a
++# nominal edge instead of the V39 endpoint edge. V41 centralizes and restores the
++# V39 rule. No new proposal, threshold, controller limit, certificate, selector,
++# score, dataset, or learned component is introduced.
++#
++# Frozen: compact-5k data/labels/checkpoint, natural roots, RCOT, BCOT,
++# protected-priority certificate, post-certificate set-preservation frontier,
++# candidate geometries, controller limits, outcome settings, and the 8 s
++# conventional-safety contract. No result below is final paper evidence.
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_41_shift_closure_semantic_fidelity_repair}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35_CPOSH="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36_FRONTIER="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37_RRB="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_CF48_V38_TUBE="$SCRIPT_DIR/reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json"
++REF_CF48_V39_TUBE="$SCRIPT_DIR/reference_results/v16_8_39_counterfactual48_conflict_window_control_reachable_tube_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
++REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++REF_EXACT_RVR="$SCRIPT_DIR/reference_results/v16_8_29_exact200_rvr_reference.json"
++
++EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
++EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
++EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
++EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
++mkdir -p "$OUT_ROOT"
++
++export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
++export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
++export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
++export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
++export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
++
++validate_manifest() {
++  local p="$1" n="$2" expected="$3"
++  [[ -s "$p" ]] || { echo "Missing ID manifest: $p" >&2; exit 2; }
++  python - "$p" "$n" "$expected" <<'PY'
++import hashlib,sys
++p,n,expected=sys.argv[1],int(sys.argv[2]),sys.argv[3]
++ids=[x.strip() for x in open(p,encoding='utf-8') if x.strip()]
++if len(ids)!=n: raise SystemExit(f"expected {n} IDs, got {len(ids)} in {p}")
++if len(set(ids))!=n: raise SystemExit(f"duplicate IDs in {p}")
++h=hashlib.sha256("\n".join(ids).encode()).hexdigest()
++if h!=expected: raise SystemExit(f"logical ID SHA mismatch: {h} != {expected}")
++print(f"manifest OK: n={n} logical_sha256={h} path={p}")
++PY
++}
++ensure_ids() {
++  validate_manifest "$EXACT_IDS" 200 "$EXPECTED_EXACT_SHA"
++  validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
++  validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
++  validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
++  cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
++  cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++  cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
++  cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
++}
++
++require_gate_pass() {
++  local analysis_json="$1" methods="$2" stage_label="$3"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing $stage_label analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" "$methods" "$stage_label" <<'PY' || exit 4
++import json,sys
++p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
++d=json.load(open(p,encoding='utf-8'))
++gates=d.get('preregistered_gate',{})
++for method in [x.strip() for x in methods.split(',') if x.strip()]:
++    if method!='cowp_shift_closed_first_action_viability_interval':
++        raise SystemExit(f'ERROR: {method} is not the repaired v16.8.41 promotion candidate')
++    g=gates.get('shift_closure_semantic_fidelity_repair')
++    if not g or g.get('pass') is not True:
++        failed=[k for k,v in (g or {}).get('checks',{}).items() if not v]
++        raise SystemExit(f'ERROR: {method} did not pass {stage} preregistered gate; failed={failed}')
++print(f'promotion gate OK for {methods} at {stage}')
++PY
++}
++
++index_arg=()
++if [[ -s "$TFEX_INDEX" ]]; then
++  index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++else
++  echo "[warning] TFExample ID index missing: $TFEX_INDEX" >&2
++fi
++common_waymax=(
++  --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax --checkpoint "$BASE_CKPT" --waymax-split validation --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0 --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++run_colocated_shard() {
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5"
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    --no-progress --status-every 2 --output "$out"
++}
++run_parallel_methods() {
++  local tag="$1" ids="$2" methods="$3"
++  IFS=',' read -r -a arr <<< "$methods"
++  for method in "${arr[@]}"; do
++    echo "=== $tag method: $method ==="
++    local start end; start=$(date +%s)
++    run_colocated_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++    run_colocated_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++    wait "$p0"; wait "$p1"
++    end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++    python -m cowp.scripts.79_merge_waymax_exact_shards \
++      --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++      --output "$OUT_ROOT/${tag}_${method}_merged.json"
++  done
++}
++analyze_set() {
++  local stage="$1" tag="$2" cowp="$3" rvr="$4"
++  local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
++    --shift-closure-semantic-fidelity-repair "$OUT_ROOT/${tag}_cowp_shift_closed_first_action_viability_interval_merged.json" \
++    --output "$OUT_ROOT/${tag}_shift_closure_semantic_fidelity_repair_analysis.json")
++  if [[ "$stage" == "counterfactual48" ]]; then
++    args+=(--v33-rosh "$REF_CF48_V33_ROSH" \
++      --v35-control-projected-spectrum "$REF_CF48_V35_CPOSH" \
++      --v36-recovery-frontier "$REF_CF48_V36_FRONTIER" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37_RRB" \
++      --v38-shift-closed-tube "$REF_CF48_V38_TUBE" \
++      --v39-conflict-window-tube "$REF_CF48_V39_TUBE")
++  fi
++  python -m cowp.scripts.94_analyze_shift_closure_semantic_fidelity_repair "${args[@]}"
++}
++
++case "$MODE" in
++  sanity)
++    python -m py_compile cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
++      cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
++      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/88_analyze_control_projected_option_spectrum.py \
++      cowp/scripts/89_analyze_control_projected_recovery_frontier.py cowp/scripts/90_analyze_recourse_returnability_bridge.py \
++      cowp/scripts/92_analyze_conflict_window_control_reachable_tube.py cowp/scripts/93_analyze_shift_closed_first_action_viability_interval.py cowp/scripts/94_analyze_shift_closure_semantic_fidelity_repair.py
++    python -m pytest -q \
++      tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py \
++      tests/test_v16_8_40_shift_closed_first_action_viability_interval.py \
++      tests/test_v16_8_39_conflict_window_control_reachable_tube.py \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py tests/test_v16_8_28_execution_integrity.py \
++      tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    if grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py; then
++      echo "ERROR: conventional-safety bypass exists" >&2; exit 3
++    fi
++    ensure_ids
++    echo "v16.8.41 reliability-repair semantic/integrity sanity passed"
++    ;;
++  make_ids) ensure_ids ;;
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++  base_equivalence16_parallel2)
++    ensure_ids; run_parallel_methods "equivalence16" "$EQ16_IDS" "cowp"
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++  counterfactual48_parallel2)
++    ensure_ids
++    run_parallel_methods "counterfactual48_v41" "$CF48_IDS" "${METHODS:-cowp_shift_closed_first_action_viability_interval}" ;;
++  analyze_counterfactual48)
++    analyze_set "counterfactual48" "counterfactual48_v41" "$REF_CF48_COWP" "$REF_CF48_RVR" ;;
++  fresh37_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_shift_closed_first_action_viability_interval}"
++    require_gate_pass "$OUT_ROOT/counterfactual48_v41_shift_closure_semantic_fidelity_repair_analysis.json" "$promoted" "counterfactual48"
++    run_parallel_methods "fresh37_v41" "$FRESH37_IDS" "$promoted" ;;
++  analyze_fresh37)
++    analyze_set "fresh37" "fresh37_v41" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR" ;;
++  confirm200_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_shift_closed_first_action_viability_interval}"
++    require_gate_pass "$OUT_ROOT/fresh37_v41_shift_closure_semantic_fidelity_repair_analysis.json" "$promoted" "fresh37"
++    run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted" ;;
++  analyze_confirm200)
++    analyze_set "exact200" "confirm_exact200" "$REF_EXACT_COWP" "$REF_EXACT_RVR" ;;
++  help|*)
++    cat <<EOF
++v16.8.41 reliability-repair rerun order
++
++1) $0 sanity
++2) $0 make_ids
++3) $0 base_equivalence16_parallel2
++4) $0 counterfactual48_parallel2
++5) $0 analyze_counterfactual48
++
++STOP here unless preregistered_gate.shift_closure_semantic_fidelity_repair.pass == true.
++The six Stage-1 GO conditions remain unchanged. V41 is a corrected rerun of V40, not a new mechanism.
++
++Only after Stage-1 pass:
++  PROMOTED_METHODS=cowp_shift_closed_first_action_viability_interval $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only after fresh37 pass:
++  PROMOTED_METHODS=cowp_shift_closed_first_action_viability_interval $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Do not use the uploaded V40 outcomes for algorithm attribution. Run this repaired
++version through equivalence16 and counterfactual48 first. Only after the repaired
++result passes reliability may its unchanged six-item gate be interpreted. Do not
++add a new V42 mechanism in the same run or relax any gate/certificate.
++EOF
++    ;;
++esac

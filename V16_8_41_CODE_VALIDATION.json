@@ -1,0 +1,142 @@
+{
+  "schema_version": "cowp_v16_8_41_code_validation_v1",
+  "version": "V16.8.41",
+  "release_role": "SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR_ONLY",
+  "method": "cowp_shift_closed_first_action_viability_interval",
+  "algorithm_name": "Shift-Closed First-Action Viability Interval — Semantic Fidelity Repair (SC-FAVI-R)",
+  "validation_verdict": "PASS_FOR_REPAIRED_SERVER_RERUN",
+  "new_algorithmic_hypothesis": false,
+  "uploaded_v40_result_attribution_allowed": false,
+  "waymax_closed_loop_outcome_available_locally": false,
+  "waymax_closed_loop_outcome_note": "The local artifact environment has no user-server dataset/index/checkpoint/GPU Waymax runtime. No repaired V41 outcome is fabricated.",
+  "result_reliability_trigger": {
+    "audit": "V16_8_40_RESULT_RELIABILITY_AUDIT_INDEPENDENT.json",
+    "hard_checks_total": 243,
+    "hard_checks_passed": 242,
+    "hard_checks_failed": 1,
+    "blocking_issue": "V40 interval completion appended nominal terminal control for LOWER_ALL/UPPER_ALL shifted schedules, unlike frozen V39 endpoint semantics.",
+    "required_action": "repair and rerun equivalence16 + counterfactual48 before attribution"
+  },
+  "tests": {
+    "v16_8_41_dedicated": {
+      "passed": 4,
+      "failed": 0,
+      "command": "python -m pytest -q tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py",
+      "log": "/mnt/data/v40_to_v41/v41_dedicated_final.log"
+    },
+    "v16_8_25_to_v16_8_41_focused": {
+      "passed": 86,
+      "failed": 0,
+      "command": "bash NEXT_RUN_COMMANDS_V16_8_41_SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR_CN.sh sanity",
+      "log": "/mnt/data/v40_to_v41/v41_sanity_final.log"
+    },
+    "full_repository": {
+      "passed": false,
+      "classification": "PRE_EXISTING_HISTORICAL_COLLECTION_ERROR",
+      "v41_exit_code": 1,
+      "pristine_v40_exit_code": 1,
+      "same_failure_in_pristine_v40": true,
+      "failure": "tests/test_v16_8_29_recovery_viability.py imports absent _recovery_bridge_viability_mask",
+      "v41_log": "/mnt/data/v40_to_v41/v41_full_pytest.log",
+      "pristine_v40_log": "/mnt/data/v40_to_v41/v40_pristine_full_pytest.log"
+    }
+  },
+  "syntax_and_static_checks": {
+    "python_compile_passed": true,
+    "launcher_bash_syntax_passed": true,
+    "conventional_safety_bypass_occurrences": 0,
+    "v40_constructor_log_trajectory_occurrences": 0,
+    "v40_constructor_ground_truth_occurrences": 0,
+    "v40_constructor_other_future_trajs_none": true,
+    "shared_shift_helper_call_sites": 2,
+    "method_registration_occurrences_policy_wrapper": 8
+  },
+  "manifest_checks": {
+    "exact200": {
+      "path": "reference_manifests/waymax_probe_200_ids.txt",
+      "count": 200,
+      "unique": 200,
+      "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "expected_count": 200,
+      "expected_logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "passed": true
+    },
+    "equivalence16": {
+      "path": "reference_manifests/waymax_v16_8_30_equivalence16_ids.txt",
+      "count": 16,
+      "unique": 16,
+      "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected_count": 16,
+      "expected_logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "passed": true
+    },
+    "counterfactual48": {
+      "path": "reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt",
+      "count": 48,
+      "unique": 48,
+      "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected_count": 48,
+      "expected_logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "passed": true
+    },
+    "fresh37": {
+      "path": "reference_manifests/waymax_v16_8_32_fresh37_ids.txt",
+      "count": 37,
+      "unique": 37,
+      "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "expected_count": 37,
+      "expected_logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "passed": true
+    }
+  },
+  "analyzer_smoke": {
+    "passed": true,
+    "schema_version": "cowp_shift_closure_semantic_fidelity_repair_analysis_v1",
+    "scenario_count": 48,
+    "gate_field_present": true,
+    "output": "/mnt/data/v40_to_v41/v41_analyzer_smoke.json"
+  },
+  "fail_closed_promotion": {
+    "passed": true,
+    "attempted_mode": "fresh37_parallel2",
+    "exit_code": 4,
+    "expected_exit_code": 4,
+    "rollout_artifacts_created": false,
+    "probe_root": "/mnt/data/v40_to_v41/fail_closed_probe"
+  },
+  "repair_invariants_tested": {
+    "literal_v39_terminal_rule_preserved": true,
+    "event_release_appends_nominal": true,
+    "lower_all_appends_lower_endpoint": true,
+    "upper_all_appends_upper_endpoint": true,
+    "v39_and_v40_share_helper": true,
+    "randomized_exact_equivalence_to_literal_v39_rule": true,
+    "controller_limits_not_widened": true,
+    "no_shift_certificate_fails_closed_in_inherited_v40_tests": true,
+    "no_logged_future_request": true
+  },
+  "final_archive_roundtrip": {
+    "completed": true,
+    "release_hashes_passed": true,
+    "release_files_checked": 18,
+    "focused_tests_passed": 86,
+    "focused_tests_failed": 0,
+    "dedicated_tests_passed": 4,
+    "dedicated_tests_failed": 0,
+    "manifest_hashes_passed": true,
+    "python_compile_passed": true,
+    "launcher_bash_syntax_passed": true,
+    "roundtrip_test_root": "/mnt/data/v40_to_v41/roundtrip_pass1/COWP_v16_8_41_SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR",
+    "note": "The first release candidate was extracted independently, all 18 release hashes verified, and dedicated/focused suites rerun. Validation was then finalized; release hashes and final archive are regenerated and verified again."
+  },
+  "delivery_files": {
+    "analysis": "CURRENT_ANALYSIS_V16_8_41_CN.md",
+    "version_changelog": "ALGORITHM_CHANGELOG_V16_8_41.md",
+    "synced_changelog": "ALGORITHM_CHANGELOG.md",
+    "launcher": "NEXT_RUN_COMMANDS_V16_8_41_SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR_CN.sh",
+    "reliability_audit": "V16_8_40_RESULT_RELIABILITY_AUDIT_INDEPENDENT.json",
+    "provisional_non_attributable_summary": "V16_8_40_PROVISIONAL_NON_ATTRIBUTABLE_RESULT_SUMMARY.json",
+    "development_manifests": "V16_8_41_DEVELOPMENT_MANIFESTS.json",
+    "core_patch": "COWP_V16_8_40_TO_V16_8_41_SHIFT_CLOSURE_SEMANTIC_FIDELITY_REPAIR_CODE.patch"
+  }
+}
