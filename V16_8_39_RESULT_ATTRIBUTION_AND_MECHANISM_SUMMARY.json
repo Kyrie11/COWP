@@ -1,0 +1,929 @@
+{
+  "schema_version": "cowp_v16_8_39_result_attribution_and_mechanism_summary_v1",
+  "audited_version": "V16.8.39",
+  "reliability_verdict": "PASS_ATTRIBUTION_ALLOWED",
+  "attribution_allowed": true,
+  "stage1_preregistered_gate": {
+    "checks": {
+      "retain_at_least_5_of_10_old_rvr_rescues": {
+        "threshold": ">=5/10",
+        "observed": "3/10",
+        "pass": false
+      },
+      "avoid_at_least_7_of_9_old_rvr_induced": {
+        "threshold": ">=7/9",
+        "observed": "9/9",
+        "pass": true
+      },
+      "net_remove_at_least_3_cowp_collisions": {
+        "threshold": ">=3",
+        "observed": 4,
+        "pass": true
+      },
+      "kinematics_net_regression_at_most_1_scene": {
+        "threshold": "net regression <=1",
+        "observed_net_failures_removed": 0,
+        "pass": true
+      },
+      "mean_ep_delta_not_below_minus_0_05": {
+        "threshold": ">=-0.05",
+        "observed": -0.01107853123297294,
+        "pass": true
+      },
+      "nonzero_intervention": {
+        "threshold": ">0 action-changing steps",
+        "observed_action_change_steps": 87,
+        "pass": true
+      }
+    },
+    "passed_checks": 5,
+    "total_checks": 6,
+    "pass": false,
+    "decision": "ARCHIVE_NO_FRESH37",
+    "sole_failed_condition": "old RVR rescue retention: 3/10 < 5/10"
+  },
+  "headline_table": {
+    "cowp": {
+      "scenarios": 48,
+      "Collision": 34,
+      "Offroad": 1,
+      "Kinematics": 6,
+      "CR": 34,
+      "EP": 1.0025120492403705
+    },
+    "rvr": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 1,
+      "Kinematics": 9,
+      "CR": 33,
+      "EP": 0.8236185433343053
+    },
+    "v33_rosh": {
+      "scenarios": 48,
+      "Collision": 29,
+      "Offroad": 1,
+      "Kinematics": 8,
+      "CR": 29,
+      "EP": 0.9746472767243782
+    },
+    "v35_control_projected_spectrum": {
+      "scenarios": 48,
+      "Collision": 27,
+      "Offroad": 0,
+      "Kinematics": 7,
+      "CR": 27,
+      "EP": 0.913986936211586
+    },
+    "v36_recovery_frontier": {
+      "scenarios": 48,
+      "Collision": 34,
+      "Offroad": 0,
+      "Kinematics": 8,
+      "CR": 34,
+      "EP": 0.9780857378306488
+    },
+    "v37_recourse_returnability_bridge": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 0,
+      "Kinematics": 7,
+      "CR": 33,
+      "EP": 0.9373499828701218
+    },
+    "v38_shift_closed_tube": {
+      "scenarios": 48,
+      "Collision": 33,
+      "Offroad": 1,
+      "Kinematics": 6,
+      "CR": 33,
+      "EP": 0.9977662743379673
+    },
+    "conflict_window_control_reachable_tube": {
+      "scenarios": 48,
+      "Collision": 30,
+      "Offroad": 1,
+      "Kinematics": 6,
+      "CR": 30,
+      "EP": 0.9914335180073977
+    }
+  },
+  "paired_V39_vs_COWP": {
+    "CR": {
+      "rescued": 4,
+      "induced": 0,
+      "shared_failure": 30,
+      "net_failures_removed": 4,
+      "mcnemar_exact_p": 0.125,
+      "rescued_ids": [
+        "6992366c5c998d00",
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ],
+      "induced_ids": []
+    },
+    "Collision": {
+      "rescued": 4,
+      "induced": 0,
+      "shared_failure": 30,
+      "net_failures_removed": 4,
+      "mcnemar_exact_p": 0.125,
+      "rescued_ids": [
+        "6992366c5c998d00",
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ],
+      "induced_ids": []
+    },
+    "Offroad": {
+      "rescued": 0,
+      "induced": 0,
+      "shared_failure": 1,
+      "net_failures_removed": 0,
+      "mcnemar_exact_p": 1.0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "Kinematics": {
+      "rescued": 0,
+      "induced": 0,
+      "shared_failure": 6,
+      "net_failures_removed": 0,
+      "mcnemar_exact_p": 1.0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "EP": {
+      "paired_n": 48,
+      "delta_mean": -0.01107853123297294,
+      "delta_median": 0.0,
+      "bootstrap95": [
+        -0.02731182835220049,
+        0.0009807233077784355
+      ],
+      "per_scene_delta": {
+        "9d79c94d87d1dfac": 0.0,
+        "c9b1c562b6ff31e5": 0.0,
+        "a27f6f60dd683a66": 0.0,
+        "4c332861792a91e7": 0.0,
+        "fe51445d725b8b8b": 0.016949892044067383,
+        "9e3e5f19ee38f2e3": 0.0,
+        "ad7d72d8adca3e25": 0.0,
+        "57f3f03f7e7967f9": 0.015989601612091064,
+        "f55df4ea9e688069": 0.0,
+        "4525d99a628819af": 0.0,
+        "3919ccd73c0fabd7": 0.0,
+        "fb9d8277036a53f3": 0.0,
+        "a6f8b2b348015743": 0.0,
+        "fccd9a25a2a57a73": -0.021568775177001953,
+        "b64cecb971b095c3": 0.0,
+        "b85168f48c8c9970": 0.0,
+        "9ccf60966ec93c20": 0.0,
+        "89806e50f692c453": 0.01962459087371826,
+        "2c2395ec28c6a158": 0.0,
+        "d632f1919fe4bab": 0.0,
+        "1c03d20597561d94": 0.0,
+        "6992366c5c998d00": 0.053260862827301025,
+        "29cd2aca8ae5e222": 0.0,
+        "7c6ac47c0deee2af": -0.2937554121017456,
+        "eeab096e35093acf": 0.0,
+        "c34fe8e79cdf1161": 0.0,
+        "ff41aa2be7fa7a56": 0.0,
+        "da87744bcf7613db": -0.07462699711322784,
+        "e6f70b30f414022e": 0.0,
+        "84196f1d9198b616": 0.0,
+        "e1d2184327703edd": 0.0,
+        "7721ff4800156886": -0.0835268497467041,
+        "f8d5d2f0f7cf5825": -0.10712385177612305,
+        "f6a7fc811128c6ef": 0.0,
+        "f8d4c735825e5d81": 0.0,
+        "51a742674d23f1e3": -0.016197144985198975,
+        "da52a87b046e4a0a": 0.0,
+        "6418b0c9e2e4b093": 0.0,
+        "a525f87ac454a88c": 0.03066602349281311,
+        "1e015170763b9002": -0.10339319705963135,
+        "a30bd30a45665244": 0.0,
+        "72a34ea361a39c22": 0.0,
+        "a25edfa42510bdb4": 0.0,
+        "d59a8c97c0980d2a": 0.0,
+        "2fa07f444b825370": 0.0,
+        "40f2d8b336a3dafc": 0.03193175792694092,
+        "4201b435eda16cf2": 0.0,
+        "ae01b0e36aaa41b4": 0.0
+      }
+    }
+  },
+  "paired_V39_vs_V38": {
+    "CR": {
+      "rescued": 3,
+      "induced": 0,
+      "shared_failure": 30,
+      "net_failures_removed": 3,
+      "mcnemar_exact_p": 0.25,
+      "rescued_ids": [
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ],
+      "induced_ids": []
+    },
+    "Collision": {
+      "rescued": 3,
+      "induced": 0,
+      "shared_failure": 30,
+      "net_failures_removed": 3,
+      "mcnemar_exact_p": 0.25,
+      "rescued_ids": [
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ],
+      "induced_ids": []
+    },
+    "Offroad": {
+      "rescued": 0,
+      "induced": 0,
+      "shared_failure": 1,
+      "net_failures_removed": 0,
+      "mcnemar_exact_p": 1.0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "Kinematics": {
+      "rescued": 0,
+      "induced": 0,
+      "shared_failure": 6,
+      "net_failures_removed": 0,
+      "mcnemar_exact_p": 1.0,
+      "rescued_ids": [],
+      "induced_ids": []
+    },
+    "EP": {
+      "paired_n": 48,
+      "delta_mean": -0.006332756330569585,
+      "delta_median": 0.0,
+      "bootstrap95": [
+        -0.021552291388312977,
+        0.0029349531357487023
+      ],
+      "per_scene_delta": {
+        "9d79c94d87d1dfac": 0.0,
+        "c9b1c562b6ff31e5": 0.0,
+        "a27f6f60dd683a66": 0.0,
+        "4c332861792a91e7": 0.0,
+        "fe51445d725b8b8b": 0.0,
+        "9e3e5f19ee38f2e3": 0.0,
+        "ad7d72d8adca3e25": 0.0,
+        "57f3f03f7e7967f9": 0.0,
+        "f55df4ea9e688069": 0.0,
+        "4525d99a628819af": 0.0,
+        "3919ccd73c0fabd7": 0.0,
+        "fb9d8277036a53f3": 0.0,
+        "a6f8b2b348015743": 0.0,
+        "fccd9a25a2a57a73": 0.0,
+        "b64cecb971b095c3": 0.0,
+        "b85168f48c8c9970": 0.0,
+        "9ccf60966ec93c20": 0.0,
+        "89806e50f692c453": 0.01962459087371826,
+        "2c2395ec28c6a158": 0.0,
+        "d632f1919fe4bab": 0.0,
+        "1c03d20597561d94": 0.0,
+        "6992366c5c998d00": 0.0,
+        "29cd2aca8ae5e222": 0.0,
+        "7c6ac47c0deee2af": -0.2937554121017456,
+        "eeab096e35093acf": 0.0,
+        "c34fe8e79cdf1161": 0.0,
+        "ff41aa2be7fa7a56": 0.0,
+        "da87744bcf7613db": 0.009327918291091919,
+        "e6f70b30f414022e": 0.0,
+        "84196f1d9198b616": 0.0,
+        "e1d2184327703edd": 0.0,
+        "7721ff4800156886": 0.0,
+        "f8d5d2f0f7cf5825": -0.10176718235015869,
+        "f6a7fc811128c6ef": 0.0,
+        "f8d4c735825e5d81": 0.0,
+        "51a742674d23f1e3": 0.0,
+        "da52a87b046e4a0a": 0.0,
+        "6418b0c9e2e4b093": 0.0,
+        "a525f87ac454a88c": 0.03066602349281311,
+        "1e015170763b9002": 0.0,
+        "a30bd30a45665244": 0.0,
+        "72a34ea361a39c22": 0.0,
+        "a25edfa42510bdb4": 0.0,
+        "d59a8c97c0980d2a": 0.0,
+        "2fa07f444b825370": 0.0,
+        "40f2d8b336a3dafc": 0.03193175792694092,
+        "4201b435eda16cf2": 0.0,
+        "ae01b0e36aaa41b4": 0.0
+      }
+    }
+  },
+  "old_RVR_counterexamples": {
+    "old_rescue_ids": [
+      "c9b1c562b6ff31e5",
+      "9e3e5f19ee38f2e3",
+      "ad7d72d8adca3e25",
+      "fccd9a25a2a57a73",
+      "b85168f48c8c9970",
+      "9ccf60966ec93c20",
+      "2c2395ec28c6a158",
+      "7c6ac47c0deee2af",
+      "f8d5d2f0f7cf5825",
+      "40f2d8b336a3dafc"
+    ],
+    "retained_ids": [
+      "7c6ac47c0deee2af",
+      "f8d5d2f0f7cf5825",
+      "40f2d8b336a3dafc"
+    ],
+    "lost_ids": [
+      "c9b1c562b6ff31e5",
+      "9e3e5f19ee38f2e3",
+      "ad7d72d8adca3e25",
+      "fccd9a25a2a57a73",
+      "b85168f48c8c9970",
+      "9ccf60966ec93c20",
+      "2c2395ec28c6a158"
+    ],
+    "old_induced_ids": [
+      "fe51445d725b8b8b",
+      "3919ccd73c0fabd7",
+      "fb9d8277036a53f3",
+      "d632f1919fe4bab",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886",
+      "f8d4c735825e5d81",
+      "6418b0c9e2e4b093",
+      "1e015170763b9002"
+    ],
+    "avoided_ids": [
+      "fe51445d725b8b8b",
+      "3919ccd73c0fabd7",
+      "fb9d8277036a53f3",
+      "d632f1919fe4bab",
+      "c34fe8e79cdf1161",
+      "7721ff4800156886",
+      "f8d4c735825e5d81",
+      "6418b0c9e2e4b093",
+      "1e015170763b9002"
+    ],
+    "lost_rescue_per_scene": [
+      {
+        "scenario_id": "c9b1c562b6ff31e5",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 0.825,
+          "fallback_step_rate": 0.825,
+          "mean_conventional_candidates": 3.7625,
+          "mean_valid_candidates": 39.5625,
+          "first_collision_step": 40,
+          "EP": 0.2375674843788147,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 1
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 66,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 0.825,
+          "fallback_step_rate": 0.825,
+          "mean_conventional_candidates": 3.7625,
+          "mean_valid_candidates": 39.5625,
+          "first_collision_step": 40,
+          "EP": 0.2375674843788147,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 1
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "1->1"
+      },
+      {
+        "scenario_id": "9e3e5f19ee38f2e3",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 42.3875,
+          "first_collision_step": 43,
+          "EP": 1.1943483352661133,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 80,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 42.3875,
+          "first_collision_step": 43,
+          "EP": 1.1943483352661133,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "0->0"
+      },
+      {
+        "scenario_id": "ad7d72d8adca3e25",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 37.6875,
+          "first_collision_step": 35,
+          "EP": 2.6664681434631348,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 80,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 37.6875,
+          "first_collision_step": 35,
+          "EP": 2.6664681434631348,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "0->0"
+      },
+      {
+        "scenario_id": "fccd9a25a2a57a73",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 0.775,
+          "fallback_step_rate": 0.925,
+          "mean_conventional_candidates": 1.0,
+          "mean_valid_candidates": 20.05,
+          "first_collision_step": 67,
+          "EP": 3.67633056640625,
+          "Collision": 1,
+          "Offroad": 1,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 29,
+          "certificates": 4,
+          "action_changes": 4,
+          "event_release_selected": 4,
+          "zero_conventional_step_rate": 0.7125,
+          "fallback_step_rate": 0.925,
+          "mean_conventional_candidates": 1.375,
+          "mean_valid_candidates": 16.85,
+          "first_collision_step": 68,
+          "EP": 3.654761791229248,
+          "Collision": 1,
+          "Offroad": 1,
+          "Kinematics": 0
+        },
+        "delta_EP": -0.021568775177001953,
+        "collision_transition": "1->1",
+        "offroad_transition": "1->1",
+        "kinematics_transition": "0->0"
+      },
+      {
+        "scenario_id": "b85168f48c8c9970",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 40.475,
+          "first_collision_step": 40,
+          "EP": 7.003966331481934,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 80,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 40.475,
+          "first_collision_step": 40,
+          "EP": 7.003966331481934,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "0->0"
+      },
+      {
+        "scenario_id": "9ccf60966ec93c20",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 0.925,
+          "fallback_step_rate": 0.925,
+          "mean_conventional_candidates": 1.6,
+          "mean_valid_candidates": 43.9625,
+          "first_collision_step": 32,
+          "EP": 1.1925022602081299,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 74,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 0.925,
+          "fallback_step_rate": 0.925,
+          "mean_conventional_candidates": 1.6,
+          "mean_valid_candidates": 43.9625,
+          "first_collision_step": 32,
+          "EP": 1.1925022602081299,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "0->0"
+      },
+      {
+        "scenario_id": "2c2395ec28c6a158",
+        "cowp": {
+          "steps": 80,
+          "probes": 0,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 38.5875,
+          "first_collision_step": 33,
+          "EP": 1.1500022411346436,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "v39": {
+          "steps": 80,
+          "probes": 80,
+          "certificates": 0,
+          "action_changes": 0,
+          "event_release_selected": 0,
+          "zero_conventional_step_rate": 1.0,
+          "fallback_step_rate": 1.0,
+          "mean_conventional_candidates": 0.0,
+          "mean_valid_candidates": 38.5875,
+          "first_collision_step": 33,
+          "EP": 1.1500022411346436,
+          "Collision": 1,
+          "Offroad": 0,
+          "Kinematics": 0
+        },
+        "delta_EP": 0.0,
+        "collision_transition": "1->1",
+        "offroad_transition": "0->0",
+        "kinematics_transition": "0->0"
+      }
+    ]
+  },
+  "V39_clean_rescues": [
+    {
+      "scenario_id": "6992366c5c998d00",
+      "cowp": {
+        "steps": 80,
+        "probes": 0,
+        "certificates": 0,
+        "action_changes": 0,
+        "event_release_selected": 0,
+        "zero_conventional_step_rate": 0.3375,
+        "fallback_step_rate": 0.675,
+        "mean_conventional_candidates": 10.35,
+        "mean_valid_candidates": 36.0125,
+        "first_collision_step": 78,
+        "EP": 0.334335595369339,
+        "Collision": 1,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "v39": {
+        "steps": 80,
+        "probes": 20,
+        "certificates": 5,
+        "action_changes": 5,
+        "event_release_selected": 5,
+        "zero_conventional_step_rate": 0.25,
+        "fallback_step_rate": 0.675,
+        "mean_conventional_candidates": 11.225,
+        "mean_valid_candidates": 35.975,
+        "first_collision_step": null,
+        "EP": 0.38759645819664,
+        "Collision": 0,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "delta_EP": 0.053260862827301025,
+      "collision_transition": "1->0",
+      "offroad_transition": "0->0",
+      "kinematics_transition": "0->0"
+    },
+    {
+      "scenario_id": "7c6ac47c0deee2af",
+      "cowp": {
+        "steps": 80,
+        "probes": 0,
+        "certificates": 0,
+        "action_changes": 0,
+        "event_release_selected": 0,
+        "zero_conventional_step_rate": 0.725,
+        "fallback_step_rate": 0.8375,
+        "mean_conventional_candidates": 3.4,
+        "mean_valid_candidates": 36.7125,
+        "first_collision_step": 57,
+        "EP": 1.646395206451416,
+        "Collision": 1,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "v39": {
+        "steps": 80,
+        "probes": 52,
+        "certificates": 15,
+        "action_changes": 15,
+        "event_release_selected": 15,
+        "zero_conventional_step_rate": 0.6875,
+        "fallback_step_rate": 0.8125,
+        "mean_conventional_candidates": 2.425,
+        "mean_valid_candidates": 39.6375,
+        "first_collision_step": null,
+        "EP": 1.3526397943496704,
+        "Collision": 0,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "delta_EP": -0.2937554121017456,
+      "collision_transition": "1->0",
+      "offroad_transition": "0->0",
+      "kinematics_transition": "0->0"
+    },
+    {
+      "scenario_id": "f8d5d2f0f7cf5825",
+      "cowp": {
+        "steps": 80,
+        "probes": 0,
+        "certificates": 0,
+        "action_changes": 0,
+        "event_release_selected": 0,
+        "zero_conventional_step_rate": 0.8875,
+        "fallback_step_rate": 1.0,
+        "mean_conventional_candidates": 0.9,
+        "mean_valid_candidates": 31.975,
+        "first_collision_step": 64,
+        "EP": 1.1392606496810913,
+        "Collision": 1,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "v39": {
+        "steps": 80,
+        "probes": 46,
+        "certificates": 3,
+        "action_changes": 3,
+        "event_release_selected": 2,
+        "zero_conventional_step_rate": 0.575,
+        "fallback_step_rate": 1.0,
+        "mean_conventional_candidates": 1.2625,
+        "mean_valid_candidates": 32.1,
+        "first_collision_step": null,
+        "EP": 1.0321367979049683,
+        "Collision": 0,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "delta_EP": -0.10712385177612305,
+      "collision_transition": "1->0",
+      "offroad_transition": "0->0",
+      "kinematics_transition": "0->0"
+    },
+    {
+      "scenario_id": "40f2d8b336a3dafc",
+      "cowp": {
+        "steps": 80,
+        "probes": 0,
+        "certificates": 0,
+        "action_changes": 0,
+        "event_release_selected": 0,
+        "zero_conventional_step_rate": 0.425,
+        "fallback_step_rate": 1.0,
+        "mean_conventional_candidates": 3.7625,
+        "mean_valid_candidates": 37.7875,
+        "first_collision_step": 75,
+        "EP": 0.7993946671485901,
+        "Collision": 1,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "v39": {
+        "steps": 80,
+        "probes": 7,
+        "certificates": 5,
+        "action_changes": 5,
+        "event_release_selected": 5,
+        "zero_conventional_step_rate": 0.125,
+        "fallback_step_rate": 1.0,
+        "mean_conventional_candidates": 4.95,
+        "mean_valid_candidates": 36.5625,
+        "first_collision_step": null,
+        "EP": 0.831326425075531,
+        "Collision": 0,
+        "Offroad": 0,
+        "Kinematics": 0
+      },
+      "delta_EP": 0.03193175792694092,
+      "collision_transition": "1->0",
+      "offroad_transition": "0->0",
+      "kinematics_transition": "0->0"
+    }
+  ],
+  "intervention": {
+    "scenes_with_action_change": 20,
+    "scene_ids": [
+      "fe51445d725b8b8b",
+      "57f3f03f7e7967f9",
+      "fb9d8277036a53f3",
+      "a6f8b2b348015743",
+      "fccd9a25a2a57a73",
+      "89806e50f692c453",
+      "1c03d20597561d94",
+      "6992366c5c998d00",
+      "7c6ac47c0deee2af",
+      "eeab096e35093acf",
+      "da87744bcf7613db",
+      "84196f1d9198b616",
+      "7721ff4800156886",
+      "f8d5d2f0f7cf5825",
+      "51a742674d23f1e3",
+      "6418b0c9e2e4b093",
+      "a525f87ac454a88c",
+      "1e015170763b9002",
+      "a25edfa42510bdb4",
+      "40f2d8b336a3dafc"
+    ],
+    "total_action_change_steps": 87,
+    "total_certificate_steps": 88,
+    "total_probe_steps": 2632,
+    "no_new_collision": true,
+    "no_new_kinematics": true,
+    "no_new_offroad": true
+  },
+  "V38_to_V39_support_decomposition": {
+    "V38": {
+      "probes": 2695,
+      "certificates": 56,
+      "action_changes": 55,
+      "hypotheses": 260640.0,
+      "unique_first_actions": 161472.0,
+      "full_safe": 522.0,
+      "shift_closed": 486.0,
+      "certificate_rate_on_probes": 0.02077922077922078
+    },
+    "V39": {
+      "probes": 2632,
+      "certificates": 88,
+      "action_changes": 87,
+      "hypotheses": 593253.0,
+      "unique_first_actions": 157205.0,
+      "full_safe": 1844.0,
+      "shift_closed": 1754.0,
+      "event_release_shift_closed": 1271.0,
+      "event_release_only_parent_support": 506.0,
+      "event_release_selected_steps": 83,
+      "certificate_rate_on_probes": 0.03343465045592705
+    },
+    "per_probe": {
+      "V38_hypotheses": 96.71243042671614,
+      "V39_hypotheses": 225.40007598784194,
+      "V38_unique_first_actions": 59.91539888682746,
+      "V39_unique_first_actions": 59.72834346504559,
+      "V38_full_safe": 0.19369202226345084,
+      "V39_full_safe": 0.7006079027355623,
+      "V38_shift_closed": 0.1803339517625232,
+      "V39_shift_closed": 0.6664133738601824
+    },
+    "ratios": {
+      "hypotheses_per_probe_V39_over_V38": 2.330621565328553,
+      "unique_first_actions_per_probe_V39_over_V38": 0.9968780075697202,
+      "full_safe_per_probe_V39_over_V38": 3.617123176000652,
+      "shift_closed_per_probe_V39_over_V38": 3.695440416776114,
+      "shift_closure_retention_V39": 0.9511930585683297
+    }
+  },
+  "mechanism_attribution": {
+    "successful_objects_to_retain": [
+      "unchanged full-horizon finite/roadgraph/causal-CV-collision/Waymax-kinematics tube certificate",
+      "one-step shift closure",
+      "controller-lifted actual emitted action representation",
+      "event-derived release witness as a terminal-sequence support expansion",
+      "hard-set-first selection with frozen COWP preference only after feasibility"
+    ],
+    "policy_promotion": "NO",
+    "representation_promotion": "retain hard tube certificate, shift closure, and event-release future witness inside the next nested mechanism",
+    "key_positive_evidence": [
+      "4 COWP collision rescues, 0 induced collision, 0 net offroad/kinematics regression, mean EP delta -0.01108",
+      "V39 keeps all 9/9 historical RVR-induced cases safe",
+      "event-release accounts for 1271/1754 shift-closed witnesses and 83/88 selected certificates",
+      "V39 adds three collision rescues over V38 while maintaining no induced physical failures"
+    ],
+    "key_negative_evidence": [
+      "only 3/10 historical RVR rescues retained, violating the frozen recall Gate",
+      "six of seven lost historical rescues receive zero V39 certificate/action-change steps",
+      "V39 more than doubles future schedule hypotheses but leaves unique emitted first actions per probe essentially unchanged",
+      "fccd9a25a2a57a73 receives four event-release interventions yet still collides, showing residual model/support mismatch"
+    ]
+  },
+  "dominant_bottleneck": {
+    "previous": "finite-duration control-sequence support",
+    "tightened": "shift-closed first-action viability support under ternary control quantization",
+    "paper_level_name": "Control-Interval Reachable Backup Support",
+    "evidence": "V39 hypotheses/probe increase 2.33x and shift witnesses/probe 3.70x, while unique first actions/probe change by only about -0.31%; recall remains 3/10.",
+    "not_current_P0": [
+      "more event-release schedules or switch times",
+      "relaxing shift closure",
+      "roadgraph/map/Frenet support",
+      "accepted-path kinematics",
+      "RCOT/BCOT or social certificate"
+    ]
+  },
+  "recommended_V40_branch": {
+    "name": "Shift-Closed First-Action Viability Interval",
+    "method": "cowp_shift_closed_first_action_viability_interval",
+    "strict_nesting": "preserve every V39-certified decision exactly; search only when V39 hard set is empty",
+    "support_expansion": "complete the existing lower-to-upper jerk/acceleration-reachable first-action interval for unchanged V39 future witnesses",
+    "proposal_rule": "canonical endpoints/midpoint plus deterministic secant/quadratic hard collision-margin boundary proposals; all proposals are reprojected and recertified",
+    "hard_requirements": [
+      "genuinely new actual emitted first action",
+      "unchanged full physical tube certificate",
+      "unchanged one-step shift closure",
+      "unchanged 8 s contract and common controller limits"
+    ],
+    "falsification": "If V40 changes new first actions but fails the six-item Gate, stop analytic interval/schedule patches and move to interaction-aware reachable response envelopes. If no new support appears, move to constrained reachable geometry/proposal construction."
+  }
+}

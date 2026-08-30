@@ -459,7 +459,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube"} for x in reasons) / max(n, 1)),
+            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube", "no_conventional_use_conflict_window_control_reachable_tube", "no_conventional_use_shift_closed_first_action_viability_interval"} for x in reasons) / max(n, 1)),
             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
@@ -477,6 +477,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "recourse_returnability_bridge_step_rate": float(sum(x == "no_conventional_use_recourse_returnability_bridge" for x in reasons) / max(n, 1)),
             "shift_closed_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_shift_closed_control_reachable_tube" for x in reasons) / max(n, 1)),
             "conflict_window_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_conflict_window_control_reachable_tube" for x in reasons) / max(n, 1)),
+            "shift_closed_first_action_viability_interval_step_rate": float(sum(x == "no_conventional_use_shift_closed_first_action_viability_interval" for x in reasons) / max(n, 1)),
             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
@@ -638,6 +639,61 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "recovery_tube_event_release_selection_rate_on_certified_steps": _mean(
                 "recovery_tube_selected_is_event_release",
                 mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_tube_nested_v39_selection_rate_on_certified_steps": _mean(
+                "recovery_tube_nested_v39_selected",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_tube_first_action_interval_attempt_step_rate": _mean(
+                "recovery_tube_first_action_interval_completion_attempted"
+            ),
+            "recovery_tube_first_action_interval_selection_rate_on_certified_steps": _mean(
+                "recovery_tube_selected_is_first_action_interval_completion",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "recovery_tube_new_first_action_selection_rate_on_certified_steps": _mean(
+                "recovery_tube_selected_is_new_first_action",
+                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_basis_count_on_attempts": _mean(
+                "recovery_tube_first_action_interval_basis_count",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_seed_evaluations_on_attempts": _mean(
+                "recovery_tube_first_action_interval_seed_evaluations",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_boundary_proposals_on_attempts": _mean(
+                "recovery_tube_first_action_interval_boundary_proposals",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_hypotheses_on_attempts": _mean(
+                "recovery_tube_first_action_interval_hypotheses_evaluated",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_unique_actions_on_attempts": _mean(
+                "recovery_tube_first_action_interval_unique_actions",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_new_actions_on_attempts": _mean(
+                "recovery_tube_first_action_interval_new_actions",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_full_safe_on_attempts": _mean(
+                "recovery_tube_first_action_interval_full_physically_safe",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_shift_closed_on_attempts": _mean(
+                "recovery_tube_first_action_interval_shift_closed",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_first_action_interval_only_parent_count_on_attempts": _mean(
+                "recovery_tube_first_action_interval_only_parent_count",
+                mask=np.asarray([bool(r.get("recovery_tube_first_action_interval_completion_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_selected_first_accel_fraction_on_interval_steps": _mean(
+                "recovery_tube_selected_first_accel_fraction",
+                mask=np.asarray([bool(r.get("recovery_tube_selected_is_first_action_interval_completion", False)) for r in rows], dtype=bool),
             ) if n else None,
             "mean_recovery_tube_parent_pool_on_probes": _mean(
                 "recovery_tube_parent_pool",

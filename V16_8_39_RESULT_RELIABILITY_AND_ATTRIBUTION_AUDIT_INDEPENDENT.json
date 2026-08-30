@@ -1,0 +1,1983 @@
+{
+  "schema_version": "cowp_v16_8_39_result_reliability_audit_independent_v1",
+  "audited_version": "V16.8.39",
+  "method": "cowp_conflict_window_control_reachable_tube",
+  "reliability_verdict": "PASS_ATTRIBUTION_ALLOWED",
+  "hard_checks_total": 222,
+  "hard_checks_passed": 222,
+  "hard_checks_failed": 0,
+  "failed_checks": [],
+  "checks": [
+    {
+      "name": "result artifact exists: counterfactual48_v39_cowp_conflict_window_control_reachable_tube_s0.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v39_cowp_conflict_window_control_reachable_tube_s1.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v39_cowp_conflict_window_control_reachable_tube_merged.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: counterfactual48_v39_conflict_window_control_reachable_tube_analysis.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_s0.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_s1.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_merged.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: equivalence16_cowp_vs_v16_8_29.json",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: waymax_exact_200_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: waymax_equivalence16_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: waymax_counterfactual48_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "result artifact exists: waymax_v16_8_32_fresh37_ids.txt",
+      "category": "artifact_completeness",
+      "pass": true
+    },
+    {
+      "name": "fresh37/exact200 rollout artifacts absent after Stage-1 failure",
+      "category": "fail_closed_protocol",
+      "pass": true,
+      "observed": [],
+      "expected": []
+    },
+    {
+      "name": "uploaded V39 archive SHA256",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "b2e3afad585044d15cd3a6ca437b97edefd1df416c6ec485268449e890f2c92c",
+      "expected": "b2e3afad585044d15cd3a6ca437b97edefd1df416c6ec485268449e890f2c92c"
+    },
+    {
+      "name": "uploaded V39 release hash: cowp/waymax_eval/policy_wrapper.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "0d7d67f7de0b2a3671721ac88cbab274db276f3b87c9dab2a5d337d0f481a888",
+      "expected": "0d7d67f7de0b2a3671721ac88cbab274db276f3b87c9dab2a5d337d0f481a888"
+    },
+    {
+      "name": "uploaded V39 release hash: cowp/waymax_eval/metrics_cowp.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "074b25b6007e2170e66817a721bf89b4e88c93791391060a1995793ce052746c",
+      "expected": "074b25b6007e2170e66817a721bf89b4e88c93791391060a1995793ce052746c"
+    },
+    {
+      "name": "uploaded V39 release hash: cowp/waymax_eval/rollout.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "43b1bcf5fb8c5d299ab22c8308771d53b08e1414d2399553d2dd0ad6080f45d2",
+      "expected": "43b1bcf5fb8c5d299ab22c8308771d53b08e1414d2399553d2dd0ad6080f45d2"
+    },
+    {
+      "name": "uploaded V39 release hash: cowp/scripts/04_eval_closed_loop.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "b14fb415d8e14cc002d544a56b1082f1d79e36789fa159acfa47b470b8e9e0b6",
+      "expected": "b14fb415d8e14cc002d544a56b1082f1d79e36789fa159acfa47b470b8e9e0b6"
+    },
+    {
+      "name": "uploaded V39 release hash: cowp/scripts/92_analyze_conflict_window_control_reachable_tube.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "68be8eb124cda7be01bbb30da2e0171d847289a7fd575a821fda9ee666734f03",
+      "expected": "68be8eb124cda7be01bbb30da2e0171d847289a7fd575a821fda9ee666734f03"
+    },
+    {
+      "name": "uploaded V39 release hash: tests/test_v16_8_39_conflict_window_control_reachable_tube.py",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "3750920ac1292438b4ebdca49d1eb1d4e1a4aa0a956665d1c57d39faee345274",
+      "expected": "3750920ac1292438b4ebdca49d1eb1d4e1a4aa0a956665d1c57d39faee345274"
+    },
+    {
+      "name": "uploaded V39 release hash: NEXT_RUN_COMMANDS_V16_8_39_CONFLICT_WINDOW_CONTROL_REACHABLE_TUBE_CN.sh",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "9720a415c580b5518c4aae7f25a6f675153e0f9539e4561b8db09ceba3518ce9",
+      "expected": "9720a415c580b5518c4aae7f25a6f675153e0f9539e4561b8db09ceba3518ce9"
+    },
+    {
+      "name": "uploaded V39 release hash: CURRENT_ANALYSIS_V16_8_39_CN.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "9e517cc3eca8b5c058f9b7578164d88ae997a23e962b2e264d50930c0ef41599",
+      "expected": "9e517cc3eca8b5c058f9b7578164d88ae997a23e962b2e264d50930c0ef41599"
+    },
+    {
+      "name": "uploaded V39 release hash: ALGORITHM_CHANGELOG_V16_8_39.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "2456c7d7e9dd77c745e5606bf50cee10adbfde92cf2d27d3b921369fba6b3ff8",
+      "expected": "2456c7d7e9dd77c745e5606bf50cee10adbfde92cf2d27d3b921369fba6b3ff8"
+    },
+    {
+      "name": "uploaded V39 release hash: ALGORITHM_CHANGELOG.md",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "9f85189f0c8bb7c8e12983e91690655527756466aafbeb96b7372cda8ec2e82d",
+      "expected": "9f85189f0c8bb7c8e12983e91690655527756466aafbeb96b7372cda8ec2e82d"
+    },
+    {
+      "name": "uploaded V39 release hash: V16_8_38_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT_INDEPENDENT.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "dacab1d0b5ee59966386a77aa0e1999fce3f36e3c6d336fbb233478e829c4ae8",
+      "expected": "dacab1d0b5ee59966386a77aa0e1999fce3f36e3c6d336fbb233478e829c4ae8"
+    },
+    {
+      "name": "uploaded V39 release hash: V16_8_38_RESULT_ATTRIBUTION_AND_MECHANISM_SUMMARY.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "f4ff7f50fed698c666b38bda63b960e0b375c8690fb954f7145b47c41c679c02",
+      "expected": "f4ff7f50fed698c666b38bda63b960e0b375c8690fb954f7145b47c41c679c02"
+    },
+    {
+      "name": "uploaded V39 release hash: V16_8_39_CODE_VALIDATION.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "f9f56366ec03c64af9c235ec3b63610f8d52450ca9fbbff75461a403b8c504ae",
+      "expected": "f9f56366ec03c64af9c235ec3b63610f8d52450ca9fbbff75461a403b8c504ae"
+    },
+    {
+      "name": "uploaded V39 release hash: V16_8_39_DEVELOPMENT_MANIFESTS.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "d0b3e5845a0bc3ac7ee236ee491c5e24e6b5c4f8c9561f5a61184dea49345355",
+      "expected": "d0b3e5845a0bc3ac7ee236ee491c5e24e6b5c4f8c9561f5a61184dea49345355"
+    },
+    {
+      "name": "uploaded V39 release hash: COWP_V16_8_38_TO_V16_8_39_CONFLICT_WINDOW_CONTROL_REACHABLE_TUBE_CODE.patch",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "e03eb0d9c86abda084d06718888e820a0310b2e20ed51e0cb45474dba5f14d20",
+      "expected": "e03eb0d9c86abda084d06718888e820a0310b2e20ed51e0cb45474dba5f14d20"
+    },
+    {
+      "name": "uploaded V39 release hash: reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json",
+      "category": "code_provenance",
+      "pass": true,
+      "observed": "19af1358dc5e05578189c66aee8a9a5e2faaba14ad678beba35e0fcd4fbf7e1b",
+      "expected": "19af1358dc5e05578189c66aee8a9a5e2faaba14ad678beba35e0fcd4fbf7e1b"
+    },
+    {
+      "name": "exact200 result manifest count",
+      "category": "manifest",
+      "pass": true,
+      "observed": 200,
+      "expected": 200
+    },
+    {
+      "name": "exact200 result manifest unique",
+      "category": "manifest",
+      "pass": true,
+      "observed": 200,
+      "expected": 200
+    },
+    {
+      "name": "exact200 result logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "expected": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+    },
+    {
+      "name": "exact200 code/result manifests byte-logically identical",
+      "category": "manifest",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "exact200 code logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+      "expected": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+    },
+    {
+      "name": "equivalence16 result manifest count",
+      "category": "manifest",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 result manifest unique",
+      "category": "manifest",
+      "pass": true,
+      "observed": 16,
+      "expected": 16
+    },
+    {
+      "name": "equivalence16 result logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "equivalence16 code/result manifests byte-logically identical",
+      "category": "manifest",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "equivalence16 code logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+      "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    {
+      "name": "counterfactual48 result manifest count",
+      "category": "manifest",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 result manifest unique",
+      "category": "manifest",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 result logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48 code/result manifests byte-logically identical",
+      "category": "manifest",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "counterfactual48 code logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "fresh37 result manifest count",
+      "category": "manifest",
+      "pass": true,
+      "observed": 37,
+      "expected": 37
+    },
+    {
+      "name": "fresh37 result manifest unique",
+      "category": "manifest",
+      "pass": true,
+      "observed": 37,
+      "expected": 37
+    },
+    {
+      "name": "fresh37 result logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "expected": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+    },
+    {
+      "name": "fresh37 code/result manifests byte-logically identical",
+      "category": "manifest",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "fresh37 code logical SHA256",
+      "category": "manifest",
+      "pass": true,
+      "observed": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+      "expected": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+    },
+    {
+      "name": "counterfactual48 shard0 resolved count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard0 resolved unique",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard0 num_rollouts",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard0 requested-on-shard",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard0 num_shards/index",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        2,
+        0
+      ],
+      "expected": [
+        2,
+        0
+      ]
+    },
+    {
+      "name": "counterfactual48 shard0 row count alignment",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        24,
+        24,
+        24
+      ],
+      "expected": [
+        24,
+        24,
+        24
+      ]
+    },
+    {
+      "name": "counterfactual48 shard1 resolved count",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard1 resolved unique",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard1 num_rollouts",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard1 requested-on-shard",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 24,
+      "expected": 24
+    },
+    {
+      "name": "counterfactual48 shard1 num_shards/index",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        2,
+        1
+      ],
+      "expected": [
+        2,
+        1
+      ]
+    },
+    {
+      "name": "counterfactual48 shard1 row count alignment",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": [
+        24,
+        24,
+        24
+      ],
+      "expected": [
+        24,
+        24,
+        24
+      ]
+    },
+    {
+      "name": "counterfactual48 shards disjoint",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "counterfactual48 shard union equals frozen manifest",
+      "category": "shard_integrity",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "counterfactual48 shard metadata: method",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "cowp_conflict_window_control_reachable_tube",
+        "cowp_conflict_window_control_reachable_tube"
+      ],
+      "expected": "cowp_conflict_window_control_reachable_tube"
+    },
+    {
+      "name": "counterfactual48 shard metadata: checkpoint",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+        "outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+      ],
+      "expected": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+    },
+    {
+      "name": "counterfactual48 shard metadata: ncf_gate_mode",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "priority",
+        "priority"
+      ],
+      "expected": "priority"
+    },
+    {
+      "name": "counterfactual48 shard metadata: waymax_split",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "validation",
+        "validation"
+      ],
+      "expected": "validation"
+    },
+    {
+      "name": "counterfactual48 shard metadata: scenario_ids_requested",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        48,
+        48
+      ],
+      "expected": 48
+    },
+    {
+      "name": "counterfactual48 shard metadata: scenario_ids_sha256",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      ],
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "counterfactual48 shard metadata: waymax_standard_metric_names",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        [
+          "KinematicsInfeasibilityMetric",
+          "OffroadMetric",
+          "OverlapMetric",
+          "ProgressionMetric"
+        ],
+        [
+          "KinematicsInfeasibilityMetric",
+          "OffroadMetric",
+          "OverlapMetric",
+          "ProgressionMetric"
+        ]
+      ],
+      "expected": [
+        "KinematicsInfeasibilityMetric",
+        "OffroadMetric",
+        "OverlapMetric",
+        "ProgressionMetric"
+      ]
+    },
+    {
+      "name": "counterfactual48 shard metadata: reuse_waymax_env",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        true,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "name": "counterfactual48 shard metadata: prefilter_waymax_shards",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        true,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "name": "counterfactual48 shard metadata: jit_waymax_env",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        true,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "name": "counterfactual48 shard metadata: jit_waymax_metrics",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        true,
+        true
+      ],
+      "expected": true
+    },
+    {
+      "name": "counterfactual48 shard metadata: actual_non_ego_policy",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        "logged_replay",
+        "logged_replay"
+      ],
+      "expected": "logged_replay"
+    },
+    {
+      "name": "counterfactual48 shard metadata: reactive_mixture_implemented",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        false,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard metadata: mechanism_ground_truth_available_online",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        false,
+        false
+      ],
+      "expected": false
+    },
+    {
+      "name": "counterfactual48 shard metadata: bcot_risk_budget",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        0.5,
+        0.5
+      ],
+      "expected": 0.5
+    },
+    {
+      "name": "counterfactual48 shard metadata: pair_witness_threshold",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        0.7,
+        0.7
+      ],
+      "expected": 0.7
+    },
+    {
+      "name": "counterfactual48 shard0 all rollout horizons 80",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        80
+      ],
+      "expected": [
+        80
+      ]
+    },
+    {
+      "name": "counterfactual48 shard1 all rollout horizons 80",
+      "category": "protocol",
+      "pass": true,
+      "observed": [
+        80
+      ],
+      "expected": [
+        80
+      ]
+    },
+    {
+      "name": "merged scenario IDs equal shard IDs",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "merged row exactly equals shard row: 1c03d20597561d94",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 1e015170763b9002",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 29cd2aca8ae5e222",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 2c2395ec28c6a158",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 2fa07f444b825370",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 3919ccd73c0fabd7",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 40f2d8b336a3dafc",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 4201b435eda16cf2",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 4525d99a628819af",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 4c332861792a91e7",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 51a742674d23f1e3",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 57f3f03f7e7967f9",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 6418b0c9e2e4b093",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 6992366c5c998d00",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 72a34ea361a39c22",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 7721ff4800156886",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 7c6ac47c0deee2af",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 84196f1d9198b616",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 89806e50f692c453",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 9ccf60966ec93c20",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 9d79c94d87d1dfac",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: 9e3e5f19ee38f2e3",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: a25edfa42510bdb4",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: a27f6f60dd683a66",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: a30bd30a45665244",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: a525f87ac454a88c",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: a6f8b2b348015743",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: ad7d72d8adca3e25",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: ae01b0e36aaa41b4",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: b64cecb971b095c3",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: b85168f48c8c9970",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: c34fe8e79cdf1161",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: c9b1c562b6ff31e5",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: d59a8c97c0980d2a",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: d632f1919fe4bab",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: da52a87b046e4a0a",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: da87744bcf7613db",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: e1d2184327703edd",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: e6f70b30f414022e",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: eeab096e35093acf",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: f55df4ea9e688069",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: f6a7fc811128c6ef",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: f8d4c735825e5d81",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: f8d5d2f0f7cf5825",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: fb9d8277036a53f3",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: fccd9a25a2a57a73",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: fe51445d725b8b8b",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged row exactly equals shard row: ff41aa2be7fa7a56",
+      "category": "merge_integrity",
+      "pass": true
+    },
+    {
+      "name": "merged header: method",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": "cowp_conflict_window_control_reachable_tube",
+      "expected": "cowp_conflict_window_control_reachable_tube"
+    },
+    {
+      "name": "merged header: checkpoint",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+      "expected": "outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+    },
+    {
+      "name": "merged header: scenario_ids_sha256",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+      "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "merged header: num_rollouts",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": 48,
+      "expected": 48
+    },
+    {
+      "name": "merged header: num_shards_merged",
+      "category": "merge_integrity",
+      "pass": true,
+      "observed": 2,
+      "expected": 2
+    },
+    {
+      "name": "merged standard metric recompute: CR",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.625,
+      "expected": 0.625
+    },
+    {
+      "name": "merged standard metric recompute: CollisionRate",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.625,
+      "expected": 0.625
+    },
+    {
+      "name": "merged standard metric recompute: EP",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.9914335180073977,
+      "expected": 0.9914335180073977
+    },
+    {
+      "name": "merged standard metric recompute: FirstPositiveStep/KinematicsInfeasibilityMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 36.5,
+      "expected": 36.5
+    },
+    {
+      "name": "merged standard metric recompute: FirstPositiveStep/OffroadMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 42.0,
+      "expected": 42.0
+    },
+    {
+      "name": "merged standard metric recompute: FirstPositiveStep/OverlapMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 51.53333333333333,
+      "expected": 51.53333333333333
+    },
+    {
+      "name": "merged standard metric recompute: KinematicsInfeasibilityRate",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.125,
+      "expected": 0.125
+    },
+    {
+      "name": "merged standard metric recompute: MetricSteps",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 80.0,
+      "expected": 80.0
+    },
+    {
+      "name": "merged standard metric recompute: OffroadRate",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.020833333333333332,
+      "expected": 0.020833333333333332
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxAny/KinematicsInfeasibilityMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.125,
+      "expected": 0.125
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxAny/OffroadMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.020833333333333332,
+      "expected": 0.020833333333333332
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxAny/OverlapMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.625,
+      "expected": 0.625
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxFinal/KinematicsInfeasibilityMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.0,
+      "expected": 0.0
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxFinal/OffroadMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.020833333333333332,
+      "expected": 0.020833333333333332
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxFinal/OverlapMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.3958333333333333,
+      "expected": 0.3958333333333333
+    },
+    {
+      "name": "merged standard metric recompute: WaymaxFinal/ProgressionMetric",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.9914335180073977,
+      "expected": 0.9914335180073977
+    },
+    {
+      "name": "merged fallback rate recompute",
+      "category": "metric_reconstruction",
+      "pass": true,
+      "observed": 0.8393229166666667,
+      "expected": 0.8393229166666667
+    },
+    {
+      "name": "V28 no-valid execution invariant: 1c03d20597561d94",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 1e015170763b9002",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.075,
+        0.075,
+        0.075
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 29cd2aca8ae5e222",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.05,
+        0.05,
+        0.05
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 2c2395ec28c6a158",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 2fa07f444b825370",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 3919ccd73c0fabd7",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 40f2d8b336a3dafc",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0375,
+        0.0375,
+        0.0375
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 4201b435eda16cf2",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 4525d99a628819af",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.1625,
+        0.1625,
+        0.1625
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 4c332861792a91e7",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 51a742674d23f1e3",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0625,
+        0.0625,
+        0.0625
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 57f3f03f7e7967f9",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.1125,
+        0.1125,
+        0.1125
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 6418b0c9e2e4b093",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.025,
+        0.025,
+        0.025
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 6992366c5c998d00",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 72a34ea361a39c22",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.1125,
+        0.1125,
+        0.1125
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 7721ff4800156886",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.05,
+        0.05,
+        0.05
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 7c6ac47c0deee2af",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0375,
+        0.0375,
+        0.0375
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 84196f1d9198b616",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 89806e50f692c453",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0125,
+        0.0125,
+        0.0125
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 9ccf60966ec93c20",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 9d79c94d87d1dfac",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: 9e3e5f19ee38f2e3",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: a25edfa42510bdb4",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: a27f6f60dd683a66",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: a30bd30a45665244",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: a525f87ac454a88c",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: a6f8b2b348015743",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.1,
+        0.1,
+        0.1
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: ad7d72d8adca3e25",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: ae01b0e36aaa41b4",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: b64cecb971b095c3",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: b85168f48c8c9970",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: c34fe8e79cdf1161",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: c9b1c562b6ff31e5",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: d59a8c97c0980d2a",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: d632f1919fe4bab",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: da52a87b046e4a0a",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0625,
+        0.0625,
+        0.0625
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: da87744bcf7613db",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: e1d2184327703edd",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: e6f70b30f414022e",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.05,
+        0.05,
+        0.05
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: eeab096e35093acf",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.15,
+        0.15,
+        0.15
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: f55df4ea9e688069",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: f6a7fc811128c6ef",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: f8d4c735825e5d81",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: f8d5d2f0f7cf5825",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: fb9d8277036a53f3",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0375,
+        0.0375,
+        0.0375
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: fccd9a25a2a57a73",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.35,
+        0.35,
+        0.35
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: fe51445d725b8b8b",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "V28 no-valid execution invariant: ff41aa2be7fa7a56",
+      "category": "execution_integrity",
+      "pass": true,
+      "observed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "expected": "all equal"
+    },
+    {
+      "name": "equivalence16 shard0 count",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard0 unique",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard0 index",
+      "category": "equivalence",
+      "pass": true,
+      "observed": [
+        2,
+        0
+      ],
+      "expected": [
+        2,
+        0
+      ]
+    },
+    {
+      "name": "equivalence16 shard1 count",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard1 unique",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 8,
+      "expected": 8
+    },
+    {
+      "name": "equivalence16 shard1 index",
+      "category": "equivalence",
+      "pass": true,
+      "observed": [
+        2,
+        1
+      ],
+      "expected": [
+        2,
+        1
+      ]
+    },
+    {
+      "name": "equivalence16 shards disjoint",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "equivalence16 union equals frozen manifest",
+      "category": "equivalence",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "equivalence16 verifier: scenario_count",
+      "category": "equivalence",
+      "pass": true,
+      "expected": 16,
+      "observed": 16
+    },
+    {
+      "name": "equivalence16 verifier: fields_compared",
+      "category": "equivalence",
+      "pass": true,
+      "expected": 1120,
+      "observed": 1120
+    },
+    {
+      "name": "equivalence16 verifier: mismatch_count",
+      "category": "equivalence",
+      "pass": true,
+      "expected": 0,
+      "observed": 0
+    },
+    {
+      "name": "equivalence16 verifier: pass",
+      "category": "equivalence",
+      "pass": true,
+      "expected": true,
+      "observed": true
+    },
+    {
+      "name": "independent V39 analyzer rerun recursive comparison",
+      "category": "analyzer_reproducibility",
+      "pass": true,
+      "observed": 0,
+      "expected": 0,
+      "note": "pristine uploaded V39 source; tolerance=1e-12"
+    },
+    {
+      "name": "V39 constructor contains no log_trajectory access",
+      "category": "causality",
+      "pass": true,
+      "observed": 0,
+      "expected": 0
+    },
+    {
+      "name": "V39 constructor explicitly uses causal collision context",
+      "category": "causality",
+      "pass": true,
+      "observed": 1,
+      "expected": ">=1"
+    },
+    {
+      "name": "result marks online mechanism GT unavailable",
+      "category": "causality",
+      "pass": true,
+      "observed": [
+        false,
+        false
+      ],
+      "expected": [
+        false,
+        false
+      ]
+    },
+    {
+      "name": "uploaded V39 dedicated tests recorded passed",
+      "category": "code_validation",
+      "pass": true,
+      "observed": "7 passed in 1.29s",
+      "expected": "passed"
+    },
+    {
+      "name": "uploaded V39 focused suite recorded passed",
+      "category": "code_validation",
+      "pass": true,
+      "observed": "75 passed in 3.27s",
+      "expected": "passed"
+    },
+    {
+      "name": "uploaded V39 compile recorded passed",
+      "category": "code_validation",
+      "pass": true
+    },
+    {
+      "name": "uploaded V39 launcher syntax recorded passed",
+      "category": "code_validation",
+      "pass": true
+    },
+    {
+      "name": "uploaded V39 final archive roundtrip recorded passed",
+      "category": "code_validation",
+      "pass": true
+    }
+  ],
+  "manifest_summary": {
+    "exact200": {
+      "count": 200,
+      "unique": 200,
+      "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+    },
+    "equivalence16": {
+      "count": 16,
+      "unique": 16,
+      "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+    },
+    "counterfactual48": {
+      "count": 48,
+      "unique": 48,
+      "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    "fresh37": {
+      "count": 37,
+      "unique": 37,
+      "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+    }
+  },
+  "headline_reconstruction": {
+    "cowp": {
+      "collision_scenes": 34,
+      "offroad_scenes": 1,
+      "kinematics_scenes": 6,
+      "mean_EP": 1.0025120492403705
+    },
+    "v39": {
+      "collision_scenes": 30,
+      "offroad_scenes": 1,
+      "kinematics_scenes": 6,
+      "mean_EP": 0.9914335180073977,
+      "fallback_step_rate": 0.8393229166666667
+    },
+    "paired_vs_cowp": {
+      "CR": {
+        "rescued": 4,
+        "induced": 0,
+        "shared_failure": 30,
+        "net_failures_removed": 4,
+        "mcnemar_exact_p": 0.125,
+        "rescued_ids": [
+          "6992366c5c998d00",
+          "7c6ac47c0deee2af",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": []
+      },
+      "Collision": {
+        "rescued": 4,
+        "induced": 0,
+        "shared_failure": 30,
+        "net_failures_removed": 4,
+        "mcnemar_exact_p": 0.125,
+        "rescued_ids": [
+          "6992366c5c998d00",
+          "7c6ac47c0deee2af",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": []
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 0,
+        "shared_failure": 1,
+        "net_failures_removed": 0,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [],
+        "induced_ids": []
+      },
+      "Kinematics": {
+        "rescued": 0,
+        "induced": 0,
+        "shared_failure": 6,
+        "net_failures_removed": 0,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [],
+        "induced_ids": []
+      },
+      "EP": {
+        "paired_n": 48,
+        "delta_mean": -0.01107853123297294,
+        "delta_median": 0.0,
+        "bootstrap95": [
+          -0.02731182835220049,
+          0.0009807233077784355
+        ],
+        "per_scene_delta": {
+          "9d79c94d87d1dfac": 0.0,
+          "c9b1c562b6ff31e5": 0.0,
+          "a27f6f60dd683a66": 0.0,
+          "4c332861792a91e7": 0.0,
+          "fe51445d725b8b8b": 0.016949892044067383,
+          "9e3e5f19ee38f2e3": 0.0,
+          "ad7d72d8adca3e25": 0.0,
+          "57f3f03f7e7967f9": 0.015989601612091064,
+          "f55df4ea9e688069": 0.0,
+          "4525d99a628819af": 0.0,
+          "3919ccd73c0fabd7": 0.0,
+          "fb9d8277036a53f3": 0.0,
+          "a6f8b2b348015743": 0.0,
+          "fccd9a25a2a57a73": -0.021568775177001953,
+          "b64cecb971b095c3": 0.0,
+          "b85168f48c8c9970": 0.0,
+          "9ccf60966ec93c20": 0.0,
+          "89806e50f692c453": 0.01962459087371826,
+          "2c2395ec28c6a158": 0.0,
+          "d632f1919fe4bab": 0.0,
+          "1c03d20597561d94": 0.0,
+          "6992366c5c998d00": 0.053260862827301025,
+          "29cd2aca8ae5e222": 0.0,
+          "7c6ac47c0deee2af": -0.2937554121017456,
+          "eeab096e35093acf": 0.0,
+          "c34fe8e79cdf1161": 0.0,
+          "ff41aa2be7fa7a56": 0.0,
+          "da87744bcf7613db": -0.07462699711322784,
+          "e6f70b30f414022e": 0.0,
+          "84196f1d9198b616": 0.0,
+          "e1d2184327703edd": 0.0,
+          "7721ff4800156886": -0.0835268497467041,
+          "f8d5d2f0f7cf5825": -0.10712385177612305,
+          "f6a7fc811128c6ef": 0.0,
+          "f8d4c735825e5d81": 0.0,
+          "51a742674d23f1e3": -0.016197144985198975,
+          "da52a87b046e4a0a": 0.0,
+          "6418b0c9e2e4b093": 0.0,
+          "a525f87ac454a88c": 0.03066602349281311,
+          "1e015170763b9002": -0.10339319705963135,
+          "a30bd30a45665244": 0.0,
+          "72a34ea361a39c22": 0.0,
+          "a25edfa42510bdb4": 0.0,
+          "d59a8c97c0980d2a": 0.0,
+          "2fa07f444b825370": 0.0,
+          "40f2d8b336a3dafc": 0.03193175792694092,
+          "4201b435eda16cf2": 0.0,
+          "ae01b0e36aaa41b4": 0.0
+        }
+      }
+    },
+    "old_rvr_counterexample_retention": {
+      "old_rvr_rescues_total": 10,
+      "old_rvr_rescues_retained": 3,
+      "old_rvr_induced_total": 9,
+      "old_rvr_induced_avoided": 9
+    },
+    "preregistered_gate": {
+      "checks": {
+        "retain_at_least_5_of_10_old_rvr_rescues": false,
+        "avoid_at_least_7_of_9_old_rvr_induced": true,
+        "net_remove_at_least_3_cowp_collisions": true,
+        "kinematics_net_regression_at_most_1_scene": true,
+        "mean_ep_delta_not_below_minus_0_05": true,
+        "nonzero_intervention": true
+      },
+      "pass": false,
+      "paper_evidence": false
+    }
+  },
+  "pooled_mechanism_reconstruction": {
+    "aggregation": "probe/certificate/action-change weighted pooled reconstruction from scenario diagnostics",
+    "total_policy_steps": 3840,
+    "total_probe_steps": 2632,
+    "total_certificate_steps": 88,
+    "total_action_change_steps": 87,
+    "probe_step_rate": 0.6854166666666667,
+    "certificate_step_rate": 0.022916666666666665,
+    "certificate_rate_on_probes": 0.03343465045592705,
+    "action_change_step_rate": 0.02265625,
+    "lifted_selected_certificate_steps": 87,
+    "lifted_selection_rate_on_certified_steps": 0.9886363636363636,
+    "event_release_selected_certificate_steps": 83,
+    "event_release_selection_rate_on_certified_steps": 0.9431818181818182,
+    "probe_weighted_means": {
+      "parent_pool": 36.525075987841944,
+      "parent_action_classes": 32.327887537993924,
+      "parents_with_nominal_conflict": 32.234802431610944,
+      "parent_first_conflict_step": 3.8762274262301823,
+      "parent_last_conflict_step": 56.652470927269476,
+      "hypotheses_generated": 225.40007598784194,
+      "unique_first_actions": 59.72834346504559,
+      "full_physically_safe_witnesses": 0.7006079027355623,
+      "shift_closed_witnesses": 0.6664133738601824,
+      "nominal_shift_closed_witnesses": 0.0011398176291793312,
+      "lower_all_shift_closed_witnesses": 0.16071428571428573,
+      "upper_all_shift_closed_witnesses": 0.021656534954407294,
+      "event_release_shift_closed_witnesses": 0.48290273556231,
+      "lower_event_release_shift_closed_witnesses": 0.35828267477203646,
+      "upper_event_release_shift_closed_witnesses": 0.12462006079027356,
+      "lifted_only_parent_support": 0.3738601823708207,
+      "event_release_only_parent_support": 0.19224924012158054
+    },
+    "probe_weighted_totals": {
+      "parent_pool": 96134.0,
+      "parent_action_classes": 85087.0,
+      "parents_with_nominal_conflict": 84842.0,
+      "parent_first_conflict_step": 10202.23058583784,
+      "parent_last_conflict_step": 149109.30348057326,
+      "hypotheses_generated": 593253.0,
+      "unique_first_actions": 157205.0,
+      "full_physically_safe_witnesses": 1844.0,
+      "shift_closed_witnesses": 1754.0,
+      "nominal_shift_closed_witnesses": 3.0,
+      "lower_all_shift_closed_witnesses": 423.0,
+      "upper_all_shift_closed_witnesses": 57.0,
+      "event_release_shift_closed_witnesses": 1271.0,
+      "lower_event_release_shift_closed_witnesses": 943.0,
+      "upper_event_release_shift_closed_witnesses": 328.0,
+      "lifted_only_parent_support": 984.0,
+      "event_release_only_parent_support": 506.0
+    },
+    "certificate_weighted_means": {
+      "abs_first_accel_delta": 1.3765919017182155,
+      "selected_release_edge": 30.011363636363637,
+      "selected_nonnominal_edges": 30.011363636363637,
+      "selected_collision_margin": 0.6958144848996942,
+      "selected_shift_collision_margin": 0.6839884140274741
+    },
+    "mean_fallback_score_delta_on_action_changes": 0.4465457371853549,
+    "shift_closure_retention_of_full_safe_witnesses": 0.9511930585683297,
+    "event_release_only_support_is_attribution_not_gate": true,
+    "interpretation": "The inherited six-item outcome gate is unchanged. Event-release-only support and event-release selection are required to attribute any gain specifically to the V39 control-sequence expansion, but are not post-hoc additional promotion thresholds."
+  },
+  "nonblocking_evidence_boundaries": [
+    "The result archive does not contain the checkpoint bytes, so the logical checkpoint path/basename and shard consistency are verified but the .pt content hash cannot be recomputed.",
+    "Non-ego actors use Waymax logged replay. This supports frozen-protocol ego closed-loop physical attribution, not strong counterfactual social-burden ground truth.",
+    "counterfactual48 is a repeatedly mechanism-selected development panel and is not publication holdout evidence.",
+    "The V39 metrics aggregator omitted V39 from the generic no_conventional_step_rate reason set; method-specific probe/zero-conventional diagnostics and every outcome/Gate value are unaffected. V40 fixes this diagnostic-only omission.",
+    "No fresh37 result is expected because the Stage-1 Gate failed; its absence is protocol compliance rather than missing evidence."
+  ]
+}
