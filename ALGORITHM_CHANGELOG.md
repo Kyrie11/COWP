@@ -4922,3 +4922,258 @@ In addition to all historical prohibitions:
 - do not alter full certificate or shift closure to increase coverage;
 - do not mix a new V42 mechanism into the repair rollout;
 - do not claim this semantic repair as a paper contribution.
+
+---
+
+# V16.8.42 — Root-Conditioned Interaction-Aware Reachable-Response Envelope (RC-IARE)
+
+Online method:
+
+```text
+cowp_interaction_aware_reachable_response_envelope
+```
+
+Release role:
+
+```text
+NEW STAGE-1 SCIENTIFIC BRANCH
+EXACTLY NESTS V39
+ARCHIVES V40/V41 FIRST-ACTION INTERVAL COMPLETION
+REQUIRES EQUIVALENCE16 + COUNTERFACTUAL48 BEFORE ANY PERFORMANCE CLAIM
+```
+
+## Evidence that selects this branch
+
+The repaired V16.8.41 result passes the independent reliability audit:
+
+```text
+107/107 blocking checks passed
+algorithm attribution allowed = true
+```
+
+The unchanged six-item Stage-1 Gate nevertheless fails 5/6:
+
+```text
+historical RVR rescues retained = 3/10  (GO >= 5/10; FAIL)
+historical RVR induced avoided = 9/9   (GO >= 7/9; PASS)
+net COWP collision failures removed = 4 (GO >= 3; PASS)
+kinematics net regression = 0           (GO <= 1; PASS)
+paired mean EP delta vs COWP = -0.010855 (GO >= -0.05; PASS)
+action-changing intervention > 0         (PASS)
+```
+
+V41 is physically outcome-equivalent to V39 on counterfactual48.  The repaired
+first-action interval extension evaluates 1,551,139 hypotheses and produces only:
+
+```text
+98 full-safe interval witnesses
+19 shift-closed interval witnesses
+5 new certified first actions
+3 selected new-first-action steps
+0 additional collision rescue over V39
+```
+
+Those three selections occur in two still-colliding scenes and one scene already
+rescued by V39.  Therefore the first-action continuum completion is not promoted.
+The previously preregistered interpretation branch applies literally:
+
+```text
+new first actions selected + unchanged Gate failure
+-> stop analytic interval/schedule patching
+-> move to interaction-aware reachable response support
+```
+
+## Dominant bottleneck
+
+The P0 failure is no longer scalar ranking, horizon length, release timing, or a
+missing interpolation point.  It is:
+
+```text
+fixed-path physical support is empty under a frozen-CV surrounding-agent model,
+although a root-conditioned low-burden interactive response may make the joint
+continuation feasible.
+```
+
+Six of the seven historical RVR rescues still missed by V41 have interval attempts
+but no full-safe/shift-closed new first action.  This is Type-A support mismatch.
+One additional scene (`fccd9a25a2a57a73`) receives V39/V41 certificates yet still
+collides in closed loop; this Type-B model-relative certificate mismatch remains a
+separate monitor and is deliberately not co-optimized in V42.
+
+## Algorithm
+
+V42 preserves the exact V39 conflict-window control-reachable tube as its first
+branch.  If V39 returns a certificate, V42 returns it byte-for-byte without
+constructing interaction support.
+
+Only at a V39-empty step, V42 evaluates the same frozen controller-reachable V39
+hypotheses with a root-conditioned interaction certificate:
+
+1. Read only the trained causal natural-decoder trajectories and logits for online
+   critical agents.  The untrained dense response trajectory head is not used.
+2. Reuse the exact frozen canonical natural-root probability measure:
+   `p_min=0.03` support filtering with all-mode fallback, support renormalization,
+   then independent `epsilon_p=0.02` floor smoothing.
+3. Geometrically deduplicate roots with the frozen 0.10 m mean-path criterion,
+   require at least two stable roots, and retain at least 0.75 canonical mass
+   (the complement of the frozen 0.25 CVaR tail mass).
+4. For every retained root, build the existing deterministic same-root recovery
+   bank.  Keep only profiles that are below the unchanged adaptive low-burden
+   budget under the conservative `AGENT_PRIORITY` relation, roadgraph-drivable,
+   and Waymax-inverse-dynamics feasible in both current and one-step-shifted form.
+5. Identify the exact surrounding agents that block the current or shifted V39
+   hypothesis.  Every blocker must have ready root support; otherwise reject.
+6. Remove only those supported blockers from the frozen ego physical collision
+   context.  All non-blocking actors, ego roadgraph checks, controller limits,
+   full-horizon kinematics, and current/shift closure remain hard.
+7. Require each blocker-root profile to be safe against the ego in both current
+   and shifted tubes and to be bidirectionally safe against every non-blocking
+   frozen-CV environment actor.
+8. Solve an exact bounded CSP selecting one response profile per retained root.
+   Profiles for different blockers must be mutually safe in both orientations and
+   both current/shift tubes.  Roots of the same actor are alternatives and are not
+   treated as simultaneous states.
+9. Select the first hard-certified action using the frozen deterministic V39
+   ordering.  The interaction extension cannot select the ordinary COWP base
+   first action as a no-op.
+
+This is a robust recourse certificate, not a soft interaction score.  No scalar
+risk/progress/burden trade-off is introduced.
+
+## Information boundary
+
+The V42 support object consumes only:
+
+- current causal simulator state;
+- trained natural trajectories/logits;
+- current map/roadgraph;
+- frozen controller and response-bank dynamics;
+- causal constant-velocity environment predictions.
+
+It does not consume:
+
+- `log_trajectory` or any logged future state;
+- future outcome labels;
+- online mechanism ground truth;
+- the learned dense response trajectory output;
+- unexecuted-policy real counterfactual trajectories;
+- counterfactual48 scene identities or scene-specific parameters.
+
+## Frozen contracts
+
+V42 changes none of the following:
+
+- compact-5k data, split, labels, or cache;
+- checkpoint, model weights, loss, or training configuration;
+- natural-root decoder, canonical root weights, RCOT, or BCOT;
+- protected-priority hard NCF semantics;
+- certificate-compatible set-preservation selector;
+- 8 s conventional-safety horizon;
+- proposal macro families;
+- acceleration/deceleration/jerk/yaw limits;
+- roadgraph and Waymax kinematics adapters;
+- V39 conflict-window schedule family and shift semantics;
+- no-valid emergency behavior;
+- six-item Stage-1 outcome Gate.
+
+## Diagnostics
+
+Added step/scenario/pooled diagnostics for:
+
+- interaction attempts and interaction-only selections;
+- ready support agents, retained canonical roots, and eligible response profiles;
+- hypotheses/no-op skips and failure-stage decomposition;
+- unsupported blockers and residual physical failures;
+- root failures against ego or frozen non-blocking environment actors;
+- environment compatibility checks/rejections;
+- cross-blocker joint compatibility checks/rejections/backtracks;
+- selected blocker/root count, minimum retained mass, maximum response burden,
+  profile evaluations, and environment checks.
+
+These diagnostics support mechanism attribution; they do not modify the promotion
+Gate.
+
+## Analyzer and fail-closed launcher
+
+Added:
+
+```text
+cowp/scripts/95_analyze_interaction_aware_reachable_response_envelope.py
+NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh
+```
+
+The analyzer reuses the unchanged six-item conjunction Gate.  A compatibility
+replay using the actual V41 merged result reproduces V41's exact 5/6 failure,
+including the 3/10 rescue-retention failure.
+
+The launcher exits with code 4 after a missing or failed counterfactual48 Gate.
+It must not create fresh37 shards unless:
+
+```text
+preregistered_gate.interaction_aware_reachable_response_envelope.pass == true
+```
+
+## Validation before rollout
+
+```text
+V42 + V41/V39 focused/regression tests  96/96 passed
+blocking code-audit checks               48/48 passed
+canonical-root randomized equivalence   250/250 passed
+four frozen manifest hashes             passed
+Python compile                           passed
+launcher bash syntax                     passed
+analyzer V41 compatibility replay        passed
+full V42 Waymax outcome                  not run yet
+```
+
+V42 is code-ready for frozen `equivalence16` and `counterfactual48`; it has no
+performance verdict until those results pass reliability analysis.
+
+## Required execution order
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh sanity
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh make_ids
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh base_equivalence16_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh counterfactual48_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_counterfactual48
+```
+
+Stop after Stage-1 unless the recorded Gate passes.  If it passes, continue:
+
+```bash
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh fresh37_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_fresh37
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh confirm200_parallel2
+bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_confirm200
+```
+
+## Preregistered interpretation
+
+- Gate pass and interaction-only selection `>0`: the branch is eligible for
+  fresh37; specific RC-IARE attribution is provisionally supported.
+- Gate pass but interaction-only selection `=0`: outcome is attributable only to
+  the exact nested V39 mechanism, not RC-IARE.
+- Interaction-only selection `>0` but Gate fail: archive V42; inspect support and
+  compatibility failure stages, but do not tune thresholds on counterfactual48.
+- Interaction attempts `>0` but selection `=0`: the natural-root/analytic-response
+  support object is mismatched; do not return to first-action grids.
+- Kinematics or EP failure: archive; do not tune scalar weights.
+
+## Newly prohibited post-hoc directions
+
+In addition to all earlier prohibitions:
+
+- do not change `p_min`, probability floor, 0.75 retained mass, minimum root count,
+  root deduplication, adaptive burden budget, or response profiles after reading
+  counterfactual48;
+- do not drop current/shift universality for retained roots;
+- do not remove non-blocking actors from the hard environment context;
+- do not replace exact joint compatibility by independent per-agent certificates;
+- do not use the logged future or Waymax future state to populate responses;
+- do not activate the untrained dense response trajectory head;
+- do not combine Type-B closed-loop mismatch repair or accepted-path kinematics
+  repair into this one-factor branch;
+- do not claim causal social-burden improvement from logged replay alone;
+- do not treat the repeatedly used counterfactual48 panel as a final publication
+  holdout.

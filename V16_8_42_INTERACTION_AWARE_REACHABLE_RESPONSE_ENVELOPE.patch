@@ -1,0 +1,2766 @@
+--- a/ALGORITHM_CHANGELOG.md
++++ b/ALGORITHM_CHANGELOG.md
+@@ -4922,3 +4922,258 @@
+ - do not alter full certificate or shift closure to increase coverage;
+ - do not mix a new V42 mechanism into the repair rollout;
+ - do not claim this semantic repair as a paper contribution.
++
++---
++
++# V16.8.42 — Root-Conditioned Interaction-Aware Reachable-Response Envelope (RC-IARE)
++
++Online method:
++
++```text
++cowp_interaction_aware_reachable_response_envelope
++```
++
++Release role:
++
++```text
++NEW STAGE-1 SCIENTIFIC BRANCH
++EXACTLY NESTS V39
++ARCHIVES V40/V41 FIRST-ACTION INTERVAL COMPLETION
++REQUIRES EQUIVALENCE16 + COUNTERFACTUAL48 BEFORE ANY PERFORMANCE CLAIM
++```
++
++## Evidence that selects this branch
++
++The repaired V16.8.41 result passes the independent reliability audit:
++
++```text
++107/107 blocking checks passed
++algorithm attribution allowed = true
++```
++
++The unchanged six-item Stage-1 Gate nevertheless fails 5/6:
++
++```text
++historical RVR rescues retained = 3/10  (GO >= 5/10; FAIL)
++historical RVR induced avoided = 9/9   (GO >= 7/9; PASS)
++net COWP collision failures removed = 4 (GO >= 3; PASS)
++kinematics net regression = 0           (GO <= 1; PASS)
++paired mean EP delta vs COWP = -0.010855 (GO >= -0.05; PASS)
++action-changing intervention > 0         (PASS)
++```
++
++V41 is physically outcome-equivalent to V39 on counterfactual48.  The repaired
++first-action interval extension evaluates 1,551,139 hypotheses and produces only:
++
++```text
++98 full-safe interval witnesses
++19 shift-closed interval witnesses
++5 new certified first actions
++3 selected new-first-action steps
++0 additional collision rescue over V39
++```
++
++Those three selections occur in two still-colliding scenes and one scene already
++rescued by V39.  Therefore the first-action continuum completion is not promoted.
++The previously preregistered interpretation branch applies literally:
++
++```text
++new first actions selected + unchanged Gate failure
++-> stop analytic interval/schedule patching
++-> move to interaction-aware reachable response support
++```
++
++## Dominant bottleneck
++
++The P0 failure is no longer scalar ranking, horizon length, release timing, or a
++missing interpolation point.  It is:
++
++```text
++fixed-path physical support is empty under a frozen-CV surrounding-agent model,
++although a root-conditioned low-burden interactive response may make the joint
++continuation feasible.
++```
++
++Six of the seven historical RVR rescues still missed by V41 have interval attempts
++but no full-safe/shift-closed new first action.  This is Type-A support mismatch.
++One additional scene (`fccd9a25a2a57a73`) receives V39/V41 certificates yet still
++collides in closed loop; this Type-B model-relative certificate mismatch remains a
++separate monitor and is deliberately not co-optimized in V42.
++
++## Algorithm
++
++V42 preserves the exact V39 conflict-window control-reachable tube as its first
++branch.  If V39 returns a certificate, V42 returns it byte-for-byte without
++constructing interaction support.
++
++Only at a V39-empty step, V42 evaluates the same frozen controller-reachable V39
++hypotheses with a root-conditioned interaction certificate:
++
++1. Read only the trained causal natural-decoder trajectories and logits for online
++   critical agents.  The untrained dense response trajectory head is not used.
++2. Reuse the exact frozen canonical natural-root probability measure:
++   `p_min=0.03` support filtering with all-mode fallback, support renormalization,
++   then independent `epsilon_p=0.02` floor smoothing.
++3. Geometrically deduplicate roots with the frozen 0.10 m mean-path criterion,
++   require at least two stable roots, and retain at least 0.75 canonical mass
++   (the complement of the frozen 0.25 CVaR tail mass).
++4. For every retained root, build the existing deterministic same-root recovery
++   bank.  Keep only profiles that are below the unchanged adaptive low-burden
++   budget under the conservative `AGENT_PRIORITY` relation, roadgraph-drivable,
++   and Waymax-inverse-dynamics feasible in both current and one-step-shifted form.
++5. Identify the exact surrounding agents that block the current or shifted V39
++   hypothesis.  Every blocker must have ready root support; otherwise reject.
++6. Remove only those supported blockers from the frozen ego physical collision
++   context.  All non-blocking actors, ego roadgraph checks, controller limits,
++   full-horizon kinematics, and current/shift closure remain hard.
++7. Require each blocker-root profile to be safe against the ego in both current
++   and shifted tubes and to be bidirectionally safe against every non-blocking
++   frozen-CV environment actor.
++8. Solve an exact bounded CSP selecting one response profile per retained root.
++   Profiles for different blockers must be mutually safe in both orientations and
++   both current/shift tubes.  Roots of the same actor are alternatives and are not
++   treated as simultaneous states.
++9. Select the first hard-certified action using the frozen deterministic V39
++   ordering.  The interaction extension cannot select the ordinary COWP base
++   first action as a no-op.
++
++This is a robust recourse certificate, not a soft interaction score.  No scalar
++risk/progress/burden trade-off is introduced.
++
++## Information boundary
++
++The V42 support object consumes only:
++
++- current causal simulator state;
++- trained natural trajectories/logits;
++- current map/roadgraph;
++- frozen controller and response-bank dynamics;
++- causal constant-velocity environment predictions.
++
++It does not consume:
++
++- `log_trajectory` or any logged future state;
++- future outcome labels;
++- online mechanism ground truth;
++- the learned dense response trajectory output;
++- unexecuted-policy real counterfactual trajectories;
++- counterfactual48 scene identities or scene-specific parameters.
++
++## Frozen contracts
++
++V42 changes none of the following:
++
++- compact-5k data, split, labels, or cache;
++- checkpoint, model weights, loss, or training configuration;
++- natural-root decoder, canonical root weights, RCOT, or BCOT;
++- protected-priority hard NCF semantics;
++- certificate-compatible set-preservation selector;
++- 8 s conventional-safety horizon;
++- proposal macro families;
++- acceleration/deceleration/jerk/yaw limits;
++- roadgraph and Waymax kinematics adapters;
++- V39 conflict-window schedule family and shift semantics;
++- no-valid emergency behavior;
++- six-item Stage-1 outcome Gate.
++
++## Diagnostics
++
++Added step/scenario/pooled diagnostics for:
++
++- interaction attempts and interaction-only selections;
++- ready support agents, retained canonical roots, and eligible response profiles;
++- hypotheses/no-op skips and failure-stage decomposition;
++- unsupported blockers and residual physical failures;
++- root failures against ego or frozen non-blocking environment actors;
++- environment compatibility checks/rejections;
++- cross-blocker joint compatibility checks/rejections/backtracks;
++- selected blocker/root count, minimum retained mass, maximum response burden,
++  profile evaluations, and environment checks.
++
++These diagnostics support mechanism attribution; they do not modify the promotion
++Gate.
++
++## Analyzer and fail-closed launcher
++
++Added:
++
++```text
++cowp/scripts/95_analyze_interaction_aware_reachable_response_envelope.py
++NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh
++```
++
++The analyzer reuses the unchanged six-item conjunction Gate.  A compatibility
++replay using the actual V41 merged result reproduces V41's exact 5/6 failure,
++including the 3/10 rescue-retention failure.
++
++The launcher exits with code 4 after a missing or failed counterfactual48 Gate.
++It must not create fresh37 shards unless:
++
++```text
++preregistered_gate.interaction_aware_reachable_response_envelope.pass == true
++```
++
++## Validation before rollout
++
++```text
++V42 + V41/V39 focused/regression tests  96/96 passed
++blocking code-audit checks               48/48 passed
++canonical-root randomized equivalence   250/250 passed
++four frozen manifest hashes             passed
++Python compile                           passed
++launcher bash syntax                     passed
++analyzer V41 compatibility replay        passed
++full V42 Waymax outcome                  not run yet
++```
++
++V42 is code-ready for frozen `equivalence16` and `counterfactual48`; it has no
++performance verdict until those results pass reliability analysis.
++
++## Required execution order
++
++```bash
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh sanity
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh make_ids
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh base_equivalence16_parallel2
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh counterfactual48_parallel2
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_counterfactual48
++```
++
++Stop after Stage-1 unless the recorded Gate passes.  If it passes, continue:
++
++```bash
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh fresh37_parallel2
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_fresh37
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh confirm200_parallel2
++bash NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh analyze_confirm200
++```
++
++## Preregistered interpretation
++
++- Gate pass and interaction-only selection `>0`: the branch is eligible for
++  fresh37; specific RC-IARE attribution is provisionally supported.
++- Gate pass but interaction-only selection `=0`: outcome is attributable only to
++  the exact nested V39 mechanism, not RC-IARE.
++- Interaction-only selection `>0` but Gate fail: archive V42; inspect support and
++  compatibility failure stages, but do not tune thresholds on counterfactual48.
++- Interaction attempts `>0` but selection `=0`: the natural-root/analytic-response
++  support object is mismatched; do not return to first-action grids.
++- Kinematics or EP failure: archive; do not tune scalar weights.
++
++## Newly prohibited post-hoc directions
++
++In addition to all earlier prohibitions:
++
++- do not change `p_min`, probability floor, 0.75 retained mass, minimum root count,
++  root deduplication, adaptive burden budget, or response profiles after reading
++  counterfactual48;
++- do not drop current/shift universality for retained roots;
++- do not remove non-blocking actors from the hard environment context;
++- do not replace exact joint compatibility by independent per-agent certificates;
++- do not use the logged future or Waymax future state to populate responses;
++- do not activate the untrained dense response trajectory head;
++- do not combine Type-B closed-loop mismatch repair or accepted-path kinematics
++  repair into this one-factor branch;
++- do not claim causal social-burden improvement from logged replay alone;
++- do not treat the repeatedly used counterfactual48 panel as a final publication
++  holdout.
+--- a/cowp/scripts/04_eval_closed_loop.py
++++ b/cowp/scripts/04_eval_closed_loop.py
+@@ -110,7 +110,7 @@
+     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
+     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
+     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
+-    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, cowp_shift_closed_control_reachable_tube, cowp_conflict_window_control_reachable_tube, cowp_shift_closed_first_action_viability_interval, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
++    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, cowp_shift_closed_control_reachable_tube, cowp_conflict_window_control_reachable_tube, cowp_shift_closed_first_action_viability_interval, cowp_interaction_aware_reachable_response_envelope, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+     ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
+     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
+     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
+--- /dev/null
++++ b/cowp/scripts/95_analyze_interaction_aware_reachable_response_envelope.py
+@@ -0,0 +1,505 @@
++from __future__ import annotations
++
++"""Analyze V16.8.42 RC-IARE under the frozen development protocol.
++
++The six-item outcome gate is inherited verbatim from V16.8.39--41.  Root support,
++response-envelope feasibility, and interaction-only selections are mechanism
++attribution diagnostics; they are deliberately not added to the promotion gate.
++"""
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++import numpy as np
++
++
++METHOD_KEY = "interaction_aware_reachable_response_envelope"
++CANONICAL_METHOD = "cowp_interaction_aware_reachable_response_envelope"
++
++
++def _load(path: str | None) -> dict[str, Any] | None:
++    return json.loads(Path(path).read_text()) if path else None
++
++
++def _rows(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
++    return {str(row["scenario_id"]): row for row in data.get("scenario_results", [])}
++
++
++def _metric(row: dict[str, Any], key: str) -> float:
++    value = (row.get("standard_metrics", {}) or {}).get(key)
++    if isinstance(value, (int, float)) and math.isfinite(float(value)):
++        return float(value)
++    return float("nan")
++
++
++def _event(row: dict[str, Any], key: str) -> bool:
++    value = _metric(row, key)
++    return bool(math.isfinite(value) and value > 0.0)
++
++
++def _diag_value(row: dict[str, Any], key: str) -> float | None:
++    value = (row.get("diagnostics", {}) or {}).get(key)
++    if isinstance(value, (int, float)) and math.isfinite(float(value)):
++        return float(value)
++    return None
++
++
++def _mcnemar_exact(rescued: int, induced: int) -> float:
++    n = int(rescued + induced)
++    if n <= 0:
++        return 1.0
++    k = min(int(rescued), int(induced))
++    tail = sum(math.comb(n, i) for i in range(k + 1)) / float(2**n)
++    return min(1.0, 2.0 * tail)
++
++
++def _bootstrap_mean_ci(
++    values: np.ndarray,
++    *,
++    seed: int = 16842,
++    draws: int = 10_000,
++) -> list[float] | None:
++    arr = np.asarray(values, dtype=np.float64)
++    arr = arr[np.isfinite(arr)]
++    if arr.size == 0:
++        return None
++    rng = np.random.default_rng(seed)
++    means = np.empty(draws, dtype=np.float64)
++    for i in range(draws):
++        means[i] = float(rng.choice(arr, size=arr.size, replace=True).mean())
++    return [float(np.quantile(means, 0.025)), float(np.quantile(means, 0.975))]
++
++
++_DIAGNOSTIC_KEYS = [
++    "fallback_step_rate",
++    "zero_conventional_candidate_step_rate",
++    "mean_conventional_candidates",
++    "mean_valid_candidates",
++    "mean_max_collision_safe_prefix_steps",
++    "mean_selected_collision_safe_prefix_steps",
++    "recovery_switch_step_rate",
++    "selected_waymax_kinematic_feasible_step_rate",
++    "selected_waymax_kinematic_feasible_rate_on_recovery_switch_steps",
++    "interaction_aware_reachable_response_envelope_step_rate",
++    "recovery_tube_probe_step_rate",
++    "recovery_tube_certificate_step_rate",
++    "recovery_tube_action_change_step_rate",
++    "recovery_tube_lifted_selection_rate_on_certified_steps",
++    "recovery_tube_event_release_selection_rate_on_certified_steps",
++    "recovery_tube_nested_v39_selection_rate_on_certified_steps",
++    "recovery_tube_interaction_attempt_step_rate",
++    "recovery_tube_interaction_selection_rate_on_certified_steps",
++    "mean_recovery_tube_interaction_support_agents_total_on_attempts",
++    "mean_recovery_tube_interaction_support_agents_ready_on_attempts",
++    "mean_recovery_tube_interaction_retained_roots_on_attempts",
++    "mean_recovery_tube_interaction_eligible_profiles_on_attempts",
++    "mean_recovery_tube_interaction_hypotheses_on_attempts",
++    "mean_recovery_tube_interaction_noop_hypotheses_on_attempts",
++    "mean_recovery_tube_interaction_no_blocker_rejects_on_attempts",
++    "mean_recovery_tube_interaction_unsupported_blocker_rejects_on_attempts",
++    "mean_recovery_tube_interaction_residual_physical_rejects_on_attempts",
++    "mean_recovery_tube_interaction_root_unrecoverable_rejects_on_attempts",
++    "mean_recovery_tube_interaction_joint_incompatibility_rejects_on_attempts",
++    "mean_recovery_tube_interaction_environment_compatibility_checks_on_attempts",
++    "mean_recovery_tube_interaction_environment_compatibility_rejects_on_attempts",
++    "mean_recovery_tube_interaction_joint_compatibility_checks_on_attempts",
++    "mean_recovery_tube_interaction_joint_compatibility_rejects_on_attempts",
++    "mean_recovery_tube_interaction_joint_assignment_backtracks_on_attempts",
++    "mean_recovery_tube_interaction_selected_blockers_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_roots_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_minimum_root_mass_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_maximum_response_burden_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_profile_evaluations_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_environment_agents_on_interaction_steps",
++    "mean_recovery_tube_interaction_selected_environment_checks_on_interaction_steps",
++    "mean_recovery_tube_parent_pool_on_probes",
++    "mean_recovery_tube_parent_action_classes_on_probes",
++    "mean_recovery_tube_parents_with_nominal_conflict_on_probes",
++    "mean_recovery_tube_hypotheses_generated_on_probes",
++    "mean_recovery_tube_unique_action_hypotheses_on_probes",
++    "mean_recovery_tube_full_physically_safe_on_probes",
++    "mean_recovery_tube_shift_closed_on_probes",
++    "mean_recovery_tube_abs_first_accel_delta_on_certified_steps",
++    "mean_recovery_tube_selected_collision_margin_on_certified_steps",
++    "mean_recovery_tube_selected_shift_collision_margin_on_certified_steps",
++    "mean_recovery_tube_selected_fallback_score_delta_on_action_changes",
++]
++
++
++def _aggregate(rows: dict[str, dict[str, Any]], ids: list[str]) -> dict[str, Any]:
++    out: dict[str, Any] = {"n": len(ids)}
++    for label, key in {
++        "CR": "CR",
++        "Collision": "CollisionRate",
++        "Offroad": "OffroadRate",
++        "Kinematics": "KinematicsInfeasibilityRate",
++    }.items():
++        out[label] = float(np.mean([_event(rows[sid], key) for sid in ids])) if ids else 0.0
++    ep = np.asarray([_metric(rows[sid], "EP") for sid in ids], dtype=np.float64)
++    ep = ep[np.isfinite(ep)]
++    out["EP"] = float(ep.mean()) if ep.size else None
++
++    macro: dict[str, float | None] = {}
++    for key in _DIAGNOSTIC_KEYS:
++        values = [_diag_value(rows[sid], key) for sid in ids]
++        finite = [value for value in values if value is not None]
++        macro[key] = float(np.mean(finite)) if finite else None
++    out["scenario_macro_average_diagnostics"] = macro
++    return out
++
++
++def _paired(
++    base: dict[str, dict[str, Any]],
++    alt: dict[str, dict[str, Any]],
++    ids: list[str],
++) -> dict[str, Any]:
++    out: dict[str, Any] = {}
++    for label, key in {
++        "CR": "CR",
++        "Collision": "CollisionRate",
++        "Offroad": "OffroadRate",
++        "Kinematics": "KinematicsInfeasibilityRate",
++    }.items():
++        rescued = [sid for sid in ids if _event(base[sid], key) and not _event(alt[sid], key)]
++        induced = [sid for sid in ids if not _event(base[sid], key) and _event(alt[sid], key)]
++        shared = [sid for sid in ids if _event(base[sid], key) and _event(alt[sid], key)]
++        out[label] = {
++            "rescued": len(rescued),
++            "induced": len(induced),
++            "shared_failure": len(shared),
++            "net_failures_removed": len(rescued) - len(induced),
++            "mcnemar_exact_p": _mcnemar_exact(len(rescued), len(induced)),
++            "rescued_ids": rescued,
++            "induced_ids": induced,
++        }
++
++    deltas: list[float] = []
++    per_scene: dict[str, float] = {}
++    for sid in ids:
++        before, after = _metric(base[sid], "EP"), _metric(alt[sid], "EP")
++        if math.isfinite(before) and math.isfinite(after):
++            delta = float(after - before)
++            deltas.append(delta)
++            per_scene[sid] = delta
++    arr = np.asarray(deltas, dtype=np.float64)
++    out["EP"] = {
++        "paired_n": int(arr.size),
++        "delta_mean": float(arr.mean()) if arr.size else None,
++        "delta_median": float(np.median(arr)) if arr.size else None,
++        "bootstrap95": _bootstrap_mean_ci(arr),
++        "per_scene_delta": per_scene,
++    }
++    return out
++
++
++def _count_from_rate(
++    rows: dict[str, dict[str, Any]],
++    ids: list[str],
++    rate_key: str,
++    denominators: dict[str, int],
++) -> int:
++    total = 0
++    for sid in ids:
++        den = int(denominators.get(sid, 0))
++        if den <= 0:
++            continue
++        value = _diag_value(rows[sid], rate_key)
++        if value is not None:
++            total += int(round(float(value) * den))
++    return int(total)
++
++
++def _weighted_total(
++    rows: dict[str, dict[str, Any]],
++    ids: list[str],
++    mean_key: str,
++    denominators: dict[str, int],
++) -> tuple[float, int]:
++    total = 0.0
++    den_total = 0
++    for sid in ids:
++        den = int(denominators.get(sid, 0))
++        if den <= 0:
++            continue
++        value = _diag_value(rows[sid], mean_key)
++        if value is None:
++            continue
++        total += float(value) * den
++        den_total += den
++    return float(total), int(den_total)
++
++
++def _pooled_interaction_mechanism(
++    rows: dict[str, dict[str, Any]],
++    ids: list[str],
++) -> dict[str, Any]:
++    steps: dict[str, int] = {}
++    probes: dict[str, int] = {}
++    certificates: dict[str, int] = {}
++    changes: dict[str, int] = {}
++    attempts: dict[str, int] = {}
++    for sid in ids:
++        diag = rows[sid].get("diagnostics", {}) or {}
++        n = int(diag.get("steps", 0) or 0)
++        steps[sid] = n
++        probes[sid] = int(round(float(diag.get("recovery_tube_probe_step_rate", 0.0) or 0.0) * n))
++        certificates[sid] = int(round(float(diag.get("recovery_tube_certificate_step_rate", 0.0) or 0.0) * n))
++        changes[sid] = int(round(float(diag.get("recovery_tube_action_change_step_rate", 0.0) or 0.0) * n))
++        attempts[sid] = int(round(float(diag.get("recovery_tube_interaction_attempt_step_rate", 0.0) or 0.0) * n))
++
++    total_steps = int(sum(steps.values()))
++    total_probes = int(sum(probes.values()))
++    total_certificates = int(sum(certificates.values()))
++    total_changes = int(sum(changes.values()))
++    total_attempts = int(sum(attempts.values()))
++
++    nested_selected = _count_from_rate(
++        rows, ids, "recovery_tube_nested_v39_selection_rate_on_certified_steps", certificates
++    )
++    interaction_selected = _count_from_rate(
++        rows, ids, "recovery_tube_interaction_selection_rate_on_certified_steps", certificates
++    )
++    lifted_selected = _count_from_rate(
++        rows, ids, "recovery_tube_lifted_selection_rate_on_certified_steps", certificates
++    )
++    event_selected = _count_from_rate(
++        rows, ids, "recovery_tube_event_release_selection_rate_on_certified_steps", certificates
++    )
++
++    attempt_keys = {
++        "support_agents_total": "mean_recovery_tube_interaction_support_agents_total_on_attempts",
++        "support_agents_ready": "mean_recovery_tube_interaction_support_agents_ready_on_attempts",
++        "retained_roots": "mean_recovery_tube_interaction_retained_roots_on_attempts",
++        "eligible_profiles": "mean_recovery_tube_interaction_eligible_profiles_on_attempts",
++        "hypotheses_evaluated": "mean_recovery_tube_interaction_hypotheses_on_attempts",
++        "noop_hypotheses_skipped": "mean_recovery_tube_interaction_noop_hypotheses_on_attempts",
++        "no_blocker_rejects": "mean_recovery_tube_interaction_no_blocker_rejects_on_attempts",
++        "unsupported_blocker_rejects": "mean_recovery_tube_interaction_unsupported_blocker_rejects_on_attempts",
++        "residual_physical_rejects": "mean_recovery_tube_interaction_residual_physical_rejects_on_attempts",
++        "root_unrecoverable_rejects": "mean_recovery_tube_interaction_root_unrecoverable_rejects_on_attempts",
++        "joint_incompatibility_rejects": "mean_recovery_tube_interaction_joint_incompatibility_rejects_on_attempts",
++        "environment_compatibility_checks": "mean_recovery_tube_interaction_environment_compatibility_checks_on_attempts",
++        "environment_compatibility_rejects": "mean_recovery_tube_interaction_environment_compatibility_rejects_on_attempts",
++        "joint_compatibility_checks": "mean_recovery_tube_interaction_joint_compatibility_checks_on_attempts",
++        "joint_compatibility_rejects": "mean_recovery_tube_interaction_joint_compatibility_rejects_on_attempts",
++        "joint_assignment_backtracks": "mean_recovery_tube_interaction_joint_assignment_backtracks_on_attempts",
++    }
++    attempt_means: dict[str, float | None] = {}
++    attempt_totals: dict[str, float] = {}
++    for label, key in attempt_keys.items():
++        total, den = _weighted_total(rows, ids, key, attempts)
++        attempt_totals[label] = float(total)
++        attempt_means[label] = float(total / den) if den else None
++
++    selected_den: dict[str, int] = {}
++    for sid in ids:
++        selected_den[sid] = _count_from_rate(
++            rows, [sid], "recovery_tube_interaction_selection_rate_on_certified_steps", certificates
++        )
++    selected_keys = {
++        "blockers": "mean_recovery_tube_interaction_selected_blockers_on_interaction_steps",
++        "roots": "mean_recovery_tube_interaction_selected_roots_on_interaction_steps",
++        "minimum_root_mass": "mean_recovery_tube_interaction_selected_minimum_root_mass_on_interaction_steps",
++        "maximum_response_burden": "mean_recovery_tube_interaction_selected_maximum_response_burden_on_interaction_steps",
++        "profile_evaluations": "mean_recovery_tube_interaction_selected_profile_evaluations_on_interaction_steps",
++        "environment_agents": "mean_recovery_tube_interaction_selected_environment_agents_on_interaction_steps",
++        "environment_checks": "mean_recovery_tube_interaction_selected_environment_checks_on_interaction_steps",
++    }
++    selected_means: dict[str, float | None] = {}
++    for label, key in selected_keys.items():
++        total, den = _weighted_total(rows, ids, key, selected_den)
++        selected_means[label] = float(total / den) if den else None
++
++    fallback_delta_sum, fallback_delta_den = _weighted_total(
++        rows, ids, "mean_recovery_tube_selected_fallback_score_delta_on_action_changes", changes
++    )
++    ready = float(attempt_totals.get("support_agents_ready", 0.0))
++    support = float(attempt_totals.get("support_agents_total", 0.0))
++    retained_roots = float(attempt_totals.get("retained_roots", 0.0))
++    eligible_profiles = float(attempt_totals.get("eligible_profiles", 0.0))
++
++    return {
++        "aggregation": "step/attempt/certificate weighted pooled reconstruction from scenario diagnostics",
++        "total_policy_steps": total_steps,
++        "total_probe_steps": total_probes,
++        "total_certificate_steps": total_certificates,
++        "total_action_change_steps": total_changes,
++        "total_interaction_attempt_steps": total_attempts,
++        "probe_step_rate": float(total_probes / total_steps) if total_steps else None,
++        "certificate_step_rate": float(total_certificates / total_steps) if total_steps else None,
++        "certificate_rate_on_probes": float(total_certificates / total_probes) if total_probes else None,
++        "action_change_step_rate": float(total_changes / total_steps) if total_steps else None,
++        "nested_v39_selected_certificate_steps": nested_selected,
++        "nested_v39_selection_rate_on_certified_steps": (
++            float(nested_selected / total_certificates) if total_certificates else None
++        ),
++        "interaction_selected_certificate_steps": interaction_selected,
++        "interaction_selection_rate_on_certified_steps": (
++            float(interaction_selected / total_certificates) if total_certificates else None
++        ),
++        "interaction_completion_rate_on_attempts": (
++            float(interaction_selected / total_attempts) if total_attempts else None
++        ),
++        "interaction_attempt_step_rate": (
++            float(total_attempts / total_steps) if total_steps else None
++        ),
++        "lifted_selected_certificate_steps": lifted_selected,
++        "event_release_selected_certificate_steps": event_selected,
++        "attempt_weighted_means": attempt_means,
++        "attempt_weighted_totals": attempt_totals,
++        "support_agent_readiness_rate": float(ready / support) if support > 0.0 else None,
++        "eligible_profiles_per_retained_root": (
++            float(eligible_profiles / retained_roots) if retained_roots > 0.0 else None
++        ),
++        "interaction_selected_weighted_means": selected_means,
++        "mean_fallback_score_delta_on_action_changes": (
++            float(fallback_delta_sum / fallback_delta_den) if fallback_delta_den else None
++        ),
++        "mechanism_nonzero": bool(interaction_selected > 0),
++    }
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--cowp", required=True)
++    parser.add_argument("--rvr")
++    parser.add_argument("--v33-rosh")
++    parser.add_argument("--v35-control-projected-spectrum")
++    parser.add_argument("--v36-recovery-frontier")
++    parser.add_argument("--v37-recourse-returnability-bridge")
++    parser.add_argument("--v38-shift-closed-tube")
++    parser.add_argument("--v39-conflict-window-tube")
++    parser.add_argument("--interaction-aware-reachable-response-envelope", required=True)
++    parser.add_argument("--development-selected", action="store_true")
++    parser.add_argument(
++        "--stage",
++        choices=["counterfactual48", "fresh37", "exact200"],
++        default="counterfactual48",
++    )
++    parser.add_argument("--output", required=True)
++    args = parser.parse_args()
++
++    data = {
++        "cowp": _load(args.cowp),
++        "rvr": _load(args.rvr),
++        "v33_rosh": _load(args.v33_rosh),
++        "v35_control_projected_spectrum": _load(args.v35_control_projected_spectrum),
++        "v36_recovery_frontier": _load(args.v36_recovery_frontier),
++        "v37_recourse_returnability_bridge": _load(args.v37_recourse_returnability_bridge),
++        "v38_shift_closed_tube": _load(args.v38_shift_closed_tube),
++        "v39_conflict_window_tube": _load(args.v39_conflict_window_tube),
++        METHOD_KEY: _load(args.interaction_aware_reachable_response_envelope),
++    }
++    data = {name: value for name, value in data.items() if value is not None}
++    rowmap = {name: _rows(value) for name, value in data.items()}
++    ids = list(rowmap["cowp"].keys())
++    idset = set(ids)
++    mismatch = {
++        name: sorted(idset.symmetric_difference(set(rows)))
++        for name, rows in rowmap.items()
++        if set(rows) != idset
++    }
++    if mismatch:
++        raise SystemExit(f"scenario set mismatch: {mismatch}")
++
++    out: dict[str, Any] = {
++        "schema_version": "cowp_interaction_aware_reachable_response_envelope_analysis_v1",
++        "canonical_method": CANONICAL_METHOD,
++        "development_selected": bool(args.development_selected),
++        "paper_evidence": False,
++        "scenario_count": len(ids),
++        "stage": str(args.stage),
++        "methods": {},
++        "paired_vs_cowp": {},
++    }
++    for name, rows in rowmap.items():
++        out["methods"][name] = _aggregate(rows, ids)
++        if name != "cowp":
++            out["paired_vs_cowp"][name] = _paired(rowmap["cowp"], rows, ids)
++
++    if "rvr" in rowmap:
++        old_rescued = set(out["paired_vs_cowp"]["rvr"]["Collision"]["rescued_ids"])
++        old_induced = set(out["paired_vs_cowp"]["rvr"]["Collision"]["induced_ids"])
++        out["rvr_counterexample_retention"] = {
++            METHOD_KEY: {
++                "old_rvr_rescues_total": len(old_rescued),
++                "old_rvr_rescues_retained": int(
++                    sum(not _event(rowmap[METHOD_KEY][sid], "CollisionRate") for sid in old_rescued)
++                ),
++                "old_rvr_induced_total": len(old_induced),
++                "old_rvr_induced_avoided": int(
++                    sum(not _event(rowmap[METHOD_KEY][sid], "CollisionRate") for sid in old_induced)
++                ),
++            }
++        }
++
++    for previous in (
++        "v33_rosh",
++        "v35_control_projected_spectrum",
++        "v36_recovery_frontier",
++        "v37_recourse_returnability_bridge",
++        "v38_shift_closed_tube",
++        "v39_conflict_window_tube",
++    ):
++        if previous in rowmap:
++            out[f"paired_vs_{previous}"] = _paired(rowmap[previous], rowmap[METHOD_KEY], ids)
++
++    paired = out["paired_vs_cowp"][METHOD_KEY]
++    ep_delta = paired["EP"]["delta_mean"]
++    pooled = _pooled_interaction_mechanism(rowmap[METHOD_KEY], ids)
++    switch_rate = pooled.get("action_change_step_rate")
++
++    if args.stage == "counterfactual48":
++        retention = out["rvr_counterexample_retention"][METHOD_KEY]
++        checks = {
++            "retain_at_least_5_of_10_old_rvr_rescues": retention["old_rvr_rescues_retained"] >= 5,
++            "avoid_at_least_7_of_9_old_rvr_induced": retention["old_rvr_induced_avoided"] >= 7,
++            "net_remove_at_least_3_cowp_collisions": paired["Collision"]["net_failures_removed"] >= 3,
++            "kinematics_net_regression_at_most_1_scene": paired["Kinematics"]["net_failures_removed"] >= -1,
++            "mean_ep_delta_not_below_minus_0_05": ep_delta is not None and ep_delta >= -0.05,
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    elif args.stage == "fresh37":
++        checks = {
++            "no_net_collision_harm": paired["Collision"]["net_failures_removed"] >= 0,
++            "no_net_cr_harm": paired["CR"]["net_failures_removed"] >= 0,
++            "offroad_net_regression_at_most_1_scene": paired["Offroad"]["net_failures_removed"] >= -1,
++            "kinematics_net_regression_at_most_1_scene": paired["Kinematics"]["net_failures_removed"] >= -1,
++            "mean_ep_delta_not_below_minus_0_03": ep_delta is not None and ep_delta >= -0.03,
++            "nonzero_intervention": switch_rate is not None and switch_rate > 0.0,
++        }
++    else:
++        checks = {"development_confirmation_only": True}
++
++    out["preregistered_gate"] = {
++        METHOD_KEY: {
++            "checks": checks,
++            "pass": bool(all(checks.values())),
++            "paper_evidence": False,
++        }
++    }
++    out["interaction_aware_reachable_response_envelope_mechanism_diagnostic"] = {
++        **pooled,
++        "support_diagnostics_are_attribution_not_gate": True,
++        "interaction_only_selection_required_for_specific_mechanism_attribution": True,
++        "interpretation": (
++            "The inherited six-item outcome conjunction gate is unchanged. V16.8.42 "
++            "first executes the exact V39 conflict-window tube. Only a V39-empty step "
++            "may use the root-conditioned interaction envelope. High-mass natural-root "
++            "coverage, same-root low-burden current/shift responses, residual hard "
++            "physical checks, and cross-agent joint compatibility are mechanism "
++            "diagnostics. They do not replace or weaken the frozen promotion gate."
++        ),
++    }
++
++    output = Path(args.output)
++    output.parent.mkdir(parents=True, exist_ok=True)
++    output.write_text(json.dumps(out, indent=2, ensure_ascii=False))
++    print(json.dumps(out, indent=2, ensure_ascii=False))
++
++
++if __name__ == "__main__":
++    main()
+--- a/cowp/waymax_eval/metrics_cowp.py
++++ b/cowp/waymax_eval/metrics_cowp.py
+@@ -459,7 +459,7 @@
+             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
+             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
+             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
+-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube", "no_conventional_use_conflict_window_control_reachable_tube", "no_conventional_use_shift_closed_first_action_viability_interval"} for x in reasons) / max(n, 1)),
++            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube", "no_conventional_use_conflict_window_control_reachable_tube", "no_conventional_use_shift_closed_first_action_viability_interval", "no_conventional_use_interaction_aware_reachable_response_envelope"} for x in reasons) / max(n, 1)),
+             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
+             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
+             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
+@@ -478,6 +478,7 @@
+             "shift_closed_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_shift_closed_control_reachable_tube" for x in reasons) / max(n, 1)),
+             "conflict_window_control_reachable_tube_step_rate": float(sum(x == "no_conventional_use_conflict_window_control_reachable_tube" for x in reasons) / max(n, 1)),
+             "shift_closed_first_action_viability_interval_step_rate": float(sum(x == "no_conventional_use_shift_closed_first_action_viability_interval" for x in reasons) / max(n, 1)),
++            "interaction_aware_reachable_response_envelope_step_rate": float(sum(x == "no_conventional_use_interaction_aware_reachable_response_envelope" for x in reasons) / max(n, 1)),
+             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
+             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
+             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
+@@ -695,6 +696,105 @@
+                 "recovery_tube_selected_first_accel_fraction",
+                 mask=np.asarray([bool(r.get("recovery_tube_selected_is_first_action_interval_completion", False)) for r in rows], dtype=bool),
+             ) if n else None,
++            "recovery_tube_interaction_attempt_step_rate": _mean(
++                "recovery_tube_interaction_response_attempted"
++            ),
++            "recovery_tube_interaction_selection_rate_on_certified_steps": _mean(
++                "recovery_tube_selected_is_interaction_response",
++                mask=np.asarray([bool(r.get("recovery_tube_selected", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_support_agents_total_on_attempts": _mean(
++                "recovery_tube_interaction_support_agents_total",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_support_agents_ready_on_attempts": _mean(
++                "recovery_tube_interaction_support_agents_ready",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_retained_roots_on_attempts": _mean(
++                "recovery_tube_interaction_support_retained_roots",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_eligible_profiles_on_attempts": _mean(
++                "recovery_tube_interaction_support_eligible_profiles",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_hypotheses_on_attempts": _mean(
++                "recovery_tube_interaction_hypotheses_evaluated",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_noop_hypotheses_on_attempts": _mean(
++                "recovery_tube_interaction_noop_hypotheses_skipped",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_no_blocker_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_no_blocker_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_unsupported_blocker_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_unsupported_blocker_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_residual_physical_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_residual_physical_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_root_unrecoverable_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_root_unrecoverable_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_joint_incompatibility_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_joint_incompatibility_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_environment_compatibility_checks_on_attempts": _mean(
++                "recovery_tube_interaction_environment_compatibility_checks",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_environment_compatibility_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_environment_compatibility_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_joint_compatibility_checks_on_attempts": _mean(
++                "recovery_tube_interaction_joint_compatibility_checks",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_joint_compatibility_rejects_on_attempts": _mean(
++                "recovery_tube_interaction_joint_compatibility_rejects",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_joint_assignment_backtracks_on_attempts": _mean(
++                "recovery_tube_interaction_joint_assignment_backtracks",
++                mask=np.asarray([bool(r.get("recovery_tube_interaction_response_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_blockers_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_blocker_count",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_roots_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_root_count",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_minimum_root_mass_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_minimum_root_mass",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_maximum_response_burden_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_maximum_response_burden",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_profile_evaluations_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_profile_evaluations",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_environment_agents_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_environment_agent_count",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_interaction_selected_environment_checks_on_interaction_steps": _mean(
++                "recovery_tube_interaction_selected_environment_compatibility_checks",
++                mask=np.asarray([bool(r.get("recovery_tube_selected_is_interaction_response", False)) for r in rows], dtype=bool),
++            ) if n else None,
+             "mean_recovery_tube_parent_pool_on_probes": _mean(
+                 "recovery_tube_parent_pool",
+                 mask=np.asarray([bool(r.get("recovery_tube_probe_used", False)) for r in rows], dtype=bool),
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -9,8 +9,12 @@
+ 
+ import numpy as np
+ 
+-from cowp.core.constants import MacroType
++from cowp.core.constants import MacroType, ObjectType, PriorityRelation
+ from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
++from cowp.geometry.collision import unsafe_between_bool
++from cowp.label.audit_relevance import canonical_root_weights
++from cowp.label.burden import adaptive_beta
++from cowp.label.safe_responses import build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
+ from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
+ from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
+ 
+@@ -116,7 +120,7 @@
+             "Use a separately retrained ablation checkpoint/config for Waymax."
+         )
+     g = str(gate_mode or "priority").lower()
+-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and g == "hard":
++    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and g == "hard":
+         g = "priority"
+     if m == "universal_ncf":
+         g = "hard"
+@@ -3621,6 +3625,1107 @@
+         "violation_sample_count": int(cols.size),
+         "source": str(source),
+     }
++
++def _stable_softmax_np(logits: np.ndarray) -> np.ndarray:
++    """Finite, deterministic softmax for online natural-root probabilities."""
++    x = np.asarray(logits, dtype=np.float64).reshape(-1)
++    out = np.zeros_like(x, dtype=np.float64)
++    finite = np.isfinite(x)
++    if not bool(np.any(finite)):
++        return out.astype(np.float32)
++    z = np.clip(x[finite] - float(np.max(x[finite])), -80.0, 0.0)
++    e = np.exp(z)
++    denom = float(np.sum(e))
++    if not np.isfinite(denom) or denom <= 0.0:
++        return out.astype(np.float32)
++    out[finite] = e / denom
++    return out.astype(np.float32)
++
++
++def _canonical_online_root_weights_np(
++    logits: np.ndarray,
++    valid: np.ndarray,
++    cfg: dict,
++) -> tuple[np.ndarray, np.ndarray]:
++    """Use the exact frozen label/SetTransport natural-root probability measure.
++
++    Returns ``(canonical_weight, raw_softmax_weight)``.  The canonical support
++    first applies the frozen ``p_min`` threshold with the all-modes fallback,
++    then renormalizes and applies the independent probability-floor smoothing.
++    Calling the shared label helper prevents online mechanism drift.
++    """
++    raw = _stable_softmax_np(logits)
++    mask = np.asarray(valid, dtype=bool).reshape(-1)
++    M = min(int(raw.size), int(mask.size))
++    if M <= 0:
++        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
++    raw = np.asarray(raw[:M], dtype=np.float32)
++    mask = np.asarray(mask[:M], dtype=bool)
++    canonical = canonical_root_weights(
++        {"valid": mask[None, :], "weight": raw[None, :]}, cfg,
++    )[0]
++    return np.asarray(canonical, dtype=np.float32), raw
++
++
++def _extract_object_types_np(state: Any, num_agents: int) -> np.ndarray:
++    """Extract Waymax object types without consulting future simulator state.
++
++    Waymax releases have exposed the field as either ``object_types`` or
++    ``object_type`` under ``object_metadata``.  Unknown/missing values are mapped
++    to ``ObjectType.UNKNOWN``; downstream response checks then use the stricter
++    non-vehicle safety profile rather than guessing a vehicle label.
++    """
++    n = max(int(num_agents), 0)
++    out = np.full((n,), int(ObjectType.UNKNOWN), dtype=np.int32)
++    meta = _get_field(state, ("object_metadata", "metadata"))
++    raw = _get_field(meta, ("object_types", "object_type", "types", "type")) if meta is not None else None
++    if raw is None:
++        raw = _get_field(state, ("object_types", "object_type"))
++    if raw is None or n <= 0:
++        return out
++    try:
++        arr = _to_numpy(raw)
++    except Exception:
++        return out
++    while arr.ndim > 1 and arr.shape[0] == 1:
++        arr = arr[0]
++    if arr.ndim == 2 and arr.shape[0] >= n and 2 <= arr.shape[1] <= 8:
++        # Be tolerant of one-hot metadata adapters used by focused tests.
++        arr = np.argmax(arr, axis=-1)
++    else:
++        arr = arr.reshape(-1)
++    known = {
++        int(ObjectType.UNKNOWN), int(ObjectType.VEHICLE), int(ObjectType.PEDESTRIAN),
++        int(ObjectType.CYCLIST), int(ObjectType.OTHER),
++    }
++    for i in range(min(n, int(arr.size))):
++        try:
++            value = int(arr[i])
++        except Exception:
++            continue
++        out[i] = value if value in known else int(ObjectType.UNKNOWN)
++    return out
++
++
++def _agent_state_after_future_sample_np(current: np.ndarray, sample: np.ndarray) -> np.ndarray:
++    """Lift one [x,y,yaw,vx,vy,length,width] sample into the online state layout."""
++    cur = np.asarray(current, dtype=np.float32).reshape(-1)
++    width = max(int(cur.size), 11)
++    nxt = np.zeros((width,), dtype=np.float32)
++    nxt[: cur.size] = cur
++    s = np.asarray(sample, dtype=np.float32).reshape(-1)
++    if s.size >= 5:
++        nxt[0:2] = s[0:2]
++        nxt[3:5] = s[3:5]
++        nxt[5] = float(np.linalg.norm(s[3:5]))
++        nxt[6] = s[2]
++    if s.size >= 7:
++        nxt[7] = max(float(s[5]), 0.1)
++        nxt[8] = max(float(s[6]), 0.1)
++    nxt[10] = 1.0
++    return nxt
++
++
++def _constant_velocity_trajectory_from_state_np(
++    agent_state: np.ndarray,
++    agent_index: int,
++    horizon_steps: int,
++    cfg: dict,
++) -> np.ndarray | None:
++    """Construct the same causal constant-velocity future used by online audit.
++
++    The trajectory is full [x,y,yaw,vx,vy,length,width] geometry so response
++    profiles can be checked against non-blocking actors with the unchanged COWP
++    unsafe predicate.  No simulator/log future is read.
++    """
++    state = np.asarray(agent_state, dtype=np.float32)
++    j = int(agent_index)
++    H = max(int(horizon_steps), 0)
++    if (
++        state.ndim != 2 or H <= 0 or not (0 <= j < state.shape[0])
++        or state.shape[1] < 11 or not bool(state[j, 10] > 0.5)
++        or not np.isfinite(state[j, :9]).all()
++    ):
++        return None
++    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
++    ts = np.arange(1, H + 1, dtype=np.float32) * dt
++    tr = np.zeros((H, 7), dtype=np.float32)
++    tr[:, :2] = state[j, :2][None, :] + state[j, 3:5][None, :] * ts[:, None]
++    tr[:, 2] = float(_wrap_angle(float(state[j, 6])))
++    tr[:, 3:5] = state[j, 3:5][None, :]
++    tr[:, 5] = max(float(state[j, 7]), 0.1)
++    tr[:, 6] = max(float(state[j, 8]), 0.1)
++    return tr
++
++
++def _trajectory_waymax_kinematic_safe_np(
++    current: np.ndarray,
++    trajectory: np.ndarray,
++    cfg: dict,
++) -> tuple[bool, dict[str, int | float | str]]:
++    """Require every response edge to satisfy Waymax's inverse-dynamics metric."""
++    tr = np.asarray(trajectory, dtype=np.float32)
++    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
++        return False, {
++            "failure_step": 0,
++            "max_abs_accel_mps2": float("inf"),
++            "max_abs_steering_curvature": float("inf"),
++            "contract_source": "invalid_response_trajectory",
++        }
++    cur = np.asarray(current, dtype=np.float32).reshape(-1)
++    max_acc = 0.0
++    max_steer = 0.0
++    contract_source = "unknown"
++    for t in range(int(tr.shape[0])):
++        target = np.asarray(tr[t, [0, 1, 2, 3, 4]], dtype=np.float32)
++        feasible, accel, steering, contract = _waymax_kinematic_transition_np(cur, target, cfg)
++        contract_source = str(contract.get("contract_source", contract_source))
++        if accel.size:
++            max_acc = max(max_acc, abs(float(accel[0])))
++        if steering.size:
++            max_steer = max(max_steer, abs(float(steering[0])))
++        if feasible.size == 0 or not bool(feasible[0]):
++            return False, {
++                "failure_step": int(t),
++                "max_abs_accel_mps2": float(max_acc),
++                "max_abs_steering_curvature": float(max_steer),
++                "contract_source": contract_source,
++            }
++        cur = _agent_state_after_future_sample_np(cur, tr[t])
++    return True, {
++        "failure_step": -1,
++        "max_abs_accel_mps2": float(max_acc),
++        "max_abs_steering_curvature": float(max_steer),
++        "contract_source": contract_source,
++    }
++
++
++def _collision_blocking_agent_indices_against_context(
++    trajectory: np.ndarray,
++    context: dict[str, Any],
++) -> tuple[list[int], dict[str, Any]]:
++    """Return the exact agents responsible for the frozen circle/CV rejection."""
++    tr = np.asarray(trajectory, dtype=np.float32)
++    idx = np.asarray(context.get("idx", np.asarray([0], dtype=np.int64)), dtype=np.int64)
++    agents = list(context.get("agents", []))
++    detail: dict[str, Any] = {
++        "nonfinite_ego": False,
++        "base_blocker_count": 0,
++        "priority_blocker_count": 0,
++        "blocker_count": 0,
++    }
++    if idx.size == 0:
++        idx = np.asarray([0], dtype=np.int64)
++    if (
++        tr.ndim != 2 or tr.shape[1] < 2 or tr.shape[0] <= int(np.max(idx, initial=0))
++        or not np.isfinite(tr[idx, :2]).all()
++    ):
++        detail["nonfinite_ego"] = True
++        return [], detail
++    base_xy = np.asarray(
++        context.get("base_xy", np.zeros((0, idx.size, 2), dtype=np.float32)),
++        dtype=np.float32,
++    )
++    rows = min(len(agents), int(base_xy.shape[0]))
++    if rows <= 0:
++        return [], detail
++    ego_xy = tr[idx, :2]
++    base_thr = np.asarray(context.get("base_threshold_m", np.zeros((rows,), dtype=np.float32)), dtype=np.float32)[:rows, None]
++    base_bad = np.any(
++        np.linalg.norm(ego_xy[None, :, :] - base_xy[:rows], axis=-1) - base_thr < 0.0,
++        axis=1,
++    )
++    priority_bad = np.zeros((rows,), dtype=bool)
++    priority_like = np.asarray(context.get("priority_like", np.zeros((rows,), dtype=bool)), dtype=bool)[:rows]
++    if bool(context.get("require_cv", True)) and bool(np.any(priority_like)):
++        cv_xy = np.asarray(context.get("cv_xy", base_xy), dtype=np.float32)[:rows]
++        cv_thr = np.asarray(context.get("priority_threshold_m", np.zeros((rows,), dtype=np.float32)), dtype=np.float32)[:rows, None]
++        all_cv_bad = np.any(
++            np.linalg.norm(ego_xy[None, :, :] - cv_xy, axis=-1) - cv_thr < 0.0,
++            axis=1,
++        )
++        priority_bad = priority_like & all_cv_bad
++    blockers = sorted({
++        int(agents[i].get("index", -1))
++        for i in range(rows)
++        if bool(base_bad[i] or priority_bad[i]) and int(agents[i].get("index", -1)) >= 0
++    })
++    detail.update({
++        "base_blocker_count": int(np.sum(base_bad)),
++        "priority_blocker_count": int(np.sum(priority_bad)),
++        "blocker_count": int(len(blockers)),
++        "blocker_indices": blockers,
++    })
++    return blockers, detail
++
++
++def _collision_context_without_agent_indices(
++    context: dict[str, Any],
++    excluded_agent_indices: set[int] | frozenset[int] | list[int] | tuple[int, ...],
++) -> dict[str, Any]:
++    """Filter supported responders while retaining every other frozen collision check."""
++    excluded = {int(x) for x in excluded_agent_indices}
++    agents = list(context.get("agents", []))
++    keep = [i for i, a in enumerate(agents) if int(a.get("index", -1)) not in excluded]
++    out = dict(context)
++    out["agents"] = [dict(agents[i]) for i in keep]
++    for key in ("base_xy", "cv_xy", "base_threshold_m", "priority_threshold_m", "priority_like"):
++        arr = np.asarray(context.get(key))
++        if arr.ndim >= 1 and arr.shape[0] >= len(agents):
++            out[key] = np.asarray(arr[keep]).copy()
++    return out
++
++
++def _prepare_interaction_response_support_np(
++    agent_state: np.ndarray,
++    sdc_index: int,
++    critical_track_index: np.ndarray,
++    critical_valid: np.ndarray,
++    natural_trajectories: np.ndarray,
++    natural_logits: np.ndarray,
++    object_types: np.ndarray,
++    roadgraph: dict[str, np.ndarray],
++    cfg: dict,
++) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
++    """Build a causal, root-conditioned response envelope once per planning step.
++
++    The envelope uses only the trained natural decoder and the frozen deterministic
++    same-root response bank.  Root support is measured by the *exact* canonical
++    label/SetTransport probability distribution: p_min filtering, support
++    renormalization and probability-floor smoothing remain distinct operations.
++    Geometric deduplication then merges canonical mass without changing its sum.
++    Every retained root must own at least one low-burden, drivable and
++    Waymax-kinematic profile in both current and one-step-shifted form.
++    """
++    state = np.asarray(agent_state, dtype=np.float32)
++    crit_idx = np.asarray(critical_track_index, dtype=np.int64).reshape(-1)
++    crit_valid = np.asarray(critical_valid, dtype=bool).reshape(-1)
++    nat = np.asarray(natural_trajectories, dtype=np.float32)
++    logits = np.asarray(natural_logits, dtype=np.float32)
++    obj = np.asarray(object_types, dtype=np.int32).reshape(-1)
++    pcfg = cfg.get("planning", {})
++    ncfg = cfg.get("natural", {})
++    ncf_cfg = cfg.get("ncf", {})
++    rcfg = cfg.get("response", {}).get("root_conditioned_transport", {})
++    min_alt_weight = max(float(ncf_cfg.get(
++        "min_alt_weight", pcfg.get("set_transport_min_alt_weight", 0.03)
++    )), 0.0)
++    probability_floor = float(np.clip(ncf_cfg.get(
++        "root_probability_floor", pcfg.get("set_transport_probability_floor", 0.02)
++    ), 0.0, 0.25))
++    required_mass = float(np.clip(
++        1.0 - float(pcfg.get(
++            "set_transport_cvar_tail_mass", ncf_cfg.get("cvar_tail_mass", 0.25)
++        )), 0.0, 1.0,
++    ))
++    min_roots = max(int(ncfg.get("certificate_min_low_burden_roots", 2)), 1)
++    dedup_m = max(float(ncfg.get("root_dedup_mean_distance_m", 0.10)), 0.0)
++    max_roots = max(int(rcfg.get("max_roots_per_agent", nat.shape[1] if nat.ndim >= 2 else 0)), 0)
++    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
++
++    aggregate: dict[str, Any] = {
++        "minimum_raw_mode_probability": float(min_alt_weight),
++        "probability_floor": float(probability_floor),
++        "required_root_mass": float(required_mass),
++        "minimum_root_count": int(min_roots),
++        "critical_slots": 0,
++        "agents_ready": 0,
++        "agents_rejected_invalid_prediction": 0,
++        "agents_rejected_root_count": 0,
++        "agents_rejected_root_mass": 0,
++        "agents_rejected_profile_feasibility": 0,
++        "retained_roots": 0,
++        "eligible_profiles": 0,
++        "profile_candidates": 0,
++        "canonical_support_mass_sum": 0.0,
++        "raw_support_mass_sum": 0.0,
++    }
++    support: dict[int, dict[str, Any]] = {}
++    if state.ndim != 2 or nat.ndim != 4 or logits.ndim != 2:
++        aggregate["invalid_input"] = True
++        return support, aggregate
++    A = min(crit_idx.size, crit_valid.size, nat.shape[0], logits.shape[0])
++    for slot in range(A):
++        if not bool(crit_valid[slot]):
++            continue
++        agent_index = int(crit_idx[slot])
++        if (
++            agent_index == int(sdc_index) or not (0 <= agent_index < state.shape[0])
++            or state.shape[1] <= 10 or not bool(state[agent_index, 10] > 0.5)
++        ):
++            continue
++        aggregate["critical_slots"] = int(aggregate["critical_slots"]) + 1
++        record: dict[str, Any] = {
++            "ready": False,
++            "reason": "invalid_prediction",
++            "slot": int(slot),
++            "agent_index": int(agent_index),
++            "object_type": int(obj[agent_index]) if agent_index < obj.size else int(ObjectType.UNKNOWN),
++            "beta": 0.0,
++            "raw_support_mass": 0.0,
++            "canonical_support_mass": 0.0,
++            "retained_raw_mass": 0.0,
++            "retained_mass": 0.0,
++            "retained_root_count": 0,
++            "roots": [],
++        }
++        M = min(int(logits.shape[1]), int(nat.shape[1]))
++        valid_modes = np.zeros((M,), dtype=bool)
++        roots_by_mode: dict[int, np.ndarray] = {}
++        for mode in range(M):
++            root = np.asarray(nat[slot, mode], dtype=np.float32).copy()
++            if root.ndim != 2 or root.shape[0] <= 0 or root.shape[1] < 7 or not np.isfinite(root[:, :5]).all():
++                continue
++            root[:, 2] = np.asarray(_wrap_angle(root[:, 2]), dtype=np.float32)
++            root[:, 5] = max(float(state[agent_index, 7]), 0.1)
++            root[:, 6] = max(float(state[agent_index, 8]), 0.1)
++            valid_modes[mode] = True
++            roots_by_mode[int(mode)] = root
++        canonical, raw_probs = _canonical_online_root_weights_np(logits[slot, :M], valid_modes, cfg)
++        canonical_support = canonical > 0.0
++        if not bool(np.any(canonical_support)):
++            aggregate["agents_rejected_invalid_prediction"] = int(aggregate["agents_rejected_invalid_prediction"]) + 1
++            support[agent_index] = record
++            continue
++        raw_support_mass = float(np.sum(raw_probs[canonical_support]))
++        canonical_support_mass = float(np.sum(canonical[canonical_support]))
++        record["raw_support_mass"] = raw_support_mass
++        record["canonical_support_mass"] = canonical_support_mass
++        aggregate["raw_support_mass_sum"] = float(aggregate["raw_support_mass_sum"]) + raw_support_mass
++        aggregate["canonical_support_mass_sum"] = float(aggregate["canonical_support_mass_sum"]) + canonical_support_mass
++        mode_records: list[dict[str, Any]] = []
++        for mode in np.flatnonzero(canonical_support):
++            mode_records.append({
++                "weight": float(canonical[mode]),
++                "raw_weight": float(raw_probs[mode]),
++                "mode_indices": [int(mode)],
++                "trajectory": roots_by_mode[int(mode)],
++            })
++        mode_records.sort(key=lambda r: (-float(r["weight"]), int(r["mode_indices"][0])))
++        deduped: list[dict[str, Any]] = []
++        for candidate in mode_records:
++            placed = False
++            for old in deduped:
++                h = min(int(candidate["trajectory"].shape[0]), int(old["trajectory"].shape[0]))
++                mean_xy = float(np.mean(np.linalg.norm(
++                    candidate["trajectory"][:h, :2] - old["trajectory"][:h, :2], axis=-1,
++                ))) if h > 0 else float("inf")
++                if mean_xy <= dedup_m:
++                    old["weight"] = float(old["weight"]) + float(candidate["weight"])
++                    old["raw_weight"] = float(old["raw_weight"]) + float(candidate["raw_weight"])
++                    old["mode_indices"].extend(int(x) for x in candidate["mode_indices"])
++                    placed = True
++                    break
++            if not placed:
++                deduped.append(candidate)
++        eligible = sorted(
++            deduped, key=lambda r: (-float(r["weight"]), int(min(r["mode_indices"]))),
++        )
++        if max_roots > 0:
++            eligible = eligible[:max_roots]
++        total_eligible_mass = float(sum(float(r["weight"]) for r in eligible))
++        total_eligible_raw_mass = float(sum(float(r["raw_weight"]) for r in eligible))
++        if len(eligible) < min_roots:
++            record["reason"] = "insufficient_root_count"
++            record["available_root_count"] = int(len(eligible))
++            record["available_root_mass"] = float(total_eligible_mass)
++            aggregate["agents_rejected_root_count"] = int(aggregate["agents_rejected_root_count"]) + 1
++            support[agent_index] = record
++            continue
++        if total_eligible_mass + 1.0e-9 < required_mass:
++            record["reason"] = "insufficient_root_mass"
++            record["available_root_count"] = int(len(eligible))
++            record["available_root_mass"] = float(total_eligible_mass)
++            aggregate["agents_rejected_root_mass"] = int(aggregate["agents_rejected_root_mass"]) + 1
++            support[agent_index] = record
++            continue
++        selected_roots: list[dict[str, Any]] = []
++        cumulative_mass = 0.0
++        cumulative_raw_mass = 0.0
++        for root_rec in eligible:
++            selected_roots.append(root_rec)
++            cumulative_mass += float(root_rec["weight"])
++            cumulative_raw_mass += float(root_rec["raw_weight"])
++            if len(selected_roots) >= min_roots and cumulative_mass + 1.0e-9 >= required_mass:
++                break
++        object_type = int(record["object_type"])
++        beta = adaptive_beta(
++            state, object_type, PriorityRelation.AGENT_PRIORITY, cfg,
++            use_adaptive=True, ego_index=int(sdc_index),
++        )
++        record["beta"] = float(beta)
++        prepared_roots: list[dict[str, Any]] = []
++        all_roots_ready = True
++        for root_rec in selected_roots:
++            root = np.asarray(root_rec["trajectory"], dtype=np.float32)
++            try:
++                bank = build_root_recovery_trajectory_bank(root, cfg)
++                burdens = prepare_root_recovery_burden_bank(
++                    root, bank, cfg, object_type=object_type,
++                    rho=PriorityRelation.AGENT_PRIORITY,
++                )
++            except Exception:
++                bank, burdens = [], []
++            profile_records: list[dict[str, Any]] = []
++            for profile_index, (profile, burden_entry) in enumerate(zip(bank, burdens)):
++                aggregate["profile_candidates"] = int(aggregate["profile_candidates"]) + 1
++                burden = float(burden_entry[0])
++                tr = np.asarray(profile, dtype=np.float32)
++                if burden > float(beta) + 1.0e-9 or tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7:
++                    continue
++                if not bool(_roadgraph_drivable_mask(tr, roadgraph)):
++                    continue
++                current_kin_ok, current_kin = _trajectory_waymax_kinematic_safe_np(state[agent_index], tr, cfg)
++                shifted = _shift_append_terminal_reference_np(tr, dt)
++                response_successor = _agent_state_after_future_sample_np(state[agent_index], tr[0])
++                shifted_kin_ok, shifted_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
++                if not (current_kin_ok and shifted_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
++                    continue
++                profile_records.append({
++                    "profile_index": int(profile_index),
++                    "trajectory": tr,
++                    "shifted_trajectory": shifted,
++                    "burden": float(burden),
++                    "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
++                    "current_kinematic": current_kin,
++                    "shifted_kinematic": shifted_kin,
++                })
++                aggregate["eligible_profiles"] = int(aggregate["eligible_profiles"]) + 1
++            profile_records.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
++            prepared_roots.append({
++                "weight": float(root_rec["weight"]),
++                "raw_weight": float(root_rec["raw_weight"]),
++                "mode_indices": tuple(sorted(int(x) for x in root_rec["mode_indices"])),
++                "trajectory": root,
++                "profiles": profile_records,
++            })
++            if not profile_records:
++                all_roots_ready = False
++        record.update({
++            "retained_raw_mass": float(cumulative_raw_mass),
++            "retained_mass": float(cumulative_mass),
++            "retained_root_count": int(len(prepared_roots)),
++            "available_root_mass": float(total_eligible_mass),
++            "available_raw_root_mass": float(total_eligible_raw_mass),
++            "roots": prepared_roots,
++        })
++        aggregate["retained_roots"] = int(aggregate["retained_roots"]) + int(len(prepared_roots))
++        if not all_roots_ready:
++            record["reason"] = "root_has_no_low_burden_shift_closed_profile"
++            aggregate["agents_rejected_profile_feasibility"] = int(aggregate["agents_rejected_profile_feasibility"]) + 1
++            support[agent_index] = record
++            continue
++        record["ready"] = True
++        record["reason"] = "ready"
++        aggregate["agents_ready"] = int(aggregate["agents_ready"]) + 1
++        old = support.get(agent_index)
++        if old is None or (not bool(old.get("ready", False))) or float(record["retained_mass"]) > float(old.get("retained_mass", -1.0)):
++            support[agent_index] = record
++    return support, aggregate
++
++
++def _interaction_aware_recovery_certificate_np(
++    agent_state: np.ndarray,
++    successor_state: np.ndarray,
++    sdc_index: int,
++    current_ego_trajectory: np.ndarray,
++    current_ego_kinematic_ok: np.ndarray,
++    shifted_ego_trajectory: np.ndarray,
++    shifted_ego_kinematic_ok: np.ndarray,
++    roadgraph: dict[str, np.ndarray],
++    cfg: dict,
++    current_collision_context: dict[str, Any],
++    shifted_collision_context: dict[str, Any],
++    response_support: dict[int, dict[str, Any]],
++    object_types: np.ndarray,
++) -> tuple[bool, dict[str, Any]]:
++    """Certify one ego tube under universal low-burden same-root response support."""
++    current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
++        current_ego_trajectory, current_collision_context,
++    )
++    shifted_blockers, shifted_blocker_detail = _collision_blocking_agent_indices_against_context(
++        shifted_ego_trajectory, shifted_collision_context,
++    )
++    blockers = sorted(set(current_blockers) | set(shifted_blockers))
++    detail: dict[str, Any] = {
++        "failure_reason": "none",
++        "current_blockers": current_blockers,
++        "shifted_blockers": shifted_blockers,
++        "blocker_count": int(len(blockers)),
++        "current_blocker_detail": current_blocker_detail,
++        "shifted_blocker_detail": shifted_blocker_detail,
++        "response_root_checks": 0,
++        "response_profile_evaluations": 0,
++        "interaction_environment_compatibility_checks": 0,
++        "interaction_environment_compatibility_rejects": 0,
++        "interaction_joint_compatibility_checks": 0,
++        "interaction_joint_compatibility_rejects": 0,
++        "interaction_joint_assignment_backtracks": 0,
++        "supported_root_count": 0,
++        "minimum_retained_root_mass": 0.0,
++        "maximum_selected_response_burden": 0.0,
++        "current_residual_certificate": {},
++        "shifted_residual_certificate": {},
++    }
++    if not blockers:
++        detail["failure_reason"] = "no_collision_blocker"
++        return False, detail
++    unsupported = [j for j in blockers if not bool(response_support.get(int(j), {}).get("ready", False))]
++    if unsupported:
++        detail["failure_reason"] = "unsupported_collision_blocker"
++        detail["unsupported_blockers"] = unsupported
++        return False, detail
++
++    excluded = set(blockers)
++    current_residual_context = _collision_context_without_agent_indices(current_collision_context, excluded)
++    shifted_residual_context = _collision_context_without_agent_indices(shifted_collision_context, excluded)
++    current_ok, current_physical = _physical_recovery_tube_certificate_np(
++        np.asarray(agent_state, dtype=np.float32), int(sdc_index),
++        current_ego_trajectory, current_ego_kinematic_ok,
++        roadgraph, cfg, collision_context=current_residual_context,
++    )
++    shifted_ok, shifted_physical = _physical_recovery_tube_certificate_np(
++        np.asarray(successor_state, dtype=np.float32), int(sdc_index),
++        shifted_ego_trajectory, shifted_ego_kinematic_ok,
++        roadgraph, cfg, collision_context=shifted_residual_context,
++    )
++    detail["current_residual_certificate"] = current_physical
++    detail["shifted_residual_certificate"] = shifted_physical
++    if not (current_ok and shifted_ok):
++        detail["failure_reason"] = "residual_physical_certificate_failed"
++        return False, detail
++
++    obj = np.asarray(object_types, dtype=np.int32).reshape(-1)
++    environment_indices = sorted({
++        int(agent.get("index", -1))
++        for context in (current_collision_context, shifted_collision_context)
++        for agent in context.get("agents", [])
++        if int(agent.get("index", -1)) >= 0
++        and int(agent.get("index", -1)) != int(sdc_index)
++        and int(agent.get("index", -1)) not in excluded
++    })
++    environment: list[dict[str, Any]] = []
++    current_horizon = int(np.asarray(current_ego_trajectory).shape[0])
++    shifted_horizon = int(np.asarray(shifted_ego_trajectory).shape[0])
++    for environment_index in environment_indices:
++        current_cv = _constant_velocity_trajectory_from_state_np(
++            agent_state, environment_index, current_horizon, cfg,
++        )
++        shifted_cv = _constant_velocity_trajectory_from_state_np(
++            successor_state, environment_index, shifted_horizon, cfg,
++        )
++        if current_cv is None or shifted_cv is None:
++            detail["failure_reason"] = "invalid_environment_actor_prediction"
++            detail["failed_environment_agent_index"] = int(environment_index)
++            return False, detail
++        environment.append({
++            "agent_index": int(environment_index),
++            "object_type": int(obj[environment_index]) if environment_index < obj.size else int(ObjectType.UNKNOWN),
++            "trajectory": current_cv,
++            "shifted_trajectory": shifted_cv,
++        })
++    detail["environment_agent_count"] = int(len(environment))
++
++    # Build a separable robust response envelope.  One profile is selected for
++    # every retained root.  Profiles belonging to different blockers must be
++    # mutually safe in both the current and shifted tubes.  Because roots of the
++    # same agent are alternatives rather than simultaneous states, they need no
++    # pairwise check.  Cross-agent pairwise compatibility makes every Cartesian
++    # combination of retained roots jointly realizable without using a learned
++    # correlation model or future simulator state.
++    root_nodes: list[dict[str, Any]] = []
++    minimum_mass = 1.0
++    root_count = 0
++    for agent_index in blockers:
++        agent_support = response_support[int(agent_index)]
++        minimum_mass = min(minimum_mass, float(agent_support.get("retained_mass", 0.0)))
++        object_type = int(agent_support.get("object_type", int(ObjectType.UNKNOWN)))
++        for root_ordinal, root in enumerate(agent_support.get("roots", [])):
++            root_count += 1
++            detail["response_root_checks"] = int(detail["response_root_checks"]) + 1
++            ego_safe_count = 0
++            environment_safe_profiles: list[dict[str, Any]] = []
++            for profile in root.get("profiles", []):
++                detail["response_profile_evaluations"] = int(detail["response_profile_evaluations"]) + 1
++                profile_current = np.asarray(profile["trajectory"], dtype=np.float32)
++                profile_shifted = np.asarray(profile["shifted_trajectory"], dtype=np.float32)
++                try:
++                    current_unsafe = unsafe_between_bool(
++                        np.asarray(current_ego_trajectory, dtype=np.float32),
++                        profile_current, cfg, agent_type=object_type,
++                    )
++                    shifted_unsafe = unsafe_between_bool(
++                        np.asarray(shifted_ego_trajectory, dtype=np.float32),
++                        profile_shifted, cfg, agent_type=object_type,
++                    )
++                except Exception:
++                    current_unsafe = shifted_unsafe = True
++                if current_unsafe or shifted_unsafe:
++                    continue
++                ego_safe_count += 1
++                environment_safe = True
++                for actor in environment:
++                    detail["interaction_environment_compatibility_checks"] = int(
++                        detail["interaction_environment_compatibility_checks"]
++                    ) + 1
++                    try:
++                        current_bad = (
++                            unsafe_between_bool(
++                                profile_current, np.asarray(actor["trajectory"], dtype=np.float32),
++                                cfg, agent_type=int(actor["object_type"]),
++                            )
++                            or unsafe_between_bool(
++                                np.asarray(actor["trajectory"], dtype=np.float32), profile_current,
++                                cfg, agent_type=object_type,
++                            )
++                        )
++                        shifted_bad = (
++                            unsafe_between_bool(
++                                profile_shifted, np.asarray(actor["shifted_trajectory"], dtype=np.float32),
++                                cfg, agent_type=int(actor["object_type"]),
++                            )
++                            or unsafe_between_bool(
++                                np.asarray(actor["shifted_trajectory"], dtype=np.float32), profile_shifted,
++                                cfg, agent_type=object_type,
++                            )
++                        )
++                    except Exception:
++                        current_bad = shifted_bad = True
++                    if current_bad or shifted_bad:
++                        detail["interaction_environment_compatibility_rejects"] = int(
++                            detail["interaction_environment_compatibility_rejects"]
++                        ) + 1
++                        environment_safe = False
++                        break
++                if environment_safe:
++                    environment_safe_profiles.append(profile)
++            environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
++            if not environment_safe_profiles:
++                detail["failure_reason"] = (
++                    "retained_root_has_no_ego_safe_response"
++                    if ego_safe_count <= 0 else "retained_root_has_no_environment_safe_response"
++                )
++                detail["failed_agent_index"] = int(agent_index)
++                detail["failed_root_ordinal"] = int(root_ordinal)
++                detail["failed_root_stage"] = "ego" if ego_safe_count <= 0 else "environment"
++                return False, detail
++            root_nodes.append({
++                "agent_index": int(agent_index),
++                "object_type": object_type,
++                "root_ordinal": int(root_ordinal),
++                "root": root,
++                "profiles": environment_safe_profiles,
++            })
++
++    # Minimum-domain-first deterministic backtracking.  This is an exact CSP over
++    # the bounded frozen root/profile bank, not a top-k heuristic.  A solution
++    # selects one response per retained root whose cross-agent pairs are all safe;
++    # therefore every possible multi-agent retained-root realization has a valid
++    # simultaneous response tuple.
++    ordered_nodes = sorted(
++        root_nodes,
++        key=lambda n: (
++            len(n["profiles"]), int(n["agent_index"]), int(n["root_ordinal"]),
++        ),
++    )
++    assignments: list[tuple[dict[str, Any], dict[str, Any]]] = []
++    compatibility_checks = 0
++    compatibility_rejects = 0
++    backtracks = 0
++
++    def pair_compatible(
++        node: dict[str, Any], profile: dict[str, Any],
++        other_node: dict[str, Any], other_profile: dict[str, Any],
++    ) -> bool:
++        nonlocal compatibility_checks, compatibility_rejects
++        if int(node["agent_index"]) == int(other_node["agent_index"]):
++            return True
++        compatibility_checks += 1
++        try:
++            current_bad = (
++                unsafe_between_bool(
++                    np.asarray(profile["trajectory"], dtype=np.float32),
++                    np.asarray(other_profile["trajectory"], dtype=np.float32),
++                    cfg, agent_type=int(other_node["object_type"]),
++                )
++                or unsafe_between_bool(
++                    np.asarray(other_profile["trajectory"], dtype=np.float32),
++                    np.asarray(profile["trajectory"], dtype=np.float32),
++                    cfg, agent_type=int(node["object_type"]),
++                )
++            )
++            shifted_bad = (
++                unsafe_between_bool(
++                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
++                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
++                    cfg, agent_type=int(other_node["object_type"]),
++                )
++                or unsafe_between_bool(
++                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
++                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
++                    cfg, agent_type=int(node["object_type"]),
++                )
++            )
++        except Exception:
++            current_bad = shifted_bad = True
++        if current_bad or shifted_bad:
++            compatibility_rejects += 1
++            return False
++        return True
++
++    def assign_node(pos: int) -> bool:
++        nonlocal backtracks
++        if pos >= len(ordered_nodes):
++            return True
++        node = ordered_nodes[pos]
++        for profile in node["profiles"]:
++            if all(pair_compatible(node, profile, old_node, old_profile) for old_node, old_profile in assignments):
++                assignments.append((node, profile))
++                if assign_node(pos + 1):
++                    return True
++                assignments.pop()
++                backtracks += 1
++        return False
++
++    if not assign_node(0):
++        detail.update({
++            "failure_reason": "no_jointly_compatible_response_envelope",
++            "interaction_joint_compatibility_checks": int(compatibility_checks),
++            "interaction_joint_compatibility_rejects": int(compatibility_rejects),
++            "interaction_joint_assignment_backtracks": int(backtracks),
++        })
++        return False, detail
++
++    selected_responses: list[dict[str, Any]] = []
++    maximum_burden = 0.0
++    for node, accepted_profile in sorted(
++        assignments,
++        key=lambda x: (int(x[0]["agent_index"]), int(x[0]["root_ordinal"])),
++    ):
++        root = node["root"]
++        burden = float(accepted_profile["burden"])
++        maximum_burden = max(maximum_burden, burden)
++        selected_responses.append({
++            "agent_index": int(node["agent_index"]),
++            "root_ordinal": int(node["root_ordinal"]),
++            "mode_indices": tuple(int(x) for x in root.get("mode_indices", ())),
++            "root_weight": float(root.get("weight", 0.0)),
++            "profile_index": int(accepted_profile["profile_index"]),
++            "burden": burden,
++        })
++    detail.update({
++        "interaction_joint_compatibility_checks": int(compatibility_checks),
++        "interaction_joint_compatibility_rejects": int(compatibility_rejects),
++        "interaction_joint_assignment_backtracks": int(backtracks),
++    })
++    detail.update({
++        "supported_root_count": int(root_count),
++        "minimum_retained_root_mass": float(minimum_mass if blockers else 0.0),
++        "maximum_selected_response_burden": float(maximum_burden),
++        "selected_responses": selected_responses,
++    })
++    return True, detail
++
++
++def _construct_interaction_aware_reachable_response_envelope_np(
++    agent_state: np.ndarray,
++    sdc_index: int,
++    nominal_trajectories: np.ndarray,
++    cand_valid: np.ndarray,
++    nominal_roadgraph_safe: np.ndarray,
++    macro_types: np.ndarray,
++    fallback_scores: np.ndarray,
++    collision_prefix_steps: np.ndarray,
++    action_targets: np.ndarray,
++    action_accels: np.ndarray,
++    roadgraph: dict[str, np.ndarray],
++    cfg: dict,
++    previous_longitudinal_accel: float,
++    *,
++    base_candidate_index: int,
++    critical_track_index: np.ndarray,
++    critical_valid: np.ndarray,
++    natural_trajectories: np.ndarray,
++    natural_logits: np.ndarray,
++    object_types: np.ndarray,
++) -> tuple[dict[str, Any] | None, dict[str, Any]]:
++    """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
++
++    The exact V39 conflict-window tube remains the nested first branch.  Only when
++    it has no physical certificate does this extension revisit the same V39
++    controller-reachable hypotheses.  A static CV blocker may be replaced by an
++    interaction contingency only when every retained high-mass natural root of
++    that exact blocker owns the same low-burden, drivable, Waymax-kinematic
++    response profile for both the current and one-step-shifted ego tubes.  All
++    non-blocking agents, ego roadgraph checks and ego inverse dynamics remain hard.
++    """
++    nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
++        agent_state, sdc_index, nominal_trajectories, cand_valid,
++        nominal_roadgraph_safe, macro_types, fallback_scores,
++        collision_prefix_steps, action_targets, action_accels,
++        roadgraph, cfg, previous_longitudinal_accel,
++    )
++    detail = dict(nested_detail)
++    detail.update({
++        "nested_v39_selected": bool(nested_selected is not None),
++        "interaction_response_attempted": False,
++        "interaction_response_selected": False,
++        "interaction_support_agents_total": 0,
++        "interaction_support_agents_ready": 0,
++        "interaction_support_retained_roots": 0,
++        "interaction_support_eligible_profiles": 0,
++        "interaction_hypotheses_evaluated": 0,
++        "interaction_noop_hypotheses_skipped": 0,
++        "interaction_no_blocker_rejects": 0,
++        "interaction_unsupported_blocker_rejects": 0,
++        "interaction_residual_physical_rejects": 0,
++        "interaction_root_unrecoverable_rejects": 0,
++        "interaction_joint_incompatibility_rejects": 0,
++        "interaction_environment_compatibility_checks": 0,
++        "interaction_environment_compatibility_rejects": 0,
++        "interaction_joint_compatibility_checks": 0,
++        "interaction_joint_compatibility_rejects": 0,
++        "interaction_joint_assignment_backtracks": 0,
++        "interaction_selected_blocker_count": 0,
++        "interaction_selected_root_count": 0,
++        "interaction_selected_minimum_root_mass": 0.0,
++        "interaction_selected_maximum_response_burden": 0.0,
++        "interaction_selected_profile_evaluations": 0,
++        "selected_is_interaction_response": False,
++        "selected_certificate_kind": "nested_v39" if nested_selected is not None else "none",
++    })
++    if nested_selected is not None:
++        return nested_selected, detail
++
++    detail["interaction_response_attempted"] = True
++    state = np.asarray(agent_state, dtype=np.float32)
++    traj = np.asarray(nominal_trajectories, dtype=np.float32)
++    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
++    nominal_road = np.asarray(nominal_roadgraph_safe, dtype=bool).reshape(-1)
++    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
++    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
++    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
++    targets = np.asarray(action_targets, dtype=np.float32)
++    nominal_accels = np.asarray(action_accels, dtype=np.float64).reshape(-1)
++    if (
++        state.ndim != 2 or not (0 <= int(sdc_index) < state.shape[0])
++        or traj.ndim != 3 or traj.shape[0] <= 0 or traj.shape[1] <= 0 or traj.shape[2] < 5
++    ):
++        detail["interaction_invalid_input"] = True
++        return None, detail
++    n = min(
++        traj.shape[0], valid.size, nominal_road.size, macro.size, scores.size,
++        prefix.size, targets.shape[0] if targets.ndim == 2 else 0, nominal_accels.size,
++    )
++    base_idx = int(base_candidate_index)
++    if n <= 0 or not (0 <= base_idx < n):
++        detail["interaction_invalid_input"] = True
++        return None, detail
++    traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
++    scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
++
++    response_support, support_detail = _prepare_interaction_response_support_np(
++        state, int(sdc_index), critical_track_index, critical_valid,
++        natural_trajectories, natural_logits, object_types, roadgraph, cfg,
++    )
++    detail["interaction_support_detail"] = support_detail
++    detail["interaction_support_agents_total"] = int(support_detail.get("critical_slots", 0))
++    detail["interaction_support_agents_ready"] = int(support_detail.get("agents_ready", 0))
++    detail["interaction_support_retained_roots"] = int(support_detail.get("retained_roots", 0))
++    detail["interaction_support_eligible_profiles"] = int(support_detail.get("eligible_profiles", 0))
++    if int(support_detail.get("agents_ready", 0)) <= 0:
++        detail["interaction_failure_reason"] = "no_response_ready_critical_agent"
++        return None, detail
++
++    pool = valid & nominal_road
++    if not bool(pool.any()):
++        pool = valid.copy()
++    pool &= macro != int(MacroType.PAD)
++    reps = _semantic_action_class_representatives_np(
++        pool, macro, targets, prefix, scores, prefer_fallback=True,
++    )
++    if not reps:
++        detail["interaction_failure_reason"] = "no_parent_action_class"
++        return None, detail
++
++    H = int(traj.shape[1])
++    current_collision_context = _prepare_collision_check_context(
++        state, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
++    )
++    rep_arr = np.asarray(reps, dtype=np.int64)
++    nominal_projected, _nominal_kin, _nominal_accel_hist = _project_candidate_bank_through_controller_np(
++        state[int(sdc_index)], traj[rep_arr], cfg, float(previous_longitudinal_accel),
++    )
++    parent_indices: list[int] = []
++    policy_ids: list[int] = []
++    policy_names: list[str] = []
++    release_edges: list[int] = []
++    nonnominal_edges: list[int] = []
++    schedules: list[np.ndarray] = []
++    for local_i, parent in enumerate(reps):
++        window = _collision_violation_window_against_context(
++            nominal_projected[local_i], current_collision_context,
++        )
++        family = _conflict_window_envelope_schedule_family(
++            H,
++            int(window.get("first_violation_step", -1)),
++            int(window.get("last_violation_step", -1)),
++        )
++        for rec in family:
++            parent_indices.append(int(parent))
++            policy_ids.append(int(rec["policy_id"]))
++            policy_names.append(str(rec["policy_name"]))
++            release_edges.append(int(rec["release_edge"]))
++            nonnominal_edges.append(int(rec["nonnominal_edges"]))
++            schedules.append(np.asarray(rec["schedule"], dtype=np.int8))
++    if not schedules:
++        detail["interaction_failure_reason"] = "no_conflict_window_hypothesis"
++        return None, detail
++    parent_arr = np.asarray(parent_indices, dtype=np.int64)
++    policy_arr = np.asarray(policy_ids, dtype=np.int8)
++    schedule_arr = np.stack(schedules, axis=0).astype(np.int8)
++    release_arr = np.asarray(release_edges, dtype=np.int32)
++    nonnominal_arr = np.asarray(nonnominal_edges, dtype=np.int32)
++    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
++        state[int(sdc_index)], np.asarray(traj[parent_arr], dtype=np.float32), cfg,
++        float(previous_longitudinal_accel),
++        longitudinal_envelope_schedule=schedule_arr,
++    )
++    base_target = np.asarray(targets[base_idx, :5], dtype=np.float32)
++
++    def hypothesis_key(j: int) -> tuple[Any, ...]:
++        parent = int(parent_arr[j])
++        pid = int(policy_arr[j])
++        return (
++            float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
++            abs(float(accel_hist[j, 0]) - float(nominal_accels[parent])),
++            int(nonnominal_arr[j]),
++            0 if pid == 0 else (1 if abs(pid) >= 2 else 2),
++            parent,
++            pid,
++        )
++
++    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
++    for j in sorted(range(int(projected.shape[0])), key=hypothesis_key):
++        first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
++        if np.allclose(first_target, base_target, rtol=0.0, atol=1.0e-6):
++            detail["interaction_noop_hypotheses_skipped"] = int(detail["interaction_noop_hypotheses_skipped"]) + 1
++            continue
++        detail["interaction_hypotheses_evaluated"] = int(detail["interaction_hypotheses_evaluated"]) + 1
++        first_accel = float(accel_hist[j, 0])
++        successor = _counterfactual_successor_agent_state(
++            state, int(sdc_index), first_target, cfg,
++        )
++        shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
++        shifted_schedule = _shift_longitudinal_envelope_schedule_np(
++            schedule_arr[j], int(policy_arr[j]),
++        )
++        shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
++            successor[int(sdc_index)], shifted_reference[None, ...], cfg,
++            first_accel, longitudinal_envelope_schedule=shifted_schedule[None, :],
++        )
++        shifted_collision_context = _prepare_collision_check_context(
++            successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
++        )
++        interaction_ok, interaction_detail = _interaction_aware_recovery_certificate_np(
++            state, successor, int(sdc_index),
++            projected[j], kin_ok[j], shifted_projected[0], shifted_kin_ok[0],
++            roadgraph, cfg, current_collision_context, shifted_collision_context,
++            response_support, object_types,
++        )
++        reason = str(interaction_detail.get("failure_reason", "unknown"))
++        detail["interaction_environment_compatibility_checks"] = int(
++            detail["interaction_environment_compatibility_checks"]
++        ) + int(interaction_detail.get("interaction_environment_compatibility_checks", 0))
++        detail["interaction_environment_compatibility_rejects"] = int(
++            detail["interaction_environment_compatibility_rejects"]
++        ) + int(interaction_detail.get("interaction_environment_compatibility_rejects", 0))
++        detail["interaction_joint_compatibility_checks"] = int(detail["interaction_joint_compatibility_checks"]) + int(
++            interaction_detail.get("interaction_joint_compatibility_checks", 0)
++        )
++        detail["interaction_joint_compatibility_rejects"] = int(detail["interaction_joint_compatibility_rejects"]) + int(
++            interaction_detail.get("interaction_joint_compatibility_rejects", 0)
++        )
++        detail["interaction_joint_assignment_backtracks"] = int(detail["interaction_joint_assignment_backtracks"]) + int(
++            interaction_detail.get("interaction_joint_assignment_backtracks", 0)
++        )
++        if not interaction_ok:
++            if reason == "no_collision_blocker":
++                detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
++            elif reason == "unsupported_collision_blocker":
++                detail["interaction_unsupported_blocker_rejects"] = int(detail["interaction_unsupported_blocker_rejects"]) + 1
++            elif reason == "residual_physical_certificate_failed":
++                detail["interaction_residual_physical_rejects"] = int(detail["interaction_residual_physical_rejects"]) + 1
++            elif reason in {
++                "retained_root_has_no_ego_safe_response",
++                "retained_root_has_no_environment_safe_response",
++                "invalid_environment_actor_prediction",
++            }:
++                detail["interaction_root_unrecoverable_rejects"] = int(detail["interaction_root_unrecoverable_rejects"]) + 1
++            elif reason == "no_jointly_compatible_response_envelope":
++                detail["interaction_joint_incompatibility_rejects"] = int(detail["interaction_joint_incompatibility_rejects"]) + 1
++            continue
++
++        parent = int(parent_arr[j])
++        pid = int(policy_arr[j])
++        current_certificate = dict(interaction_detail.get("current_residual_certificate", {}))
++        shifted_certificate = dict(interaction_detail.get("shifted_residual_certificate", {}))
++        selected = {
++            "expanded_index": int(j),
++            "parent_index": parent,
++            "macro": int(macro[parent]),
++            "policy_id": pid,
++            "policy_name": str(policy_names[j]),
++            "mode": int(schedule_arr[j, 0]),
++            "schedule": np.asarray(schedule_arr[j], dtype=np.int8),
++            "release_edge": int(release_arr[j]),
++            "nonnominal_edges": int(nonnominal_arr[j]),
++            "event_release": bool(abs(pid) >= 2),
++            "trajectory": np.asarray(projected[j], dtype=np.float32),
++            "target": first_target,
++            "accel": first_accel,
++            "accel_history": np.asarray(accel_hist[j], dtype=np.float32),
++            "shifted_trajectory": np.asarray(shifted_projected[0], dtype=np.float32),
++            "shifted_accel_history": np.asarray(shifted_accel_hist[0], dtype=np.float32),
++            "fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
++            "first_accel_delta": float(first_accel - float(nominal_accels[parent])),
++            "current_certificate": current_certificate,
++            "shifted_certificate": shifted_certificate,
++            "interaction_certificate": interaction_detail,
++        }
++        detail.update({
++            "selected": True,
++            "interaction_response_selected": True,
++            "selected_is_interaction_response": True,
++            "selected_certificate_kind": "interaction_aware_reachable_response_envelope",
++            "selected_is_lifted": bool(pid != 0),
++            "selected_is_event_release": bool(abs(pid) >= 2),
++            "selected_policy_id": pid,
++            "selected_policy_name": str(policy_names[j]),
++            "selected_envelope_mode": int(schedule_arr[j, 0]),
++            "selected_release_edge": int(release_arr[j]),
++            "selected_nonnominal_edges": int(nonnominal_arr[j]),
++            "selected_parent_candidate": parent,
++            "selected_parent_macro": int(macro[parent]),
++            "selected_parent_macro_name": _macro_name(int(macro[parent])),
++            "selected_first_accel_delta": float(first_accel - float(nominal_accels[parent])),
++            "selected_collision_min_margin_m": float(current_certificate.get("collision_min_margin_m", -999.0)),
++            "selected_shift_collision_min_margin_m": float(shifted_certificate.get("collision_min_margin_m", -999.0)),
++            "selected_fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
++            "selected_is_new_first_action": True,
++            "interaction_selected_blocker_count": int(interaction_detail.get("blocker_count", 0)),
++            "interaction_selected_root_count": int(interaction_detail.get("supported_root_count", 0)),
++            "interaction_selected_minimum_root_mass": float(interaction_detail.get("minimum_retained_root_mass", 0.0)),
++            "interaction_selected_maximum_response_burden": float(interaction_detail.get("maximum_selected_response_burden", 0.0)),
++            "interaction_selected_profile_evaluations": int(interaction_detail.get("response_profile_evaluations", 0)),
++            "interaction_selected_environment_agent_count": int(interaction_detail.get("environment_agent_count", 0)),
++            "interaction_selected_environment_compatibility_checks": int(interaction_detail.get("interaction_environment_compatibility_checks", 0)),
++            "interaction_selected_responses": interaction_detail.get("selected_responses", []),
++        })
++        return selected, detail
++
++    detail["interaction_failure_reason"] = "no_interaction_certified_action"
++    return None, detail
+ 
+ def _collision_free_against_constant_velocity(
+     traj: np.ndarray,
+@@ -5726,7 +6831,7 @@
+                     selection_mask = certificate_accepted
+                 adjusted_scores = scores
+ 
+-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and gate_mode in {"priority", "soft"}:
++            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
+                 pcfg_selector = self.cfg.get("planning", {})
+                 physical_ok = (
+                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
+@@ -5943,7 +7048,7 @@
+                 fallback_reason = "no_certificate_use_least_coercive_conventional"
+             elif bool(fallback_flags[2]):
+                 fallback_used = True
+-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"}:
++                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"}:
+                     # Historical v16.8.29--35 recovery probes use the same controlled
+                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
+                     # references but expands the *current* support to one existing-bank
+@@ -5977,6 +7082,7 @@
+                         "cowp_shift_closed_control_reachable_tube",
+                         "cowp_conflict_window_control_reachable_tube",
+                         "cowp_shift_closed_first_action_viability_interval",
++                        "cowp_interaction_aware_reachable_response_envelope",
+                     }:
+                         # V38 constructs nominal/all-horizon lower/all-horizon upper
+                         # controller tubes. V39 keeps that support nested and adds
+@@ -5989,13 +7095,7 @@
+                         prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
+                         macro_np_tube = macro_t.detach().cpu().numpy().astype(np.int64)
+                         fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
+-                        if method == "cowp_shift_closed_first_action_viability_interval":
+-                            tube_constructor = _construct_shift_closed_first_action_viability_interval_np
+-                        elif method == "cowp_conflict_window_control_reachable_tube":
+-                            tube_constructor = _construct_conflict_window_control_reachable_tube_np
+-                        else:
+-                            tube_constructor = _construct_shift_closed_control_reachable_tube_np
+-                        selected_tube, recovery_tube_detail = tube_constructor(
++                        common_tube_args = (
+                             agent_state,
+                             int(sdc_index),
+                             np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32),
+@@ -6010,6 +7110,37 @@
+                             self.cfg,
+                             float(self._previous_longitudinal_accel),
+                         )
++                        if method == "cowp_interaction_aware_reachable_response_envelope":
++                            natural_out = pred.get("natural", {})
++                            natural_traj_t = natural_out.get("traj") if isinstance(natural_out, dict) else None
++                            natural_logits_t = natural_out.get("logits") if isinstance(natural_out, dict) else None
++                            if self.torch.is_tensor(natural_traj_t) and self.torch.is_tensor(natural_logits_t):
++                                natural_traj_np = natural_traj_t[0].detach().cpu().numpy().astype(np.float32, copy=False)
++                                natural_logits_np = natural_logits_t[0].detach().cpu().numpy().astype(np.float32, copy=False)
++                            else:
++                                natural_traj_np = np.zeros((0, 0, 0, 7), dtype=np.float32)
++                                natural_logits_np = np.zeros((0, 0), dtype=np.float32)
++                            selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
++                                *common_tube_args,
++                                base_candidate_index=int(recovery_base_candidate),
++                                critical_track_index=np.asarray(
++                                    batch_np["cowp/critical/track_index"][0], dtype=np.int64
++                                ),
++                                critical_valid=np.asarray(
++                                    batch_np["cowp/critical/valid"][0], dtype=bool
++                                ),
++                                natural_trajectories=natural_traj_np,
++                                natural_logits=natural_logits_np,
++                                object_types=_extract_object_types_np(state, int(agent_state.shape[0])),
++                            )
++                        else:
++                            if method == "cowp_shift_closed_first_action_viability_interval":
++                                tube_constructor = _construct_shift_closed_first_action_viability_interval_np
++                            elif method == "cowp_conflict_window_control_reachable_tube":
++                                tube_constructor = _construct_conflict_window_control_reachable_tube_np
++                            else:
++                                tube_constructor = _construct_shift_closed_control_reachable_tube_np
++                            selected_tube, recovery_tube_detail = tube_constructor(*common_tube_args)
+                         chosen = int(recovery_base_candidate)
+                         if selected_tube is not None:
+                             chosen = int(selected_tube["parent_index"])
+@@ -6040,7 +7171,9 @@
+                         select_mask = self.torch.zeros_like(cand_valid)
+                         select_mask[int(chosen)] = True
+                         select_score = fallback_score
+-                        if method == "cowp_shift_closed_first_action_viability_interval":
++                        if method == "cowp_interaction_aware_reachable_response_envelope":
++                            fallback_reason = "no_conventional_use_interaction_aware_reachable_response_envelope"
++                        elif method == "cowp_shift_closed_first_action_viability_interval":
+                             fallback_reason = "no_conventional_use_shift_closed_first_action_viability_interval"
+                         elif method == "cowp_conflict_window_control_reachable_tube":
+                             fallback_reason = "no_conventional_use_conflict_window_control_reachable_tube"
+@@ -6613,6 +7746,7 @@
+                 "cowp_shift_closed_control_reachable_tube",
+                 "cowp_conflict_window_control_reachable_tube",
+                 "cowp_shift_closed_first_action_viability_interval",
++                "cowp_interaction_aware_reachable_response_envelope",
+             }:
+                 selected_contract_target = (
+                     np.asarray(recovery_tube_target_override, dtype=np.float32)
+@@ -6927,6 +8061,34 @@
+                 "recovery_tube_selected_is_new_first_action": bool(recovery_tube_detail.get("selected_is_new_first_action", False)),
+                 "recovery_tube_selected_first_accel_fraction": float(recovery_tube_detail.get("selected_first_accel_fraction", 0.0)),
+                 "recovery_tube_selected_boundary_source": str(recovery_tube_detail.get("selected_boundary_source", "NONE")),
++                "recovery_tube_interaction_response_attempted": bool(recovery_tube_detail.get("interaction_response_attempted", False)),
++                "recovery_tube_interaction_response_selected": bool(recovery_tube_detail.get("interaction_response_selected", False)),
++                "recovery_tube_selected_is_interaction_response": bool(recovery_tube_detail.get("selected_is_interaction_response", False)),
++                "recovery_tube_selected_certificate_kind": str(recovery_tube_detail.get("selected_certificate_kind", "none")),
++                "recovery_tube_interaction_failure_reason": str(recovery_tube_detail.get("interaction_failure_reason", "none")),
++                "recovery_tube_interaction_support_agents_total": int(recovery_tube_detail.get("interaction_support_agents_total", 0)),
++                "recovery_tube_interaction_support_agents_ready": int(recovery_tube_detail.get("interaction_support_agents_ready", 0)),
++                "recovery_tube_interaction_support_retained_roots": int(recovery_tube_detail.get("interaction_support_retained_roots", 0)),
++                "recovery_tube_interaction_support_eligible_profiles": int(recovery_tube_detail.get("interaction_support_eligible_profiles", 0)),
++                "recovery_tube_interaction_hypotheses_evaluated": int(recovery_tube_detail.get("interaction_hypotheses_evaluated", 0)),
++                "recovery_tube_interaction_noop_hypotheses_skipped": int(recovery_tube_detail.get("interaction_noop_hypotheses_skipped", 0)),
++                "recovery_tube_interaction_no_blocker_rejects": int(recovery_tube_detail.get("interaction_no_blocker_rejects", 0)),
++                "recovery_tube_interaction_unsupported_blocker_rejects": int(recovery_tube_detail.get("interaction_unsupported_blocker_rejects", 0)),
++                "recovery_tube_interaction_residual_physical_rejects": int(recovery_tube_detail.get("interaction_residual_physical_rejects", 0)),
++                "recovery_tube_interaction_root_unrecoverable_rejects": int(recovery_tube_detail.get("interaction_root_unrecoverable_rejects", 0)),
++                "recovery_tube_interaction_joint_incompatibility_rejects": int(recovery_tube_detail.get("interaction_joint_incompatibility_rejects", 0)),
++                "recovery_tube_interaction_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_environment_compatibility_checks", 0)),
++                "recovery_tube_interaction_environment_compatibility_rejects": int(recovery_tube_detail.get("interaction_environment_compatibility_rejects", 0)),
++                "recovery_tube_interaction_joint_compatibility_checks": int(recovery_tube_detail.get("interaction_joint_compatibility_checks", 0)),
++                "recovery_tube_interaction_joint_compatibility_rejects": int(recovery_tube_detail.get("interaction_joint_compatibility_rejects", 0)),
++                "recovery_tube_interaction_joint_assignment_backtracks": int(recovery_tube_detail.get("interaction_joint_assignment_backtracks", 0)),
++                "recovery_tube_interaction_selected_blocker_count": int(recovery_tube_detail.get("interaction_selected_blocker_count", 0)),
++                "recovery_tube_interaction_selected_root_count": int(recovery_tube_detail.get("interaction_selected_root_count", 0)),
++                "recovery_tube_interaction_selected_minimum_root_mass": float(recovery_tube_detail.get("interaction_selected_minimum_root_mass", 0.0)),
++                "recovery_tube_interaction_selected_maximum_response_burden": float(recovery_tube_detail.get("interaction_selected_maximum_response_burden", 0.0)),
++                "recovery_tube_interaction_selected_profile_evaluations": int(recovery_tube_detail.get("interaction_selected_profile_evaluations", 0)),
++                "recovery_tube_interaction_selected_environment_agent_count": int(recovery_tube_detail.get("interaction_selected_environment_agent_count", 0)),
++                "recovery_tube_interaction_selected_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_selected_environment_compatibility_checks", 0)),
+                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
+                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
+                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
+@@ -6969,7 +8131,9 @@
+             traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
+             execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
+             execution_accel = float(recovery_tube_accel_override)
+-            if method == "cowp_shift_closed_first_action_viability_interval":
++            if method == "cowp_interaction_aware_reachable_response_envelope":
++                execution_source = "interaction_aware_reachable_response_envelope"
++            elif method == "cowp_shift_closed_first_action_viability_interval":
+                 execution_source = "shift_closed_first_action_viability_interval"
+             elif method == "cowp_conflict_window_control_reachable_tube":
+                 execution_source = "conflict_window_control_reachable_tube"
+--- a/cowp/waymax_eval/rollout.py
++++ b/cowp/waymax_eval/rollout.py
+@@ -66,7 +66,7 @@
+         "no_ncf": "planner_score_only",
+     }
+     m = aliases.get(m, m)
+-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and g == "hard":
++    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and g == "hard":
+         # The paper/code treats the primary COWP certificate as priority-aware NCF.
+         # ``cowp_cert_utility`` shares the exact same certificate and changes only
+         # the post-certificate selector, so it must inherit the same gate semantics.
+@@ -866,7 +866,7 @@
+         selection_mask = torch.where(has_shielded, shielded, certificate_accepted)
+         adjusted_scores = scores
+ 
+-    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and gate_mode in {"priority", "soft"}:
++    if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
+         # Candidate-calibrated P-NCF frontier.  The pair witness is still used as
+         # explanatory evidence, but selection is anchored by a candidate-level NCF
+         # certificate trained from the dataset's noncoercive_feasible/false_safe
+--- /dev/null
++++ b/tests/test_v16_8_42_interaction_aware_reachable_response_envelope.py
+@@ -0,0 +1,316 @@
++from __future__ import annotations
++
++import inspect
++
++import numpy as np
++
++import cowp.waymax_eval.policy_wrapper as pw
++from cowp.label.audit_relevance import canonical_root_weights
++from cowp.waymax_eval.metrics_cowp import policy_diagnostic_scenario_rows
++
++
++def _state(n: int = 3) -> np.ndarray:
++    state = np.zeros((n, 11), dtype=np.float32)
++    state[:, 7] = 4.5
++    state[:, 8] = 2.0
++    state[:, 10] = 1.0
++    return state
++
++
++def _traj(marker: float, horizon: int = 4) -> np.ndarray:
++    tr = np.zeros((horizon, 7), dtype=np.float32)
++    tr[:, 0] = marker + np.arange(horizon, dtype=np.float32)
++    tr[:, 3] = 1.0
++    tr[:, 5] = 4.5
++    tr[:, 6] = 2.0
++    return tr
++
++
++def _profile(marker: float, burden: float = 0.1, profile_index: int = 0) -> dict:
++    tr = _traj(marker)
++    return {
++        "profile_index": profile_index,
++        "trajectory": tr,
++        "shifted_trajectory": tr.copy(),
++        "burden": burden,
++        "burden_components": np.zeros(6, dtype=np.float32),
++        "current_kinematic": {},
++        "shifted_kinematic": {},
++    }
++
++
++def _support(agent_index: int, markers: list[float]) -> dict:
++    return {
++        "ready": True,
++        "object_type": 1,
++        "retained_mass": 0.8,
++        "roots": [
++            {
++                "weight": 0.4,
++                "mode_indices": (i,),
++                "profiles": [_profile(marker, profile_index=i)],
++            }
++            for i, marker in enumerate(markers)
++        ],
++    }
++
++
++def test_v42_method_is_priority_hard_path() -> None:
++    method, gate = pw._canonical_online_method(
++        "cowp_interaction_aware_reachable_response_envelope", "hard"
++    )
++    assert method == "cowp_interaction_aware_reachable_response_envelope"
++    assert gate == "priority"
++
++
++def test_stable_softmax_is_finite_and_order_preserving() -> None:
++    probs = pw._stable_softmax_np(np.asarray([1000.0, 999.0, np.nan], dtype=np.float32))
++    assert np.isfinite(probs).all()
++    assert probs[0] > probs[1] > probs[2]
++    np.testing.assert_allclose(probs.sum(), 1.0, rtol=0.0, atol=1e-6)
++
++
++def test_response_support_retains_high_mass_same_root_set(monkeypatch) -> None:
++    monkeypatch.setattr(pw, "build_root_recovery_trajectory_bank", lambda root, cfg: [root.copy()])
++    monkeypatch.setattr(
++        pw,
++        "prepare_root_recovery_burden_bank",
++        lambda root, bank, cfg, object_type, rho: [(0.1, np.zeros(6, dtype=np.float32))],
++    )
++    monkeypatch.setattr(pw, "_roadgraph_drivable_mask", lambda tr, roadgraph: True)
++    monkeypatch.setattr(
++        pw,
++        "_trajectory_waymax_kinematic_safe_np",
++        lambda current, trajectory, cfg: (True, {"failure_step": -1}),
++    )
++
++    natural = np.stack([_traj(0.0), _traj(10.0), _traj(20.0)], axis=0)[None, ...]
++    logits = np.log(np.asarray([[0.50, 0.30, 0.20]], dtype=np.float32))
++    cfg = {
++        "time": {"dt": 0.1},
++        "planning": {
++            "set_transport_probability_floor": 0.02,
++            "set_transport_min_alt_weight": 0.03,
++            "set_transport_cvar_tail_mass": 0.25,
++        },
++        "natural": {
++            "certificate_min_low_burden_roots": 2,
++            "root_dedup_mean_distance_m": 0.10,
++        },
++        "response": {"root_conditioned_transport": {"max_roots_per_agent": 3}},
++        "burden": {},
++    }
++    support, detail = pw._prepare_interaction_response_support_np(
++        _state(2), 0,
++        np.asarray([1], dtype=np.int64),
++        np.asarray([True]),
++        natural, logits,
++        np.asarray([1, 1], dtype=np.int32),
++        {}, cfg,
++    )
++    assert detail["agents_ready"] == 1
++    assert support[1]["ready"] is True
++    assert support[1]["retained_root_count"] == 2
++    assert support[1]["retained_mass"] >= 0.75
++    assert all(root["profiles"] for root in support[1]["roots"])
++
++
++def test_interaction_certificate_accepts_universal_single_blocker_envelope(monkeypatch) -> None:
++    monkeypatch.setattr(
++        pw,
++        "_collision_blocking_agent_indices_against_context",
++        lambda trajectory, context: (list(context["blockers"]), {"blocker_count": len(context["blockers"])}),
++    )
++    monkeypatch.setattr(
++        pw,
++        "_physical_recovery_tube_certificate_np",
++        lambda *args, **kwargs: (True, {"collision_min_margin_m": 1.0}),
++    )
++    monkeypatch.setattr(pw, "unsafe_between_bool", lambda *args, **kwargs: False)
++
++    ok, detail = pw._interaction_aware_recovery_certificate_np(
++        _state(3), _state(3), 0,
++        _traj(100.0), np.ones(4, dtype=bool),
++        _traj(101.0), np.ones(4, dtype=bool),
++        {}, {}, {"blockers": [1]}, {"blockers": [1]},
++        {1: _support(1, [10.0, 20.0])},
++        np.asarray([1, 1, 1], dtype=np.int32),
++    )
++    assert ok is True
++    assert detail["supported_root_count"] == 2
++    assert len(detail["selected_responses"]) == 2
++    assert detail["maximum_selected_response_burden"] <= 0.1 + 1e-8
++
++
++def test_interaction_certificate_rejects_nonjoint_multiagent_responses(monkeypatch) -> None:
++    monkeypatch.setattr(
++        pw,
++        "_collision_blocking_agent_indices_against_context",
++        lambda trajectory, context: (list(context["blockers"]), {"blocker_count": len(context["blockers"])}),
++    )
++    monkeypatch.setattr(
++        pw,
++        "_physical_recovery_tube_certificate_np",
++        lambda *args, **kwargs: (True, {"collision_min_margin_m": 1.0}),
++    )
++
++    def fake_unsafe(a, b, cfg, agent_type=1, agent_lane_dist=None):
++        ma = int(round(float(np.asarray(a)[0, 0])))
++        mb = int(round(float(np.asarray(b)[0, 0])))
++        # Ego markers are far away.  The only two blocker profiles conflict.
++        return {ma, mb} == {10, 20}
++
++    monkeypatch.setattr(pw, "unsafe_between_bool", fake_unsafe)
++    ok, detail = pw._interaction_aware_recovery_certificate_np(
++        _state(3), _state(3), 0,
++        _traj(100.0), np.ones(4, dtype=bool),
++        _traj(101.0), np.ones(4, dtype=bool),
++        {}, {}, {"blockers": [1, 2]}, {"blockers": [1, 2]},
++        {1: _support(1, [10.0]), 2: _support(2, [20.0])},
++        np.asarray([1, 1, 1], dtype=np.int32),
++    )
++    assert ok is False
++    assert detail["failure_reason"] == "no_jointly_compatible_response_envelope"
++    assert detail["interaction_joint_compatibility_rejects"] > 0
++
++
++def test_v42_preserves_nested_v39_certificate_exactly(monkeypatch) -> None:
++    sentinel = {"parent_index": 3, "target": np.ones(5, dtype=np.float32)}
++    nested_detail = {"selected": True, "selected_policy_name": "LOWER_TO_LAST_CONFLICT"}
++    monkeypatch.setattr(
++        pw,
++        "_construct_conflict_window_control_reachable_tube_np",
++        lambda *args, **kwargs: (sentinel, nested_detail),
++    )
++    monkeypatch.setattr(
++        pw,
++        "_prepare_interaction_response_support_np",
++        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("extension must not run")),
++    )
++    selected, detail = pw._construct_interaction_aware_reachable_response_envelope_np(
++        _state(2), 0,
++        np.zeros((1, 4, 7), dtype=np.float32),
++        np.asarray([True]), np.asarray([True]), np.asarray([0]),
++        np.asarray([0.0]), np.asarray([0.0]),
++        np.zeros((1, 5), dtype=np.float32), np.asarray([0.0]),
++        {}, {}, 0.0,
++        base_candidate_index=0,
++        critical_track_index=np.asarray([1]), critical_valid=np.asarray([True]),
++        natural_trajectories=np.zeros((1, 2, 4, 7), dtype=np.float32),
++        natural_logits=np.zeros((1, 2), dtype=np.float32),
++        object_types=np.asarray([1, 1]),
++    )
++    assert selected is sentinel
++    assert detail["nested_v39_selected"] is True
++    assert detail["interaction_response_attempted"] is False
++    assert detail["selected_certificate_kind"] == "nested_v39"
++
++
++def test_v42_constructor_is_causal_and_does_not_use_dense_response_prediction() -> None:
++    source = inspect.getsource(pw._construct_interaction_aware_reachable_response_envelope_np)
++    source += inspect.getsource(pw._prepare_interaction_response_support_np)
++    assert "log_trajectory" not in source
++    assert "ground_truth" not in source.lower()
++    assert 'pred["response"]' not in source
++    assert "natural_trajectories" in source
++
++
++
++def test_online_root_weights_exactly_match_frozen_canonical_measure() -> None:
++    rng = np.random.default_rng(42)
++    cfg = {
++        "ncf": {"min_alt_weight": 0.03, "root_probability_floor": 0.02},
++        "planning": {"set_transport_min_alt_weight": 0.03, "set_transport_probability_floor": 0.02},
++    }
++    for _ in range(50):
++        logits = rng.normal(size=8).astype(np.float32)
++        valid = rng.random(8) > 0.2
++        if not valid.any():
++            valid[0] = True
++        got, raw = pw._canonical_online_root_weights_np(logits, valid, cfg)
++        expected = canonical_root_weights(
++            {"valid": valid[None, :], "weight": raw[None, :]}, cfg
++        )[0]
++        np.testing.assert_allclose(got, expected, rtol=0.0, atol=1e-7)
++        np.testing.assert_allclose(got.sum(), 1.0, rtol=0.0, atol=1e-6)
++
++
++def test_interaction_certificate_rejects_profile_unsafe_to_nonblocker(monkeypatch) -> None:
++    current_context = {
++        "blockers": [1],
++        "agents": [{"index": 1}, {"index": 2}],
++    }
++    shifted_context = {
++        "blockers": [1],
++        "agents": [{"index": 1}, {"index": 2}],
++    }
++    monkeypatch.setattr(
++        pw, "_collision_blocking_agent_indices_against_context",
++        lambda trajectory, context: (list(context["blockers"]), {"blocker_count": len(context["blockers"])}),
++    )
++    monkeypatch.setattr(
++        pw, "_physical_recovery_tube_certificate_np",
++        lambda *args, **kwargs: (True, {"collision_min_margin_m": 1.0}),
++    )
++
++    def fake_unsafe(a, b, cfg, agent_type=1, agent_lane_dist=None):
++        ma = int(round(float(np.asarray(a)[0, 0])))
++        mb = int(round(float(np.asarray(b)[0, 0])))
++        # Profile marker 10 is incompatible with the non-blocking actor's CV path.
++        return ma == 10 and mb <= 5
++
++    monkeypatch.setattr(pw, "unsafe_between_bool", fake_unsafe)
++    state = _state(3)
++    state[2, 0] = 0.0
++    ok, detail = pw._interaction_aware_recovery_certificate_np(
++        state, state.copy(), 0,
++        _traj(100.0), np.ones(4, dtype=bool),
++        _traj(101.0), np.ones(4, dtype=bool),
++        {}, {}, current_context, shifted_context,
++        {1: _support(1, [10.0])},
++        np.asarray([1, 1, 1], dtype=np.int32),
++    )
++    assert ok is False
++    assert detail["failure_reason"] == "retained_root_has_no_environment_safe_response"
++    assert detail["interaction_environment_compatibility_checks"] > 0
++    assert detail["interaction_environment_compatibility_rejects"] > 0
++
++def test_v42_diagnostics_aggregate_interaction_mechanism() -> None:
++    rollouts = [{
++        "scenario_id": "scene",
++        "steps": 1,
++        "standard_metrics": {"CollisionRate": 0.0, "EP": 1.0},
++        "policy_diagnostics": [{
++            "fallback_used": True,
++            "fallback_reason": "no_conventional_use_interaction_aware_reachable_response_envelope",
++            "valid_candidates": 3,
++            "conventional_candidates": 0,
++            "roadgraph_safe_candidates": 2,
++            "collision_safe_candidates": 0,
++            "recovery_tube_probe_used": True,
++            "recovery_tube_selected": True,
++            "recovery_tube_action_changed": True,
++            "recovery_tube_nested_v39_selected": False,
++            "recovery_tube_interaction_response_attempted": True,
++            "recovery_tube_selected_is_interaction_response": True,
++            "recovery_tube_interaction_support_agents_total": 2,
++            "recovery_tube_interaction_support_agents_ready": 2,
++            "recovery_tube_interaction_support_retained_roots": 4,
++            "recovery_tube_interaction_support_eligible_profiles": 8,
++            "recovery_tube_interaction_hypotheses_evaluated": 5,
++            "recovery_tube_interaction_environment_compatibility_checks": 7,
++            "recovery_tube_interaction_environment_compatibility_rejects": 1,
++            "recovery_tube_interaction_selected_blocker_count": 1,
++            "recovery_tube_interaction_selected_root_count": 2,
++            "recovery_tube_interaction_selected_minimum_root_mass": 0.8,
++            "recovery_tube_interaction_selected_maximum_response_burden": 0.2,
++        }],
++    }]
++    row = policy_diagnostic_scenario_rows(rollouts)[0]
++    assert row["no_conventional_step_rate"] == 1.0
++    assert row["interaction_aware_reachable_response_envelope_step_rate"] == 1.0
++    assert row["recovery_tube_interaction_attempt_step_rate"] == 1.0
++    assert row["recovery_tube_interaction_selection_rate_on_certified_steps"] == 1.0
++    assert row["mean_recovery_tube_interaction_selected_minimum_root_mass_on_interaction_steps"] == 0.8
++    assert row["mean_recovery_tube_interaction_environment_compatibility_checks_on_attempts"] == 7.0
++    assert row["mean_recovery_tube_interaction_environment_compatibility_rejects_on_attempts"] == 1.0
+--- /dev/null
++++ b/NEXT_RUN_COMMANDS_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE_CN.sh
+@@ -0,0 +1,242 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# v16.8.42: Root-Conditioned Interaction-Aware Reachable-Response Envelope (RC-IARE)
++#
++# Scientific branch selected by the frozen V40/V41 decision rule after repaired
++# V41 produced real interval-only actions but failed the inherited outcome gate.
++# The exact V39 conflict-window tube is the nested first branch. Only on a
++# V39-empty fallback step may RC-IARE replace an exact fixed-path blocker with a
++# universal high-mass same-root response envelope. Every retained root must own
++# a low-burden, drivable, Waymax-kinematic response for current and one-step-
++# shifted ego tubes; simultaneous blockers must admit a jointly compatible
++# response assignment. All remaining physical/model/protocol layers stay frozen.
++#
++# Counterfactual48 is development evidence. The six-item conjunction gate is
++# unchanged and fail-closed. Mechanism diagnostics never override that gate.
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_42_interaction_aware_reachable_response_envelope}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35_CPOSH="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36_FRONTIER="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37_RRB="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_CF48_V38_TUBE="$SCRIPT_DIR/reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json"
++REF_CF48_V39_TUBE="$SCRIPT_DIR/reference_results/v16_8_39_counterfactual48_conflict_window_control_reachable_tube_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
++REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++REF_EXACT_RVR="$SCRIPT_DIR/reference_results/v16_8_29_exact200_rvr_reference.json"
++
++EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
++EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
++EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
++EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
++mkdir -p "$OUT_ROOT"
++
++export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
++export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
++export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
++export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
++export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
++
++validate_manifest() {
++  local p="$1" n="$2" expected="$3"
++  [[ -s "$p" ]] || { echo "Missing ID manifest: $p" >&2; exit 2; }
++  python - "$p" "$n" "$expected" <<'PY'
++import hashlib,sys
++p,n,expected=sys.argv[1],int(sys.argv[2]),sys.argv[3]
++ids=[x.strip() for x in open(p,encoding='utf-8') if x.strip()]
++if len(ids)!=n: raise SystemExit(f"expected {n} IDs, got {len(ids)} in {p}")
++if len(set(ids))!=n: raise SystemExit(f"duplicate IDs in {p}")
++h=hashlib.sha256("\n".join(ids).encode()).hexdigest()
++if h!=expected: raise SystemExit(f"logical ID SHA mismatch: {h} != {expected}")
++print(f"manifest OK: n={n} logical_sha256={h} path={p}")
++PY
++}
++ensure_ids() {
++  validate_manifest "$EXACT_IDS" 200 "$EXPECTED_EXACT_SHA"
++  validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
++  validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
++  validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
++  cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
++  cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++  cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
++  cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
++}
++
++require_gate_pass() {
++  local analysis_json="$1" methods="$2" stage_label="$3"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing $stage_label analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" "$methods" "$stage_label" <<'PY' || exit 4
++import json,sys
++p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
++d=json.load(open(p,encoding='utf-8'))
++gates=d.get('preregistered_gate',{})
++for method in [x.strip() for x in methods.split(',') if x.strip()]:
++    if method!='cowp_interaction_aware_reachable_response_envelope':
++        raise SystemExit(f'ERROR: {method} is not the V16.8.42 RC-IARE promotion candidate')
++    g=gates.get('interaction_aware_reachable_response_envelope')
++    if not g or g.get('pass') is not True:
++        failed=[k for k,v in (g or {}).get('checks',{}).items() if not v]
++        raise SystemExit(f'ERROR: {method} did not pass {stage} preregistered gate; failed={failed}')
++print(f'promotion gate OK for {methods} at {stage}')
++PY
++}
++
++index_arg=()
++if [[ -s "$TFEX_INDEX" ]]; then
++  index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++else
++  echo "[warning] TFExample ID index missing: $TFEX_INDEX" >&2
++fi
++common_waymax=(
++  --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax --checkpoint "$BASE_CKPT" --waymax-split validation --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0 --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++run_colocated_shard() {
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5"
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    --no-progress --status-every 2 --output "$out"
++}
++run_parallel_methods() {
++  local tag="$1" ids="$2" methods="$3"
++  IFS=',' read -r -a arr <<< "$methods"
++  for method in "${arr[@]}"; do
++    echo "=== $tag method: $method ==="
++    local start end; start=$(date +%s)
++    run_colocated_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++    run_colocated_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++    wait "$p0"; wait "$p1"
++    end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++    python -m cowp.scripts.79_merge_waymax_exact_shards \
++      --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++      --output "$OUT_ROOT/${tag}_${method}_merged.json"
++  done
++}
++analyze_set() {
++  local stage="$1" tag="$2" cowp="$3" rvr="$4"
++  local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
++    --interaction-aware-reachable-response-envelope "$OUT_ROOT/${tag}_cowp_interaction_aware_reachable_response_envelope_merged.json" \
++    --output "$OUT_ROOT/${tag}_interaction_aware_reachable_response_envelope_analysis.json")
++  if [[ "$stage" == "counterfactual48" ]]; then
++    args+=(--v33-rosh "$REF_CF48_V33_ROSH" \
++      --v35-control-projected-spectrum "$REF_CF48_V35_CPOSH" \
++      --v36-recovery-frontier "$REF_CF48_V36_FRONTIER" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37_RRB" \
++      --v38-shift-closed-tube "$REF_CF48_V38_TUBE" \
++      --v39-conflict-window-tube "$REF_CF48_V39_TUBE")
++  fi
++  python -m cowp.scripts.95_analyze_interaction_aware_reachable_response_envelope "${args[@]}"
++}
++
++case "$MODE" in
++  sanity)
++    python -m py_compile cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
++      cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
++      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/88_analyze_control_projected_option_spectrum.py \
++      cowp/scripts/89_analyze_control_projected_recovery_frontier.py cowp/scripts/90_analyze_recourse_returnability_bridge.py \
++      cowp/scripts/92_analyze_conflict_window_control_reachable_tube.py cowp/scripts/93_analyze_shift_closed_first_action_viability_interval.py cowp/scripts/94_analyze_shift_closure_semantic_fidelity_repair.py cowp/scripts/95_analyze_interaction_aware_reachable_response_envelope.py
++    python -m pytest -q \
++      tests/test_v16_8_42_interaction_aware_reachable_response_envelope.py \
++      tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py \
++      tests/test_v16_8_40_shift_closed_first_action_viability_interval.py \
++      tests/test_v16_8_39_conflict_window_control_reachable_tube.py \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py tests/test_v16_8_28_execution_integrity.py \
++      tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    if grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py; then
++      echo "ERROR: conventional-safety bypass exists" >&2; exit 3
++    fi
++    ensure_ids
++    echo "v16.8.42 RC-IARE semantic/integrity sanity passed"
++    ;;
++  make_ids) ensure_ids ;;
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++  base_equivalence16_parallel2)
++    ensure_ids; run_parallel_methods "equivalence16" "$EQ16_IDS" "cowp"
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++  counterfactual48_parallel2)
++    ensure_ids
++    run_parallel_methods "counterfactual48_v42" "$CF48_IDS" "${METHODS:-cowp_interaction_aware_reachable_response_envelope}" ;;
++  analyze_counterfactual48)
++    analyze_set "counterfactual48" "counterfactual48_v42" "$REF_CF48_COWP" "$REF_CF48_RVR" ;;
++  fresh37_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/counterfactual48_v42_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "counterfactual48"
++    run_parallel_methods "fresh37_v42" "$FRESH37_IDS" "$promoted" ;;
++  analyze_fresh37)
++    analyze_set "fresh37" "fresh37_v42" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR" ;;
++  confirm200_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/fresh37_v42_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "fresh37"
++    run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted" ;;
++  analyze_confirm200)
++    analyze_set "exact200" "confirm_exact200" "$REF_EXACT_COWP" "$REF_EXACT_RVR" ;;
++  help|*)
++    cat <<EOF
++V16.8.42 RC-IARE fail-closed run order
++
++1) $0 sanity
++2) $0 make_ids
++3) $0 base_equivalence16_parallel2
++4) $0 counterfactual48_parallel2
++5) $0 analyze_counterfactual48
++
++STOP unless:
++  preregistered_gate.interaction_aware_reachable_response_envelope.pass == true
++
++The counterfactual48 Stage-1 conjunction remains exactly:
++  retain >=5/10 historical RVR rescues; avoid >=7/9 RVR-induced collisions;
++  remove >=3 net COWP collisions; add <=1 net kinematics failure;
++  paired mean EP delta >= -0.05; nonzero action-changing intervention.
++
++Only after Stage-1 pass:
++  PROMOTED_METHODS=cowp_interaction_aware_reachable_response_envelope $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only after fresh37 pass:
++  PROMOTED_METHODS=cowp_interaction_aware_reachable_response_envelope $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Do not run fresh37 after a Stage-1 failure. Do not tune root probability floors,
++root mass coverage, burden budgets, response profiles, release schedules, action
++grids, controller limits, horizon, or scalar scores on counterfactual48. RC-IARE
++mechanism fields are attribution diagnostics, not substitute promotion criteria.
++EOF
++    ;;
++esac

@@ -1,0 +1,1008 @@
+{
+  "schema_version": "cowp_v16_8_41_independent_result_reliability_and_attribution_audit_v1",
+  "generated_from_uploaded_artifacts": true,
+  "uploaded_artifact_sha256": {
+    "code_zip": "37c7233cfc520625c7e2d4873fec17b13f1f74beca90b1b7875b9d09a428860c",
+    "result_zip": "23b02411451570c65c4ef1d184ef3b44bc3e80377029fa568619843f1d93f50d"
+  },
+  "hard_checks_total": 107,
+  "hard_checks_passed": 107,
+  "hard_checks_failed": 0,
+  "overall_reliability": "PASS",
+  "algorithm_attribution_allowed": true,
+  "preregistered_gate_pass": false,
+  "decision": "ATTRIBUTION_ALLOWED__STAGE1_FAIL__ARCHIVE_V41__DO_NOT_RUN_FRESH37",
+  "headline": {
+    "n": 48,
+    "Collision_rate": 0.625,
+    "Collision_count": 30,
+    "Offroad_rate": 0.020833333333333332,
+    "Offroad_count": 1,
+    "Kinematics_rate": 0.125,
+    "Kinematics_count": 6,
+    "EP": 0.9916566852480173,
+    "paired_vs_cowp": {
+      "CR": {
+        "rescued": 4,
+        "induced": 0,
+        "shared_failure": 30,
+        "net_failures_removed": 4,
+        "mcnemar_exact_p": 0.125,
+        "rescued_ids": [
+          "6992366c5c998d00",
+          "7c6ac47c0deee2af",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": []
+      },
+      "Collision": {
+        "rescued": 4,
+        "induced": 0,
+        "shared_failure": 30,
+        "net_failures_removed": 4,
+        "mcnemar_exact_p": 0.125,
+        "rescued_ids": [
+          "6992366c5c998d00",
+          "7c6ac47c0deee2af",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc"
+        ],
+        "induced_ids": []
+      },
+      "Offroad": {
+        "rescued": 0,
+        "induced": 0,
+        "shared_failure": 1,
+        "net_failures_removed": 0,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [],
+        "induced_ids": []
+      },
+      "Kinematics": {
+        "rescued": 0,
+        "induced": 0,
+        "shared_failure": 6,
+        "net_failures_removed": 0,
+        "mcnemar_exact_p": 1.0,
+        "rescued_ids": [],
+        "induced_ids": []
+      },
+      "EP": {
+        "paired_n": 48,
+        "delta_mean": -0.010855363992353281,
+        "delta_median": 0.0,
+        "bootstrap95": [
+          -0.026983088650740682,
+          0.0010464393533766267
+        ],
+        "per_scene_delta": {
+          "9d79c94d87d1dfac": 0.0,
+          "c9b1c562b6ff31e5": 0.0,
+          "a27f6f60dd683a66": 0.0,
+          "4c332861792a91e7": 0.0,
+          "fe51445d725b8b8b": 0.016949892044067383,
+          "9e3e5f19ee38f2e3": 0.0,
+          "ad7d72d8adca3e25": 0.0,
+          "57f3f03f7e7967f9": 0.015989601612091064,
+          "f55df4ea9e688069": 0.0,
+          "4525d99a628819af": 0.0,
+          "3919ccd73c0fabd7": 0.0,
+          "fb9d8277036a53f3": 0.0,
+          "a6f8b2b348015743": 0.0,
+          "fccd9a25a2a57a73": -0.021568775177001953,
+          "b64cecb971b095c3": 0.0,
+          "b85168f48c8c9970": 0.0,
+          "9ccf60966ec93c20": 0.0,
+          "89806e50f692c453": 0.01962459087371826,
+          "2c2395ec28c6a158": 0.0,
+          "d632f1919fe4bab": 0.0,
+          "1c03d20597561d94": 0.0,
+          "6992366c5c998d00": 0.053260862827301025,
+          "29cd2aca8ae5e222": 0.0,
+          "7c6ac47c0deee2af": -0.2937554121017456,
+          "eeab096e35093acf": 0.0,
+          "c34fe8e79cdf1161": 0.0,
+          "ff41aa2be7fa7a56": 0.0,
+          "da87744bcf7613db": -0.07462699711322784,
+          "e6f70b30f414022e": 0.0,
+          "84196f1d9198b616": 0.0,
+          "e1d2184327703edd": 0.0,
+          "7721ff4800156886": -0.0835268497467041,
+          "f8d5d2f0f7cf5825": -0.0964118242263794,
+          "f6a7fc811128c6ef": 0.0,
+          "f8d4c735825e5d81": 0.0,
+          "51a742674d23f1e3": -0.016197144985198975,
+          "da52a87b046e4a0a": 0.0,
+          "6418b0c9e2e4b093": 0.0,
+          "a525f87ac454a88c": 0.03066602349281311,
+          "1e015170763b9002": -0.10339319705963135,
+          "a30bd30a45665244": 0.0,
+          "72a34ea361a39c22": 0.0,
+          "a25edfa42510bdb4": 0.0,
+          "d59a8c97c0980d2a": 0.0,
+          "2fa07f444b825370": 0.0,
+          "40f2d8b336a3dafc": 0.03193175792694092,
+          "4201b435eda16cf2": 0.0,
+          "ae01b0e36aaa41b4": 0.0
+        }
+      }
+    },
+    "old_rvr_retention": {
+      "old_rvr_rescues_total": 10,
+      "old_rvr_rescues_retained": 3,
+      "old_rvr_induced_total": 9,
+      "old_rvr_induced_avoided": 9
+    },
+    "total_policy_steps": 3840,
+    "probe_steps": 2629,
+    "certificate_steps": 91,
+    "action_change_steps": 90,
+    "interval_attempt_steps": 2541,
+    "interval_selected_steps": 3,
+    "new_first_action_selected_steps": 3
+  },
+  "reliability_boundaries": [
+    "Exact checkpoint bytes and server source-tree hash are not embedded, so cryptographic end-to-end provenance is unavailable.",
+    "Logged-replay non-ego agents support frozen physical closed-loop attribution, not strong counterfactual social-response claims.",
+    "counterfactual48 is a development-selected panel, not final paper holdout evidence."
+  ],
+  "checks": [
+    {
+      "name": "exact200.code_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 200,
+        "expected": 200
+      }
+    },
+    {
+      "name": "exact200.result_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 200,
+        "expected": 200
+      }
+    },
+    {
+      "name": "exact200.code_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "exact200.result_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "exact200.code_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+        "expected": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+      }
+    },
+    {
+      "name": "exact200.result_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+        "expected": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+      }
+    },
+    {
+      "name": "exact200.same_ids",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "equivalence16.code_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 16,
+        "expected": 16
+      }
+    },
+    {
+      "name": "equivalence16.result_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 16,
+        "expected": 16
+      }
+    },
+    {
+      "name": "equivalence16.code_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "equivalence16.result_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "equivalence16.code_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+        "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+      }
+    },
+    {
+      "name": "equivalence16.result_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+        "expected": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+      }
+    },
+    {
+      "name": "equivalence16.same_ids",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "counterfactual48.code_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 48,
+        "expected": 48
+      }
+    },
+    {
+      "name": "counterfactual48.result_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 48,
+        "expected": 48
+      }
+    },
+    {
+      "name": "counterfactual48.code_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "counterfactual48.result_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "counterfactual48.code_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "counterfactual48.result_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "expected": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "counterfactual48.same_ids",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "fresh37.code_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 37,
+        "expected": 37
+      }
+    },
+    {
+      "name": "fresh37.result_count",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": 37,
+        "expected": 37
+      }
+    },
+    {
+      "name": "fresh37.code_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "fresh37.result_unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "fresh37.code_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+        "expected": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+      }
+    },
+    {
+      "name": "fresh37.result_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "got": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+        "expected": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+      }
+    },
+    {
+      "name": "fresh37.same_ids",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shard0.index",
+      "passed": true,
+      "blocking": true,
+      "detail": 0
+    },
+    {
+      "name": "shard0.num_shards",
+      "passed": true,
+      "blocking": true,
+      "detail": 2
+    },
+    {
+      "name": "shard0.resolved_24",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard0.unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shard0.rollouts_24",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard0.method",
+      "passed": true,
+      "blocking": true,
+      "detail": "cowp_shift_closed_first_action_viability_interval"
+    },
+    {
+      "name": "shard0.manifest_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "shard0.no_online_ground_truth",
+      "passed": true,
+      "blocking": true,
+      "detail": false
+    },
+    {
+      "name": "shard0.logged_replay_declared",
+      "passed": true,
+      "blocking": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "shard0.metric_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard0.diag_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard0.metric_diag_order",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shard1.index",
+      "passed": true,
+      "blocking": true,
+      "detail": 1
+    },
+    {
+      "name": "shard1.num_shards",
+      "passed": true,
+      "blocking": true,
+      "detail": 2
+    },
+    {
+      "name": "shard1.resolved_24",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard1.unique",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shard1.rollouts_24",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard1.method",
+      "passed": true,
+      "blocking": true,
+      "detail": "cowp_shift_closed_first_action_viability_interval"
+    },
+    {
+      "name": "shard1.manifest_sha",
+      "passed": true,
+      "blocking": true,
+      "detail": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+    },
+    {
+      "name": "shard1.no_online_ground_truth",
+      "passed": true,
+      "blocking": true,
+      "detail": false
+    },
+    {
+      "name": "shard1.logged_replay_declared",
+      "passed": true,
+      "blocking": true,
+      "detail": "logged_replay"
+    },
+    {
+      "name": "shard1.metric_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard1.diag_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 24
+    },
+    {
+      "name": "shard1.metric_diag_order",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shards.disjoint",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shards.union_manifest",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "shards.protocol_equal.method",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": "cowp_shift_closed_first_action_viability_interval",
+        "s1": "cowp_shift_closed_first_action_viability_interval"
+      }
+    },
+    {
+      "name": "shards.protocol_equal.checkpoint",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+        "s1": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+      }
+    },
+    {
+      "name": "shards.protocol_equal.scenario_ids_sha256",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "s1": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "shards.protocol_equal.actual_non_ego_policy",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": "logged_replay",
+        "s1": "logged_replay"
+      }
+    },
+    {
+      "name": "shards.protocol_equal.mechanism_ground_truth_available_online",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": false,
+        "s1": false
+      }
+    },
+    {
+      "name": "shards.protocol_equal.bcot_risk_budget",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": 0.5,
+        "s1": 0.5
+      }
+    },
+    {
+      "name": "shards.protocol_equal.pair_witness_threshold",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "s0": 0.7,
+        "s1": 0.7
+      }
+    },
+    {
+      "name": "merge.canonical_content_match_excluding_input_path_spelling",
+      "passed": true,
+      "blocking": true,
+      "detail": "All merged fields match after normalizing input_files to basenames; the only raw difference is relative versus absolute shard path spelling."
+    },
+    {
+      "name": "merge.raw_byte_sha_match",
+      "passed": false,
+      "blocking": false,
+      "detail": {
+        "uploaded": "734f3a159dad42cffae9ae1dcc7fa19047dadaee0f42556548ffe18da142d11a",
+        "rerun": "e1667531c851d94ea214d3b7568457bc08e6722679f87479f595eed486242623",
+        "explanation": "Expected mismatch caused solely by input_files path spelling; canonical content check passes."
+      }
+    },
+    {
+      "name": "merge.row_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 48
+    },
+    {
+      "name": "merge.unique_scenarios",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "merge.manifest_exact",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "merge.recompute.CR",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.625,
+        "recomputed": 0.625,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.CollisionRate",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.625,
+        "recomputed": 0.625,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.EP",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.9916566852480173,
+        "recomputed": 0.9916566852480173,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.FirstPositiveStep/KinematicsInfeasibilityMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 36.5,
+        "recomputed": 36.5,
+        "n": 6
+      }
+    },
+    {
+      "name": "merge.recompute.FirstPositiveStep/OffroadMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 42.0,
+        "recomputed": 42.0,
+        "n": 1
+      }
+    },
+    {
+      "name": "merge.recompute.FirstPositiveStep/OverlapMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 51.6,
+        "recomputed": 51.6,
+        "n": 30
+      }
+    },
+    {
+      "name": "merge.recompute.KinematicsInfeasibilityRate",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.125,
+        "recomputed": 0.125,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.MetricSteps",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 80.0,
+        "recomputed": 80.0,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.OffroadRate",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.020833333333333332,
+        "recomputed": 0.020833333333333332,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxAny/KinematicsInfeasibilityMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.125,
+        "recomputed": 0.125,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxAny/OffroadMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.020833333333333332,
+        "recomputed": 0.020833333333333332,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxAny/OverlapMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.625,
+        "recomputed": 0.625,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxFinal/KinematicsInfeasibilityMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.0,
+        "recomputed": 0.0,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxFinal/OffroadMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.020833333333333332,
+        "recomputed": 0.020833333333333332,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxFinal/OverlapMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.3958333333333333,
+        "recomputed": 0.3958333333333333,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.WaymaxFinal/ProgressionMetric",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": 0.9916566852480173,
+        "recomputed": 0.9916566852480173,
+        "n": 48
+      }
+    },
+    {
+      "name": "merge.recompute.fallback",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "execution.no_valid_invariant",
+      "passed": true,
+      "blocking": true,
+      "detail": []
+    },
+    {
+      "name": "equivalence16.pass",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+        "scenarios": 16,
+        "fields_checked": 1120,
+        "atol": 1e-07,
+        "passed": true,
+        "mismatch_count_capped": 0,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "equivalence16.scenario_count",
+      "passed": true,
+      "blocking": true,
+      "detail": 16
+    },
+    {
+      "name": "equivalence16.fields",
+      "passed": true,
+      "blocking": true,
+      "detail": 1120
+    },
+    {
+      "name": "equivalence16.zero_mismatch",
+      "passed": true,
+      "blocking": true,
+      "detail": []
+    },
+    {
+      "name": "analysis.independent_recursive_match",
+      "passed": true,
+      "blocking": true,
+      "detail": []
+    },
+    {
+      "name": "analysis.byte_sha_match",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "uploaded": "ff161f506a47d1378012b85b40c2a6309053108cbc7880f7622248bcb2e6d268",
+        "rerun": "ff161f506a47d1378012b85b40c2a6309053108cbc7880f7622248bcb2e6d268"
+      }
+    },
+    {
+      "name": "gate.six_checks_exact",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stored": {
+          "retain_at_least_5_of_10_old_rvr_rescues": false,
+          "avoid_at_least_7_of_9_old_rvr_induced": true,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        },
+        "expected": {
+          "retain_at_least_5_of_10_old_rvr_rescues": false,
+          "avoid_at_least_7_of_9_old_rvr_induced": true,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        }
+      }
+    },
+    {
+      "name": "gate.overall_fail",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "checks": {
+          "retain_at_least_5_of_10_old_rvr_rescues": false,
+          "avoid_at_least_7_of_9_old_rvr_induced": true,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        },
+        "pass": false,
+        "paper_evidence": false
+      }
+    },
+    {
+      "name": "code.shared_shift_helper",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.v39_uses_shared_shift",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.v41_uses_shared_shift",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.lower_all_terminal",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.upper_all_terminal",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.event_release_terminal_nominal",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_log_trajectory._shift_longitudinal_envelope_schedule_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_ground_truth._shift_longitudinal_envelope_schedule_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_log_trajectory._construct_conflict_window_control_reachable_tube_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_ground_truth._construct_conflict_window_control_reachable_tube_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_log_trajectory._construct_shift_closed_first_action_viability_interval_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "code.no_ground_truth._construct_shift_closed_first_action_viability_interval_np",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.fail_closed_exit4",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.repaired_candidate_only",
+      "passed": true,
+      "blocking": true,
+      "detail": null
+    },
+    {
+      "name": "sanity.exit_zero",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "returncode": 0,
+        "stdout_tail": "........................................................................ [ 83%]\n..............                                                           [100%]\n86 passed in 2.75s\nmanifest OK: n=200 logical_sha256=3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f path=/mnt/data/work_cowp_v41/reference_manifests/waymax_probe_200_ids.txt\nmanifest OK: n=16 logical_sha256=81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760 path=/mnt/data/work_cowp_v41/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt\nmanifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/work_cowp_v41/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt\nmanifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/work_cowp_v41/reference_manifests/waymax_v16_8_32_fresh37_ids.txt\nv16.8.41 reliability-repair semantic/integrity sanity passed\n",
+        "stderr_tail": "[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl\n"
+      }
+    },
+    {
+      "name": "sanity.86_passed",
+      "passed": true,
+      "blocking": true,
+      "detail": {
+        "stdout_tail": "work_cowp_v41/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt\nmanifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/work_cowp_v41/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt\nmanifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/work_cowp_v41/reference_manifests/waymax_v16_8_32_fresh37_ids.txt\nv16.8.41 reliability-repair semantic/integrity sanity passed\n",
+        "stderr_tail": "[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl\n"
+      }
+    },
+    {
+      "name": "boundary.checkpoint_bytes_embedded",
+      "passed": false,
+      "blocking": false,
+      "detail": "Result archive contains a logical checkpoint path, not checkpoint bytes."
+    },
+    {
+      "name": "boundary.source_tree_hash_embedded",
+      "passed": false,
+      "blocking": false,
+      "detail": "Result JSONs do not embed a source-tree content hash; source semantics and output integrity were audited separately."
+    },
+    {
+      "name": "boundary.reactive_non_ego_agents",
+      "passed": false,
+      "blocking": false,
+      "detail": "actual_non_ego_policy=logged_replay, so no strong counterfactual social-burden claim is supported."
+    },
+    {
+      "name": "boundary.final_holdout",
+      "passed": false,
+      "blocking": false,
+      "detail": "counterfactual48 is development-selected and has been reused for mechanism selection."
+    }
+  ],
+  "blocking_failures": []
+}

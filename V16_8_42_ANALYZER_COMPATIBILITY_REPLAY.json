@@ -1,0 +1,33 @@
+{
+  "schema_version": "cowp_v16_8_42_analyzer_compatibility_replay_v1",
+  "input_notice": "This is a compatibility replay using the real V16.8.41 merged result as input to the V16.8.42 analyzer. It is not a V16.8.42 performance result.",
+  "input_sha256": "734f3a159dad42cffae9ae1dcc7fa19047dadaee0f42556548ffe18da142d11a",
+  "full_replay_output_sha256": "2c9149e49b4aa4f08471d84db78a2a651c436dcb7f35114365c27ba24fd7e952",
+  "scenario_count": 48,
+  "reproduced_headline": {
+    "n": 48,
+    "Collision": 0.625,
+    "Offroad": 0.020833333333333332,
+    "Kinematics": 0.125,
+    "EP": 0.9916566852480173
+  },
+  "reproduced_preregistered_gate": {
+    "checks": {
+      "retain_at_least_5_of_10_old_rvr_rescues": false,
+      "avoid_at_least_7_of_9_old_rvr_induced": true,
+      "net_remove_at_least_3_cowp_collisions": true,
+      "kinematics_net_regression_at_most_1_scene": true,
+      "mean_ep_delta_not_below_minus_0_05": true,
+      "nonzero_intervention": true
+    },
+    "pass": false,
+    "paper_evidence": false
+  },
+  "reproduced_rvr_counterexample_retention": {
+    "old_rvr_rescues_total": 10,
+    "old_rvr_rescues_retained": 3,
+    "old_rvr_induced_total": 9,
+    "old_rvr_induced_avoided": 9
+  },
+  "mechanism_replay_note": "V41 has no V42 interaction diagnostics; therefore interaction_attempts/selections are correctly reconstructed as zero. This check only validates backward-compatible outcome-gate semantics."
+}

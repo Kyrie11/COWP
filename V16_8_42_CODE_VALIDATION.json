@@ -1,0 +1,402 @@
+{
+  "schema_version": "cowp_v16_8_42_code_validation_v1",
+  "release": "V16.8.42 Root-Conditioned Interaction-Aware Reachable-Response Envelope (RC-IARE)",
+  "code_root": "/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE",
+  "baseline_root": "/mnt/data/work_cowp_v41",
+  "hard_checks_total": 48,
+  "hard_checks_passed": 48,
+  "hard_checks_failed": 0,
+  "overall_code_validation": "PASS",
+  "ready_for_equivalence16_and_counterfactual48": true,
+  "performance_claim_allowed": false,
+  "focused_test_count": 96,
+  "synthetic_analyzer_compatibility_sha256": "2c9149e49b4aa4f08471d84db78a2a651c436dcb7f35114365c27ba24fd7e952",
+  "key_file_sha256": {
+    "policy_wrapper.py": "30a66b01c12bdbb41dd72f6783416e2aa1d6f37a97be82984cd8fcd2fe30c709",
+    "metrics_cowp.py": "9ba9fc060f89c3c94d86c5c8724766f8af4f5e91ccb5d0f05626f8537bbd56dc",
+    "rollout.py": "6648a6d5a2fc262bf786d81247038863683e0b6db8adb655e46b9ed515eec6a7",
+    "04_eval_closed_loop.py": "f897409a10517a63080092bb22b0173211d81478d6c8aa7597cb80750a589116",
+    "95_analyzer.py": "2efbabca2fdca1349fbec81c944b532384c52e88a9161a614010daaee3286c33",
+    "launcher": "3247833470159e1c8450056748ea63eaa4def89580e6fcae6e13c314c7fded6c",
+    "test": "a9a320439f0d9484e04d871423335c8f69c9c9e852d8bce302156ba10fe02652"
+  },
+  "checks": [
+    {
+      "name": "frozen_exact_source._shift_longitudinal_envelope_schedule_np",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_sha": "42bb39a4eab5f3583ebe48f77ccc4817a25efe7e2b1ad3fed931c25457dcc4dd",
+        "v42_sha": "42bb39a4eab5f3583ebe48f77ccc4817a25efe7e2b1ad3fed931c25457dcc4dd"
+      }
+    },
+    {
+      "name": "frozen_exact_source._construct_conflict_window_control_reachable_tube_np",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_sha": "2eec8dd96ff32d85320392c98862bdf759e4c9a62c71b269f0a02330ab4b9484",
+        "v42_sha": "2eec8dd96ff32d85320392c98862bdf759e4c9a62c71b269f0a02330ab4b9484"
+      }
+    },
+    {
+      "name": "frozen_exact_source._construct_shift_closed_first_action_viability_interval_np",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_sha": "ac302d3f2275871eafb07a07f97067829a0f4f040e92eb17307760ee92b03cf1",
+        "v42_sha": "ac302d3f2275871eafb07a07f97067829a0f4f040e92eb17307760ee92b03cf1"
+      }
+    },
+    {
+      "name": "frozen_tree.configs",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_only": [],
+        "v42_only": [],
+        "content_diff": []
+      }
+    },
+    {
+      "name": "frozen_tree.cowp/models",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_only": [],
+        "v42_only": [],
+        "content_diff": []
+      }
+    },
+    {
+      "name": "frozen_tree.cowp/label",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_only": [],
+        "v42_only": [],
+        "content_diff": []
+      }
+    },
+    {
+      "name": "frozen_tree.cowp/data",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "v41_only": [],
+        "v42_only": [],
+        "content_diff": []
+      }
+    },
+    {
+      "name": "new_function_exists._canonical_online_root_weights_np",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "new_function_exists._constant_velocity_trajectory_from_state_np",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "new_function_exists._prepare_interaction_response_support_np",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "new_function_exists._interaction_aware_recovery_certificate_np",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "new_function_exists._construct_interaction_aware_reachable_response_envelope_np",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "causality.no_log_trajectory",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "causality.no_ground_truth",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "causality.no_pred[response]",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "causality.no_pred[response]",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "causality.natural_input_explicit",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "canonical.shared_helper_called",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "canonical.pmin_and_floor_distinct",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "environment.current_shift_cv_constructed",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "environment.bidirectional_unsafe_checks",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "environment.nonblockers_excluded_from_replacement",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "joint.exact_backtracking",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "certificate.residual_hard_physical_twice",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "certificate.low_burden_agent_priority",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "constructor.nested_v39_first",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "constructor.nested_return_before_extension",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "constructor.extension_different_from_base",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "canonical.randomized_exact_250",
+      "passed": true,
+      "blocker": true,
+      "detail": []
+    },
+    {
+      "name": "method.canonical_registered",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "method.execution_branch_wired",
+      "passed": true,
+      "blocker": true,
+      "detail": 8
+    },
+    {
+      "name": "method.no_conventional_bypass",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "method.causal_collision_context",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "analyzer.compatibility_gate_exact",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "stored": {
+          "retain_at_least_5_of_10_old_rvr_rescues": false,
+          "avoid_at_least_7_of_9_old_rvr_induced": true,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        },
+        "expected": {
+          "retain_at_least_5_of_10_old_rvr_rescues": false,
+          "avoid_at_least_7_of_9_old_rvr_induced": true,
+          "net_remove_at_least_3_cowp_collisions": true,
+          "kinematics_net_regression_at_most_1_scene": true,
+          "mean_ep_delta_not_below_minus_0_05": true,
+          "nonzero_intervention": true
+        }
+      }
+    },
+    {
+      "name": "analyzer.compatibility_overall_fail",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "analyzer.compatibility_v41_headline",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "analyzer.mechanism_not_gate",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.fail_closed_exit4",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.require_gate_pass",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.fresh_after_gate",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "launcher.canonical_method_only",
+      "passed": true,
+      "blocker": true,
+      "detail": null
+    },
+    {
+      "name": "manifest.waymax_probe_200_ids.txt",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "n": 200,
+        "unique": 200,
+        "sha": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+        "expected_n": 200,
+        "expected_sha": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+      }
+    },
+    {
+      "name": "manifest.waymax_v16_8_30_equivalence16_ids.txt",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "n": 16,
+        "unique": 16,
+        "sha": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+        "expected_n": 16,
+        "expected_sha": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+      }
+    },
+    {
+      "name": "manifest.waymax_v16_8_30_counterfactual48_ids.txt",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "n": 48,
+        "unique": 48,
+        "sha": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+        "expected_n": 48,
+        "expected_sha": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "manifest.waymax_v16_8_32_fresh37_ids.txt",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "n": 37,
+        "unique": 37,
+        "sha": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+        "expected_n": 37,
+        "expected_sha": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+      }
+    },
+    {
+      "name": "runtime.sanity_exit_zero",
+      "passed": true,
+      "blocker": true,
+      "detail": {
+        "returncode": 0,
+        "tail": "........................................................................ [ 75%]\n........................                                                 [100%]\n96 passed in 2.54s\nmanifest OK: n=200 logical_sha256=3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_probe_200_ids.txt\nmanifest OK: n=16 logical_sha256=81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt\nmanifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt\nmanifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_32_fresh37_ids.txt\nv16.8.42 RC-IARE semantic/integrity sanity passed\n[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl\n"
+      }
+    },
+    {
+      "name": "runtime.focused_96_passed",
+      "passed": true,
+      "blocker": true,
+      "detail": "[ 75%]\n........................                                                 [100%]\n96 passed in 2.54s\nmanifest OK: n=200 logical_sha256=3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_probe_200_ids.txt\nmanifest OK: n=16 logical_sha256=81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt\nmanifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt\nmanifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_32_fresh37_ids.txt\nv16.8.42 RC-IARE semantic/integrity sanity passed\n[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl\n"
+    },
+    {
+      "name": "runtime.semantic_integrity_message",
+      "passed": true,
+      "blocker": true,
+      "detail": "[ 75%]\n........................                                                 [100%]\n96 passed in 2.54s\nmanifest OK: n=200 logical_sha256=3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_probe_200_ids.txt\nmanifest OK: n=16 logical_sha256=81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt\nmanifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt\nmanifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/COWP_V16_8_42_INTERACTION_AWARE_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_32_fresh37_ids.txt\nv16.8.42 RC-IARE semantic/integrity sanity passed\n[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl\n"
+    },
+    {
+      "name": "evidence.full_v42_waymax_outcomes_available",
+      "passed": false,
+      "blocker": false,
+      "detail": "No V16.8.42 equivalence16/counterfactual48/fresh37/exact200 rollout was run in this CPU-only audit. Algorithm performance remains unclaimed."
+    },
+    {
+      "name": "evidence.reactive_counterfactual_social_validation_available",
+      "passed": false,
+      "blocker": false,
+      "detail": "V16.8.42 is currently a logged-replay physical mechanism probe; reactive-agent and human-audited false-safe evidence remain future publication gates."
+    },
+    {
+      "name": "evidence.counterfactual48_is_final_holdout",
+      "passed": false,
+      "blocker": false,
+      "detail": "counterfactual48 is a repeatedly used development panel and cannot serve as a final held-out publication test."
+    }
+  ],
+  "blocking_failures": [],
+  "decision": "CODE READY FOR FROZEN EQUIVALENCE16 + COUNTERFACTUAL48; NO V42 PERFORMANCE VERDICT YET"
+}

@@ -9,8 +9,12 @@ import time
 
 import numpy as np
 
-from cowp.core.constants import MacroType
+from cowp.core.constants import MacroType, ObjectType, PriorityRelation
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
+from cowp.geometry.collision import unsafe_between_bool
+from cowp.label.audit_relevance import canonical_root_weights
+from cowp.label.burden import adaptive_beta
+from cowp.label.safe_responses import build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
 from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
@@ -116,7 +120,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -3622,6 +3626,1107 @@ def _collision_violation_window_against_context(
         "source": str(source),
     }
 
+def _stable_softmax_np(logits: np.ndarray) -> np.ndarray:
+    """Finite, deterministic softmax for online natural-root probabilities."""
+    x = np.asarray(logits, dtype=np.float64).reshape(-1)
+    out = np.zeros_like(x, dtype=np.float64)
+    finite = np.isfinite(x)
+    if not bool(np.any(finite)):
+        return out.astype(np.float32)
+    z = np.clip(x[finite] - float(np.max(x[finite])), -80.0, 0.0)
+    e = np.exp(z)
+    denom = float(np.sum(e))
+    if not np.isfinite(denom) or denom <= 0.0:
+        return out.astype(np.float32)
+    out[finite] = e / denom
+    return out.astype(np.float32)
+
+
+def _canonical_online_root_weights_np(
+    logits: np.ndarray,
+    valid: np.ndarray,
+    cfg: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Use the exact frozen label/SetTransport natural-root probability measure.
+
+    Returns ``(canonical_weight, raw_softmax_weight)``.  The canonical support
+    first applies the frozen ``p_min`` threshold with the all-modes fallback,
+    then renormalizes and applies the independent probability-floor smoothing.
+    Calling the shared label helper prevents online mechanism drift.
+    """
+    raw = _stable_softmax_np(logits)
+    mask = np.asarray(valid, dtype=bool).reshape(-1)
+    M = min(int(raw.size), int(mask.size))
+    if M <= 0:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    raw = np.asarray(raw[:M], dtype=np.float32)
+    mask = np.asarray(mask[:M], dtype=bool)
+    canonical = canonical_root_weights(
+        {"valid": mask[None, :], "weight": raw[None, :]}, cfg,
+    )[0]
+    return np.asarray(canonical, dtype=np.float32), raw
+
+
+def _extract_object_types_np(state: Any, num_agents: int) -> np.ndarray:
+    """Extract Waymax object types without consulting future simulator state.
+
+    Waymax releases have exposed the field as either ``object_types`` or
+    ``object_type`` under ``object_metadata``.  Unknown/missing values are mapped
+    to ``ObjectType.UNKNOWN``; downstream response checks then use the stricter
+    non-vehicle safety profile rather than guessing a vehicle label.
+    """
+    n = max(int(num_agents), 0)
+    out = np.full((n,), int(ObjectType.UNKNOWN), dtype=np.int32)
+    meta = _get_field(state, ("object_metadata", "metadata"))
+    raw = _get_field(meta, ("object_types", "object_type", "types", "type")) if meta is not None else None
+    if raw is None:
+        raw = _get_field(state, ("object_types", "object_type"))
+    if raw is None or n <= 0:
+        return out
+    try:
+        arr = _to_numpy(raw)
+    except Exception:
+        return out
+    while arr.ndim > 1 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 2 and arr.shape[0] >= n and 2 <= arr.shape[1] <= 8:
+        # Be tolerant of one-hot metadata adapters used by focused tests.
+        arr = np.argmax(arr, axis=-1)
+    else:
+        arr = arr.reshape(-1)
+    known = {
+        int(ObjectType.UNKNOWN), int(ObjectType.VEHICLE), int(ObjectType.PEDESTRIAN),
+        int(ObjectType.CYCLIST), int(ObjectType.OTHER),
+    }
+    for i in range(min(n, int(arr.size))):
+        try:
+            value = int(arr[i])
+        except Exception:
+            continue
+        out[i] = value if value in known else int(ObjectType.UNKNOWN)
+    return out
+
+
+def _agent_state_after_future_sample_np(current: np.ndarray, sample: np.ndarray) -> np.ndarray:
+    """Lift one [x,y,yaw,vx,vy,length,width] sample into the online state layout."""
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    width = max(int(cur.size), 11)
+    nxt = np.zeros((width,), dtype=np.float32)
+    nxt[: cur.size] = cur
+    s = np.asarray(sample, dtype=np.float32).reshape(-1)
+    if s.size >= 5:
+        nxt[0:2] = s[0:2]
+        nxt[3:5] = s[3:5]
+        nxt[5] = float(np.linalg.norm(s[3:5]))
+        nxt[6] = s[2]
+    if s.size >= 7:
+        nxt[7] = max(float(s[5]), 0.1)
+        nxt[8] = max(float(s[6]), 0.1)
+    nxt[10] = 1.0
+    return nxt
+
+
+def _constant_velocity_trajectory_from_state_np(
+    agent_state: np.ndarray,
+    agent_index: int,
+    horizon_steps: int,
+    cfg: dict,
+) -> np.ndarray | None:
+    """Construct the same causal constant-velocity future used by online audit.
+
+    The trajectory is full [x,y,yaw,vx,vy,length,width] geometry so response
+    profiles can be checked against non-blocking actors with the unchanged COWP
+    unsafe predicate.  No simulator/log future is read.
+    """
+    state = np.asarray(agent_state, dtype=np.float32)
+    j = int(agent_index)
+    H = max(int(horizon_steps), 0)
+    if (
+        state.ndim != 2 or H <= 0 or not (0 <= j < state.shape[0])
+        or state.shape[1] < 11 or not bool(state[j, 10] > 0.5)
+        or not np.isfinite(state[j, :9]).all()
+    ):
+        return None
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    ts = np.arange(1, H + 1, dtype=np.float32) * dt
+    tr = np.zeros((H, 7), dtype=np.float32)
+    tr[:, :2] = state[j, :2][None, :] + state[j, 3:5][None, :] * ts[:, None]
+    tr[:, 2] = float(_wrap_angle(float(state[j, 6])))
+    tr[:, 3:5] = state[j, 3:5][None, :]
+    tr[:, 5] = max(float(state[j, 7]), 0.1)
+    tr[:, 6] = max(float(state[j, 8]), 0.1)
+    return tr
+
+
+def _trajectory_waymax_kinematic_safe_np(
+    current: np.ndarray,
+    trajectory: np.ndarray,
+    cfg: dict,
+) -> tuple[bool, dict[str, int | float | str]]:
+    """Require every response edge to satisfy Waymax's inverse-dynamics metric."""
+    tr = np.asarray(trajectory, dtype=np.float32)
+    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
+        return False, {
+            "failure_step": 0,
+            "max_abs_accel_mps2": float("inf"),
+            "max_abs_steering_curvature": float("inf"),
+            "contract_source": "invalid_response_trajectory",
+        }
+    cur = np.asarray(current, dtype=np.float32).reshape(-1)
+    max_acc = 0.0
+    max_steer = 0.0
+    contract_source = "unknown"
+    for t in range(int(tr.shape[0])):
+        target = np.asarray(tr[t, [0, 1, 2, 3, 4]], dtype=np.float32)
+        feasible, accel, steering, contract = _waymax_kinematic_transition_np(cur, target, cfg)
+        contract_source = str(contract.get("contract_source", contract_source))
+        if accel.size:
+            max_acc = max(max_acc, abs(float(accel[0])))
+        if steering.size:
+            max_steer = max(max_steer, abs(float(steering[0])))
+        if feasible.size == 0 or not bool(feasible[0]):
+            return False, {
+                "failure_step": int(t),
+                "max_abs_accel_mps2": float(max_acc),
+                "max_abs_steering_curvature": float(max_steer),
+                "contract_source": contract_source,
+            }
+        cur = _agent_state_after_future_sample_np(cur, tr[t])
+    return True, {
+        "failure_step": -1,
+        "max_abs_accel_mps2": float(max_acc),
+        "max_abs_steering_curvature": float(max_steer),
+        "contract_source": contract_source,
+    }
+
+
+def _collision_blocking_agent_indices_against_context(
+    trajectory: np.ndarray,
+    context: dict[str, Any],
+) -> tuple[list[int], dict[str, Any]]:
+    """Return the exact agents responsible for the frozen circle/CV rejection."""
+    tr = np.asarray(trajectory, dtype=np.float32)
+    idx = np.asarray(context.get("idx", np.asarray([0], dtype=np.int64)), dtype=np.int64)
+    agents = list(context.get("agents", []))
+    detail: dict[str, Any] = {
+        "nonfinite_ego": False,
+        "base_blocker_count": 0,
+        "priority_blocker_count": 0,
+        "blocker_count": 0,
+    }
+    if idx.size == 0:
+        idx = np.asarray([0], dtype=np.int64)
+    if (
+        tr.ndim != 2 or tr.shape[1] < 2 or tr.shape[0] <= int(np.max(idx, initial=0))
+        or not np.isfinite(tr[idx, :2]).all()
+    ):
+        detail["nonfinite_ego"] = True
+        return [], detail
+    base_xy = np.asarray(
+        context.get("base_xy", np.zeros((0, idx.size, 2), dtype=np.float32)),
+        dtype=np.float32,
+    )
+    rows = min(len(agents), int(base_xy.shape[0]))
+    if rows <= 0:
+        return [], detail
+    ego_xy = tr[idx, :2]
+    base_thr = np.asarray(context.get("base_threshold_m", np.zeros((rows,), dtype=np.float32)), dtype=np.float32)[:rows, None]
+    base_bad = np.any(
+        np.linalg.norm(ego_xy[None, :, :] - base_xy[:rows], axis=-1) - base_thr < 0.0,
+        axis=1,
+    )
+    priority_bad = np.zeros((rows,), dtype=bool)
+    priority_like = np.asarray(context.get("priority_like", np.zeros((rows,), dtype=bool)), dtype=bool)[:rows]
+    if bool(context.get("require_cv", True)) and bool(np.any(priority_like)):
+        cv_xy = np.asarray(context.get("cv_xy", base_xy), dtype=np.float32)[:rows]
+        cv_thr = np.asarray(context.get("priority_threshold_m", np.zeros((rows,), dtype=np.float32)), dtype=np.float32)[:rows, None]
+        all_cv_bad = np.any(
+            np.linalg.norm(ego_xy[None, :, :] - cv_xy, axis=-1) - cv_thr < 0.0,
+            axis=1,
+        )
+        priority_bad = priority_like & all_cv_bad
+    blockers = sorted({
+        int(agents[i].get("index", -1))
+        for i in range(rows)
+        if bool(base_bad[i] or priority_bad[i]) and int(agents[i].get("index", -1)) >= 0
+    })
+    detail.update({
+        "base_blocker_count": int(np.sum(base_bad)),
+        "priority_blocker_count": int(np.sum(priority_bad)),
+        "blocker_count": int(len(blockers)),
+        "blocker_indices": blockers,
+    })
+    return blockers, detail
+
+
+def _collision_context_without_agent_indices(
+    context: dict[str, Any],
+    excluded_agent_indices: set[int] | frozenset[int] | list[int] | tuple[int, ...],
+) -> dict[str, Any]:
+    """Filter supported responders while retaining every other frozen collision check."""
+    excluded = {int(x) for x in excluded_agent_indices}
+    agents = list(context.get("agents", []))
+    keep = [i for i, a in enumerate(agents) if int(a.get("index", -1)) not in excluded]
+    out = dict(context)
+    out["agents"] = [dict(agents[i]) for i in keep]
+    for key in ("base_xy", "cv_xy", "base_threshold_m", "priority_threshold_m", "priority_like"):
+        arr = np.asarray(context.get(key))
+        if arr.ndim >= 1 and arr.shape[0] >= len(agents):
+            out[key] = np.asarray(arr[keep]).copy()
+    return out
+
+
+def _prepare_interaction_response_support_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    critical_track_index: np.ndarray,
+    critical_valid: np.ndarray,
+    natural_trajectories: np.ndarray,
+    natural_logits: np.ndarray,
+    object_types: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
+    """Build a causal, root-conditioned response envelope once per planning step.
+
+    The envelope uses only the trained natural decoder and the frozen deterministic
+    same-root response bank.  Root support is measured by the *exact* canonical
+    label/SetTransport probability distribution: p_min filtering, support
+    renormalization and probability-floor smoothing remain distinct operations.
+    Geometric deduplication then merges canonical mass without changing its sum.
+    Every retained root must own at least one low-burden, drivable and
+    Waymax-kinematic profile in both current and one-step-shifted form.
+    """
+    state = np.asarray(agent_state, dtype=np.float32)
+    crit_idx = np.asarray(critical_track_index, dtype=np.int64).reshape(-1)
+    crit_valid = np.asarray(critical_valid, dtype=bool).reshape(-1)
+    nat = np.asarray(natural_trajectories, dtype=np.float32)
+    logits = np.asarray(natural_logits, dtype=np.float32)
+    obj = np.asarray(object_types, dtype=np.int32).reshape(-1)
+    pcfg = cfg.get("planning", {})
+    ncfg = cfg.get("natural", {})
+    ncf_cfg = cfg.get("ncf", {})
+    rcfg = cfg.get("response", {}).get("root_conditioned_transport", {})
+    min_alt_weight = max(float(ncf_cfg.get(
+        "min_alt_weight", pcfg.get("set_transport_min_alt_weight", 0.03)
+    )), 0.0)
+    probability_floor = float(np.clip(ncf_cfg.get(
+        "root_probability_floor", pcfg.get("set_transport_probability_floor", 0.02)
+    ), 0.0, 0.25))
+    required_mass = float(np.clip(
+        1.0 - float(pcfg.get(
+            "set_transport_cvar_tail_mass", ncf_cfg.get("cvar_tail_mass", 0.25)
+        )), 0.0, 1.0,
+    ))
+    min_roots = max(int(ncfg.get("certificate_min_low_burden_roots", 2)), 1)
+    dedup_m = max(float(ncfg.get("root_dedup_mean_distance_m", 0.10)), 0.0)
+    max_roots = max(int(rcfg.get("max_roots_per_agent", nat.shape[1] if nat.ndim >= 2 else 0)), 0)
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+
+    aggregate: dict[str, Any] = {
+        "minimum_raw_mode_probability": float(min_alt_weight),
+        "probability_floor": float(probability_floor),
+        "required_root_mass": float(required_mass),
+        "minimum_root_count": int(min_roots),
+        "critical_slots": 0,
+        "agents_ready": 0,
+        "agents_rejected_invalid_prediction": 0,
+        "agents_rejected_root_count": 0,
+        "agents_rejected_root_mass": 0,
+        "agents_rejected_profile_feasibility": 0,
+        "retained_roots": 0,
+        "eligible_profiles": 0,
+        "profile_candidates": 0,
+        "canonical_support_mass_sum": 0.0,
+        "raw_support_mass_sum": 0.0,
+    }
+    support: dict[int, dict[str, Any]] = {}
+    if state.ndim != 2 or nat.ndim != 4 or logits.ndim != 2:
+        aggregate["invalid_input"] = True
+        return support, aggregate
+    A = min(crit_idx.size, crit_valid.size, nat.shape[0], logits.shape[0])
+    for slot in range(A):
+        if not bool(crit_valid[slot]):
+            continue
+        agent_index = int(crit_idx[slot])
+        if (
+            agent_index == int(sdc_index) or not (0 <= agent_index < state.shape[0])
+            or state.shape[1] <= 10 or not bool(state[agent_index, 10] > 0.5)
+        ):
+            continue
+        aggregate["critical_slots"] = int(aggregate["critical_slots"]) + 1
+        record: dict[str, Any] = {
+            "ready": False,
+            "reason": "invalid_prediction",
+            "slot": int(slot),
+            "agent_index": int(agent_index),
+            "object_type": int(obj[agent_index]) if agent_index < obj.size else int(ObjectType.UNKNOWN),
+            "beta": 0.0,
+            "raw_support_mass": 0.0,
+            "canonical_support_mass": 0.0,
+            "retained_raw_mass": 0.0,
+            "retained_mass": 0.0,
+            "retained_root_count": 0,
+            "roots": [],
+        }
+        M = min(int(logits.shape[1]), int(nat.shape[1]))
+        valid_modes = np.zeros((M,), dtype=bool)
+        roots_by_mode: dict[int, np.ndarray] = {}
+        for mode in range(M):
+            root = np.asarray(nat[slot, mode], dtype=np.float32).copy()
+            if root.ndim != 2 or root.shape[0] <= 0 or root.shape[1] < 7 or not np.isfinite(root[:, :5]).all():
+                continue
+            root[:, 2] = np.asarray(_wrap_angle(root[:, 2]), dtype=np.float32)
+            root[:, 5] = max(float(state[agent_index, 7]), 0.1)
+            root[:, 6] = max(float(state[agent_index, 8]), 0.1)
+            valid_modes[mode] = True
+            roots_by_mode[int(mode)] = root
+        canonical, raw_probs = _canonical_online_root_weights_np(logits[slot, :M], valid_modes, cfg)
+        canonical_support = canonical > 0.0
+        if not bool(np.any(canonical_support)):
+            aggregate["agents_rejected_invalid_prediction"] = int(aggregate["agents_rejected_invalid_prediction"]) + 1
+            support[agent_index] = record
+            continue
+        raw_support_mass = float(np.sum(raw_probs[canonical_support]))
+        canonical_support_mass = float(np.sum(canonical[canonical_support]))
+        record["raw_support_mass"] = raw_support_mass
+        record["canonical_support_mass"] = canonical_support_mass
+        aggregate["raw_support_mass_sum"] = float(aggregate["raw_support_mass_sum"]) + raw_support_mass
+        aggregate["canonical_support_mass_sum"] = float(aggregate["canonical_support_mass_sum"]) + canonical_support_mass
+        mode_records: list[dict[str, Any]] = []
+        for mode in np.flatnonzero(canonical_support):
+            mode_records.append({
+                "weight": float(canonical[mode]),
+                "raw_weight": float(raw_probs[mode]),
+                "mode_indices": [int(mode)],
+                "trajectory": roots_by_mode[int(mode)],
+            })
+        mode_records.sort(key=lambda r: (-float(r["weight"]), int(r["mode_indices"][0])))
+        deduped: list[dict[str, Any]] = []
+        for candidate in mode_records:
+            placed = False
+            for old in deduped:
+                h = min(int(candidate["trajectory"].shape[0]), int(old["trajectory"].shape[0]))
+                mean_xy = float(np.mean(np.linalg.norm(
+                    candidate["trajectory"][:h, :2] - old["trajectory"][:h, :2], axis=-1,
+                ))) if h > 0 else float("inf")
+                if mean_xy <= dedup_m:
+                    old["weight"] = float(old["weight"]) + float(candidate["weight"])
+                    old["raw_weight"] = float(old["raw_weight"]) + float(candidate["raw_weight"])
+                    old["mode_indices"].extend(int(x) for x in candidate["mode_indices"])
+                    placed = True
+                    break
+            if not placed:
+                deduped.append(candidate)
+        eligible = sorted(
+            deduped, key=lambda r: (-float(r["weight"]), int(min(r["mode_indices"]))),
+        )
+        if max_roots > 0:
+            eligible = eligible[:max_roots]
+        total_eligible_mass = float(sum(float(r["weight"]) for r in eligible))
+        total_eligible_raw_mass = float(sum(float(r["raw_weight"]) for r in eligible))
+        if len(eligible) < min_roots:
+            record["reason"] = "insufficient_root_count"
+            record["available_root_count"] = int(len(eligible))
+            record["available_root_mass"] = float(total_eligible_mass)
+            aggregate["agents_rejected_root_count"] = int(aggregate["agents_rejected_root_count"]) + 1
+            support[agent_index] = record
+            continue
+        if total_eligible_mass + 1.0e-9 < required_mass:
+            record["reason"] = "insufficient_root_mass"
+            record["available_root_count"] = int(len(eligible))
+            record["available_root_mass"] = float(total_eligible_mass)
+            aggregate["agents_rejected_root_mass"] = int(aggregate["agents_rejected_root_mass"]) + 1
+            support[agent_index] = record
+            continue
+        selected_roots: list[dict[str, Any]] = []
+        cumulative_mass = 0.0
+        cumulative_raw_mass = 0.0
+        for root_rec in eligible:
+            selected_roots.append(root_rec)
+            cumulative_mass += float(root_rec["weight"])
+            cumulative_raw_mass += float(root_rec["raw_weight"])
+            if len(selected_roots) >= min_roots and cumulative_mass + 1.0e-9 >= required_mass:
+                break
+        object_type = int(record["object_type"])
+        beta = adaptive_beta(
+            state, object_type, PriorityRelation.AGENT_PRIORITY, cfg,
+            use_adaptive=True, ego_index=int(sdc_index),
+        )
+        record["beta"] = float(beta)
+        prepared_roots: list[dict[str, Any]] = []
+        all_roots_ready = True
+        for root_rec in selected_roots:
+            root = np.asarray(root_rec["trajectory"], dtype=np.float32)
+            try:
+                bank = build_root_recovery_trajectory_bank(root, cfg)
+                burdens = prepare_root_recovery_burden_bank(
+                    root, bank, cfg, object_type=object_type,
+                    rho=PriorityRelation.AGENT_PRIORITY,
+                )
+            except Exception:
+                bank, burdens = [], []
+            profile_records: list[dict[str, Any]] = []
+            for profile_index, (profile, burden_entry) in enumerate(zip(bank, burdens)):
+                aggregate["profile_candidates"] = int(aggregate["profile_candidates"]) + 1
+                burden = float(burden_entry[0])
+                tr = np.asarray(profile, dtype=np.float32)
+                if burden > float(beta) + 1.0e-9 or tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7:
+                    continue
+                if not bool(_roadgraph_drivable_mask(tr, roadgraph)):
+                    continue
+                current_kin_ok, current_kin = _trajectory_waymax_kinematic_safe_np(state[agent_index], tr, cfg)
+                shifted = _shift_append_terminal_reference_np(tr, dt)
+                response_successor = _agent_state_after_future_sample_np(state[agent_index], tr[0])
+                shifted_kin_ok, shifted_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
+                if not (current_kin_ok and shifted_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
+                    continue
+                profile_records.append({
+                    "profile_index": int(profile_index),
+                    "trajectory": tr,
+                    "shifted_trajectory": shifted,
+                    "burden": float(burden),
+                    "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
+                    "current_kinematic": current_kin,
+                    "shifted_kinematic": shifted_kin,
+                })
+                aggregate["eligible_profiles"] = int(aggregate["eligible_profiles"]) + 1
+            profile_records.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
+            prepared_roots.append({
+                "weight": float(root_rec["weight"]),
+                "raw_weight": float(root_rec["raw_weight"]),
+                "mode_indices": tuple(sorted(int(x) for x in root_rec["mode_indices"])),
+                "trajectory": root,
+                "profiles": profile_records,
+            })
+            if not profile_records:
+                all_roots_ready = False
+        record.update({
+            "retained_raw_mass": float(cumulative_raw_mass),
+            "retained_mass": float(cumulative_mass),
+            "retained_root_count": int(len(prepared_roots)),
+            "available_root_mass": float(total_eligible_mass),
+            "available_raw_root_mass": float(total_eligible_raw_mass),
+            "roots": prepared_roots,
+        })
+        aggregate["retained_roots"] = int(aggregate["retained_roots"]) + int(len(prepared_roots))
+        if not all_roots_ready:
+            record["reason"] = "root_has_no_low_burden_shift_closed_profile"
+            aggregate["agents_rejected_profile_feasibility"] = int(aggregate["agents_rejected_profile_feasibility"]) + 1
+            support[agent_index] = record
+            continue
+        record["ready"] = True
+        record["reason"] = "ready"
+        aggregate["agents_ready"] = int(aggregate["agents_ready"]) + 1
+        old = support.get(agent_index)
+        if old is None or (not bool(old.get("ready", False))) or float(record["retained_mass"]) > float(old.get("retained_mass", -1.0)):
+            support[agent_index] = record
+    return support, aggregate
+
+
+def _interaction_aware_recovery_certificate_np(
+    agent_state: np.ndarray,
+    successor_state: np.ndarray,
+    sdc_index: int,
+    current_ego_trajectory: np.ndarray,
+    current_ego_kinematic_ok: np.ndarray,
+    shifted_ego_trajectory: np.ndarray,
+    shifted_ego_kinematic_ok: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    current_collision_context: dict[str, Any],
+    shifted_collision_context: dict[str, Any],
+    response_support: dict[int, dict[str, Any]],
+    object_types: np.ndarray,
+) -> tuple[bool, dict[str, Any]]:
+    """Certify one ego tube under universal low-burden same-root response support."""
+    current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
+        current_ego_trajectory, current_collision_context,
+    )
+    shifted_blockers, shifted_blocker_detail = _collision_blocking_agent_indices_against_context(
+        shifted_ego_trajectory, shifted_collision_context,
+    )
+    blockers = sorted(set(current_blockers) | set(shifted_blockers))
+    detail: dict[str, Any] = {
+        "failure_reason": "none",
+        "current_blockers": current_blockers,
+        "shifted_blockers": shifted_blockers,
+        "blocker_count": int(len(blockers)),
+        "current_blocker_detail": current_blocker_detail,
+        "shifted_blocker_detail": shifted_blocker_detail,
+        "response_root_checks": 0,
+        "response_profile_evaluations": 0,
+        "interaction_environment_compatibility_checks": 0,
+        "interaction_environment_compatibility_rejects": 0,
+        "interaction_joint_compatibility_checks": 0,
+        "interaction_joint_compatibility_rejects": 0,
+        "interaction_joint_assignment_backtracks": 0,
+        "supported_root_count": 0,
+        "minimum_retained_root_mass": 0.0,
+        "maximum_selected_response_burden": 0.0,
+        "current_residual_certificate": {},
+        "shifted_residual_certificate": {},
+    }
+    if not blockers:
+        detail["failure_reason"] = "no_collision_blocker"
+        return False, detail
+    unsupported = [j for j in blockers if not bool(response_support.get(int(j), {}).get("ready", False))]
+    if unsupported:
+        detail["failure_reason"] = "unsupported_collision_blocker"
+        detail["unsupported_blockers"] = unsupported
+        return False, detail
+
+    excluded = set(blockers)
+    current_residual_context = _collision_context_without_agent_indices(current_collision_context, excluded)
+    shifted_residual_context = _collision_context_without_agent_indices(shifted_collision_context, excluded)
+    current_ok, current_physical = _physical_recovery_tube_certificate_np(
+        np.asarray(agent_state, dtype=np.float32), int(sdc_index),
+        current_ego_trajectory, current_ego_kinematic_ok,
+        roadgraph, cfg, collision_context=current_residual_context,
+    )
+    shifted_ok, shifted_physical = _physical_recovery_tube_certificate_np(
+        np.asarray(successor_state, dtype=np.float32), int(sdc_index),
+        shifted_ego_trajectory, shifted_ego_kinematic_ok,
+        roadgraph, cfg, collision_context=shifted_residual_context,
+    )
+    detail["current_residual_certificate"] = current_physical
+    detail["shifted_residual_certificate"] = shifted_physical
+    if not (current_ok and shifted_ok):
+        detail["failure_reason"] = "residual_physical_certificate_failed"
+        return False, detail
+
+    obj = np.asarray(object_types, dtype=np.int32).reshape(-1)
+    environment_indices = sorted({
+        int(agent.get("index", -1))
+        for context in (current_collision_context, shifted_collision_context)
+        for agent in context.get("agents", [])
+        if int(agent.get("index", -1)) >= 0
+        and int(agent.get("index", -1)) != int(sdc_index)
+        and int(agent.get("index", -1)) not in excluded
+    })
+    environment: list[dict[str, Any]] = []
+    current_horizon = int(np.asarray(current_ego_trajectory).shape[0])
+    shifted_horizon = int(np.asarray(shifted_ego_trajectory).shape[0])
+    for environment_index in environment_indices:
+        current_cv = _constant_velocity_trajectory_from_state_np(
+            agent_state, environment_index, current_horizon, cfg,
+        )
+        shifted_cv = _constant_velocity_trajectory_from_state_np(
+            successor_state, environment_index, shifted_horizon, cfg,
+        )
+        if current_cv is None or shifted_cv is None:
+            detail["failure_reason"] = "invalid_environment_actor_prediction"
+            detail["failed_environment_agent_index"] = int(environment_index)
+            return False, detail
+        environment.append({
+            "agent_index": int(environment_index),
+            "object_type": int(obj[environment_index]) if environment_index < obj.size else int(ObjectType.UNKNOWN),
+            "trajectory": current_cv,
+            "shifted_trajectory": shifted_cv,
+        })
+    detail["environment_agent_count"] = int(len(environment))
+
+    # Build a separable robust response envelope.  One profile is selected for
+    # every retained root.  Profiles belonging to different blockers must be
+    # mutually safe in both the current and shifted tubes.  Because roots of the
+    # same agent are alternatives rather than simultaneous states, they need no
+    # pairwise check.  Cross-agent pairwise compatibility makes every Cartesian
+    # combination of retained roots jointly realizable without using a learned
+    # correlation model or future simulator state.
+    root_nodes: list[dict[str, Any]] = []
+    minimum_mass = 1.0
+    root_count = 0
+    for agent_index in blockers:
+        agent_support = response_support[int(agent_index)]
+        minimum_mass = min(minimum_mass, float(agent_support.get("retained_mass", 0.0)))
+        object_type = int(agent_support.get("object_type", int(ObjectType.UNKNOWN)))
+        for root_ordinal, root in enumerate(agent_support.get("roots", [])):
+            root_count += 1
+            detail["response_root_checks"] = int(detail["response_root_checks"]) + 1
+            ego_safe_count = 0
+            environment_safe_profiles: list[dict[str, Any]] = []
+            for profile in root.get("profiles", []):
+                detail["response_profile_evaluations"] = int(detail["response_profile_evaluations"]) + 1
+                profile_current = np.asarray(profile["trajectory"], dtype=np.float32)
+                profile_shifted = np.asarray(profile["shifted_trajectory"], dtype=np.float32)
+                try:
+                    current_unsafe = unsafe_between_bool(
+                        np.asarray(current_ego_trajectory, dtype=np.float32),
+                        profile_current, cfg, agent_type=object_type,
+                    )
+                    shifted_unsafe = unsafe_between_bool(
+                        np.asarray(shifted_ego_trajectory, dtype=np.float32),
+                        profile_shifted, cfg, agent_type=object_type,
+                    )
+                except Exception:
+                    current_unsafe = shifted_unsafe = True
+                if current_unsafe or shifted_unsafe:
+                    continue
+                ego_safe_count += 1
+                environment_safe = True
+                for actor in environment:
+                    detail["interaction_environment_compatibility_checks"] = int(
+                        detail["interaction_environment_compatibility_checks"]
+                    ) + 1
+                    try:
+                        current_bad = (
+                            unsafe_between_bool(
+                                profile_current, np.asarray(actor["trajectory"], dtype=np.float32),
+                                cfg, agent_type=int(actor["object_type"]),
+                            )
+                            or unsafe_between_bool(
+                                np.asarray(actor["trajectory"], dtype=np.float32), profile_current,
+                                cfg, agent_type=object_type,
+                            )
+                        )
+                        shifted_bad = (
+                            unsafe_between_bool(
+                                profile_shifted, np.asarray(actor["shifted_trajectory"], dtype=np.float32),
+                                cfg, agent_type=int(actor["object_type"]),
+                            )
+                            or unsafe_between_bool(
+                                np.asarray(actor["shifted_trajectory"], dtype=np.float32), profile_shifted,
+                                cfg, agent_type=object_type,
+                            )
+                        )
+                    except Exception:
+                        current_bad = shifted_bad = True
+                    if current_bad or shifted_bad:
+                        detail["interaction_environment_compatibility_rejects"] = int(
+                            detail["interaction_environment_compatibility_rejects"]
+                        ) + 1
+                        environment_safe = False
+                        break
+                if environment_safe:
+                    environment_safe_profiles.append(profile)
+            environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
+            if not environment_safe_profiles:
+                detail["failure_reason"] = (
+                    "retained_root_has_no_ego_safe_response"
+                    if ego_safe_count <= 0 else "retained_root_has_no_environment_safe_response"
+                )
+                detail["failed_agent_index"] = int(agent_index)
+                detail["failed_root_ordinal"] = int(root_ordinal)
+                detail["failed_root_stage"] = "ego" if ego_safe_count <= 0 else "environment"
+                return False, detail
+            root_nodes.append({
+                "agent_index": int(agent_index),
+                "object_type": object_type,
+                "root_ordinal": int(root_ordinal),
+                "root": root,
+                "profiles": environment_safe_profiles,
+            })
+
+    # Minimum-domain-first deterministic backtracking.  This is an exact CSP over
+    # the bounded frozen root/profile bank, not a top-k heuristic.  A solution
+    # selects one response per retained root whose cross-agent pairs are all safe;
+    # therefore every possible multi-agent retained-root realization has a valid
+    # simultaneous response tuple.
+    ordered_nodes = sorted(
+        root_nodes,
+        key=lambda n: (
+            len(n["profiles"]), int(n["agent_index"]), int(n["root_ordinal"]),
+        ),
+    )
+    assignments: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    compatibility_checks = 0
+    compatibility_rejects = 0
+    backtracks = 0
+
+    def pair_compatible(
+        node: dict[str, Any], profile: dict[str, Any],
+        other_node: dict[str, Any], other_profile: dict[str, Any],
+    ) -> bool:
+        nonlocal compatibility_checks, compatibility_rejects
+        if int(node["agent_index"]) == int(other_node["agent_index"]):
+            return True
+        compatibility_checks += 1
+        try:
+            current_bad = (
+                unsafe_between_bool(
+                    np.asarray(profile["trajectory"], dtype=np.float32),
+                    np.asarray(other_profile["trajectory"], dtype=np.float32),
+                    cfg, agent_type=int(other_node["object_type"]),
+                )
+                or unsafe_between_bool(
+                    np.asarray(other_profile["trajectory"], dtype=np.float32),
+                    np.asarray(profile["trajectory"], dtype=np.float32),
+                    cfg, agent_type=int(node["object_type"]),
+                )
+            )
+            shifted_bad = (
+                unsafe_between_bool(
+                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
+                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
+                    cfg, agent_type=int(other_node["object_type"]),
+                )
+                or unsafe_between_bool(
+                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
+                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
+                    cfg, agent_type=int(node["object_type"]),
+                )
+            )
+        except Exception:
+            current_bad = shifted_bad = True
+        if current_bad or shifted_bad:
+            compatibility_rejects += 1
+            return False
+        return True
+
+    def assign_node(pos: int) -> bool:
+        nonlocal backtracks
+        if pos >= len(ordered_nodes):
+            return True
+        node = ordered_nodes[pos]
+        for profile in node["profiles"]:
+            if all(pair_compatible(node, profile, old_node, old_profile) for old_node, old_profile in assignments):
+                assignments.append((node, profile))
+                if assign_node(pos + 1):
+                    return True
+                assignments.pop()
+                backtracks += 1
+        return False
+
+    if not assign_node(0):
+        detail.update({
+            "failure_reason": "no_jointly_compatible_response_envelope",
+            "interaction_joint_compatibility_checks": int(compatibility_checks),
+            "interaction_joint_compatibility_rejects": int(compatibility_rejects),
+            "interaction_joint_assignment_backtracks": int(backtracks),
+        })
+        return False, detail
+
+    selected_responses: list[dict[str, Any]] = []
+    maximum_burden = 0.0
+    for node, accepted_profile in sorted(
+        assignments,
+        key=lambda x: (int(x[0]["agent_index"]), int(x[0]["root_ordinal"])),
+    ):
+        root = node["root"]
+        burden = float(accepted_profile["burden"])
+        maximum_burden = max(maximum_burden, burden)
+        selected_responses.append({
+            "agent_index": int(node["agent_index"]),
+            "root_ordinal": int(node["root_ordinal"]),
+            "mode_indices": tuple(int(x) for x in root.get("mode_indices", ())),
+            "root_weight": float(root.get("weight", 0.0)),
+            "profile_index": int(accepted_profile["profile_index"]),
+            "burden": burden,
+        })
+    detail.update({
+        "interaction_joint_compatibility_checks": int(compatibility_checks),
+        "interaction_joint_compatibility_rejects": int(compatibility_rejects),
+        "interaction_joint_assignment_backtracks": int(backtracks),
+    })
+    detail.update({
+        "supported_root_count": int(root_count),
+        "minimum_retained_root_mass": float(minimum_mass if blockers else 0.0),
+        "maximum_selected_response_burden": float(maximum_burden),
+        "selected_responses": selected_responses,
+    })
+    return True, detail
+
+
+def _construct_interaction_aware_reachable_response_envelope_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    nominal_trajectories: np.ndarray,
+    cand_valid: np.ndarray,
+    nominal_roadgraph_safe: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    action_targets: np.ndarray,
+    action_accels: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    previous_longitudinal_accel: float,
+    *,
+    base_candidate_index: int,
+    critical_track_index: np.ndarray,
+    critical_valid: np.ndarray,
+    natural_trajectories: np.ndarray,
+    natural_logits: np.ndarray,
+    object_types: np.ndarray,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
+
+    The exact V39 conflict-window tube remains the nested first branch.  Only when
+    it has no physical certificate does this extension revisit the same V39
+    controller-reachable hypotheses.  A static CV blocker may be replaced by an
+    interaction contingency only when every retained high-mass natural root of
+    that exact blocker owns the same low-burden, drivable, Waymax-kinematic
+    response profile for both the current and one-step-shifted ego tubes.  All
+    non-blocking agents, ego roadgraph checks and ego inverse dynamics remain hard.
+    """
+    nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
+        agent_state, sdc_index, nominal_trajectories, cand_valid,
+        nominal_roadgraph_safe, macro_types, fallback_scores,
+        collision_prefix_steps, action_targets, action_accels,
+        roadgraph, cfg, previous_longitudinal_accel,
+    )
+    detail = dict(nested_detail)
+    detail.update({
+        "nested_v39_selected": bool(nested_selected is not None),
+        "interaction_response_attempted": False,
+        "interaction_response_selected": False,
+        "interaction_support_agents_total": 0,
+        "interaction_support_agents_ready": 0,
+        "interaction_support_retained_roots": 0,
+        "interaction_support_eligible_profiles": 0,
+        "interaction_hypotheses_evaluated": 0,
+        "interaction_noop_hypotheses_skipped": 0,
+        "interaction_no_blocker_rejects": 0,
+        "interaction_unsupported_blocker_rejects": 0,
+        "interaction_residual_physical_rejects": 0,
+        "interaction_root_unrecoverable_rejects": 0,
+        "interaction_joint_incompatibility_rejects": 0,
+        "interaction_environment_compatibility_checks": 0,
+        "interaction_environment_compatibility_rejects": 0,
+        "interaction_joint_compatibility_checks": 0,
+        "interaction_joint_compatibility_rejects": 0,
+        "interaction_joint_assignment_backtracks": 0,
+        "interaction_selected_blocker_count": 0,
+        "interaction_selected_root_count": 0,
+        "interaction_selected_minimum_root_mass": 0.0,
+        "interaction_selected_maximum_response_burden": 0.0,
+        "interaction_selected_profile_evaluations": 0,
+        "selected_is_interaction_response": False,
+        "selected_certificate_kind": "nested_v39" if nested_selected is not None else "none",
+    })
+    if nested_selected is not None:
+        return nested_selected, detail
+
+    detail["interaction_response_attempted"] = True
+    state = np.asarray(agent_state, dtype=np.float32)
+    traj = np.asarray(nominal_trajectories, dtype=np.float32)
+    valid = np.asarray(cand_valid, dtype=bool).reshape(-1)
+    nominal_road = np.asarray(nominal_roadgraph_safe, dtype=bool).reshape(-1)
+    macro = np.asarray(macro_types, dtype=np.int64).reshape(-1)
+    scores = np.asarray(fallback_scores, dtype=np.float64).reshape(-1)
+    prefix = np.asarray(collision_prefix_steps, dtype=np.float64).reshape(-1)
+    targets = np.asarray(action_targets, dtype=np.float32)
+    nominal_accels = np.asarray(action_accels, dtype=np.float64).reshape(-1)
+    if (
+        state.ndim != 2 or not (0 <= int(sdc_index) < state.shape[0])
+        or traj.ndim != 3 or traj.shape[0] <= 0 or traj.shape[1] <= 0 or traj.shape[2] < 5
+    ):
+        detail["interaction_invalid_input"] = True
+        return None, detail
+    n = min(
+        traj.shape[0], valid.size, nominal_road.size, macro.size, scores.size,
+        prefix.size, targets.shape[0] if targets.ndim == 2 else 0, nominal_accels.size,
+    )
+    base_idx = int(base_candidate_index)
+    if n <= 0 or not (0 <= base_idx < n):
+        detail["interaction_invalid_input"] = True
+        return None, detail
+    traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
+    scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
+
+    response_support, support_detail = _prepare_interaction_response_support_np(
+        state, int(sdc_index), critical_track_index, critical_valid,
+        natural_trajectories, natural_logits, object_types, roadgraph, cfg,
+    )
+    detail["interaction_support_detail"] = support_detail
+    detail["interaction_support_agents_total"] = int(support_detail.get("critical_slots", 0))
+    detail["interaction_support_agents_ready"] = int(support_detail.get("agents_ready", 0))
+    detail["interaction_support_retained_roots"] = int(support_detail.get("retained_roots", 0))
+    detail["interaction_support_eligible_profiles"] = int(support_detail.get("eligible_profiles", 0))
+    if int(support_detail.get("agents_ready", 0)) <= 0:
+        detail["interaction_failure_reason"] = "no_response_ready_critical_agent"
+        return None, detail
+
+    pool = valid & nominal_road
+    if not bool(pool.any()):
+        pool = valid.copy()
+    pool &= macro != int(MacroType.PAD)
+    reps = _semantic_action_class_representatives_np(
+        pool, macro, targets, prefix, scores, prefer_fallback=True,
+    )
+    if not reps:
+        detail["interaction_failure_reason"] = "no_parent_action_class"
+        return None, detail
+
+    H = int(traj.shape[1])
+    current_collision_context = _prepare_collision_check_context(
+        state, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+    )
+    rep_arr = np.asarray(reps, dtype=np.int64)
+    nominal_projected, _nominal_kin, _nominal_accel_hist = _project_candidate_bank_through_controller_np(
+        state[int(sdc_index)], traj[rep_arr], cfg, float(previous_longitudinal_accel),
+    )
+    parent_indices: list[int] = []
+    policy_ids: list[int] = []
+    policy_names: list[str] = []
+    release_edges: list[int] = []
+    nonnominal_edges: list[int] = []
+    schedules: list[np.ndarray] = []
+    for local_i, parent in enumerate(reps):
+        window = _collision_violation_window_against_context(
+            nominal_projected[local_i], current_collision_context,
+        )
+        family = _conflict_window_envelope_schedule_family(
+            H,
+            int(window.get("first_violation_step", -1)),
+            int(window.get("last_violation_step", -1)),
+        )
+        for rec in family:
+            parent_indices.append(int(parent))
+            policy_ids.append(int(rec["policy_id"]))
+            policy_names.append(str(rec["policy_name"]))
+            release_edges.append(int(rec["release_edge"]))
+            nonnominal_edges.append(int(rec["nonnominal_edges"]))
+            schedules.append(np.asarray(rec["schedule"], dtype=np.int8))
+    if not schedules:
+        detail["interaction_failure_reason"] = "no_conflict_window_hypothesis"
+        return None, detail
+    parent_arr = np.asarray(parent_indices, dtype=np.int64)
+    policy_arr = np.asarray(policy_ids, dtype=np.int8)
+    schedule_arr = np.stack(schedules, axis=0).astype(np.int8)
+    release_arr = np.asarray(release_edges, dtype=np.int32)
+    nonnominal_arr = np.asarray(nonnominal_edges, dtype=np.int32)
+    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
+        state[int(sdc_index)], np.asarray(traj[parent_arr], dtype=np.float32), cfg,
+        float(previous_longitudinal_accel),
+        longitudinal_envelope_schedule=schedule_arr,
+    )
+    base_target = np.asarray(targets[base_idx, :5], dtype=np.float32)
+
+    def hypothesis_key(j: int) -> tuple[Any, ...]:
+        parent = int(parent_arr[j])
+        pid = int(policy_arr[j])
+        return (
+            float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
+            abs(float(accel_hist[j, 0]) - float(nominal_accels[parent])),
+            int(nonnominal_arr[j]),
+            0 if pid == 0 else (1 if abs(pid) >= 2 else 2),
+            parent,
+            pid,
+        )
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    for j in sorted(range(int(projected.shape[0])), key=hypothesis_key):
+        first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
+        if np.allclose(first_target, base_target, rtol=0.0, atol=1.0e-6):
+            detail["interaction_noop_hypotheses_skipped"] = int(detail["interaction_noop_hypotheses_skipped"]) + 1
+            continue
+        detail["interaction_hypotheses_evaluated"] = int(detail["interaction_hypotheses_evaluated"]) + 1
+        first_accel = float(accel_hist[j, 0])
+        successor = _counterfactual_successor_agent_state(
+            state, int(sdc_index), first_target, cfg,
+        )
+        shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+        shifted_schedule = _shift_longitudinal_envelope_schedule_np(
+            schedule_arr[j], int(policy_arr[j]),
+        )
+        shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+            successor[int(sdc_index)], shifted_reference[None, ...], cfg,
+            first_accel, longitudinal_envelope_schedule=shifted_schedule[None, :],
+        )
+        shifted_collision_context = _prepare_collision_check_context(
+            successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+        )
+        interaction_ok, interaction_detail = _interaction_aware_recovery_certificate_np(
+            state, successor, int(sdc_index),
+            projected[j], kin_ok[j], shifted_projected[0], shifted_kin_ok[0],
+            roadgraph, cfg, current_collision_context, shifted_collision_context,
+            response_support, object_types,
+        )
+        reason = str(interaction_detail.get("failure_reason", "unknown"))
+        detail["interaction_environment_compatibility_checks"] = int(
+            detail["interaction_environment_compatibility_checks"]
+        ) + int(interaction_detail.get("interaction_environment_compatibility_checks", 0))
+        detail["interaction_environment_compatibility_rejects"] = int(
+            detail["interaction_environment_compatibility_rejects"]
+        ) + int(interaction_detail.get("interaction_environment_compatibility_rejects", 0))
+        detail["interaction_joint_compatibility_checks"] = int(detail["interaction_joint_compatibility_checks"]) + int(
+            interaction_detail.get("interaction_joint_compatibility_checks", 0)
+        )
+        detail["interaction_joint_compatibility_rejects"] = int(detail["interaction_joint_compatibility_rejects"]) + int(
+            interaction_detail.get("interaction_joint_compatibility_rejects", 0)
+        )
+        detail["interaction_joint_assignment_backtracks"] = int(detail["interaction_joint_assignment_backtracks"]) + int(
+            interaction_detail.get("interaction_joint_assignment_backtracks", 0)
+        )
+        if not interaction_ok:
+            if reason == "no_collision_blocker":
+                detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
+            elif reason == "unsupported_collision_blocker":
+                detail["interaction_unsupported_blocker_rejects"] = int(detail["interaction_unsupported_blocker_rejects"]) + 1
+            elif reason == "residual_physical_certificate_failed":
+                detail["interaction_residual_physical_rejects"] = int(detail["interaction_residual_physical_rejects"]) + 1
+            elif reason in {
+                "retained_root_has_no_ego_safe_response",
+                "retained_root_has_no_environment_safe_response",
+                "invalid_environment_actor_prediction",
+            }:
+                detail["interaction_root_unrecoverable_rejects"] = int(detail["interaction_root_unrecoverable_rejects"]) + 1
+            elif reason == "no_jointly_compatible_response_envelope":
+                detail["interaction_joint_incompatibility_rejects"] = int(detail["interaction_joint_incompatibility_rejects"]) + 1
+            continue
+
+        parent = int(parent_arr[j])
+        pid = int(policy_arr[j])
+        current_certificate = dict(interaction_detail.get("current_residual_certificate", {}))
+        shifted_certificate = dict(interaction_detail.get("shifted_residual_certificate", {}))
+        selected = {
+            "expanded_index": int(j),
+            "parent_index": parent,
+            "macro": int(macro[parent]),
+            "policy_id": pid,
+            "policy_name": str(policy_names[j]),
+            "mode": int(schedule_arr[j, 0]),
+            "schedule": np.asarray(schedule_arr[j], dtype=np.int8),
+            "release_edge": int(release_arr[j]),
+            "nonnominal_edges": int(nonnominal_arr[j]),
+            "event_release": bool(abs(pid) >= 2),
+            "trajectory": np.asarray(projected[j], dtype=np.float32),
+            "target": first_target,
+            "accel": first_accel,
+            "accel_history": np.asarray(accel_hist[j], dtype=np.float32),
+            "shifted_trajectory": np.asarray(shifted_projected[0], dtype=np.float32),
+            "shifted_accel_history": np.asarray(shifted_accel_hist[0], dtype=np.float32),
+            "fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
+            "first_accel_delta": float(first_accel - float(nominal_accels[parent])),
+            "current_certificate": current_certificate,
+            "shifted_certificate": shifted_certificate,
+            "interaction_certificate": interaction_detail,
+        }
+        detail.update({
+            "selected": True,
+            "interaction_response_selected": True,
+            "selected_is_interaction_response": True,
+            "selected_certificate_kind": "interaction_aware_reachable_response_envelope",
+            "selected_is_lifted": bool(pid != 0),
+            "selected_is_event_release": bool(abs(pid) >= 2),
+            "selected_policy_id": pid,
+            "selected_policy_name": str(policy_names[j]),
+            "selected_envelope_mode": int(schedule_arr[j, 0]),
+            "selected_release_edge": int(release_arr[j]),
+            "selected_nonnominal_edges": int(nonnominal_arr[j]),
+            "selected_parent_candidate": parent,
+            "selected_parent_macro": int(macro[parent]),
+            "selected_parent_macro_name": _macro_name(int(macro[parent])),
+            "selected_first_accel_delta": float(first_accel - float(nominal_accels[parent])),
+            "selected_collision_min_margin_m": float(current_certificate.get("collision_min_margin_m", -999.0)),
+            "selected_shift_collision_min_margin_m": float(shifted_certificate.get("collision_min_margin_m", -999.0)),
+            "selected_fallback_score": float(scores[parent]) if np.isfinite(scores[parent]) else float("inf"),
+            "selected_is_new_first_action": True,
+            "interaction_selected_blocker_count": int(interaction_detail.get("blocker_count", 0)),
+            "interaction_selected_root_count": int(interaction_detail.get("supported_root_count", 0)),
+            "interaction_selected_minimum_root_mass": float(interaction_detail.get("minimum_retained_root_mass", 0.0)),
+            "interaction_selected_maximum_response_burden": float(interaction_detail.get("maximum_selected_response_burden", 0.0)),
+            "interaction_selected_profile_evaluations": int(interaction_detail.get("response_profile_evaluations", 0)),
+            "interaction_selected_environment_agent_count": int(interaction_detail.get("environment_agent_count", 0)),
+            "interaction_selected_environment_compatibility_checks": int(interaction_detail.get("interaction_environment_compatibility_checks", 0)),
+            "interaction_selected_responses": interaction_detail.get("selected_responses", []),
+        })
+        return selected, detail
+
+    detail["interaction_failure_reason"] = "no_interaction_certified_action"
+    return None, detail
+
 def _collision_free_against_constant_velocity(
     traj: np.ndarray,
     agent_state: np.ndarray,
@@ -5726,7 +6831,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -5943,7 +7048,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -5977,6 +7082,7 @@ class COWPWaymaxPolicy:
                         "cowp_shift_closed_control_reachable_tube",
                         "cowp_conflict_window_control_reachable_tube",
                         "cowp_shift_closed_first_action_viability_interval",
+                        "cowp_interaction_aware_reachable_response_envelope",
                     }:
                         # V38 constructs nominal/all-horizon lower/all-horizon upper
                         # controller tubes. V39 keeps that support nested and adds
@@ -5989,13 +7095,7 @@ class COWPWaymaxPolicy:
                         prefix_np = collision_prefix_steps.detach().cpu().numpy().astype(np.float64)
                         macro_np_tube = macro_t.detach().cpu().numpy().astype(np.int64)
                         fallback_np = fallback_score.detach().cpu().numpy().astype(np.float64)
-                        if method == "cowp_shift_closed_first_action_viability_interval":
-                            tube_constructor = _construct_shift_closed_first_action_viability_interval_np
-                        elif method == "cowp_conflict_window_control_reachable_tube":
-                            tube_constructor = _construct_conflict_window_control_reachable_tube_np
-                        else:
-                            tube_constructor = _construct_shift_closed_control_reachable_tube_np
-                        selected_tube, recovery_tube_detail = tube_constructor(
+                        common_tube_args = (
                             agent_state,
                             int(sdc_index),
                             np.asarray(batch_np["cowp/candidates/trajectory"][0], dtype=np.float32),
@@ -6010,6 +7110,37 @@ class COWPWaymaxPolicy:
                             self.cfg,
                             float(self._previous_longitudinal_accel),
                         )
+                        if method == "cowp_interaction_aware_reachable_response_envelope":
+                            natural_out = pred.get("natural", {})
+                            natural_traj_t = natural_out.get("traj") if isinstance(natural_out, dict) else None
+                            natural_logits_t = natural_out.get("logits") if isinstance(natural_out, dict) else None
+                            if self.torch.is_tensor(natural_traj_t) and self.torch.is_tensor(natural_logits_t):
+                                natural_traj_np = natural_traj_t[0].detach().cpu().numpy().astype(np.float32, copy=False)
+                                natural_logits_np = natural_logits_t[0].detach().cpu().numpy().astype(np.float32, copy=False)
+                            else:
+                                natural_traj_np = np.zeros((0, 0, 0, 7), dtype=np.float32)
+                                natural_logits_np = np.zeros((0, 0), dtype=np.float32)
+                            selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
+                                *common_tube_args,
+                                base_candidate_index=int(recovery_base_candidate),
+                                critical_track_index=np.asarray(
+                                    batch_np["cowp/critical/track_index"][0], dtype=np.int64
+                                ),
+                                critical_valid=np.asarray(
+                                    batch_np["cowp/critical/valid"][0], dtype=bool
+                                ),
+                                natural_trajectories=natural_traj_np,
+                                natural_logits=natural_logits_np,
+                                object_types=_extract_object_types_np(state, int(agent_state.shape[0])),
+                            )
+                        else:
+                            if method == "cowp_shift_closed_first_action_viability_interval":
+                                tube_constructor = _construct_shift_closed_first_action_viability_interval_np
+                            elif method == "cowp_conflict_window_control_reachable_tube":
+                                tube_constructor = _construct_conflict_window_control_reachable_tube_np
+                            else:
+                                tube_constructor = _construct_shift_closed_control_reachable_tube_np
+                            selected_tube, recovery_tube_detail = tube_constructor(*common_tube_args)
                         chosen = int(recovery_base_candidate)
                         if selected_tube is not None:
                             chosen = int(selected_tube["parent_index"])
@@ -6040,7 +7171,9 @@ class COWPWaymaxPolicy:
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[int(chosen)] = True
                         select_score = fallback_score
-                        if method == "cowp_shift_closed_first_action_viability_interval":
+                        if method == "cowp_interaction_aware_reachable_response_envelope":
+                            fallback_reason = "no_conventional_use_interaction_aware_reachable_response_envelope"
+                        elif method == "cowp_shift_closed_first_action_viability_interval":
                             fallback_reason = "no_conventional_use_shift_closed_first_action_viability_interval"
                         elif method == "cowp_conflict_window_control_reachable_tube":
                             fallback_reason = "no_conventional_use_conflict_window_control_reachable_tube"
@@ -6613,6 +7746,7 @@ class COWPWaymaxPolicy:
                 "cowp_shift_closed_control_reachable_tube",
                 "cowp_conflict_window_control_reachable_tube",
                 "cowp_shift_closed_first_action_viability_interval",
+                "cowp_interaction_aware_reachable_response_envelope",
             }:
                 selected_contract_target = (
                     np.asarray(recovery_tube_target_override, dtype=np.float32)
@@ -6927,6 +8061,34 @@ class COWPWaymaxPolicy:
                 "recovery_tube_selected_is_new_first_action": bool(recovery_tube_detail.get("selected_is_new_first_action", False)),
                 "recovery_tube_selected_first_accel_fraction": float(recovery_tube_detail.get("selected_first_accel_fraction", 0.0)),
                 "recovery_tube_selected_boundary_source": str(recovery_tube_detail.get("selected_boundary_source", "NONE")),
+                "recovery_tube_interaction_response_attempted": bool(recovery_tube_detail.get("interaction_response_attempted", False)),
+                "recovery_tube_interaction_response_selected": bool(recovery_tube_detail.get("interaction_response_selected", False)),
+                "recovery_tube_selected_is_interaction_response": bool(recovery_tube_detail.get("selected_is_interaction_response", False)),
+                "recovery_tube_selected_certificate_kind": str(recovery_tube_detail.get("selected_certificate_kind", "none")),
+                "recovery_tube_interaction_failure_reason": str(recovery_tube_detail.get("interaction_failure_reason", "none")),
+                "recovery_tube_interaction_support_agents_total": int(recovery_tube_detail.get("interaction_support_agents_total", 0)),
+                "recovery_tube_interaction_support_agents_ready": int(recovery_tube_detail.get("interaction_support_agents_ready", 0)),
+                "recovery_tube_interaction_support_retained_roots": int(recovery_tube_detail.get("interaction_support_retained_roots", 0)),
+                "recovery_tube_interaction_support_eligible_profiles": int(recovery_tube_detail.get("interaction_support_eligible_profiles", 0)),
+                "recovery_tube_interaction_hypotheses_evaluated": int(recovery_tube_detail.get("interaction_hypotheses_evaluated", 0)),
+                "recovery_tube_interaction_noop_hypotheses_skipped": int(recovery_tube_detail.get("interaction_noop_hypotheses_skipped", 0)),
+                "recovery_tube_interaction_no_blocker_rejects": int(recovery_tube_detail.get("interaction_no_blocker_rejects", 0)),
+                "recovery_tube_interaction_unsupported_blocker_rejects": int(recovery_tube_detail.get("interaction_unsupported_blocker_rejects", 0)),
+                "recovery_tube_interaction_residual_physical_rejects": int(recovery_tube_detail.get("interaction_residual_physical_rejects", 0)),
+                "recovery_tube_interaction_root_unrecoverable_rejects": int(recovery_tube_detail.get("interaction_root_unrecoverable_rejects", 0)),
+                "recovery_tube_interaction_joint_incompatibility_rejects": int(recovery_tube_detail.get("interaction_joint_incompatibility_rejects", 0)),
+                "recovery_tube_interaction_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_environment_compatibility_checks", 0)),
+                "recovery_tube_interaction_environment_compatibility_rejects": int(recovery_tube_detail.get("interaction_environment_compatibility_rejects", 0)),
+                "recovery_tube_interaction_joint_compatibility_checks": int(recovery_tube_detail.get("interaction_joint_compatibility_checks", 0)),
+                "recovery_tube_interaction_joint_compatibility_rejects": int(recovery_tube_detail.get("interaction_joint_compatibility_rejects", 0)),
+                "recovery_tube_interaction_joint_assignment_backtracks": int(recovery_tube_detail.get("interaction_joint_assignment_backtracks", 0)),
+                "recovery_tube_interaction_selected_blocker_count": int(recovery_tube_detail.get("interaction_selected_blocker_count", 0)),
+                "recovery_tube_interaction_selected_root_count": int(recovery_tube_detail.get("interaction_selected_root_count", 0)),
+                "recovery_tube_interaction_selected_minimum_root_mass": float(recovery_tube_detail.get("interaction_selected_minimum_root_mass", 0.0)),
+                "recovery_tube_interaction_selected_maximum_response_burden": float(recovery_tube_detail.get("interaction_selected_maximum_response_burden", 0.0)),
+                "recovery_tube_interaction_selected_profile_evaluations": int(recovery_tube_detail.get("interaction_selected_profile_evaluations", 0)),
+                "recovery_tube_interaction_selected_environment_agent_count": int(recovery_tube_detail.get("interaction_selected_environment_agent_count", 0)),
+                "recovery_tube_interaction_selected_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_selected_environment_compatibility_checks", 0)),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
@@ -6969,7 +8131,9 @@ class COWPWaymaxPolicy:
             traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
             execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
             execution_accel = float(recovery_tube_accel_override)
-            if method == "cowp_shift_closed_first_action_viability_interval":
+            if method == "cowp_interaction_aware_reachable_response_envelope":
+                execution_source = "interaction_aware_reachable_response_envelope"
+            elif method == "cowp_shift_closed_first_action_viability_interval":
                 execution_source = "shift_closed_first_action_viability_interval"
             elif method == "cowp_conflict_window_control_reachable_tube":
                 execution_source = "conflict_window_control_reachable_tube"
