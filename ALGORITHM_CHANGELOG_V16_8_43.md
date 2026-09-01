@@ -185,3 +185,21 @@ Any failure archives V43 and prohibits fresh37.
   repair into V43;
 - do not use logged-replay improvement as causal burden evidence;
 - do not treat counterfactual48/fresh37/exact200 as final publication holdouts.
+
+## Post-release engineering hotfix — cache diagnostic initialization
+
+**Algorithm-neutral repair; BC-IARE semantics and all frozen gates remain unchanged.**
+
+The first server `profile8_parallel2` execution found that the outer V42 interaction
+constructor did not initialize the three V43 cache-hit diagnostic counters before
+aggregating the first per-hypothesis interaction certificate. The repair only adds
+zero-valued initialization for:
+
+- `interaction_environment_compatibility_cache_hits`;
+- `interaction_joint_compatibility_cache_hits`;
+- `interaction_successor_context_cache_hits`.
+
+These fields are diagnostics only and do not participate in hard-set admission,
+selection, control projection, or execution. A full outer-constructor regression test
+was added. Post-repair V16.8.25→43 focused sanity is **104/104 passed**. Existing run
+commands and Stage-1 preregistration remain unchanged.

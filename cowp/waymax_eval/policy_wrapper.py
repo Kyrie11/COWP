@@ -4523,6 +4523,12 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         "interaction_joint_compatibility_checks": 0,
         "interaction_joint_compatibility_rejects": 0,
         "interaction_joint_assignment_backtracks": 0,
+        # V16.8.43 performance diagnostics must exist on the outer constructor
+        # detail before the first interaction hypothesis is aggregated.  These
+        # counters do not participate in certificate admission or selection.
+        "interaction_environment_compatibility_cache_hits": 0,
+        "interaction_joint_compatibility_cache_hits": 0,
+        "interaction_successor_context_cache_hits": 0,
         "interaction_selected_blocker_count": 0,
         "interaction_selected_root_count": 0,
         "interaction_selected_minimum_root_mass": 0.0,

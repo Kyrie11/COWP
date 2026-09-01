@@ -1,8 +1,8 @@
 {
-  "schema_version": "cowp_v16_8_43_code_validation_v1",
-  "release": "V16.8.43 Blocker-Conditioned Interaction-Aware Reachable-Response Envelope (BC-IARE)",
-  "hard_checks_total": 24,
-  "hard_checks_passed": 24,
+  "schema_version": "cowp_v16_8_43_code_validation_v2_hotfix1",
+  "release": "V16.8.43 Blocker-Conditioned Interaction-Aware Reachable-Response Envelope (BC-IARE) + runtime diagnostic initialization hotfix",
+  "hard_checks_total": 25,
+  "hard_checks_passed": 25,
   "hard_checks_failed": 0,
   "overall_code_validation": "PASS",
   "ready_for_equivalence16_and_counterfactual48": true,
@@ -10,20 +10,20 @@
   "performance_note": "Only synthetic compatibility-cache subcomponent benchmark is available locally. Use profile8_parallel2 on the server for end-to-end timing.",
   "key_file_sha256": {
     "cowp_model.py": "432446e54a936fadc4140579628fc9d53431fc6636f140179aa7a17dba8193dc",
-    "policy_wrapper.py": "f89ea20cecfc627939c6a2f59a70b77f0df163ddd9f5bff7ec66028f5d92a0c1",
+    "policy_wrapper.py": "1a477e5f375ab0a1571b366922da13c1adb719a98967544d4bb8135d236a5d2c",
     "metrics_cowp.py": "01a9222f53583b0c9734c404876f6f698b8e6a4b4088882691f6466dda83542c",
     "rollout.py": "4f12155d591baa7814e47f6bd0881717281a50ead06c77146acc4f4179855589",
     "04_eval_closed_loop.py": "55c09c7e541645423296fe8a9c161005e14418f2ad9511380aed428233fdc184",
     "96_analyzer.py": "259d9174d68b21efea3184e304c018763f8aae6623214dcb14b6028d80b47dda",
     "launcher": "46463684d8647bd84a8809c9def7d1fd6d3a0771aa69aab5758b8087f4005262",
-    "test": "3a563c0ea77fa8d103e7a87eed5eeeacdd98a1204dab7faaa77012dd0e44877c"
+    "test": "dbf568d779e2d201cc90ccc0d2e2d29cee41c022e048bef8c1c0a0069a1eb7ad"
   },
   "checks": [
     {
       "name": "focused_semantic_integrity_suite",
       "passed": true,
       "detail": {
-        "passed": 103,
+        "passed": 104,
         "failed": 0,
         "sanity_log": "V16_8_43_RELEASE_SANITY.log"
       }
@@ -32,7 +32,7 @@
       "name": "v43_dedicated_tests",
       "passed": true,
       "detail": {
-        "passed": 7,
+        "passed": 8,
         "failed": 0
       }
     },
@@ -178,6 +178,32 @@
       "name": "frozen_tree.cowp/label",
       "passed": true,
       "detail": null
+    },
+    {
+      "name": "outer_constructor_cache_diagnostic_initialization",
+      "passed": true,
+      "detail": {
+        "regression_test": "test_v43_v42_outer_constructor_initializes_cache_diagnostics_before_aggregation",
+        "covers": [
+          "environment_cache_hit_aggregation",
+          "joint_cache_hit_aggregation",
+          "successor_context_cache_hit_aggregation"
+        ],
+        "algorithm_neutral": true
+      }
     }
-  ]
+  ],
+  "hotfix": {
+    "classification": "algorithm-neutral runtime repair",
+    "reason": "outer V42 interaction constructor omitted initialization of three V43 cache-hit diagnostic counters before aggregation, causing profile8 KeyError",
+    "algorithm_semantics_changed": false,
+    "preregistered_gate_changed": false,
+    "launcher_commands_changed": false,
+    "fields_initialized": [
+      "interaction_environment_compatibility_cache_hits",
+      "interaction_joint_compatibility_cache_hits",
+      "interaction_successor_context_cache_hits"
+    ],
+    "report": "V16_8_43_RUNTIME_CACHE_DIAGNOSTIC_INIT_HOTFIX_CN.md"
+  }
 }

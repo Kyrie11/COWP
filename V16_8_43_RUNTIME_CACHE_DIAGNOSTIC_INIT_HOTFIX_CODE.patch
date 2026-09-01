@@ -1,0 +1,108 @@
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -4523,6 +4523,12 @@
+         "interaction_joint_compatibility_checks": 0,
+         "interaction_joint_compatibility_rejects": 0,
+         "interaction_joint_assignment_backtracks": 0,
++        # V16.8.43 performance diagnostics must exist on the outer constructor
++        # detail before the first interaction hypothesis is aggregated.  These
++        # counters do not participate in certificate admission or selection.
++        "interaction_environment_compatibility_cache_hits": 0,
++        "interaction_joint_compatibility_cache_hits": 0,
++        "interaction_successor_context_cache_hits": 0,
+         "interaction_selected_blocker_count": 0,
+         "interaction_selected_root_count": 0,
+         "interaction_selected_minimum_root_mass": 0.0,
+--- a/tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py
++++ b/tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py
+@@ -220,3 +220,90 @@
+     assert row["recovery_tube_blocker_query_selection_rate_on_certified_steps"] == 1.0
+     assert row["mean_recovery_tube_blocker_query_agents_on_attempts"] == 5.0
+     assert row["mean_recovery_tube_blocker_query_environment_cache_hits_on_attempts"] == 20.0
++
++
++def test_v43_v42_outer_constructor_initializes_cache_diagnostics_before_aggregation(monkeypatch) -> None:
++    """Regression for profile8 KeyError in the real V42 outer constructor path.
++
++    The V43 cache counters are diagnostic-only.  The outer V42 constructor must
++    initialize them before aggregating the first per-hypothesis certificate.
++    """
++    monkeypatch.setattr(
++        pw, "_construct_conflict_window_control_reachable_tube_np",
++        lambda *args, **kwargs: (None, {}),
++    )
++    monkeypatch.setattr(
++        pw, "_prepare_interaction_response_support_np",
++        lambda *args, **kwargs: ({1: {"ready": True}}, {"critical_slots": 1, "agents_ready": 1, "retained_roots": 1, "eligible_profiles": 1}),
++    )
++    monkeypatch.setattr(pw, "_semantic_action_class_representatives_np", lambda *args, **kwargs: [0])
++    monkeypatch.setattr(pw, "_prepare_collision_check_context", lambda *args, **kwargs: {})
++    monkeypatch.setattr(
++        pw, "_project_candidate_bank_through_controller_np",
++        lambda state, traj, cfg, previous_accel, longitudinal_envelope_schedule=None: (
++            np.asarray(traj, dtype=np.float32).copy(),
++            np.ones(np.asarray(traj).shape[:2], dtype=bool),
++            np.zeros(np.asarray(traj).shape[:2], dtype=np.float32),
++        ),
++    )
++    monkeypatch.setattr(
++        pw, "_collision_violation_window_against_context",
++        lambda *args, **kwargs: {"first_violation_step": 0, "last_violation_step": 0},
++    )
++    monkeypatch.setattr(
++        pw, "_conflict_window_envelope_schedule_family",
++        lambda H, first, last: [
++            {
++                "policy_id": 0,
++                "policy_name": "NOMINAL",
++                "release_edge": -1,
++                "nonnominal_edges": 0,
++                "schedule": np.zeros(H, dtype=np.int8),
++            },
++            {
++                "policy_id": 2,
++                "policy_name": "LOWER_TO_FIRST_CONFLICT",
++                "release_edge": 0,
++                "nonnominal_edges": 1,
++                "schedule": np.zeros(H, dtype=np.int8),
++            },
++        ],
++    )
++    monkeypatch.setattr(pw, "_counterfactual_successor_agent_state", lambda state, *args, **kwargs: np.asarray(state).copy())
++    monkeypatch.setattr(pw, "_shift_append_terminal_reference_np", lambda tr, dt: np.asarray(tr).copy())
++    monkeypatch.setattr(pw, "_shift_longitudinal_envelope_schedule_np", lambda schedule, policy_id: np.asarray(schedule).copy())
++    monkeypatch.setattr(
++        pw, "_interaction_aware_recovery_certificate_np",
++        lambda *args, **kwargs: (False, {
++            "failure_reason": "unsupported_collision_blocker",
++            "interaction_environment_compatibility_checks": 3,
++            "interaction_environment_compatibility_rejects": 1,
++            "interaction_joint_compatibility_checks": 2,
++            "interaction_joint_compatibility_rejects": 0,
++            "interaction_joint_assignment_backtracks": 0,
++            "interaction_environment_compatibility_cache_hits": 2,
++            "interaction_joint_compatibility_cache_hits": 1,
++        }),
++    )
++
++    state = _state(2)
++    traj = np.zeros((1, 4, 7), dtype=np.float32)
++    # Make the emitted first target differ from base_target so the hypothesis is evaluated.
++    traj[0, :, 0] = np.arange(4, dtype=np.float32) + 1.0
++    selected, detail = pw._construct_interaction_aware_reachable_response_envelope_np(
++        state, 0, traj,
++        np.asarray([True]), np.asarray([True]), np.asarray([0]),
++        np.asarray([0.0]), np.asarray([1.0]),
++        np.zeros((1, 5), dtype=np.float32), np.asarray([0.0]),
++        {}, {}, 0.0,
++        base_candidate_index=0,
++        critical_track_index=np.asarray([1], dtype=np.int64),
++        critical_valid=np.asarray([True]),
++        natural_trajectories=np.zeros((1, 2, 4, 7), dtype=np.float32),
++        natural_logits=np.zeros((1, 2), dtype=np.float32),
++        object_types=np.asarray([1, 1], dtype=np.int32),
++    )
++    assert selected is None
++    assert detail["interaction_environment_compatibility_cache_hits"] == 4
++    assert detail["interaction_joint_compatibility_cache_hits"] == 2
++    assert detail["interaction_successor_context_cache_hits"] == 1

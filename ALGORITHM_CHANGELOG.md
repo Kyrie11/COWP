@@ -5368,3 +5368,26 @@ Any failure archives V43 and prohibits fresh37.
   repair into V43;
 - do not use logged-replay improvement as causal burden evidence;
 - do not treat counterfactual48/fresh37/exact200 as final publication holdouts.
+
+## V16.8.43 post-release engineering hotfix — cache diagnostic initialization
+
+**Classification: algorithm-neutral runtime repair. No new algorithm version / no change to the preregistered Gate.**
+
+The first server `profile8_parallel2` run exposed a `KeyError` in the outer V42
+interaction constructor when V43 cache diagnostics were aggregated. V43 added
+policy-step-local memoization and the inner interaction certificate initialized
+`interaction_environment_compatibility_cache_hits`,
+`interaction_joint_compatibility_cache_hits`, and
+`interaction_successor_context_cache_hits`, but the outer
+`_construct_interaction_aware_reachable_response_envelope_np` detail dictionary did
+not initialize the same three fields before doing `detail[key] += ...`.
+
+Repair: initialize all three counters to zero in the outer detail contract. No
+certificate predicate, blocker/root/response support, CSP constraint, physical tube,
+selector, fallback score, controller projection, execution override, dataset/model
+configuration, or promotion threshold is changed. A regression test now executes the
+actual outer-constructor hypothesis aggregation path, including a repeated first action
+that exercises the successor-context cache hit path.
+
+Post-repair focused semantic/integrity sanity: **104/104 passed**. Existing launcher
+commands, including `profile8_parallel2`, are unchanged.
