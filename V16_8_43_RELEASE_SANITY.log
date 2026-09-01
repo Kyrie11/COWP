@@ -1,0 +1,10 @@
+[warning] TFExample ID index missing: /data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tfexample_id_index_validation.jsonl
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 1.38s
+manifest OK: n=200 logical_sha256=3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f path=/mnt/data/COWP_V16_8_43_BLOCKER_CONDITIONED_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_probe_200_ids.txt
+manifest OK: n=16 logical_sha256=81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760 path=/mnt/data/COWP_V16_8_43_BLOCKER_CONDITIONED_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt
+manifest OK: n=48 logical_sha256=ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0 path=/mnt/data/COWP_V16_8_43_BLOCKER_CONDITIONED_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt
+manifest OK: n=37 logical_sha256=ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481 path=/mnt/data/COWP_V16_8_43_BLOCKER_CONDITIONED_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/waymax_v16_8_32_fresh37_ids.txt
+manifest OK: n=8 logical_sha256=d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead path=/mnt/data/COWP_V16_8_43_BLOCKER_CONDITIONED_REACHABLE_RESPONSE_ENVELOPE/reference_manifests/v16_8_43_runtime_profile8_ids.txt
+v16.8.43 BC-IARE semantic/integrity sanity passed

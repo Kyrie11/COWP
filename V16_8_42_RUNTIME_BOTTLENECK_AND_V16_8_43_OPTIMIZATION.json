@@ -1,0 +1,31 @@
+{
+  "schema_version": "cowp_v16_8_42_runtime_bottleneck_and_v16_8_43_optimization_v1",
+  "v42_server_observation": {
+    "counterfactual48_parallel2_wall_seconds": 55440.0,
+    "hours": 15.4,
+    "equivalence16_parallel2_wall_seconds": 343.0,
+    "interaction_hypotheses_evaluated": 495101.0,
+    "environment_compatibility_checks_logical": 7813492.0,
+    "joint_compatibility_checks_logical": 76616.0
+  },
+  "bottleneck": "CPU/Python repeated responder-environment and responder-responder collision compatibility evaluation inside roughly 0.5M interaction hypotheses; neural forward is not the only or main new V42 cost.",
+  "v43_semantics_preserving_optimizations": [
+    "Policy-step responder↔environment compatibility memoization keyed by blocker/root/profile/environment actor.",
+    "Policy-step responder↔responder joint compatibility memoization keyed by the unordered pair of response profiles.",
+    "Policy-step successor collision-context memoization keyed by actual emitted first target plus emitted longitudinal acceleration.",
+    "Logical compatibility check/reject counts are preserved as if uncached; cache hits are added as diagnostics only."
+  ],
+  "synthetic_microbenchmark": {
+    "repeats": 80,
+    "uncached_seconds": 0.9495642270001099,
+    "cached_seconds": 0.08531655100000535,
+    "subcomponent_speedup_x": 11.129894678935749,
+    "unsafe_predicate_calls_uncached": 209920,
+    "unsafe_predicate_calls_cached": 7680,
+    "unsafe_predicate_call_reduction_x": 27.333333333333332,
+    "logical_environment_checks_per_call": 640,
+    "cache_hits_last_call": 640,
+    "claim_boundary": "Synthetic microbenchmark of the repeated compatibility subcomponent only; not an end-to-end Waymax wall-clock claim."
+  },
+  "server_validation": "Use V43 profile8_parallel2 before interpreting end-to-end speedup; profile8 is performance-only and not paper evidence."
+}

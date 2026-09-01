@@ -365,6 +365,14 @@ class COWPModel(nn.Module):
             "critical_mask": critical_mask,
             "sdc_index": sdc_index,
         }
+        # V16.8.43: expose the *root-scene* agent latent for late-bound natural
+        # queries of exact recovery blockers.  Planner-stage ``enc`` is the
+        # candidate-conditioned graph, so reusing it for natural decoding would
+        # violate the natural-option semantics.  This is only an additional
+        # view of an already-computed tensor; it does not change any head, loss,
+        # checkpoint parameter, or existing model output.
+        if enc_scene is not None:
+            out["natural_scene_z_agent"] = enc_scene["z_agent"]
         if need_candidate_context:
             assert cand_traj is not None and cand_mask is not None and enc_cond is not None
             assert enc_candidates is not None

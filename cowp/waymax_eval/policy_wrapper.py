@@ -120,7 +120,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -4138,6 +4138,7 @@ def _interaction_aware_recovery_certificate_np(
     shifted_collision_context: dict[str, Any],
     response_support: dict[int, dict[str, Any]],
     object_types: np.ndarray,
+    compatibility_cache: dict[str, dict[Any, bool]] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Certify one ego tube under universal low-burden same-root response support."""
     current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
@@ -4161,12 +4162,19 @@ def _interaction_aware_recovery_certificate_np(
         "interaction_joint_compatibility_checks": 0,
         "interaction_joint_compatibility_rejects": 0,
         "interaction_joint_assignment_backtracks": 0,
+        "interaction_environment_compatibility_cache_hits": 0,
+        "interaction_joint_compatibility_cache_hits": 0,
+        "interaction_successor_context_cache_hits": 0,
         "supported_root_count": 0,
         "minimum_retained_root_mass": 0.0,
         "maximum_selected_response_burden": 0.0,
         "current_residual_certificate": {},
         "shifted_residual_certificate": {},
     }
+    if compatibility_cache is None:
+        compatibility_cache = {}
+    environment_cache = compatibility_cache.setdefault("environment", {})
+    joint_cache = compatibility_cache.setdefault("joint", {})
     if not blockers:
         detail["failure_reason"] = "no_collision_blocker"
         return False, detail
@@ -4268,30 +4276,42 @@ def _interaction_aware_recovery_certificate_np(
                     detail["interaction_environment_compatibility_checks"] = int(
                         detail["interaction_environment_compatibility_checks"]
                     ) + 1
-                    try:
-                        current_bad = (
-                            unsafe_between_bool(
-                                profile_current, np.asarray(actor["trajectory"], dtype=np.float32),
-                                cfg, agent_type=int(actor["object_type"]),
+                    cache_key = (
+                        int(agent_index), int(root_ordinal), int(profile.get("profile_index", -1)),
+                        int(actor["agent_index"]),
+                    )
+                    cached = environment_cache.get(cache_key)
+                    if cached is None:
+                        try:
+                            current_bad = (
+                                unsafe_between_bool(
+                                    profile_current, np.asarray(actor["trajectory"], dtype=np.float32),
+                                    cfg, agent_type=int(actor["object_type"]),
+                                )
+                                or unsafe_between_bool(
+                                    np.asarray(actor["trajectory"], dtype=np.float32), profile_current,
+                                    cfg, agent_type=object_type,
+                                )
                             )
-                            or unsafe_between_bool(
-                                np.asarray(actor["trajectory"], dtype=np.float32), profile_current,
-                                cfg, agent_type=object_type,
+                            shifted_bad = (
+                                unsafe_between_bool(
+                                    profile_shifted, np.asarray(actor["shifted_trajectory"], dtype=np.float32),
+                                    cfg, agent_type=int(actor["object_type"]),
+                                )
+                                or unsafe_between_bool(
+                                    np.asarray(actor["shifted_trajectory"], dtype=np.float32), profile_shifted,
+                                    cfg, agent_type=object_type,
+                                )
                             )
-                        )
-                        shifted_bad = (
-                            unsafe_between_bool(
-                                profile_shifted, np.asarray(actor["shifted_trajectory"], dtype=np.float32),
-                                cfg, agent_type=int(actor["object_type"]),
-                            )
-                            or unsafe_between_bool(
-                                np.asarray(actor["shifted_trajectory"], dtype=np.float32), profile_shifted,
-                                cfg, agent_type=object_type,
-                            )
-                        )
-                    except Exception:
-                        current_bad = shifted_bad = True
-                    if current_bad or shifted_bad:
+                            cached = bool(not (current_bad or shifted_bad))
+                        except Exception:
+                            cached = False
+                        environment_cache[cache_key] = bool(cached)
+                    else:
+                        detail["interaction_environment_compatibility_cache_hits"] = int(
+                            detail["interaction_environment_compatibility_cache_hits"]
+                        ) + 1
+                    if not bool(cached):
                         detail["interaction_environment_compatibility_rejects"] = int(
                             detail["interaction_environment_compatibility_rejects"]
                         ) + 1
@@ -4341,34 +4361,49 @@ def _interaction_aware_recovery_certificate_np(
         if int(node["agent_index"]) == int(other_node["agent_index"]):
             return True
         compatibility_checks += 1
-        try:
-            current_bad = (
-                unsafe_between_bool(
-                    np.asarray(profile["trajectory"], dtype=np.float32),
-                    np.asarray(other_profile["trajectory"], dtype=np.float32),
-                    cfg, agent_type=int(other_node["object_type"]),
+        left = (
+            int(node["agent_index"]), int(node["root_ordinal"]), int(profile.get("profile_index", -1)),
+        )
+        right = (
+            int(other_node["agent_index"]), int(other_node["root_ordinal"]), int(other_profile.get("profile_index", -1)),
+        )
+        cache_key = tuple(sorted((left, right)))
+        cached = joint_cache.get(cache_key)
+        if cached is None:
+            try:
+                current_bad = (
+                    unsafe_between_bool(
+                        np.asarray(profile["trajectory"], dtype=np.float32),
+                        np.asarray(other_profile["trajectory"], dtype=np.float32),
+                        cfg, agent_type=int(other_node["object_type"]),
+                    )
+                    or unsafe_between_bool(
+                        np.asarray(other_profile["trajectory"], dtype=np.float32),
+                        np.asarray(profile["trajectory"], dtype=np.float32),
+                        cfg, agent_type=int(node["object_type"]),
+                    )
                 )
-                or unsafe_between_bool(
-                    np.asarray(other_profile["trajectory"], dtype=np.float32),
-                    np.asarray(profile["trajectory"], dtype=np.float32),
-                    cfg, agent_type=int(node["object_type"]),
+                shifted_bad = (
+                    unsafe_between_bool(
+                        np.asarray(profile["shifted_trajectory"], dtype=np.float32),
+                        np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
+                        cfg, agent_type=int(other_node["object_type"]),
+                    )
+                    or unsafe_between_bool(
+                        np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
+                        np.asarray(profile["shifted_trajectory"], dtype=np.float32),
+                        cfg, agent_type=int(node["object_type"]),
+                    )
                 )
-            )
-            shifted_bad = (
-                unsafe_between_bool(
-                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
-                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
-                    cfg, agent_type=int(other_node["object_type"]),
-                )
-                or unsafe_between_bool(
-                    np.asarray(other_profile["shifted_trajectory"], dtype=np.float32),
-                    np.asarray(profile["shifted_trajectory"], dtype=np.float32),
-                    cfg, agent_type=int(node["object_type"]),
-                )
-            )
-        except Exception:
-            current_bad = shifted_bad = True
-        if current_bad or shifted_bad:
+                cached = bool(not (current_bad or shifted_bad))
+            except Exception:
+                cached = False
+            joint_cache[cache_key] = bool(cached)
+        else:
+            detail["interaction_joint_compatibility_cache_hits"] = int(
+                detail["interaction_joint_compatibility_cache_hits"]
+            ) + 1
+        if not bool(cached):
             compatibility_rejects += 1
             return False
         return True
@@ -4448,6 +4483,8 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     natural_trajectories: np.ndarray,
     natural_logits: np.ndarray,
     object_types: np.ndarray,
+    shared_compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+    shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
 
@@ -4606,6 +4643,19 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         )
 
     dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    # V16.8.43 performance-only caches.  They memoize predicates whose inputs are
+    # invariant across hypotheses in one policy step.  Logical compatibility
+    # checks/rejects remain counted exactly as before so mechanism statistics are
+    # comparable to V42; cache-hit counters are additional diagnostics only.
+    compatibility_cache = shared_compatibility_cache
+    if compatibility_cache is None:
+        compatibility_cache = {"environment": {}, "joint": {}}
+    else:
+        compatibility_cache.setdefault("environment", {})
+        compatibility_cache.setdefault("joint", {})
+    successor_context_cache = shared_successor_context_cache
+    if successor_context_cache is None:
+        successor_context_cache = {}
     for j in sorted(range(int(projected.shape[0])), key=hypothesis_key):
         first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
         if np.allclose(first_target, base_target, rtol=0.0, atol=1.0e-6):
@@ -4613,9 +4663,21 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             continue
         detail["interaction_hypotheses_evaluated"] = int(detail["interaction_hypotheses_evaluated"]) + 1
         first_accel = float(accel_hist[j, 0])
-        successor = _counterfactual_successor_agent_state(
-            state, int(sdc_index), first_target, cfg,
-        )
+        successor_key = np.asarray(first_target, dtype=np.float32).tobytes() + np.float32(first_accel).tobytes()
+        cached_successor = successor_context_cache.get(successor_key)
+        if cached_successor is None:
+            successor = _counterfactual_successor_agent_state(
+                state, int(sdc_index), first_target, cfg,
+            )
+            shifted_collision_context = _prepare_collision_check_context(
+                successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+            )
+            successor_context_cache[successor_key] = (successor, shifted_collision_context)
+        else:
+            successor, shifted_collision_context = cached_successor
+            detail["interaction_successor_context_cache_hits"] = int(
+                detail["interaction_successor_context_cache_hits"]
+            ) + 1
         shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
         shifted_schedule = _shift_longitudinal_envelope_schedule_np(
             schedule_arr[j], int(policy_arr[j]),
@@ -4624,14 +4686,11 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             successor[int(sdc_index)], shifted_reference[None, ...], cfg,
             first_accel, longitudinal_envelope_schedule=shifted_schedule[None, :],
         )
-        shifted_collision_context = _prepare_collision_check_context(
-            successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
-        )
         interaction_ok, interaction_detail = _interaction_aware_recovery_certificate_np(
             state, successor, int(sdc_index),
             projected[j], kin_ok[j], shifted_projected[0], shifted_kin_ok[0],
             roadgraph, cfg, current_collision_context, shifted_collision_context,
-            response_support, object_types,
+            response_support, object_types, compatibility_cache=compatibility_cache,
         )
         reason = str(interaction_detail.get("failure_reason", "unknown"))
         detail["interaction_environment_compatibility_checks"] = int(
@@ -4649,6 +4708,12 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         detail["interaction_joint_assignment_backtracks"] = int(detail["interaction_joint_assignment_backtracks"]) + int(
             interaction_detail.get("interaction_joint_assignment_backtracks", 0)
         )
+        detail["interaction_environment_compatibility_cache_hits"] = int(
+            detail["interaction_environment_compatibility_cache_hits"]
+        ) + int(interaction_detail.get("interaction_environment_compatibility_cache_hits", 0))
+        detail["interaction_joint_compatibility_cache_hits"] = int(
+            detail["interaction_joint_compatibility_cache_hits"]
+        ) + int(interaction_detail.get("interaction_joint_compatibility_cache_hits", 0))
         if not interaction_ok:
             if reason == "no_collision_blocker":
                 detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
@@ -4726,6 +4791,177 @@ def _construct_interaction_aware_reachable_response_envelope_np(
 
     detail["interaction_failure_reason"] = "no_interaction_certified_action"
     return None, detail
+
+
+def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    nominal_trajectories: np.ndarray,
+    cand_valid: np.ndarray,
+    nominal_roadgraph_safe: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    action_targets: np.ndarray,
+    action_accels: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    previous_longitudinal_accel: float,
+    *,
+    base_candidate_index: int,
+    critical_track_index: np.ndarray,
+    critical_valid: np.ndarray,
+    natural_trajectories: np.ndarray,
+    natural_logits: np.ndarray,
+    blocker_query_track_index: np.ndarray,
+    blocker_query_trajectories: np.ndarray,
+    blocker_query_logits: np.ndarray,
+    object_types: np.ndarray,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """V16.8.43 late-bound blocker-conditioned support completion.
+
+    Stage A runs the *exact* V42 RC-IARE constructor first.  If it returns a
+    certificate, that action is returned unchanged.  Only if the full V42 hard
+    set is empty do we extend the natural-option query domain with agents drawn
+    from the frozen collision context.  The decoder, canonical root measure,
+    burden budget, response bank, environment checks, joint CSP, physical tube
+    certificate, shift closure, and deterministic action ordering are unchanged.
+
+    This isolates a single hypothesis exposed by the V42 attribution: the online
+    scene-level critical set (default active cap 4) can omit exact blockers seen
+    by the wider collision audit (up to 24), creating a support-indexing false
+    negative.  The extension does *not* enlarge the social NCF critical set.
+    """
+    shared_compatibility_cache: dict[str, dict[Any, bool]] = {
+        "environment": {}, "joint": {},
+    }
+    shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] = {}
+    base_selected, base_detail = _construct_interaction_aware_reachable_response_envelope_np(
+        agent_state, sdc_index, nominal_trajectories, cand_valid,
+        nominal_roadgraph_safe, macro_types, fallback_scores,
+        collision_prefix_steps, action_targets, action_accels,
+        roadgraph, cfg, previous_longitudinal_accel,
+        base_candidate_index=int(base_candidate_index),
+        critical_track_index=critical_track_index,
+        critical_valid=critical_valid,
+        natural_trajectories=natural_trajectories,
+        natural_logits=natural_logits,
+        object_types=object_types,
+        shared_compatibility_cache=shared_compatibility_cache,
+        shared_successor_context_cache=shared_successor_context_cache,
+    )
+    detail = dict(base_detail)
+    detail.update({
+        "nested_v42_selected": bool(base_selected is not None),
+        "blocker_conditioned_query_attempted": False,
+        "blocker_conditioned_query_selected": False,
+        "blocker_conditioned_query_agent_count": 0,
+        "blocker_conditioned_query_ready_agent_count": 0,
+        "blocker_conditioned_query_hypotheses_evaluated": 0,
+        "blocker_conditioned_query_unsupported_blocker_rejects": 0,
+        "blocker_conditioned_query_root_unrecoverable_rejects": 0,
+        "blocker_conditioned_query_environment_cache_hits": 0,
+        "blocker_conditioned_query_joint_cache_hits": 0,
+        "blocker_conditioned_query_successor_context_cache_hits": 0,
+    })
+    if base_selected is not None:
+        detail["selected_certificate_kind"] = str(
+            base_detail.get("selected_certificate_kind", "nested_v42")
+        )
+        return base_selected, detail
+
+    query_idx = np.asarray(blocker_query_track_index, dtype=np.int64).reshape(-1)
+    query_traj = np.asarray(blocker_query_trajectories, dtype=np.float32)
+    query_logits = np.asarray(blocker_query_logits, dtype=np.float32)
+    if query_idx.size <= 0 or query_traj.ndim != 4 or query_logits.ndim != 2:
+        detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+        return None, detail
+    q = min(query_idx.size, query_traj.shape[0], query_logits.shape[0])
+    if q <= 0:
+        detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+        return None, detail
+    query_idx = query_idx[:q]
+    query_traj = query_traj[:q]
+    query_logits = query_logits[:q]
+    detail["blocker_conditioned_query_attempted"] = True
+    detail["blocker_conditioned_query_agent_count"] = int(q)
+
+    base_idx = np.asarray(critical_track_index, dtype=np.int64).reshape(-1)
+    base_valid = np.asarray(critical_valid, dtype=bool).reshape(-1)
+    base_traj = np.asarray(natural_trajectories, dtype=np.float32)
+    base_logits = np.asarray(natural_logits, dtype=np.float32)
+    a = min(base_idx.size, base_valid.size, base_traj.shape[0] if base_traj.ndim == 4 else 0,
+            base_logits.shape[0] if base_logits.ndim == 2 else 0)
+    if a > 0:
+        combined_idx = np.concatenate([base_idx[:a], query_idx], axis=0)
+        combined_valid = np.concatenate([base_valid[:a], np.ones(q, dtype=bool)], axis=0)
+        combined_traj = np.concatenate([base_traj[:a], query_traj], axis=0)
+        combined_logits = np.concatenate([base_logits[:a], query_logits], axis=0)
+    else:
+        combined_idx = query_idx.copy()
+        combined_valid = np.ones(q, dtype=bool)
+        combined_traj = query_traj.copy()
+        combined_logits = query_logits.copy()
+
+    expanded_selected, expanded_detail = _construct_interaction_aware_reachable_response_envelope_np(
+        agent_state, sdc_index, nominal_trajectories, cand_valid,
+        nominal_roadgraph_safe, macro_types, fallback_scores,
+        collision_prefix_steps, action_targets, action_accels,
+        roadgraph, cfg, previous_longitudinal_accel,
+        base_candidate_index=int(base_candidate_index),
+        critical_track_index=combined_idx,
+        critical_valid=combined_valid,
+        natural_trajectories=combined_traj,
+        natural_logits=combined_logits,
+        object_types=object_types,
+        shared_compatibility_cache=shared_compatibility_cache,
+        shared_successor_context_cache=shared_successor_context_cache,
+    )
+    support_detail = expanded_detail.get("interaction_support_detail", {})
+    base_ready = int(base_detail.get("interaction_support_agents_ready", 0))
+    expanded_ready = int(expanded_detail.get("interaction_support_agents_ready", 0))
+    # Query indices explicitly exclude original critical agents, so the ready
+    # count increment is an exact late-bound readiness count.
+    late_ready = max(expanded_ready - base_ready, 0)
+    detail["blocker_conditioned_query_ready_agent_count"] = int(late_ready)
+    detail["blocker_conditioned_query_hypotheses_evaluated"] = int(
+        expanded_detail.get("interaction_hypotheses_evaluated", 0)
+    )
+    detail["blocker_conditioned_query_unsupported_blocker_rejects"] = int(
+        expanded_detail.get("interaction_unsupported_blocker_rejects", 0)
+    )
+    detail["blocker_conditioned_query_root_unrecoverable_rejects"] = int(
+        expanded_detail.get("interaction_root_unrecoverable_rejects", 0)
+    )
+    detail["blocker_conditioned_query_environment_cache_hits"] = int(
+        expanded_detail.get("interaction_environment_compatibility_cache_hits", 0)
+    )
+    detail["blocker_conditioned_query_joint_cache_hits"] = int(
+        expanded_detail.get("interaction_joint_compatibility_cache_hits", 0)
+    )
+    detail["blocker_conditioned_query_successor_context_cache_hits"] = int(
+        expanded_detail.get("interaction_successor_context_cache_hits", 0)
+    )
+    if expanded_selected is None:
+        detail["blocker_conditioned_query_failure_reason"] = str(
+            expanded_detail.get("interaction_failure_reason", "no_blocker_conditioned_certificate")
+        )
+        return None, detail
+
+    # Preserve the expanded certificate diagnostics while explicitly marking
+    # that the selected action required late-bound blocker support.
+    selected_detail = dict(expanded_detail)
+    selected_detail.update(detail)
+    selected_detail.update({
+        "selected": True,
+        "nested_v42_selected": False,
+        "blocker_conditioned_query_attempted": True,
+        "blocker_conditioned_query_selected": True,
+        "selected_certificate_kind": "blocker_conditioned_interaction_aware_reachable_response_envelope",
+        "selected_is_interaction_response": True,
+        "interaction_response_selected": True,
+    })
+    return expanded_selected, selected_detail
 
 def _collision_free_against_constant_velocity(
     traj: np.ndarray,
@@ -6187,6 +6423,54 @@ class COWPWaymaxPolicy:
         self._profile_sync()
         return time.perf_counter()
 
+    def _decode_blocker_conditioned_natural_queries_np(
+        self,
+        batch: dict[str, Any],
+        pred: dict[str, Any],
+        query_indices: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decode natural roots for late-bound exact-blocker candidates.
+
+        V16.8.43 deliberately does not modify the scene-level critical set used
+        by RCOT/BCOT/NCF.  Instead, the physical-recovery branch may ask the same
+        frozen natural decoder about additional agents already present in the
+        frozen collision context.  Natural decoding must use the root-scene graph
+        latent, never the candidate-conditioned planner graph.
+        """
+        q = np.asarray(query_indices, dtype=np.int64).reshape(-1)
+        if q.size <= 0:
+            return (
+                np.zeros((0, 0, 0, 7), dtype=np.float32),
+                np.zeros((0, 0), dtype=np.float32),
+            )
+        z_scene = pred.get("natural_scene_z_agent")
+        if not self.torch.is_tensor(z_scene):
+            return (
+                np.zeros((0, 0, 0, 7), dtype=np.float32),
+                np.zeros((0, 0), dtype=np.float32),
+            )
+        idx_t = self.torch.as_tensor(q[None, :], device=self.dev, dtype=self.torch.long)
+        anchor7 = self.model._critical_anchor7(batch["state/history"], idx_t)
+        device_type = z_scene.device.type
+        with self.torch.autocast(device_type=device_type, enabled=False):
+            natural = self.model.natural_decoder(
+                z_scene.float(), idx_t, decode_traj=True,
+                anchor7=anchor7.float(),
+                dt=float(self.model.cfg.get("time", {}).get("dt", 0.1)),
+            )
+        natural = self.model._add_natural_anchor(natural, anchor7)
+        traj_t = natural.get("traj")
+        logits_t = natural.get("logits")
+        if not (self.torch.is_tensor(traj_t) and self.torch.is_tensor(logits_t)):
+            return (
+                np.zeros((0, 0, 0, 7), dtype=np.float32),
+                np.zeros((0, 0), dtype=np.float32),
+            )
+        return (
+            traj_t[0].detach().cpu().numpy().astype(np.float32, copy=False),
+            logits_t[0].detach().cpu().numpy().astype(np.float32, copy=False),
+        )
+
     def _trajectory_to_action(
         self,
         state: Any,
@@ -6831,7 +7115,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -7048,7 +7332,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -7083,6 +7367,7 @@ class COWPWaymaxPolicy:
                         "cowp_conflict_window_control_reachable_tube",
                         "cowp_shift_closed_first_action_viability_interval",
                         "cowp_interaction_aware_reachable_response_envelope",
+                        "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
                     }:
                         # V38 constructs nominal/all-horizon lower/all-horizon upper
                         # controller tubes. V39 keeps that support nested and adds
@@ -7110,7 +7395,10 @@ class COWPWaymaxPolicy:
                             self.cfg,
                             float(self._previous_longitudinal_accel),
                         )
-                        if method == "cowp_interaction_aware_reachable_response_envelope":
+                        if method in {
+                            "cowp_interaction_aware_reachable_response_envelope",
+                            "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+                        }:
                             natural_out = pred.get("natural", {})
                             natural_traj_t = natural_out.get("traj") if isinstance(natural_out, dict) else None
                             natural_logits_t = natural_out.get("logits") if isinstance(natural_out, dict) else None
@@ -7120,19 +7408,71 @@ class COWPWaymaxPolicy:
                             else:
                                 natural_traj_np = np.zeros((0, 0, 0, 7), dtype=np.float32)
                                 natural_logits_np = np.zeros((0, 0), dtype=np.float32)
-                            selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
-                                *common_tube_args,
-                                base_candidate_index=int(recovery_base_candidate),
-                                critical_track_index=np.asarray(
-                                    batch_np["cowp/critical/track_index"][0], dtype=np.int64
-                                ),
-                                critical_valid=np.asarray(
-                                    batch_np["cowp/critical/valid"][0], dtype=bool
-                                ),
-                                natural_trajectories=natural_traj_np,
-                                natural_logits=natural_logits_np,
-                                object_types=_extract_object_types_np(state, int(agent_state.shape[0])),
+                            critical_idx_np = np.asarray(
+                                batch_np["cowp/critical/track_index"][0], dtype=np.int64
                             )
+                            critical_valid_np = np.asarray(
+                                batch_np["cowp/critical/valid"][0], dtype=bool
+                            )
+                            object_types_np = _extract_object_types_np(state, int(agent_state.shape[0]))
+                            if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+                                # Query scope is inherited from the frozen causal
+                                # collision context, not from an enlarged social
+                                # critical set.  Only non-critical nearby actors are
+                                # decoded; exact blockers are still identified by the
+                                # hard tube certificate inside the constructor.
+                                H_query = int(np.asarray(batch_np["cowp/candidates/trajectory"][0]).shape[1])
+                                query_context = _prepare_collision_check_context(
+                                    agent_state, int(sdc_index), self.cfg,
+                                    horizon_steps=H_query, other_future_trajs=None,
+                                )
+                                original_critical = {
+                                    int(x) for x, ok in zip(critical_idx_np.tolist(), critical_valid_np.tolist())
+                                    if bool(ok)
+                                }
+                                model_agent_count = int(np.asarray(batch_np["state/history"]).shape[1])
+                                model_agent_valid = np.asarray(
+                                    batch_np["state/agent_valid"][0], dtype=bool
+                                ).reshape(-1)
+                                query_indices = np.asarray([
+                                    int(a.get("index", -1))
+                                    for a in query_context.get("agents", [])
+                                    if 0 <= int(a.get("index", -1)) < model_agent_count
+                                    and int(a.get("index", -1)) < model_agent_valid.shape[0]
+                                    and bool(model_agent_valid[int(a.get("index", -1))])
+                                    and int(a.get("index", -1)) != int(sdc_index)
+                                    and int(a.get("index", -1)) not in original_critical
+                                ], dtype=np.int64)
+                                # Exact de-duplication preserves the collision-context
+                                # order and therefore introduces no new ranking rule.
+                                if query_indices.size:
+                                    _, first_pos = np.unique(query_indices, return_index=True)
+                                    query_indices = query_indices[np.sort(first_pos)]
+                                blocker_nat_np, blocker_logits_np = self._decode_blocker_conditioned_natural_queries_np(
+                                    batch, pred, query_indices,
+                                )
+                                selected_tube, recovery_tube_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+                                    *common_tube_args,
+                                    base_candidate_index=int(recovery_base_candidate),
+                                    critical_track_index=critical_idx_np,
+                                    critical_valid=critical_valid_np,
+                                    natural_trajectories=natural_traj_np,
+                                    natural_logits=natural_logits_np,
+                                    blocker_query_track_index=query_indices,
+                                    blocker_query_trajectories=blocker_nat_np,
+                                    blocker_query_logits=blocker_logits_np,
+                                    object_types=object_types_np,
+                                )
+                            else:
+                                selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
+                                    *common_tube_args,
+                                    base_candidate_index=int(recovery_base_candidate),
+                                    critical_track_index=critical_idx_np,
+                                    critical_valid=critical_valid_np,
+                                    natural_trajectories=natural_traj_np,
+                                    natural_logits=natural_logits_np,
+                                    object_types=object_types_np,
+                                )
                         else:
                             if method == "cowp_shift_closed_first_action_viability_interval":
                                 tube_constructor = _construct_shift_closed_first_action_viability_interval_np
@@ -7171,7 +7511,9 @@ class COWPWaymaxPolicy:
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[int(chosen)] = True
                         select_score = fallback_score
-                        if method == "cowp_interaction_aware_reachable_response_envelope":
+                        if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+                            fallback_reason = "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope"
+                        elif method == "cowp_interaction_aware_reachable_response_envelope":
                             fallback_reason = "no_conventional_use_interaction_aware_reachable_response_envelope"
                         elif method == "cowp_shift_closed_first_action_viability_interval":
                             fallback_reason = "no_conventional_use_shift_closed_first_action_viability_interval"
@@ -7747,6 +8089,7 @@ class COWPWaymaxPolicy:
                 "cowp_conflict_window_control_reachable_tube",
                 "cowp_shift_closed_first_action_viability_interval",
                 "cowp_interaction_aware_reachable_response_envelope",
+                "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
             }:
                 selected_contract_target = (
                     np.asarray(recovery_tube_target_override, dtype=np.float32)
@@ -8079,9 +8422,12 @@ class COWPWaymaxPolicy:
                 "recovery_tube_interaction_joint_incompatibility_rejects": int(recovery_tube_detail.get("interaction_joint_incompatibility_rejects", 0)),
                 "recovery_tube_interaction_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_environment_compatibility_checks", 0)),
                 "recovery_tube_interaction_environment_compatibility_rejects": int(recovery_tube_detail.get("interaction_environment_compatibility_rejects", 0)),
+                "recovery_tube_interaction_environment_compatibility_cache_hits": int(recovery_tube_detail.get("interaction_environment_compatibility_cache_hits", 0)),
                 "recovery_tube_interaction_joint_compatibility_checks": int(recovery_tube_detail.get("interaction_joint_compatibility_checks", 0)),
                 "recovery_tube_interaction_joint_compatibility_rejects": int(recovery_tube_detail.get("interaction_joint_compatibility_rejects", 0)),
+                "recovery_tube_interaction_joint_compatibility_cache_hits": int(recovery_tube_detail.get("interaction_joint_compatibility_cache_hits", 0)),
                 "recovery_tube_interaction_joint_assignment_backtracks": int(recovery_tube_detail.get("interaction_joint_assignment_backtracks", 0)),
+                "recovery_tube_interaction_successor_context_cache_hits": int(recovery_tube_detail.get("interaction_successor_context_cache_hits", 0)),
                 "recovery_tube_interaction_selected_blocker_count": int(recovery_tube_detail.get("interaction_selected_blocker_count", 0)),
                 "recovery_tube_interaction_selected_root_count": int(recovery_tube_detail.get("interaction_selected_root_count", 0)),
                 "recovery_tube_interaction_selected_minimum_root_mass": float(recovery_tube_detail.get("interaction_selected_minimum_root_mass", 0.0)),
@@ -8089,6 +8435,17 @@ class COWPWaymaxPolicy:
                 "recovery_tube_interaction_selected_profile_evaluations": int(recovery_tube_detail.get("interaction_selected_profile_evaluations", 0)),
                 "recovery_tube_interaction_selected_environment_agent_count": int(recovery_tube_detail.get("interaction_selected_environment_agent_count", 0)),
                 "recovery_tube_interaction_selected_environment_compatibility_checks": int(recovery_tube_detail.get("interaction_selected_environment_compatibility_checks", 0)),
+                "recovery_tube_nested_v42_selected": bool(recovery_tube_detail.get("nested_v42_selected", False)),
+                "recovery_tube_blocker_conditioned_query_attempted": bool(recovery_tube_detail.get("blocker_conditioned_query_attempted", False)),
+                "recovery_tube_blocker_conditioned_query_selected": bool(recovery_tube_detail.get("blocker_conditioned_query_selected", False)),
+                "recovery_tube_blocker_conditioned_query_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_agent_count", 0)),
+                "recovery_tube_blocker_conditioned_query_ready_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_ready_agent_count", 0)),
+                "recovery_tube_blocker_conditioned_query_hypotheses_evaluated": int(recovery_tube_detail.get("blocker_conditioned_query_hypotheses_evaluated", 0)),
+                "recovery_tube_blocker_conditioned_query_unsupported_blocker_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_unsupported_blocker_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_root_unrecoverable_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_root_unrecoverable_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_environment_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_environment_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_joint_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_joint_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_successor_context_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_successor_context_cache_hits", 0)),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
@@ -8131,7 +8488,9 @@ class COWPWaymaxPolicy:
             traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
             execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
             execution_accel = float(recovery_tube_accel_override)
-            if method == "cowp_interaction_aware_reachable_response_envelope":
+            if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+                execution_source = "blocker_conditioned_interaction_aware_reachable_response_envelope"
+            elif method == "cowp_interaction_aware_reachable_response_envelope":
                 execution_source = "interaction_aware_reachable_response_envelope"
             elif method == "cowp_shift_closed_first_action_viability_interval":
                 execution_source = "shift_closed_first_action_viability_interval"

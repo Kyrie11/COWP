@@ -1,0 +1,183 @@
+{
+  "schema_version": "cowp_v16_8_43_code_validation_v1",
+  "release": "V16.8.43 Blocker-Conditioned Interaction-Aware Reachable-Response Envelope (BC-IARE)",
+  "hard_checks_total": 24,
+  "hard_checks_passed": 24,
+  "hard_checks_failed": 0,
+  "overall_code_validation": "PASS",
+  "ready_for_equivalence16_and_counterfactual48": true,
+  "performance_claim_allowed": false,
+  "performance_note": "Only synthetic compatibility-cache subcomponent benchmark is available locally. Use profile8_parallel2 on the server for end-to-end timing.",
+  "key_file_sha256": {
+    "cowp_model.py": "432446e54a936fadc4140579628fc9d53431fc6636f140179aa7a17dba8193dc",
+    "policy_wrapper.py": "f89ea20cecfc627939c6a2f59a70b77f0df163ddd9f5bff7ec66028f5d92a0c1",
+    "metrics_cowp.py": "01a9222f53583b0c9734c404876f6f698b8e6a4b4088882691f6466dda83542c",
+    "rollout.py": "4f12155d591baa7814e47f6bd0881717281a50ead06c77146acc4f4179855589",
+    "04_eval_closed_loop.py": "55c09c7e541645423296fe8a9c161005e14418f2ad9511380aed428233fdc184",
+    "96_analyzer.py": "259d9174d68b21efea3184e304c018763f8aae6623214dcb14b6028d80b47dda",
+    "launcher": "46463684d8647bd84a8809c9def7d1fd6d3a0771aa69aab5758b8087f4005262",
+    "test": "3a563c0ea77fa8d103e7a87eed5eeeacdd98a1204dab7faaa77012dd0e44877c"
+  },
+  "checks": [
+    {
+      "name": "focused_semantic_integrity_suite",
+      "passed": true,
+      "detail": {
+        "passed": 103,
+        "failed": 0,
+        "sanity_log": "V16_8_43_RELEASE_SANITY.log"
+      }
+    },
+    {
+      "name": "v43_dedicated_tests",
+      "passed": true,
+      "detail": {
+        "passed": 7,
+        "failed": 0
+      }
+    },
+    {
+      "name": "python_compile",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "launcher_bash_syntax",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "manifest_exact200",
+      "passed": true,
+      "detail": {
+        "n": 200,
+        "logical_sha256": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
+      }
+    },
+    {
+      "name": "manifest_equivalence16",
+      "passed": true,
+      "detail": {
+        "n": 16,
+        "logical_sha256": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
+      }
+    },
+    {
+      "name": "manifest_counterfactual48",
+      "passed": true,
+      "detail": {
+        "n": 48,
+        "logical_sha256": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
+      }
+    },
+    {
+      "name": "manifest_fresh37",
+      "passed": true,
+      "detail": {
+        "n": 37,
+        "logical_sha256": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
+      }
+    },
+    {
+      "name": "manifest_profile8",
+      "passed": true,
+      "detail": {
+        "n": 8,
+        "logical_sha256": "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
+      }
+    },
+    {
+      "name": "exact_v42_nesting_before_query",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "social_critical_set_not_modified",
+      "passed": true,
+      "detail": {
+        "scope": "combined indices are passed only to recovery constructor; RCOT/BCOT batch critical tensor is unchanged"
+      }
+    },
+    {
+      "name": "root_scene_latent_exposed",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "late_query_uses_root_scene_latent",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no_logged_future_in_v43_decode_or_constructor",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no_ground_truth_in_v43_decode_or_constructor",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no_dense_response_head_in_v43_decode",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "no_v43_threshold_tuning_constants",
+      "passed": true,
+      "detail": {
+        "meaning": "V43 delegates frozen root/response thresholds to unchanged V42 helper"
+      }
+    },
+    {
+      "name": "compatibility_cache_semantics_test",
+      "passed": true,
+      "detail": {
+        "logical_environment_checks_preserved": true,
+        "second_call_cache_hits_positive": true
+      }
+    },
+    {
+      "name": "synthetic_cache_microbenchmark",
+      "passed": true,
+      "detail": {
+        "subcomponent_speedup_x": 11.129894678935749,
+        "unsafe_call_reduction_x": 27.333333333333332,
+        "not_end_to_end_claim": true
+      }
+    },
+    {
+      "name": "analyzer_v42_compatibility_replay",
+      "passed": true,
+      "detail": {
+        "same_gate_5_of_6": true,
+        "v43_as_v42_paired_collision_0_0": true
+      }
+    },
+    {
+      "name": "fail_closed_fresh37_probe",
+      "passed": true,
+      "detail": {
+        "exit_code": 4,
+        "rollout_artifacts": 0,
+        "only_manifest_copies_written": true
+      }
+    },
+    {
+      "name": "frozen_tree.configs",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "frozen_tree.cowp/data",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "frozen_tree.cowp/label",
+      "passed": true,
+      "detail": null
+    }
+  ]
+}
