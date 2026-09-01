@@ -1,0 +1,993 @@
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -2,7 +2,7 @@
+ 
+ from collections import Counter
+ from dataclasses import dataclass
+-from typing import Any
++from typing import Any, Callable
+ import importlib
+ import math
+ import time
+@@ -4485,6 +4485,9 @@
+     object_types: np.ndarray,
+     shared_compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] | None = None,
++    known_nested_v39_empty: bool = False,
++    hypothesis_indices: np.ndarray | None = None,
++    internal_trace: dict[str, Any] | None = None,
+ ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
+ 
+@@ -4496,12 +4499,18 @@
+     response profile for both the current and one-step-shifted ego tubes.  All
+     non-blocking agents, ego roadgraph checks and ego inverse dynamics remain hard.
+     """
+-    nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
+-        agent_state, sdc_index, nominal_trajectories, cand_valid,
+-        nominal_roadgraph_safe, macro_types, fallback_scores,
+-        collision_prefix_steps, action_targets, action_accels,
+-        roadgraph, cfg, previous_longitudinal_accel,
+-    )
++    if bool(known_nested_v39_empty):
++        # Engineering-only fast path used by V43 after the exact V42 stage has
++        # already proved the nested V39 hard set empty for the same policy step.
++        # Re-running V39 cannot change the expanded-support result.
++        nested_selected, nested_detail = None, {}
++    else:
++        nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
++            agent_state, sdc_index, nominal_trajectories, cand_valid,
++            nominal_roadgraph_safe, macro_types, fallback_scores,
++            collision_prefix_steps, action_targets, action_accels,
++            roadgraph, cfg, previous_longitudinal_accel,
++        )
+     detail = dict(nested_detail)
+     detail.update({
+         "nested_v39_selected": bool(nested_selected is not None),
+@@ -4662,7 +4671,15 @@
+     successor_context_cache = shared_successor_context_cache
+     if successor_context_cache is None:
+         successor_context_cache = {}
+-    for j in sorted(range(int(projected.shape[0])), key=hypothesis_key):
++    if hypothesis_indices is None:
++        candidate_hypotheses = list(range(int(projected.shape[0])))
++    else:
++        raw_hypotheses = np.asarray(hypothesis_indices, dtype=np.int64).reshape(-1)
++        candidate_hypotheses = sorted({
++            int(j) for j in raw_hypotheses.tolist()
++            if 0 <= int(j) < int(projected.shape[0])
++        })
++    for j in sorted(candidate_hypotheses, key=hypothesis_key):
+         first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
+         if np.allclose(first_target, base_target, rtol=0.0, atol=1.0e-6):
+             detail["interaction_noop_hypotheses_skipped"] = int(detail["interaction_noop_hypotheses_skipped"]) + 1
+@@ -4725,6 +4742,11 @@
+                 detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
+             elif reason == "unsupported_collision_blocker":
+                 detail["interaction_unsupported_blocker_rejects"] = int(detail["interaction_unsupported_blocker_rejects"]) + 1
++                if internal_trace is not None:
++                    unsupported_h = internal_trace.setdefault("unsupported_hypothesis_indices", [])
++                    unsupported_h.append(int(j))
++                    blocker_union = internal_trace.setdefault("unsupported_blocker_union", set())
++                    blocker_union.update(int(x) for x in interaction_detail.get("unsupported_blockers", []))
+             elif reason == "residual_physical_certificate_failed":
+                 detail["interaction_residual_physical_rejects"] = int(detail["interaction_residual_physical_rejects"]) + 1
+             elif reason in {
+@@ -4820,9 +4842,10 @@
+     natural_trajectories: np.ndarray,
+     natural_logits: np.ndarray,
+     blocker_query_track_index: np.ndarray,
+-    blocker_query_trajectories: np.ndarray,
+-    blocker_query_logits: np.ndarray,
++    blocker_query_trajectories: np.ndarray | None,
++    blocker_query_logits: np.ndarray | None,
+     object_types: np.ndarray,
++    blocker_query_decoder: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]] | None = None,
+ ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+     """V16.8.43 late-bound blocker-conditioned support completion.
+ 
+@@ -4842,6 +4865,10 @@
+         "environment": {}, "joint": {},
+     }
+     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] = {}
++    base_trace: dict[str, Any] = {
++        "unsupported_hypothesis_indices": [],
++        "unsupported_blocker_union": set(),
++    }
+     base_selected, base_detail = _construct_interaction_aware_reachable_response_envelope_np(
+         agent_state, sdc_index, nominal_trajectories, cand_valid,
+         nominal_roadgraph_safe, macro_types, fallback_scores,
+@@ -4855,6 +4882,7 @@
+         object_types=object_types,
+         shared_compatibility_cache=shared_compatibility_cache,
+         shared_successor_context_cache=shared_successor_context_cache,
++        internal_trace=base_trace,
+     )
+     detail = dict(base_detail)
+     detail.update({
+@@ -4869,6 +4897,9 @@
+         "blocker_conditioned_query_environment_cache_hits": 0,
+         "blocker_conditioned_query_joint_cache_hits": 0,
+         "blocker_conditioned_query_successor_context_cache_hits": 0,
++        "blocker_conditioned_query_candidate_agents_before_exact_filter": 0,
++        "blocker_conditioned_query_exact_blocker_agent_count": 0,
++        "blocker_conditioned_query_replayed_hypothesis_count": 0,
+     })
+     if base_selected is not None:
+         detail["selected_certificate_kind"] = str(
+@@ -4877,18 +4908,73 @@
+         return base_selected, detail
+ 
+     query_idx = np.asarray(blocker_query_track_index, dtype=np.int64).reshape(-1)
+-    query_traj = np.asarray(blocker_query_trajectories, dtype=np.float32)
+-    query_logits = np.asarray(blocker_query_logits, dtype=np.float32)
+-    if query_idx.size <= 0 or query_traj.ndim != 4 or query_logits.ndim != 2:
++    if query_idx.size <= 0:
+         detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+         return None, detail
+-    q = min(query_idx.size, query_traj.shape[0], query_logits.shape[0])
+-    if q <= 0:
++    query_traj_all: np.ndarray | None = None
++    query_logits_all: np.ndarray | None = None
++    if blocker_query_decoder is None:
++        if blocker_query_trajectories is None or blocker_query_logits is None:
++            detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
++            return None, detail
++        query_traj_all = np.asarray(blocker_query_trajectories, dtype=np.float32)
++        query_logits_all = np.asarray(blocker_query_logits, dtype=np.float32)
++        if query_traj_all.ndim != 4 or query_logits_all.ndim != 2:
++            detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
++            return None, detail
++        q_all = min(query_idx.size, query_traj_all.shape[0], query_logits_all.shape[0])
++        query_idx = query_idx[:q_all]
++        query_traj_all = query_traj_all[:q_all]
++        query_logits_all = query_logits_all[:q_all]
++    else:
++        q_all = int(query_idx.size)
++    if q_all <= 0:
+         detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+         return None, detail
+-    query_idx = query_idx[:q]
+-    query_traj = query_traj[:q]
+-    query_logits = query_logits[:q]
++    detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] = int(q_all)
++
++    # Runtime-fidelity repair: V43 late-bound support can only change a V42
++    # hypothesis that failed specifically because an exact collision blocker had
++    # no response support.  Hypotheses that already failed residual physical,
++    # root feasibility, joint compatibility, or no-blocker checks are invariant
++    # to adding support for previously unsupported agents.  Restricting the
++    # second pass to that repairable subset is therefore logically exact.
++    unsupported_hypotheses = np.asarray(
++        base_trace.get("unsupported_hypothesis_indices", []), dtype=np.int64
++    ).reshape(-1)
++    unsupported_blockers = {
++        int(x) for x in base_trace.get("unsupported_blocker_union", set())
++    }
++    if unsupported_hypotheses.size <= 0 or not unsupported_blockers:
++        detail["blocker_conditioned_query_failure_reason"] = "no_unsupported_blocker_hypothesis"
++        return None, detail
++    keep = np.asarray([int(x) in unsupported_blockers for x in query_idx.tolist()], dtype=bool)
++    filtered_idx = query_idx[keep]
++    if filtered_idx.size <= 0:
++        detail["blocker_conditioned_query_failure_reason"] = "no_model_visible_unsupported_blocker_query"
++        return None, detail
++    if blocker_query_decoder is not None:
++        query_traj, query_logits = blocker_query_decoder(filtered_idx)
++        query_traj = np.asarray(query_traj, dtype=np.float32)
++        query_logits = np.asarray(query_logits, dtype=np.float32)
++        q = min(filtered_idx.size, query_traj.shape[0] if query_traj.ndim == 4 else 0,
++                query_logits.shape[0] if query_logits.ndim == 2 else 0)
++        query_idx = filtered_idx[:q]
++        query_traj = query_traj[:q] if query_traj.ndim == 4 else np.zeros((0, 0, 0, 7), dtype=np.float32)
++        query_logits = query_logits[:q] if query_logits.ndim == 2 else np.zeros((0, 0), dtype=np.float32)
++    else:
++        assert query_traj_all is not None and query_logits_all is not None
++        query_idx = filtered_idx
++        query_traj = query_traj_all[keep]
++        query_logits = query_logits_all[keep]
++        q = int(query_idx.size)
++    detail["blocker_conditioned_query_exact_blocker_agent_count"] = int(q)
++    detail["blocker_conditioned_query_replayed_hypothesis_count"] = int(
++        np.unique(unsupported_hypotheses).size
++    )
++    if q <= 0:
++        detail["blocker_conditioned_query_failure_reason"] = "no_ready_exact_blocker_decode"
++        return None, detail
+     detail["blocker_conditioned_query_attempted"] = True
+     detail["blocker_conditioned_query_agent_count"] = int(q)
+ 
+@@ -4922,6 +5008,8 @@
+         object_types=object_types,
+         shared_compatibility_cache=shared_compatibility_cache,
+         shared_successor_context_cache=shared_successor_context_cache,
++        known_nested_v39_empty=True,
++        hypothesis_indices=unsupported_hypotheses,
+     )
+     support_detail = expanded_detail.get("interaction_support_detail", {})
+     base_ready = int(base_detail.get("interaction_support_agents_ready", 0))
+@@ -7454,9 +7542,11 @@
+                                 if query_indices.size:
+                                     _, first_pos = np.unique(query_indices, return_index=True)
+                                     query_indices = query_indices[np.sort(first_pos)]
+-                                blocker_nat_np, blocker_logits_np = self._decode_blocker_conditioned_natural_queries_np(
+-                                    batch, pred, query_indices,
+-                                )
++                                # Runtime-fidelity repair: V42 can only be changed by
++                                # hypotheses rejected for an unsupported exact collision blocker.
++                                # Defer NaturalDecoder work until that frozen V42 trace identifies
++                                # the blocker subset; this preserves certificate semantics while
++                                # avoiding queries for irrelevant nearby actors.
+                                 selected_tube, recovery_tube_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+                                     *common_tube_args,
+                                     base_candidate_index=int(recovery_base_candidate),
+@@ -7465,9 +7555,12 @@
+                                     natural_trajectories=natural_traj_np,
+                                     natural_logits=natural_logits_np,
+                                     blocker_query_track_index=query_indices,
+-                                    blocker_query_trajectories=blocker_nat_np,
+-                                    blocker_query_logits=blocker_logits_np,
++                                    blocker_query_trajectories=None,
++                                    blocker_query_logits=None,
+                                     object_types=object_types_np,
++                                    blocker_query_decoder=lambda exact_idx: self._decode_blocker_conditioned_natural_queries_np(
++                                        batch, pred, exact_idx,
++                                    ),
+                                 )
+                             else:
+                                 selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
+@@ -8445,6 +8538,9 @@
+                 "recovery_tube_blocker_conditioned_query_attempted": bool(recovery_tube_detail.get("blocker_conditioned_query_attempted", False)),
+                 "recovery_tube_blocker_conditioned_query_selected": bool(recovery_tube_detail.get("blocker_conditioned_query_selected", False)),
+                 "recovery_tube_blocker_conditioned_query_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_agent_count", 0)),
++                "recovery_tube_blocker_conditioned_query_candidate_agents_before_exact_filter": int(recovery_tube_detail.get("blocker_conditioned_query_candidate_agents_before_exact_filter", 0)),
++                "recovery_tube_blocker_conditioned_query_exact_blocker_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_exact_blocker_agent_count", 0)),
++                "recovery_tube_blocker_conditioned_query_replayed_hypothesis_count": int(recovery_tube_detail.get("blocker_conditioned_query_replayed_hypothesis_count", 0)),
+                 "recovery_tube_blocker_conditioned_query_ready_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_ready_agent_count", 0)),
+                 "recovery_tube_blocker_conditioned_query_hypotheses_evaluated": int(recovery_tube_detail.get("blocker_conditioned_query_hypotheses_evaluated", 0)),
+                 "recovery_tube_blocker_conditioned_query_unsupported_blocker_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_unsupported_blocker_rejects", 0)),
+--- a/cowp/waymax_eval/metrics_cowp.py
++++ b/cowp/waymax_eval/metrics_cowp.py
+@@ -821,6 +821,18 @@
+                 "recovery_tube_blocker_conditioned_query_agent_count",
+                 mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+             ) if n else None,
++            "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": _mean(
++                "recovery_tube_blocker_conditioned_query_candidate_agents_before_exact_filter",
++                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": _mean(
++                "recovery_tube_blocker_conditioned_query_exact_blocker_agent_count",
++                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
++            "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": _mean(
++                "recovery_tube_blocker_conditioned_query_replayed_hypothesis_count",
++                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
++            ) if n else None,
+             "mean_recovery_tube_blocker_query_ready_agents_on_attempts": _mean(
+                 "recovery_tube_blocker_conditioned_query_ready_agent_count",
+                 mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+--- a/tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py
++++ b/tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py
+@@ -110,6 +110,10 @@
+         valid = np.asarray(kwargs["critical_valid"], dtype=bool).copy()
+         calls.append((idx, valid))
+         if len(calls) == 1:
++            trace = kwargs.get("internal_trace")
++            if trace is not None:
++                trace.setdefault("unsupported_hypothesis_indices", []).extend([0, 3])
++                trace.setdefault("unsupported_blocker_union", set()).add(2)
+             return None, {
+                 "interaction_support_agents_ready": 1,
+                 "interaction_hypotheses_evaluated": 8,
+@@ -135,6 +139,8 @@
+     assert selected is sentinel
+     assert [x[0].tolist() for x in calls] == [[1], [1, 2]]
+     assert calls[1][1].tolist() == [True, True]
++    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 1
++    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
+     assert detail["nested_v42_selected"] is False
+     assert detail["blocker_conditioned_query_attempted"] is True
+     assert detail["blocker_conditioned_query_selected"] is True
+@@ -307,3 +313,116 @@
+     assert detail["interaction_environment_compatibility_cache_hits"] == 4
+     assert detail["interaction_joint_compatibility_cache_hits"] == 2
+     assert detail["interaction_successor_context_cache_hits"] == 1
++
++
++def test_v43_runtime_repair_filters_query_to_exact_unsupported_blockers(monkeypatch) -> None:
++    sentinel = {"parent_index": 4, "target": np.ones(5, dtype=np.float32)}
++    calls: list[dict] = []
++
++    def fake_v42(*args, **kwargs):
++        calls.append(dict(kwargs))
++        if len(calls) == 1:
++            trace = kwargs.get("internal_trace")
++            assert trace is not None
++            trace["unsupported_hypothesis_indices"].extend([7, 2, 7])
++            trace["unsupported_blocker_union"].update({2, 4})
++            return None, {
++                "interaction_support_agents_ready": 1,
++                "interaction_failure_reason": "no_interaction_certified_action",
++            }
++        assert kwargs.get("known_nested_v39_empty") is True
++        assert np.asarray(kwargs.get("hypothesis_indices"), dtype=np.int64).tolist() == [7, 2, 7]
++        assert np.asarray(kwargs["critical_track_index"], dtype=np.int64).tolist() == [1, 2, 4]
++        return sentinel, {
++            "interaction_support_agents_ready": 3,
++            "interaction_hypotheses_evaluated": 2,
++            "interaction_unsupported_blocker_rejects": 0,
++            "interaction_root_unrecoverable_rejects": 1,
++            "selected": True,
++        }
++
++    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
++    kwargs = _constructor_kwargs()
++    kwargs["blocker_query_track_index"] = np.asarray([2, 3, 4, 5], dtype=np.int64)
++    kwargs["blocker_query_trajectories"] = np.zeros((4, 2, 4, 7), dtype=np.float32)
++    kwargs["blocker_query_logits"] = np.zeros((4, 2), dtype=np.float32)
++    kwargs["object_types"] = np.asarray([1, 1, 1, 1, 1, 1], dtype=np.int32)
++    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
++        *_constructor_args(), **kwargs
++    )
++    assert selected is sentinel
++    assert len(calls) == 2
++    assert detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] == 4
++    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 2
++    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
++
++
++def test_v43_runtime_repair_skips_second_pass_when_no_unsupported_failure(monkeypatch) -> None:
++    calls = 0
++
++    def fake_v42(*args, **kwargs):
++        nonlocal calls
++        calls += 1
++        return None, {
++            "interaction_support_agents_ready": 1,
++            "interaction_failure_reason": "no_interaction_certified_action",
++        }
++
++    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
++    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
++        *_constructor_args(), **_constructor_kwargs()
++    )
++    assert selected is None
++    assert calls == 1
++    assert detail["blocker_conditioned_query_failure_reason"] == "no_unsupported_blocker_hypothesis"
++
++
++def test_v43_runtime_repair_defers_decoder_until_exact_blockers_known(monkeypatch) -> None:
++    calls: list[dict] = []
++    decoded: list[list[int]] = []
++
++    def fake_v42(*args, **kwargs):
++        calls.append(dict(kwargs))
++        if len(calls) == 1:
++            trace = kwargs.get("internal_trace")
++            assert trace is not None
++            trace["unsupported_hypothesis_indices"].extend([5, 9])
++            trace["unsupported_blocker_union"].update({3, 6})
++            return None, {
++                "interaction_support_agents_ready": 1,
++                "interaction_failure_reason": "no_interaction_certified_action",
++            }
++        assert kwargs.get("known_nested_v39_empty") is True
++        assert np.asarray(kwargs.get("hypothesis_indices"), dtype=np.int64).tolist() == [5, 9]
++        assert np.asarray(kwargs["critical_track_index"], dtype=np.int64).tolist() == [1, 3, 6]
++        return None, {
++            "interaction_support_agents_ready": 3,
++            "interaction_hypotheses_evaluated": 2,
++            "interaction_unsupported_blocker_rejects": 0,
++            "interaction_root_unrecoverable_rejects": 2,
++        }
++
++    def fake_decoder(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
++        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
++        decoded.append(idx.tolist())
++        q = int(idx.size)
++        return (
++            np.zeros((q, 2, 4, 7), dtype=np.float32),
++            np.zeros((q, 2), dtype=np.float32),
++        )
++
++    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
++    kwargs = _constructor_kwargs()
++    kwargs["blocker_query_track_index"] = np.asarray([2, 3, 4, 5, 6, 7], dtype=np.int64)
++    kwargs["blocker_query_trajectories"] = None
++    kwargs["blocker_query_logits"] = None
++    kwargs["object_types"] = np.asarray([1] * 8, dtype=np.int32)
++    kwargs["blocker_query_decoder"] = fake_decoder
++    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
++        *_constructor_args(), **kwargs
++    )
++    assert selected is None
++    assert decoded == [[3, 6]]
++    assert detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] == 6
++    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 2
++    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
+--- a/ALGORITHM_CHANGELOG.md
++++ b/ALGORITHM_CHANGELOG.md
+@@ -5391,3 +5391,42 @@
+ 
+ Post-repair focused semantic/integrity sanity: **104/104 passed**. Existing launcher
+ commands, including `profile8_parallel2`, are unchanged.
++
++---
++
++# V16.8.43R2 — BC-IARE Runtime-Fidelity Repair (engineering-only)
++
++**No new scientific algorithm version and no change to the V43 preregistration.**
++
++The uploaded V43 result package contains `equivalence16` and `profile8` but no
++`counterfactual48` Stage-1 result. Available artifacts are internally consistent;
++`equivalence16` remains 16 scenes / 1120 fields / 0 mismatch. The profile8 run is,
++however, a practical engineering blocker: the 8-scene parallel run took **26,242 s
++(~7.29 h)** and V43 selection occupied about **99.5%** of per-step policy runtime.
++Consequently no V43 algorithm attribution is allowed from this upload.
++
++The runtime implementation also performs substantially more work than the frozen
++**exact-blocker-conditioned** scientific hypothesis requires: it decodes all model-visible
++non-critical collision-context actors and reruns the full V42 hypothesis family after V42
++fails.
++
++V43R2 is a semantics-preserving work-elimination repair:
++
++```text
++exact V42 first pass
++→ trace only unsupported_collision_blocker hypothesis IDs + exact blocker union
++→ late-bound NaturalDecoder only for those exact blockers
++→ skip nested V39 in pass 2 (already proved empty on the identical state)
++→ replay only repairable unsupported hypotheses
++→ unchanged V42 hard interaction certificate and selector
++```
++
++New diagnostics expose candidate query agents before filtering, exact blocker query agents,
++and replayed hypothesis count. The scientific method ID, root/response semantics, social
++critical set, V39 tube/shift closure, controller, 8 s contract, dataset/checkpoint and the
++six Stage-1 GO thresholds remain unchanged.
++
++Validation after repair: V42+V43 dedicated tests **21/21 passed**; V16.8.25→43 focused
++semantic/integrity sanity **107/107 passed**. Server `profile8_parallel2` must be rerun and
++checked with `verify_profile8_repair` before the unchanged `counterfactual48` Stage-1 is
++started. No end-to-end speed claim is made before that server rerun.
+--- a/cowp/scripts/97_verify_v43r2_runtime_fidelity.py
++++ b/cowp/scripts/97_verify_v43r2_runtime_fidelity.py
+@@ -0,0 +1,109 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++
++def _load(path: str) -> dict[str, Any]:
++    with open(path, "r", encoding="utf-8") as f:
++        return json.load(f)
++
++
++def _eq(a: Any, b: Any, tol: float) -> bool:
++    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
++        return a == b
++    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
++        if isinstance(a, float) and math.isnan(a):
++            return isinstance(b, float) and math.isnan(b)
++        if isinstance(b, float) and math.isnan(b):
++            return False
++        return abs(float(a) - float(b)) <= tol
++    return a == b
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description="Verify V16.8.43R2 runtime repair preserves profile8 behavioral outcomes.")
++    ap.add_argument("--reference", required=True)
++    ap.add_argument("--candidate", required=True)
++    ap.add_argument("--output", required=True)
++    ap.add_argument("--reference-wall-seconds")
++    ap.add_argument("--candidate-wall-seconds")
++    ap.add_argument("--tol", type=float, default=1e-9)
++    args = ap.parse_args()
++
++    ref = _load(args.reference)
++    cand = _load(args.candidate)
++    checks: list[dict[str, Any]] = []
++
++    def add(name: str, ok: bool, detail: Any = None) -> None:
++        checks.append({"name": name, "pass": bool(ok), "detail": detail})
++
++    add("method_identity", ref.get("method") == cand.get("method"), [ref.get("method"), cand.get("method")])
++    add("scenario_hash", ref.get("scenario_ids_sha256") == cand.get("scenario_ids_sha256"), [ref.get("scenario_ids_sha256"), cand.get("scenario_ids_sha256")])
++    add("num_rollouts", ref.get("num_rollouts") == cand.get("num_rollouts"), [ref.get("num_rollouts"), cand.get("num_rollouts")])
++
++    rr = {str(x["scenario_id"]): x for x in ref.get("scenario_results", [])}
++    cr = {str(x["scenario_id"]): x for x in cand.get("scenario_results", [])}
++    add("scenario_id_set", set(rr) == set(cr), {"reference": sorted(rr), "candidate": sorted(cr)})
++
++    mismatches: list[dict[str, Any]] = []
++    behavioral_diag_exclusions = (
++        "blocker_query",  # intentionally changed by exact-blocker pruning
++    )
++    for sid in sorted(set(rr) & set(cr)):
++        rrow, crow = rr[sid], cr[sid]
++        for k in sorted(set(rrow.get("standard_metrics", {})) | set(crow.get("standard_metrics", {}))):
++            a = rrow.get("standard_metrics", {}).get(k)
++            b = crow.get("standard_metrics", {}).get(k)
++            if not _eq(a, b, args.tol):
++                mismatches.append({"scenario_id": sid, "field": f"standard_metrics.{k}", "reference": a, "candidate": b})
++        rd, cd = rrow.get("diagnostics", {}), crow.get("diagnostics", {})
++        for k in sorted(set(rd) & set(cd)):
++            if any(token in k for token in behavioral_diag_exclusions):
++                continue
++            # Runtime repair adds accounting fields and may change cache-hit counts
++            # without changing the hard predicate results.  Compare all behavioral
++            # diagnostics but exclude cache accounting.
++            if "cache_hits" in k:
++                continue
++            a, b = rd.get(k), cd.get(k)
++            if not _eq(a, b, args.tol):
++                mismatches.append({"scenario_id": sid, "field": f"diagnostics.{k}", "reference": a, "candidate": b})
++    add("behavioral_profile_equivalence", len(mismatches) == 0, {"mismatch_count": len(mismatches), "first_mismatches": mismatches[:50]})
++
++    wall = {}
++    if args.reference_wall_seconds and args.candidate_wall_seconds:
++        rsec = float(Path(args.reference_wall_seconds).read_text().strip())
++        csec = float(Path(args.candidate_wall_seconds).read_text().strip())
++        wall = {
++            "reference_seconds": rsec,
++            "candidate_seconds": csec,
++            "speedup": (rsec / csec) if csec > 0 else None,
++            "reduction_fraction": ((rsec - csec) / rsec) if rsec > 0 else None,
++        }
++
++    out = {
++        "schema_version": "v16.8.43r2_runtime_fidelity_v1",
++        "reference": args.reference,
++        "candidate": args.candidate,
++        "tolerance": args.tol,
++        "checks": checks,
++        "pass": all(x["pass"] for x in checks),
++        "wall_clock": wall,
++        "interpretation": (
++            "PASS means the engineering-only exact-blocker/hypothesis pruning preserved the available profile8 behavioral evidence. "
++            "Query/cache accounting is intentionally excluded because those are the optimized work counters."
++        ),
++    }
++    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
++    Path(args.output).write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(out, ensure_ascii=False, indent=2))
++    if not out["pass"]:
++        raise SystemExit(3)
++
++
++if __name__ == "__main__":
++    main()
+--- a/NEXT_RUN_COMMANDS_V16_8_43R2_RUNTIME_FIDELITY_REPAIR_CN.sh
++++ b/NEXT_RUN_COMMANDS_V16_8_43R2_RUNTIME_FIDELITY_REPAIR_CN.sh
+@@ -0,0 +1,289 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# v16.8.43R2: engineering-only runtime-fidelity repair for BC-IARE
++#
++# Scientific branch selected by the frozen V40/V41 decision rule after repaired
++# V41 produced real interval-only actions but failed the inherited outcome gate.
++# The exact V42 RC-IARE policy is nested first. Only on a V42-empty recovery
++# step may BC-IARE add late-bound natural-root support for additional agents from
++# the frozen collision context; exact blocker use still occurs inside the hard
++# RC-IARE certificate. Every retained root must own
++# a low-burden, drivable, Waymax-kinematic response for current and one-step-
++# shifted ego tubes; simultaneous blockers must admit a jointly compatible
++# response assignment. All remaining physical/model/protocol layers stay frozen.
++#
++# Counterfactual48 is development evidence. The six-item conjunction gate is
++# unchanged and fail-closed. Mechanism diagnostics never override that gate.
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_43r2_blocker_conditioned_runtime_fidelity_repair}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++PROFILE8_IDS="$SCRIPT_DIR/reference_manifests/v16_8_43_runtime_profile8_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35_CPOSH="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36_FRONTIER="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37_RRB="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_CF48_V38_TUBE="$SCRIPT_DIR/reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json"
++REF_CF48_V39_TUBE="$SCRIPT_DIR/reference_results/v16_8_39_counterfactual48_conflict_window_control_reachable_tube_reference.json"
++REF_CF48_V42_IARE="$SCRIPT_DIR/reference_results/v16_8_42_counterfactual48_interaction_aware_reachable_response_envelope_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
++REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++REF_EXACT_RVR="$SCRIPT_DIR/reference_results/v16_8_29_exact200_rvr_reference.json"
++
++EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
++EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
++EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
++EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
++EXPECTED_PROFILE8_SHA="d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
++mkdir -p "$OUT_ROOT"
++
++export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
++export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
++export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
++export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
++export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
++
++validate_manifest() {
++  local p="$1" n="$2" expected="$3"
++  [[ -s "$p" ]] || { echo "Missing ID manifest: $p" >&2; exit 2; }
++  python - "$p" "$n" "$expected" <<'PY'
++import hashlib,sys
++p,n,expected=sys.argv[1],int(sys.argv[2]),sys.argv[3]
++ids=[x.strip() for x in open(p,encoding='utf-8') if x.strip()]
++if len(ids)!=n: raise SystemExit(f"expected {n} IDs, got {len(ids)} in {p}")
++if len(set(ids))!=n: raise SystemExit(f"duplicate IDs in {p}")
++h=hashlib.sha256("\n".join(ids).encode()).hexdigest()
++if h!=expected: raise SystemExit(f"logical ID SHA mismatch: {h} != {expected}")
++print(f"manifest OK: n={n} logical_sha256={h} path={p}")
++PY
++}
++ensure_ids() {
++  validate_manifest "$EXACT_IDS" 200 "$EXPECTED_EXACT_SHA"
++  validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
++  validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
++  validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
++  validate_manifest "$PROFILE8_IDS" 8 "$EXPECTED_PROFILE8_SHA"
++  cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
++  cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++  cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
++  cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
++  cp "$PROFILE8_IDS" "$OUT_ROOT/v16_8_43_runtime_profile8_ids.txt"
++}
++
++require_gate_pass() {
++  local analysis_json="$1" methods="$2" stage_label="$3"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing $stage_label analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" "$methods" "$stage_label" <<'PY' || exit 4
++import json,sys
++p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
++d=json.load(open(p,encoding='utf-8'))
++gates=d.get('preregistered_gate',{})
++for method in [x.strip() for x in methods.split(',') if x.strip()]:
++    if method!='cowp_blocker_conditioned_interaction_aware_reachable_response_envelope':
++        raise SystemExit(f'ERROR: {method} is not the V16.8.43 BC-IARE promotion candidate')
++    g=gates.get('blocker_conditioned_interaction_aware_reachable_response_envelope')
++    if not g or g.get('pass') is not True:
++        failed=[k for k,v in (g or {}).get('checks',{}).items() if not v]
++        raise SystemExit(f'ERROR: {method} did not pass {stage} preregistered gate; failed={failed}')
++print(f'promotion gate OK for {methods} at {stage}')
++PY
++}
++
++index_arg=()
++if [[ -s "$TFEX_INDEX" ]]; then
++  index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++else
++  echo "[warning] TFExample ID index missing: $TFEX_INDEX" >&2
++fi
++common_waymax=(
++  --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax --checkpoint "$BASE_CKPT" --waymax-split validation --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0 --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++run_colocated_shard() {
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5"
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    --no-progress --status-every 2 --output "$out"
++}
++run_profile8_parallel2() {
++  local method="${PROFILE_METHOD:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++  local tag="runtime_profile8_v43r2"
++  echo "=== performance-only profile8 method: $method ==="
++  local start end; start=$(date +%s)
++  CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$PROFILE8_IDS" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 0 \
++    --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 \
++    --output "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++  CUDA_VISIBLE_DEVICES=1 XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$PROFILE8_IDS" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 1 \
++    --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 \
++    --output "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++  wait "$p0"; wait "$p1"
++  end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++  python -m cowp.scripts.79_merge_waymax_exact_shards \
++    --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++    --output "$OUT_ROOT/${tag}_${method}_merged.json"
++}
++
++run_parallel_methods() {
++  local tag="$1" ids="$2" methods="$3"
++  IFS=',' read -r -a arr <<< "$methods"
++  for method in "${arr[@]}"; do
++    echo "=== $tag method: $method ==="
++    local start end; start=$(date +%s)
++    run_colocated_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++    run_colocated_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++    wait "$p0"; wait "$p1"
++    end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++    python -m cowp.scripts.79_merge_waymax_exact_shards \
++      --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++      --output "$OUT_ROOT/${tag}_${method}_merged.json"
++  done
++}
++analyze_set() {
++  local stage="$1" tag="$2" cowp="$3" rvr="$4"
++  local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
++    --blocker-conditioned-interaction-aware-reachable-response-envelope "$OUT_ROOT/${tag}_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" \
++    --output "$OUT_ROOT/${tag}_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json")
++  if [[ "$stage" == "counterfactual48" ]]; then
++    args+=(--v33-rosh "$REF_CF48_V33_ROSH" \
++      --v35-control-projected-spectrum "$REF_CF48_V35_CPOSH" \
++      --v36-recovery-frontier "$REF_CF48_V36_FRONTIER" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37_RRB" \
++      --v38-shift-closed-tube "$REF_CF48_V38_TUBE" \
++      --v39-conflict-window-tube "$REF_CF48_V39_TUBE" \
++      --v42-interaction-aware-reachable-response-envelope "$REF_CF48_V42_IARE")
++  fi
++  python -m cowp.scripts.96_analyze_blocker_conditioned_interaction_aware_reachable_response_envelope "${args[@]}"
++}
++
++case "$MODE" in
++  sanity)
++    python -m py_compile cowp/models/cowp_model.py cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
++      cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
++      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/88_analyze_control_projected_option_spectrum.py \
++      cowp/scripts/89_analyze_control_projected_recovery_frontier.py cowp/scripts/90_analyze_recourse_returnability_bridge.py \
++      cowp/scripts/92_analyze_conflict_window_control_reachable_tube.py cowp/scripts/93_analyze_shift_closed_first_action_viability_interval.py cowp/scripts/94_analyze_shift_closure_semantic_fidelity_repair.py cowp/scripts/96_analyze_blocker_conditioned_interaction_aware_reachable_response_envelope.py cowp/scripts/97_verify_v43r2_runtime_fidelity.py
++    python -m pytest -q \
++      tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py \
++      tests/test_v16_8_42_interaction_aware_reachable_response_envelope.py \
++      tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py \
++      tests/test_v16_8_40_shift_closed_first_action_viability_interval.py \
++      tests/test_v16_8_39_conflict_window_control_reachable_tube.py \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py tests/test_v16_8_28_execution_integrity.py \
++      tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    if grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py; then
++      echo "ERROR: conventional-safety bypass exists" >&2; exit 3
++    fi
++    ensure_ids
++    echo "v16.8.43R2 BC-IARE runtime-fidelity repair sanity passed"
++    ;;
++  make_ids) ensure_ids ;;
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++  base_equivalence16_parallel2)
++    ensure_ids; run_parallel_methods "equivalence16" "$EQ16_IDS" "cowp"
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++  counterfactual48_parallel2)
++    ensure_ids
++    run_parallel_methods "counterfactual48_v43r2" "$CF48_IDS" "${METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}" ;;
++  analyze_counterfactual48)
++    analyze_set "counterfactual48" "counterfactual48_v43r2" "$REF_CF48_COWP" "$REF_CF48_RVR" ;;
++  fresh37_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/counterfactual48_v43r2_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "counterfactual48"
++    run_parallel_methods "fresh37_v43r2" "$FRESH37_IDS" "$promoted" ;;
++  analyze_fresh37)
++    analyze_set "fresh37" "fresh37_v43r2" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR" ;;
++  confirm200_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/fresh37_v43r2_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "fresh37"
++    run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted" ;;
++  analyze_confirm200)
++    analyze_set "exact200" "confirm_exact200" "$REF_EXACT_COWP" "$REF_EXACT_RVR" ;;
++  profile8_parallel2)
++    ensure_ids; run_profile8_parallel2 ;;
++  verify_profile8_repair)
++    python -m cowp.scripts.97_verify_v43r2_runtime_fidelity \
++      --reference "$SCRIPT_DIR/reference_results/v16_8_43_runtime_profile8_before_r2_merged.json" \
++      --candidate "$OUT_ROOT/runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" \
++      --reference-wall-seconds "$SCRIPT_DIR/reference_results/v16_8_43_runtime_profile8_before_r2_wall_seconds.txt" \
++      --candidate-wall-seconds "$OUT_ROOT/runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_wall_seconds.txt" \
++      --output "$OUT_ROOT/runtime_profile8_v43r2_runtime_fidelity_equivalence.json" ;;
++  help|*)
++    cat <<EOF
++V16.8.43R2 BC-IARE engineering-repair fail-closed run order
++
++1) $0 sanity
++2) $0 make_ids
++3) $0 base_equivalence16_parallel2
++4) $0 profile8_parallel2
++5) $0 verify_profile8_repair
++6) $0 counterfactual48_parallel2
++7) $0 analyze_counterfactual48
++
++STOP unless:
++  preregistered_gate.blocker_conditioned_interaction_aware_reachable_response_envelope.pass == true
++
++The counterfactual48 Stage-1 conjunction remains exactly:
++  retain >=5/10 historical RVR rescues; avoid >=7/9 RVR-induced collisions;
++  remove >=3 net COWP collisions; add <=1 net kinematics failure;
++  paired mean EP delta >= -0.05; nonzero action-changing intervention.
++
++Only after Stage-1 pass:
++  PROMOTED_METHODS=cowp_blocker_conditioned_interaction_aware_reachable_response_envelope $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only after fresh37 pass:
++  PROMOTED_METHODS=cowp_blocker_conditioned_interaction_aware_reachable_response_envelope $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Performance repair verification (never promotion evidence):
++  $0 profile8_parallel2
++  $0 verify_profile8_repair
++
++Do not run fresh37 after a Stage-1 failure. Do not tune root probability floors,
++root mass coverage, burden budgets, response profiles, release schedules, action
++grids, controller limits, horizon, or scalar scores on counterfactual48. BC-IARE
++mechanism fields are attribution diagnostics, not substitute promotion criteria.
++EOF
++    ;;
++esac
+--- a/ALGORITHM_CHANGELOG_V16_8_43R2.md
++++ b/ALGORITHM_CHANGELOG_V16_8_43R2.md
+@@ -0,0 +1,133 @@
++# V16.8.43R2 — BC-IARE Runtime-Fidelity Repair
++
++**Classification:** engineering-only repair. **No new scientific algorithm version.**
++
++This repair exists because the uploaded V16.8.43 result package contains only
++`equivalence16` and `profile8`; the preregistered `counterfactual48` Stage-1 result is
++absent. The available profile8 is internally consistent but exposes a practical
++execution blocker: BC-IARE selection consumes about 99.5% of policy time and the 8-scene
++parallel profile took 26,242 s (~7.29 h). Under the project rule, no V43 algorithm
++attribution or new mechanism is permitted until the unchanged Stage-1 can be run.
++
++## Frozen scientific method
++
++The method ID remains:
++
++```text
++cowp_blocker_conditioned_interaction_aware_reachable_response_envelope
++```
++
++The following are unchanged:
++
++- exact V42-first nesting;
++- exact-blocker-conditioned late-bound recovery support semantics;
++- social RCOT/BCOT critical/protected set;
++- NaturalDecoder weights and root-scene latent;
++- canonical root probability measure (`p_min=0.03`, floor `0.02`, dedup `0.10 m`,
++  minimum roots `2`, retained mass `>=0.75`);
++- same-root low-burden response bank and adaptive AGENT_PRIORITY beta;
++- responder↔environment bidirectional safety;
++- multi-blocker exact CSP;
++- V39 physical tube, 8 s horizon, shift closure, roadgraph and Waymax kinematics;
++- common controller limits, selector ordering and execution override;
++- compact-5k data, split, checkpoint, loss and proposal geometry;
++- the six preregistered Stage-1 GO conditions.
++
++## Engineering root cause
++
++The V43 scientific hypothesis is **exact blocker late binding**, but the released runtime
++implementation did more work than that hypothesis requires:
++
++1. it built a query list from nearly every model-visible non-critical actor in the frozen
++   collision context;
++2. it decoded natural roots for that full list before knowing which actor actually caused
++   an unsupported-blocker failure;
++3. after exact V42 returned no certificate, it reran the full V42 interaction hypothesis
++   family with the enlarged support domain.
++
++A support extension can only change a V42 hypothesis that was rejected specifically as
++`unsupported_collision_blocker`. A hypothesis already rejected for no blocker, residual
++physical failure, root unrecoverability or joint incompatibility cannot become feasible
++merely because an unrelated actor receives natural-response support.
++
++## Semantics-preserving repair
++
++V43R2 therefore adds an internal trace to the unchanged V42 constructor:
++
++```text
++unsupported_hypothesis_indices
++unsupported_blocker_union
++```
++
++The second pass now:
++
++1. runs the exact V42 pass first;
++2. returns the exact V42 selection unchanged if it exists;
++3. if V42 is empty, keeps only hypotheses whose original failure reason was
++   `unsupported_collision_blocker`;
++4. intersects the late-bound query pool with the **exact unsupported blocker union**;
++5. defers NaturalDecoder execution until that exact blocker set is known;
++6. skips re-running nested V39 in the second pass because the identical first pass has
++   already proved the V39 hard set empty;
++7. replays only the repairable unsupported hypotheses under the otherwise unchanged V42
++   hard certificate;
++8. retains the existing policy-step-local environment/joint/successor caches.
++
++This is a work-elimination transform, not a relaxation or a new selector.
++
++## New diagnostics
++
++The runtime repair records:
++
++```text
++blocker_conditioned_query_candidate_agents_before_exact_filter
++blocker_conditioned_query_exact_blocker_agent_count
++blocker_conditioned_query_replayed_hypothesis_count
++```
++
++These are exported into scenario metrics to quantify how much irrelevant work was removed.
++
++## Validation
++
++- V42 + V43 dedicated tests after repair: **21/21 passed**.
++- V16.8.25→V16.8.43 focused semantic/integrity launcher sanity: **107/107 passed**.
++- Python compile: PASS.
++- launcher shell syntax: PASS.
++- exact200/equivalence16/counterfactual48/fresh37/profile8 manifest hashes: PASS.
++- new tests cover exact-blocker filtering, second-pass skip when no unsupported failure,
++  and deferred NaturalDecoder invocation only on exact blockers.
++
++No end-to-end Waymax speedup is claimed locally because the server dataset/checkpoint/GPU
++runtime is not available here. The repaired `profile8_parallel2` plus
++`verify_profile8_repair` must establish behavioral fidelity and actual wall-clock speed on
++the server before Stage-1 is rerun.
++
++## Frozen experiment gate
++
++The Stage-1 conjunction remains exactly:
++
++```text
++historical RVR rescues retained >= 5/10
++historical RVR induced avoided >= 7/9
++net COWP collision failures removed >= 3
++Kinematics net regression <= 1 scene
++paired mean EP delta >= -0.05
++nonzero action-changing intervention
++```
++
++No threshold may be changed after seeing V43R2 results.
++
++## Prohibited scientific changes during this repair
++
++All V43 prohibitions remain active. In particular, do not:
++
++- tune `p_min`, probability floor, root mass, root count, dedup or beta;
++- enlarge the social protected/critical set;
++- relax environment safety, joint CSP, roadgraph, kinematics, shift closure or 8 s horizon;
++- add first-action grids, schedules, switch times, horizon stacking or scalar weights;
++- enable dense response heads or train a new viability model;
++- rebuild compact-5k;
++- mix the `fccd...` long-horizon mismatch or accepted-path kinematics into this rerun.
++
++Only after a reliable counterfactual48 result exists may the scientific branch decision be
++made from the already frozen V43 interpretation rules.

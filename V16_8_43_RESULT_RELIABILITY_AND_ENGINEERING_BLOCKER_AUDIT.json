@@ -1,0 +1,185 @@
+{
+  "schema_version": "v16.8.43_result_reliability_engineering_blocker_audit_v1",
+  "result_inventory": [
+    "equivalence16_cowp_merged.json",
+    "equivalence16_cowp_s0.json",
+    "equivalence16_cowp_s1.json",
+    "equivalence16_cowp_vs_v16_8_29.json",
+    "equivalence16_cowp_wall_seconds.txt",
+    "runtime_profile8_v43_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json",
+    "runtime_profile8_v43_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_s0.json",
+    "runtime_profile8_v43_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_s1.json",
+    "runtime_profile8_v43_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_wall_seconds.txt",
+    "v16_8_43_runtime_profile8_ids.txt",
+    "waymax_counterfactual48_ids.txt",
+    "waymax_equivalence16_ids.txt",
+    "waymax_exact_200_ids.txt",
+    "waymax_v16_8_32_fresh37_ids.txt"
+  ],
+  "checks": [
+    {
+      "name": "counterfactual48_stage1_result_present",
+      "pass": false,
+      "blocking": true,
+      "detail": {
+        "matching_files": []
+      }
+    },
+    {
+      "name": "equivalence16_pass",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "num_scenes": null,
+        "fields_compared": null,
+        "mismatch_count": null
+      }
+    },
+    {
+      "name": "profile8_manifest",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "count": 8,
+        "unique": 8,
+        "logical_sha256": "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
+      }
+    },
+    {
+      "name": "profile8_shard_0_protocol",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "num_rollouts": 4,
+        "method": "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+        "mechanism_ground_truth_available_online": false
+      }
+    },
+    {
+      "name": "profile8_shard_1_protocol",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "num_rollouts": 4,
+        "method": "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+        "mechanism_ground_truth_available_online": false
+      }
+    },
+    {
+      "name": "profile8_shards_disjoint_cover_manifest",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "scenario_ids": [
+          "2fa07f444b825370",
+          "f55df4ea9e688069",
+          "9e3e5f19ee38f2e3",
+          "ae01b0e36aaa41b4",
+          "ad7d72d8adca3e25",
+          "4201b435eda16cf2",
+          "2c2395ec28c6a158",
+          "b85168f48c8c9970"
+        ]
+      }
+    },
+    {
+      "name": "profile8_merged_cover",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "num_rollouts": 8,
+        "num_shards_merged": 2
+      }
+    },
+    {
+      "name": "profile8_metric_recompute",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "recomputed": {
+          "CR": 0.875,
+          "CollisionRate": 0.875,
+          "OffroadRate": 0.0,
+          "KinematicsInfeasibilityRate": 0.0,
+          "EP": 1.8191400617361069
+        },
+        "merged": {
+          "CR": 0.875,
+          "CollisionRate": 0.875,
+          "OffroadRate": 0.0,
+          "KinematicsInfeasibilityRate": 0.0,
+          "EP": 1.8191400617361069
+        }
+      }
+    },
+    {
+      "name": "uploaded_code_release_hashes",
+      "pass": true,
+      "blocking": true,
+      "detail": {
+        "checked": 20,
+        "failures": []
+      }
+    }
+  ],
+  "blocking_failures": [
+    "counterfactual48_stage1_result_present"
+  ],
+  "equivalence16": {
+    "passed": true,
+    "num_scenes": null,
+    "fields_compared": null,
+    "mismatch_count": null
+  },
+  "profile8": {
+    "wall_seconds": 26242.0,
+    "wall_hours": 7.289444444444444,
+    "runtime_by_shard": [
+      {
+        "shard": 0,
+        "selection_mean_s": 81.49916104370786,
+        "policy_total_mean_s": 81.89963786563312,
+        "selection_fraction": 0.9951101514931935,
+        "candidate_build_mean_s": 0.3641914029503823,
+        "model_forward_mean_s": 0.026797745292424225
+      },
+      {
+        "shard": 1,
+        "selection_mean_s": 76.11545657221868,
+        "policy_total_mean_s": 76.5207697294536,
+        "selection_fraction": 0.9947032268667978,
+        "candidate_build_mean_s": 0.36742942712808146,
+        "model_forward_mean_s": 0.027791020175936865
+      }
+    ],
+    "metric_summary": {
+      "CR": 0.875,
+      "CollisionRate": 0.875,
+      "OffroadRate": 0.0,
+      "KinematicsInfeasibilityRate": 0.0,
+      "EP": 1.8191400617361069
+    },
+    "mechanism_descriptive_macro_means": {
+      "zero_conventional_candidate_step_rate": 1.0,
+      "blocker_query_attempt_step_rate": 0.95,
+      "mean_query_candidate_agents": 16.73950892857143,
+      "mean_query_ready_agents": 13.133779761904762,
+      "mean_base_hypotheses": 199.465625,
+      "mean_base_unsupported_rejects": 117.2234375,
+      "mean_base_root_unrecoverable_rejects": 68.1703125,
+      "mean_expanded_hypotheses": 210.69303075396826,
+      "mean_expanded_unsupported_rejects": 5.7863839285714285,
+      "mean_expanded_root_unrecoverable_rejects": 167.88169642857144,
+      "mean_base_environment_checks": 4227.8703125,
+      "mean_base_environment_cache_hits": 4105.8453125,
+      "mean_expanded_environment_cache_hits": 10154.763070436507
+    }
+  },
+  "reliability_decision": {
+    "available_artifacts_integrity": "PASS",
+    "stage1_algorithm_attribution": "NOT_ALLOWED",
+    "reason": "The preregistered counterfactual48 Stage-1 rollout/merged/analyzer artifacts are absent. The only V43 execution evidence is equivalence16 plus profile8. Profile8 additionally shows a severe runtime engineering blocker in selection.",
+    "required_action": "ENGINEERING-ONLY RUNTIME FIDELITY REPAIR, VERIFY PROFILE8 BEHAVIORAL EQUIVALENCE/SPEED, THEN RERUN THE UNCHANGED COUNTERFACTUAL48 GATE."
+  },
+  "algorithm_verdict": "DEFERRED; no V16.8.43 promotion/failure attribution from this upload"
+}

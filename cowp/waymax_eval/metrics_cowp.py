@@ -821,6 +821,18 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
                 "recovery_tube_blocker_conditioned_query_agent_count",
                 mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
             ) if n else None,
+            "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_candidate_agents_before_exact_filter",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_exact_blocker_agent_count",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_replayed_hypothesis_count",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
             "mean_recovery_tube_blocker_query_ready_agents_on_attempts": _mean(
                 "recovery_tube_blocker_conditioned_query_ready_agent_count",
                 mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),

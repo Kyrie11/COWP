@@ -5391,3 +5391,42 @@ that exercises the successor-context cache hit path.
 
 Post-repair focused semantic/integrity sanity: **104/104 passed**. Existing launcher
 commands, including `profile8_parallel2`, are unchanged.
+
+---
+
+# V16.8.43R2 — BC-IARE Runtime-Fidelity Repair (engineering-only)
+
+**No new scientific algorithm version and no change to the V43 preregistration.**
+
+The uploaded V43 result package contains `equivalence16` and `profile8` but no
+`counterfactual48` Stage-1 result. Available artifacts are internally consistent;
+`equivalence16` remains 16 scenes / 1120 fields / 0 mismatch. The profile8 run is,
+however, a practical engineering blocker: the 8-scene parallel run took **26,242 s
+(~7.29 h)** and V43 selection occupied about **99.5%** of per-step policy runtime.
+Consequently no V43 algorithm attribution is allowed from this upload.
+
+The runtime implementation also performs substantially more work than the frozen
+**exact-blocker-conditioned** scientific hypothesis requires: it decodes all model-visible
+non-critical collision-context actors and reruns the full V42 hypothesis family after V42
+fails.
+
+V43R2 is a semantics-preserving work-elimination repair:
+
+```text
+exact V42 first pass
+→ trace only unsupported_collision_blocker hypothesis IDs + exact blocker union
+→ late-bound NaturalDecoder only for those exact blockers
+→ skip nested V39 in pass 2 (already proved empty on the identical state)
+→ replay only repairable unsupported hypotheses
+→ unchanged V42 hard interaction certificate and selector
+```
+
+New diagnostics expose candidate query agents before filtering, exact blocker query agents,
+and replayed hypothesis count. The scientific method ID, root/response semantics, social
+critical set, V39 tube/shift closure, controller, 8 s contract, dataset/checkpoint and the
+six Stage-1 GO thresholds remain unchanged.
+
+Validation after repair: V42+V43 dedicated tests **21/21 passed**; V16.8.25→43 focused
+semantic/integrity sanity **107/107 passed**. Server `profile8_parallel2` must be rerun and
+checked with `verify_profile8_repair` before the unchanged `counterfactual48` Stage-1 is
+started. No end-to-end speed claim is made before that server rerun.

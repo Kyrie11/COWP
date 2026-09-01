@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 import importlib
 import math
 import time
@@ -4485,6 +4485,9 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     object_types: np.ndarray,
     shared_compatibility_cache: dict[str, dict[Any, bool]] | None = None,
     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] | None = None,
+    known_nested_v39_empty: bool = False,
+    hypothesis_indices: np.ndarray | None = None,
+    internal_trace: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
 
@@ -4496,12 +4499,18 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     response profile for both the current and one-step-shifted ego tubes.  All
     non-blocking agents, ego roadgraph checks and ego inverse dynamics remain hard.
     """
-    nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
-        agent_state, sdc_index, nominal_trajectories, cand_valid,
-        nominal_roadgraph_safe, macro_types, fallback_scores,
-        collision_prefix_steps, action_targets, action_accels,
-        roadgraph, cfg, previous_longitudinal_accel,
-    )
+    if bool(known_nested_v39_empty):
+        # Engineering-only fast path used by V43 after the exact V42 stage has
+        # already proved the nested V39 hard set empty for the same policy step.
+        # Re-running V39 cannot change the expanded-support result.
+        nested_selected, nested_detail = None, {}
+    else:
+        nested_selected, nested_detail = _construct_conflict_window_control_reachable_tube_np(
+            agent_state, sdc_index, nominal_trajectories, cand_valid,
+            nominal_roadgraph_safe, macro_types, fallback_scores,
+            collision_prefix_steps, action_targets, action_accels,
+            roadgraph, cfg, previous_longitudinal_accel,
+        )
     detail = dict(nested_detail)
     detail.update({
         "nested_v39_selected": bool(nested_selected is not None),
@@ -4662,7 +4671,15 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     successor_context_cache = shared_successor_context_cache
     if successor_context_cache is None:
         successor_context_cache = {}
-    for j in sorted(range(int(projected.shape[0])), key=hypothesis_key):
+    if hypothesis_indices is None:
+        candidate_hypotheses = list(range(int(projected.shape[0])))
+    else:
+        raw_hypotheses = np.asarray(hypothesis_indices, dtype=np.int64).reshape(-1)
+        candidate_hypotheses = sorted({
+            int(j) for j in raw_hypotheses.tolist()
+            if 0 <= int(j) < int(projected.shape[0])
+        })
+    for j in sorted(candidate_hypotheses, key=hypothesis_key):
         first_target = np.asarray(projected[j, 0, :5], dtype=np.float32)
         if np.allclose(first_target, base_target, rtol=0.0, atol=1.0e-6):
             detail["interaction_noop_hypotheses_skipped"] = int(detail["interaction_noop_hypotheses_skipped"]) + 1
@@ -4725,6 +4742,11 @@ def _construct_interaction_aware_reachable_response_envelope_np(
                 detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
             elif reason == "unsupported_collision_blocker":
                 detail["interaction_unsupported_blocker_rejects"] = int(detail["interaction_unsupported_blocker_rejects"]) + 1
+                if internal_trace is not None:
+                    unsupported_h = internal_trace.setdefault("unsupported_hypothesis_indices", [])
+                    unsupported_h.append(int(j))
+                    blocker_union = internal_trace.setdefault("unsupported_blocker_union", set())
+                    blocker_union.update(int(x) for x in interaction_detail.get("unsupported_blockers", []))
             elif reason == "residual_physical_certificate_failed":
                 detail["interaction_residual_physical_rejects"] = int(detail["interaction_residual_physical_rejects"]) + 1
             elif reason in {
@@ -4820,9 +4842,10 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     natural_trajectories: np.ndarray,
     natural_logits: np.ndarray,
     blocker_query_track_index: np.ndarray,
-    blocker_query_trajectories: np.ndarray,
-    blocker_query_logits: np.ndarray,
+    blocker_query_trajectories: np.ndarray | None,
+    blocker_query_logits: np.ndarray | None,
     object_types: np.ndarray,
+    blocker_query_decoder: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.43 late-bound blocker-conditioned support completion.
 
@@ -4842,6 +4865,10 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         "environment": {}, "joint": {},
     }
     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] = {}
+    base_trace: dict[str, Any] = {
+        "unsupported_hypothesis_indices": [],
+        "unsupported_blocker_union": set(),
+    }
     base_selected, base_detail = _construct_interaction_aware_reachable_response_envelope_np(
         agent_state, sdc_index, nominal_trajectories, cand_valid,
         nominal_roadgraph_safe, macro_types, fallback_scores,
@@ -4855,6 +4882,7 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         object_types=object_types,
         shared_compatibility_cache=shared_compatibility_cache,
         shared_successor_context_cache=shared_successor_context_cache,
+        internal_trace=base_trace,
     )
     detail = dict(base_detail)
     detail.update({
@@ -4869,6 +4897,9 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         "blocker_conditioned_query_environment_cache_hits": 0,
         "blocker_conditioned_query_joint_cache_hits": 0,
         "blocker_conditioned_query_successor_context_cache_hits": 0,
+        "blocker_conditioned_query_candidate_agents_before_exact_filter": 0,
+        "blocker_conditioned_query_exact_blocker_agent_count": 0,
+        "blocker_conditioned_query_replayed_hypothesis_count": 0,
     })
     if base_selected is not None:
         detail["selected_certificate_kind"] = str(
@@ -4877,18 +4908,73 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         return base_selected, detail
 
     query_idx = np.asarray(blocker_query_track_index, dtype=np.int64).reshape(-1)
-    query_traj = np.asarray(blocker_query_trajectories, dtype=np.float32)
-    query_logits = np.asarray(blocker_query_logits, dtype=np.float32)
-    if query_idx.size <= 0 or query_traj.ndim != 4 or query_logits.ndim != 2:
+    if query_idx.size <= 0:
         detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
         return None, detail
-    q = min(query_idx.size, query_traj.shape[0], query_logits.shape[0])
+    query_traj_all: np.ndarray | None = None
+    query_logits_all: np.ndarray | None = None
+    if blocker_query_decoder is None:
+        if blocker_query_trajectories is None or blocker_query_logits is None:
+            detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+            return None, detail
+        query_traj_all = np.asarray(blocker_query_trajectories, dtype=np.float32)
+        query_logits_all = np.asarray(blocker_query_logits, dtype=np.float32)
+        if query_traj_all.ndim != 4 or query_logits_all.ndim != 2:
+            detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+            return None, detail
+        q_all = min(query_idx.size, query_traj_all.shape[0], query_logits_all.shape[0])
+        query_idx = query_idx[:q_all]
+        query_traj_all = query_traj_all[:q_all]
+        query_logits_all = query_logits_all[:q_all]
+    else:
+        q_all = int(query_idx.size)
+    if q_all <= 0:
+        detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+        return None, detail
+    detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] = int(q_all)
+
+    # Runtime-fidelity repair: V43 late-bound support can only change a V42
+    # hypothesis that failed specifically because an exact collision blocker had
+    # no response support.  Hypotheses that already failed residual physical,
+    # root feasibility, joint compatibility, or no-blocker checks are invariant
+    # to adding support for previously unsupported agents.  Restricting the
+    # second pass to that repairable subset is therefore logically exact.
+    unsupported_hypotheses = np.asarray(
+        base_trace.get("unsupported_hypothesis_indices", []), dtype=np.int64
+    ).reshape(-1)
+    unsupported_blockers = {
+        int(x) for x in base_trace.get("unsupported_blocker_union", set())
+    }
+    if unsupported_hypotheses.size <= 0 or not unsupported_blockers:
+        detail["blocker_conditioned_query_failure_reason"] = "no_unsupported_blocker_hypothesis"
+        return None, detail
+    keep = np.asarray([int(x) in unsupported_blockers for x in query_idx.tolist()], dtype=bool)
+    filtered_idx = query_idx[keep]
+    if filtered_idx.size <= 0:
+        detail["blocker_conditioned_query_failure_reason"] = "no_model_visible_unsupported_blocker_query"
+        return None, detail
+    if blocker_query_decoder is not None:
+        query_traj, query_logits = blocker_query_decoder(filtered_idx)
+        query_traj = np.asarray(query_traj, dtype=np.float32)
+        query_logits = np.asarray(query_logits, dtype=np.float32)
+        q = min(filtered_idx.size, query_traj.shape[0] if query_traj.ndim == 4 else 0,
+                query_logits.shape[0] if query_logits.ndim == 2 else 0)
+        query_idx = filtered_idx[:q]
+        query_traj = query_traj[:q] if query_traj.ndim == 4 else np.zeros((0, 0, 0, 7), dtype=np.float32)
+        query_logits = query_logits[:q] if query_logits.ndim == 2 else np.zeros((0, 0), dtype=np.float32)
+    else:
+        assert query_traj_all is not None and query_logits_all is not None
+        query_idx = filtered_idx
+        query_traj = query_traj_all[keep]
+        query_logits = query_logits_all[keep]
+        q = int(query_idx.size)
+    detail["blocker_conditioned_query_exact_blocker_agent_count"] = int(q)
+    detail["blocker_conditioned_query_replayed_hypothesis_count"] = int(
+        np.unique(unsupported_hypotheses).size
+    )
     if q <= 0:
-        detail["blocker_conditioned_query_failure_reason"] = "no_late_bound_blocker_query"
+        detail["blocker_conditioned_query_failure_reason"] = "no_ready_exact_blocker_decode"
         return None, detail
-    query_idx = query_idx[:q]
-    query_traj = query_traj[:q]
-    query_logits = query_logits[:q]
     detail["blocker_conditioned_query_attempted"] = True
     detail["blocker_conditioned_query_agent_count"] = int(q)
 
@@ -4922,6 +5008,8 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         object_types=object_types,
         shared_compatibility_cache=shared_compatibility_cache,
         shared_successor_context_cache=shared_successor_context_cache,
+        known_nested_v39_empty=True,
+        hypothesis_indices=unsupported_hypotheses,
     )
     support_detail = expanded_detail.get("interaction_support_detail", {})
     base_ready = int(base_detail.get("interaction_support_agents_ready", 0))
@@ -7454,9 +7542,11 @@ class COWPWaymaxPolicy:
                                 if query_indices.size:
                                     _, first_pos = np.unique(query_indices, return_index=True)
                                     query_indices = query_indices[np.sort(first_pos)]
-                                blocker_nat_np, blocker_logits_np = self._decode_blocker_conditioned_natural_queries_np(
-                                    batch, pred, query_indices,
-                                )
+                                # Runtime-fidelity repair: V42 can only be changed by
+                                # hypotheses rejected for an unsupported exact collision blocker.
+                                # Defer NaturalDecoder work until that frozen V42 trace identifies
+                                # the blocker subset; this preserves certificate semantics while
+                                # avoiding queries for irrelevant nearby actors.
                                 selected_tube, recovery_tube_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
                                     *common_tube_args,
                                     base_candidate_index=int(recovery_base_candidate),
@@ -7465,9 +7555,12 @@ class COWPWaymaxPolicy:
                                     natural_trajectories=natural_traj_np,
                                     natural_logits=natural_logits_np,
                                     blocker_query_track_index=query_indices,
-                                    blocker_query_trajectories=blocker_nat_np,
-                                    blocker_query_logits=blocker_logits_np,
+                                    blocker_query_trajectories=None,
+                                    blocker_query_logits=None,
                                     object_types=object_types_np,
+                                    blocker_query_decoder=lambda exact_idx: self._decode_blocker_conditioned_natural_queries_np(
+                                        batch, pred, exact_idx,
+                                    ),
                                 )
                             else:
                                 selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
@@ -8445,6 +8538,9 @@ class COWPWaymaxPolicy:
                 "recovery_tube_blocker_conditioned_query_attempted": bool(recovery_tube_detail.get("blocker_conditioned_query_attempted", False)),
                 "recovery_tube_blocker_conditioned_query_selected": bool(recovery_tube_detail.get("blocker_conditioned_query_selected", False)),
                 "recovery_tube_blocker_conditioned_query_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_agent_count", 0)),
+                "recovery_tube_blocker_conditioned_query_candidate_agents_before_exact_filter": int(recovery_tube_detail.get("blocker_conditioned_query_candidate_agents_before_exact_filter", 0)),
+                "recovery_tube_blocker_conditioned_query_exact_blocker_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_exact_blocker_agent_count", 0)),
+                "recovery_tube_blocker_conditioned_query_replayed_hypothesis_count": int(recovery_tube_detail.get("blocker_conditioned_query_replayed_hypothesis_count", 0)),
                 "recovery_tube_blocker_conditioned_query_ready_agent_count": int(recovery_tube_detail.get("blocker_conditioned_query_ready_agent_count", 0)),
                 "recovery_tube_blocker_conditioned_query_hypotheses_evaluated": int(recovery_tube_detail.get("blocker_conditioned_query_hypotheses_evaluated", 0)),
                 "recovery_tube_blocker_conditioned_query_unsupported_blocker_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_unsupported_blocker_rejects", 0)),

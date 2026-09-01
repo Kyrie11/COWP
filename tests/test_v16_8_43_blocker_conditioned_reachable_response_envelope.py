@@ -110,6 +110,10 @@ def test_v43_late_bound_query_only_expands_support_after_v42_empty(monkeypatch) 
         valid = np.asarray(kwargs["critical_valid"], dtype=bool).copy()
         calls.append((idx, valid))
         if len(calls) == 1:
+            trace = kwargs.get("internal_trace")
+            if trace is not None:
+                trace.setdefault("unsupported_hypothesis_indices", []).extend([0, 3])
+                trace.setdefault("unsupported_blocker_union", set()).add(2)
             return None, {
                 "interaction_support_agents_ready": 1,
                 "interaction_hypotheses_evaluated": 8,
@@ -135,6 +139,8 @@ def test_v43_late_bound_query_only_expands_support_after_v42_empty(monkeypatch) 
     assert selected is sentinel
     assert [x[0].tolist() for x in calls] == [[1], [1, 2]]
     assert calls[1][1].tolist() == [True, True]
+    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 1
+    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
     assert detail["nested_v42_selected"] is False
     assert detail["blocker_conditioned_query_attempted"] is True
     assert detail["blocker_conditioned_query_selected"] is True
@@ -307,3 +313,116 @@ def test_v43_v42_outer_constructor_initializes_cache_diagnostics_before_aggregat
     assert detail["interaction_environment_compatibility_cache_hits"] == 4
     assert detail["interaction_joint_compatibility_cache_hits"] == 2
     assert detail["interaction_successor_context_cache_hits"] == 1
+
+
+def test_v43_runtime_repair_filters_query_to_exact_unsupported_blockers(monkeypatch) -> None:
+    sentinel = {"parent_index": 4, "target": np.ones(5, dtype=np.float32)}
+    calls: list[dict] = []
+
+    def fake_v42(*args, **kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            trace = kwargs.get("internal_trace")
+            assert trace is not None
+            trace["unsupported_hypothesis_indices"].extend([7, 2, 7])
+            trace["unsupported_blocker_union"].update({2, 4})
+            return None, {
+                "interaction_support_agents_ready": 1,
+                "interaction_failure_reason": "no_interaction_certified_action",
+            }
+        assert kwargs.get("known_nested_v39_empty") is True
+        assert np.asarray(kwargs.get("hypothesis_indices"), dtype=np.int64).tolist() == [7, 2, 7]
+        assert np.asarray(kwargs["critical_track_index"], dtype=np.int64).tolist() == [1, 2, 4]
+        return sentinel, {
+            "interaction_support_agents_ready": 3,
+            "interaction_hypotheses_evaluated": 2,
+            "interaction_unsupported_blocker_rejects": 0,
+            "interaction_root_unrecoverable_rejects": 1,
+            "selected": True,
+        }
+
+    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
+    kwargs = _constructor_kwargs()
+    kwargs["blocker_query_track_index"] = np.asarray([2, 3, 4, 5], dtype=np.int64)
+    kwargs["blocker_query_trajectories"] = np.zeros((4, 2, 4, 7), dtype=np.float32)
+    kwargs["blocker_query_logits"] = np.zeros((4, 2), dtype=np.float32)
+    kwargs["object_types"] = np.asarray([1, 1, 1, 1, 1, 1], dtype=np.int32)
+    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+        *_constructor_args(), **kwargs
+    )
+    assert selected is sentinel
+    assert len(calls) == 2
+    assert detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] == 4
+    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 2
+    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
+
+
+def test_v43_runtime_repair_skips_second_pass_when_no_unsupported_failure(monkeypatch) -> None:
+    calls = 0
+
+    def fake_v42(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return None, {
+            "interaction_support_agents_ready": 1,
+            "interaction_failure_reason": "no_interaction_certified_action",
+        }
+
+    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
+    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+        *_constructor_args(), **_constructor_kwargs()
+    )
+    assert selected is None
+    assert calls == 1
+    assert detail["blocker_conditioned_query_failure_reason"] == "no_unsupported_blocker_hypothesis"
+
+
+def test_v43_runtime_repair_defers_decoder_until_exact_blockers_known(monkeypatch) -> None:
+    calls: list[dict] = []
+    decoded: list[list[int]] = []
+
+    def fake_v42(*args, **kwargs):
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            trace = kwargs.get("internal_trace")
+            assert trace is not None
+            trace["unsupported_hypothesis_indices"].extend([5, 9])
+            trace["unsupported_blocker_union"].update({3, 6})
+            return None, {
+                "interaction_support_agents_ready": 1,
+                "interaction_failure_reason": "no_interaction_certified_action",
+            }
+        assert kwargs.get("known_nested_v39_empty") is True
+        assert np.asarray(kwargs.get("hypothesis_indices"), dtype=np.int64).tolist() == [5, 9]
+        assert np.asarray(kwargs["critical_track_index"], dtype=np.int64).tolist() == [1, 3, 6]
+        return None, {
+            "interaction_support_agents_ready": 3,
+            "interaction_hypotheses_evaluated": 2,
+            "interaction_unsupported_blocker_rejects": 0,
+            "interaction_root_unrecoverable_rejects": 2,
+        }
+
+    def fake_decoder(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+        decoded.append(idx.tolist())
+        q = int(idx.size)
+        return (
+            np.zeros((q, 2, 4, 7), dtype=np.float32),
+            np.zeros((q, 2), dtype=np.float32),
+        )
+
+    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
+    kwargs = _constructor_kwargs()
+    kwargs["blocker_query_track_index"] = np.asarray([2, 3, 4, 5, 6, 7], dtype=np.int64)
+    kwargs["blocker_query_trajectories"] = None
+    kwargs["blocker_query_logits"] = None
+    kwargs["object_types"] = np.asarray([1] * 8, dtype=np.int32)
+    kwargs["blocker_query_decoder"] = fake_decoder
+    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+        *_constructor_args(), **kwargs
+    )
+    assert selected is None
+    assert decoded == [[3, 6]]
+    assert detail["blocker_conditioned_query_candidate_agents_before_exact_filter"] == 6
+    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 2
+    assert detail["blocker_conditioned_query_replayed_hypothesis_count"] == 2
