@@ -1,0 +1,39 @@
+external_baselines:
+  baseline: wayformer_bc
+  methods: [wayformer_bc]
+  max_candidates: 24
+  supervision_target: logged_nominal
+  allow_teacher_supervision: false
+  model:
+    arch: route_bc_wayformer
+    max_candidates: 24
+    d_model: 256
+    num_layers: 4
+    num_heads: 8
+    dropout: 0.15
+    num_latents: 16
+    mlp_hidden: 128
+    mlp_layers: 4
+  training:
+    # Avoid incompatible cuDNN SDPA execution-plan selection while retaining fast fused fallbacks.
+    sdpa_backend: safe
+    # Prefer BF16 only when the current GPU supports it; otherwise use FP16 + GradScaler.
+    amp_dtype: auto
+    device: auto
+    distributed: auto
+    batch_size: 128
+    num_workers: 8
+    epochs: 24
+    lr: 0.0001
+    weight_decay: 0.0002
+    grad_clip: 5.0
+    tqdm: true
+    pin_memory: true
+    find_unused_parameters: auto
+  loss_weights:
+    policy: 1.0
+    utility: 0.0
+    hard: 0.0
+    harm: 0.0
+    oracle_rec: 0.0
+    deploy_rec: 0.0

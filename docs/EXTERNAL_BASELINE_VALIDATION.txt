@@ -1,0 +1,22 @@
+OC-RAP external-baseline revision validation
+Date: 2026-08-26
+
+Static validation:
+- bash -n on all six external-baseline launchers: PASS
+- python -m py_compile on changed external-baseline/runtime/tools modules: PASS
+- yaml.safe_load on configs/external_baselines/*.yaml: PASS
+- fidelity audit: exactly 6 main-table methods in each of safe / near / contact: PASS
+- run-index expected closed-loop methods: exactly 6 per regime: PASS
+
+Targeted regression tests:
+- pytest -q tests/test_v50_3_recovery_hotfix.py tests/models/test_external_observation_only_policies.py
+  14 passed
+- pytest -q tests/models/test_external_gameformer_input_contract.py tests/simulation/test_closed_loop_timing_aggregation.py tests/test_closed_loop_resume_optimization.py tests/test_v50_full_regime_runtime.py
+  18 passed
+
+Total relevant tests executed: 32 passed.
+
+Environment limitation:
+- /data0/senzeyu2/dataset/OCRAP and the raw WOMD TFRecords are not mounted in this sandbox.
+- Therefore no claim is made that full user-server training / Waymax closed-loop evaluation was executed here.
+- Recommended server-side validation: first CL_MAX_SCENARIOS=2, then CL_MAX_SCENARIOS=0 for full regime buckets.

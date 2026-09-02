@@ -1,0 +1,14 @@
+V48.74.1 OC-SVBW-ENGFIX installation / attribution guard
+
+1. Back up the current OC-RAP working tree and uncommitted changes.
+2. From /home/senzeyu2/code, unzip the v48.74.1 full drop-in (top level is OC-RAP/).
+3. Verify that src/ocrap/v48_74_signed_viability.py exists.
+4. The existing v48.74 launcher sets PYTHONPATH, PYTHONNOUSERSITE and OCRAP_V48_74_SIGNED_VIABILITY automatically.
+5. Optional but recommended: run tools/check_v48_74_runtime_code_contract.py manually. Do not start training unless valid=true and attribution_ready=true.
+6. Run the original two-GPU command unchanged. P/Q share one schema-10 tensor cache; do not delete the cache between arms.
+7. Keep the P74 and Q74 result archives, all audits/contracts/sentinel, and the four best.pt checkpoints (or immutable checkpoint manifest).
+
+Engineering marker: v48.74.2-OC-SVBW-ENGFIX.
+Algorithm marker remains: v48.74-DCP-DRFC-BCDE-RIFA-OC-SVBW.
+
+When OCRAP_V48_74_SIGNED_VIABILITY is absent, the historical V48.73 schema-9 path remains unchanged.

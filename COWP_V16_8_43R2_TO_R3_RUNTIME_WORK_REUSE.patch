@@ -1,0 +1,1264 @@
+--- /mnt/data/work_v43/code/cowp/waymax_eval/policy_wrapper.py	2026-09-02 01:32:48.000000000 +0000
++++ /mnt/data/work_v43/r3/cowp/waymax_eval/policy_wrapper.py	2026-09-02 22:17:57.158569756 +0000
+@@ -4124,6 +4124,50 @@
+     return support, aggregate
+ 
+ 
++def _merge_interaction_response_support_details_np(
++    base: dict[str, Any],
++    extra: dict[str, Any],
++) -> dict[str, Any]:
++    """Exact aggregate merge for disjoint per-agent response-support builds.
++
++    ``_prepare_interaction_response_support_np`` has no cross-agent coupling:
++    every count/mass field is a sum over critical slots, while the probability
++    and root-policy fields are frozen constants.  BC-IARE online late-bound
++    queries explicitly exclude the original critical agents, so preparing only
++    the new exact blockers and adding these aggregates is identical to preparing
++    the concatenated disjoint slot list.
++    """
++    out = dict(base)
++    additive = {
++        "critical_slots",
++        "agents_ready",
++        "agents_rejected_invalid_prediction",
++        "agents_rejected_root_count",
++        "agents_rejected_root_mass",
++        "agents_rejected_profile_feasibility",
++        "retained_roots",
++        "eligible_profiles",
++        "profile_candidates",
++        "canonical_support_mass_sum",
++        "raw_support_mass_sum",
++    }
++    for key in additive:
++        av = base.get(key, 0)
++        bv = extra.get(key, 0)
++        out[key] = av + bv
++    if bool(base.get("invalid_input", False)) or bool(extra.get("invalid_input", False)):
++        out["invalid_input"] = True
++    for key in (
++        "minimum_raw_mode_probability",
++        "probability_floor",
++        "required_root_mass",
++        "minimum_root_count",
++    ):
++        if key not in out and key in extra:
++            out[key] = extra[key]
++    return out
++
++
+ def _interaction_aware_recovery_certificate_np(
+     agent_state: np.ndarray,
+     successor_state: np.ndarray,
+@@ -4485,6 +4529,10 @@
+     object_types: np.ndarray,
+     shared_compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] | None = None,
++    prepared_response_support: dict[int, dict[str, Any]] | None = None,
++    prepared_response_support_detail: dict[str, Any] | None = None,
++    prepared_hypothesis_workspace: dict[str, Any] | None = None,
++    prepared_unsupported_replay_cache: dict[int, dict[str, Any]] | None = None,
+     known_nested_v39_empty: bool = False,
+     hypothesis_indices: np.ndarray | None = None,
+     internal_trace: dict[str, Any] | None = None,
+@@ -4576,11 +4624,26 @@
+     traj, valid, nominal_road, macro = traj[:n], valid[:n], nominal_road[:n], macro[:n]
+     scores, prefix, targets, nominal_accels = scores[:n], prefix[:n], targets[:n], nominal_accels[:n]
+ 
+-    response_support, support_detail = _prepare_interaction_response_support_np(
+-        state, int(sdc_index), critical_track_index, critical_valid,
+-        natural_trajectories, natural_logits, object_types, roadgraph, cfg,
+-    )
++    if prepared_response_support is None:
++        response_support, support_detail = _prepare_interaction_response_support_np(
++            state, int(sdc_index), critical_track_index, critical_valid,
++            natural_trajectories, natural_logits, object_types, roadgraph, cfg,
++        )
++    else:
++        # V16.8.43R3 engineering-only fast path: response support is a
++        # per-agent function of the current state, frozen natural roots and
++        # frozen response bank; it is independent of the ego hypothesis being
++        # replayed.  Reusing the exact first-pass support therefore removes
++        # duplicate work without changing any certificate predicate.
++        response_support = prepared_response_support
++        support_detail = dict(prepared_response_support_detail or {})
+     detail["interaction_support_detail"] = support_detail
++    if internal_trace is not None:
++        # Internal-only objects; never serialized into rollout diagnostics.
++        # BC-IARE R3 uses them only when the late-bound query set is disjoint
++        # from the original critical set, which is the online query contract.
++        internal_trace["prepared_response_support"] = response_support
++        internal_trace["prepared_response_support_detail"] = dict(support_detail)
+     detail["interaction_support_agents_total"] = int(support_detail.get("critical_slots", 0))
+     detail["interaction_support_agents_ready"] = int(support_detail.get("agents_ready", 0))
+     detail["interaction_support_retained_roots"] = int(support_detail.get("retained_roots", 0))
+@@ -4589,61 +4652,101 @@
+         detail["interaction_failure_reason"] = "no_response_ready_critical_agent"
+         return None, detail
+ 
+-    pool = valid & nominal_road
+-    if not bool(pool.any()):
+-        pool = valid.copy()
+-    pool &= macro != int(MacroType.PAD)
+-    reps = _semantic_action_class_representatives_np(
+-        pool, macro, targets, prefix, scores, prefer_fallback=True,
+-    )
+-    if not reps:
+-        detail["interaction_failure_reason"] = "no_parent_action_class"
+-        return None, detail
++    if prepared_hypothesis_workspace is None:
++        pool = valid & nominal_road
++        if not bool(pool.any()):
++            pool = valid.copy()
++        pool &= macro != int(MacroType.PAD)
++        reps = _semantic_action_class_representatives_np(
++            pool, macro, targets, prefix, scores, prefer_fallback=True,
++        )
++        if not reps:
++            detail["interaction_failure_reason"] = "no_parent_action_class"
++            return None, detail
+ 
+-    H = int(traj.shape[1])
+-    current_collision_context = _prepare_collision_check_context(
+-        state, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+-    )
+-    rep_arr = np.asarray(reps, dtype=np.int64)
+-    nominal_projected, _nominal_kin, _nominal_accel_hist = _project_candidate_bank_through_controller_np(
+-        state[int(sdc_index)], traj[rep_arr], cfg, float(previous_longitudinal_accel),
+-    )
+-    parent_indices: list[int] = []
+-    policy_ids: list[int] = []
+-    policy_names: list[str] = []
+-    release_edges: list[int] = []
+-    nonnominal_edges: list[int] = []
+-    schedules: list[np.ndarray] = []
+-    for local_i, parent in enumerate(reps):
+-        window = _collision_violation_window_against_context(
+-            nominal_projected[local_i], current_collision_context,
+-        )
+-        family = _conflict_window_envelope_schedule_family(
+-            H,
+-            int(window.get("first_violation_step", -1)),
+-            int(window.get("last_violation_step", -1)),
+-        )
+-        for rec in family:
+-            parent_indices.append(int(parent))
+-            policy_ids.append(int(rec["policy_id"]))
+-            policy_names.append(str(rec["policy_name"]))
+-            release_edges.append(int(rec["release_edge"]))
+-            nonnominal_edges.append(int(rec["nonnominal_edges"]))
+-            schedules.append(np.asarray(rec["schedule"], dtype=np.int8))
+-    if not schedules:
+-        detail["interaction_failure_reason"] = "no_conflict_window_hypothesis"
+-        return None, detail
+-    parent_arr = np.asarray(parent_indices, dtype=np.int64)
+-    policy_arr = np.asarray(policy_ids, dtype=np.int8)
+-    schedule_arr = np.stack(schedules, axis=0).astype(np.int8)
+-    release_arr = np.asarray(release_edges, dtype=np.int32)
+-    nonnominal_arr = np.asarray(nonnominal_edges, dtype=np.int32)
+-    projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
+-        state[int(sdc_index)], np.asarray(traj[parent_arr], dtype=np.float32), cfg,
+-        float(previous_longitudinal_accel),
+-        longitudinal_envelope_schedule=schedule_arr,
+-    )
+-    base_target = np.asarray(targets[base_idx, :5], dtype=np.float32)
++        H = int(traj.shape[1])
++        current_collision_context = _prepare_collision_check_context(
++            state, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
++        )
++        rep_arr = np.asarray(reps, dtype=np.int64)
++        nominal_projected, _nominal_kin, _nominal_accel_hist = _project_candidate_bank_through_controller_np(
++            state[int(sdc_index)], traj[rep_arr], cfg, float(previous_longitudinal_accel),
++        )
++        parent_indices: list[int] = []
++        policy_ids: list[int] = []
++        policy_names: list[str] = []
++        release_edges: list[int] = []
++        nonnominal_edges: list[int] = []
++        schedules: list[np.ndarray] = []
++        for local_i, parent in enumerate(reps):
++            window = _collision_violation_window_against_context(
++                nominal_projected[local_i], current_collision_context,
++            )
++            family = _conflict_window_envelope_schedule_family(
++                H,
++                int(window.get("first_violation_step", -1)),
++                int(window.get("last_violation_step", -1)),
++            )
++            for rec in family:
++                parent_indices.append(int(parent))
++                policy_ids.append(int(rec["policy_id"]))
++                policy_names.append(str(rec["policy_name"]))
++                release_edges.append(int(rec["release_edge"]))
++                nonnominal_edges.append(int(rec["nonnominal_edges"]))
++                schedules.append(np.asarray(rec["schedule"], dtype=np.int8))
++        if not schedules:
++            detail["interaction_failure_reason"] = "no_conflict_window_hypothesis"
++            return None, detail
++        parent_arr = np.asarray(parent_indices, dtype=np.int64)
++        policy_arr = np.asarray(policy_ids, dtype=np.int8)
++        schedule_arr = np.stack(schedules, axis=0).astype(np.int8)
++        release_arr = np.asarray(release_edges, dtype=np.int32)
++        nonnominal_arr = np.asarray(nonnominal_edges, dtype=np.int32)
++        projected, kin_ok, accel_hist = _project_candidate_bank_through_controller_np(
++            state[int(sdc_index)], np.asarray(traj[parent_arr], dtype=np.float32), cfg,
++            float(previous_longitudinal_accel),
++            longitudinal_envelope_schedule=schedule_arr,
++        )
++        base_target = np.asarray(targets[base_idx, :5], dtype=np.float32)
++        hypothesis_workspace = {
++            "H": int(H),
++            "current_collision_context": current_collision_context,
++            "parent_arr": parent_arr,
++            "policy_arr": policy_arr,
++            "policy_names": tuple(policy_names),
++            "schedule_arr": schedule_arr,
++            "release_arr": release_arr,
++            "nonnominal_arr": nonnominal_arr,
++            "projected": projected,
++            "kin_ok": kin_ok,
++            "accel_hist": accel_hist,
++            "base_target": base_target,
++        }
++        if internal_trace is not None:
++            internal_trace["prepared_hypothesis_workspace"] = hypothesis_workspace
++    else:
++        # V16.8.43R3 engineering-only fast path.  The V43 second pass uses the
++        # exact same state, candidate bank, controller limits and V39 schedule
++        # family as the V42 first pass; only response support changes.  Reusing
++        # this immutable workspace therefore preserves hypothesis identity and
++        # hard physical semantics exactly.
++        ws = prepared_hypothesis_workspace
++        try:
++            H = int(ws["H"])
++            current_collision_context = ws["current_collision_context"]
++            parent_arr = np.asarray(ws["parent_arr"], dtype=np.int64)
++            policy_arr = np.asarray(ws["policy_arr"], dtype=np.int8)
++            policy_names = list(ws["policy_names"])
++            schedule_arr = np.asarray(ws["schedule_arr"], dtype=np.int8)
++            release_arr = np.asarray(ws["release_arr"], dtype=np.int32)
++            nonnominal_arr = np.asarray(ws["nonnominal_arr"], dtype=np.int32)
++            projected = np.asarray(ws["projected"], dtype=np.float32)
++            kin_ok = np.asarray(ws["kin_ok"], dtype=bool)
++            accel_hist = np.asarray(ws["accel_hist"], dtype=np.float32)
++            base_target = np.asarray(ws["base_target"], dtype=np.float32)
++        except Exception:
++            detail["interaction_invalid_prepared_workspace"] = True
++            return None, detail
+ 
+     def hypothesis_key(j: int) -> tuple[Any, ...]:
+         parent = int(parent_arr[j])
+@@ -4686,29 +4789,48 @@
+             continue
+         detail["interaction_hypotheses_evaluated"] = int(detail["interaction_hypotheses_evaluated"]) + 1
+         first_accel = float(accel_hist[j, 0])
+-        successor_key = np.asarray(first_target, dtype=np.float32).tobytes() + np.float32(first_accel).tobytes()
+-        cached_successor = successor_context_cache.get(successor_key)
+-        if cached_successor is None:
+-            successor = _counterfactual_successor_agent_state(
+-                state, int(sdc_index), first_target, cfg,
+-            )
+-            shifted_collision_context = _prepare_collision_check_context(
+-                successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
+-            )
+-            successor_context_cache[successor_key] = (successor, shifted_collision_context)
+-        else:
+-            successor, shifted_collision_context = cached_successor
++        prepared_replay = (
++            prepared_unsupported_replay_cache.get(int(j))
++            if isinstance(prepared_unsupported_replay_cache, dict) else None
++        )
++        if prepared_replay is not None:
++            # This record was computed by the exact V42 first pass for the same
++            # hypothesis before it failed solely on unsupported blocker support.
++            # Reusing it removes duplicate successor/shift projection work.
++            successor = prepared_replay["successor"]
++            shifted_collision_context = prepared_replay["shifted_collision_context"]
++            shifted_projected = prepared_replay["shifted_projected"]
++            shifted_kin_ok = prepared_replay["shifted_kin_ok"]
++            shifted_accel_hist = prepared_replay["shifted_accel_hist"]
++            # R2 would have hit the shared successor-context cache here; keep the
++            # logical diagnostic identical even though R3 reuses the full record.
+             detail["interaction_successor_context_cache_hits"] = int(
+                 detail["interaction_successor_context_cache_hits"]
+             ) + 1
+-        shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
+-        shifted_schedule = _shift_longitudinal_envelope_schedule_np(
+-            schedule_arr[j], int(policy_arr[j]),
+-        )
+-        shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
+-            successor[int(sdc_index)], shifted_reference[None, ...], cfg,
+-            first_accel, longitudinal_envelope_schedule=shifted_schedule[None, :],
+-        )
++        else:
++            successor_key = np.asarray(first_target, dtype=np.float32).tobytes() + np.float32(first_accel).tobytes()
++            cached_successor = successor_context_cache.get(successor_key)
++            if cached_successor is None:
++                successor = _counterfactual_successor_agent_state(
++                    state, int(sdc_index), first_target, cfg,
++                )
++                shifted_collision_context = _prepare_collision_check_context(
++                    successor, int(sdc_index), cfg, horizon_steps=H, other_future_trajs=None,
++                )
++                successor_context_cache[successor_key] = (successor, shifted_collision_context)
++            else:
++                successor, shifted_collision_context = cached_successor
++                detail["interaction_successor_context_cache_hits"] = int(
++                    detail["interaction_successor_context_cache_hits"]
++                ) + 1
++            shifted_reference = _shift_append_terminal_reference_np(projected[j], dt)
++            shifted_schedule = _shift_longitudinal_envelope_schedule_np(
++                schedule_arr[j], int(policy_arr[j]),
++            )
++            shifted_projected, shifted_kin_ok, shifted_accel_hist = _project_candidate_bank_through_controller_np(
++                successor[int(sdc_index)], shifted_reference[None, ...], cfg,
++                first_accel, longitudinal_envelope_schedule=shifted_schedule[None, :],
++            )
+         interaction_ok, interaction_detail = _interaction_aware_recovery_certificate_np(
+             state, successor, int(sdc_index),
+             projected[j], kin_ok[j], shifted_projected[0], shifted_kin_ok[0],
+@@ -4747,6 +4869,14 @@
+                     unsupported_h.append(int(j))
+                     blocker_union = internal_trace.setdefault("unsupported_blocker_union", set())
+                     blocker_union.update(int(x) for x in interaction_detail.get("unsupported_blockers", []))
++                    replay_cache = internal_trace.setdefault("unsupported_replay_cache", {})
++                    replay_cache[int(j)] = {
++                        "successor": successor,
++                        "shifted_collision_context": shifted_collision_context,
++                        "shifted_projected": shifted_projected,
++                        "shifted_kin_ok": shifted_kin_ok,
++                        "shifted_accel_hist": shifted_accel_hist,
++                    }
+             elif reason == "residual_physical_certificate_failed":
+                 detail["interaction_residual_physical_rejects"] = int(detail["interaction_residual_physical_rejects"]) + 1
+             elif reason in {
+@@ -4995,6 +5125,32 @@
+         combined_traj = query_traj.copy()
+         combined_logits = query_logits.copy()
+ 
++    prepared_support: dict[int, dict[str, Any]] | None = None
++    prepared_support_detail: dict[str, Any] | None = None
++    base_prepared_support = base_trace.get("prepared_response_support")
++    base_prepared_detail = base_trace.get("prepared_response_support_detail")
++    base_agents = {int(x) for x in base_idx[:a].tolist()} if a > 0 else set()
++    query_agents = {int(x) for x in query_idx.tolist()}
++    if (
++        isinstance(base_prepared_support, dict)
++        and isinstance(base_prepared_detail, dict)
++        and base_agents.isdisjoint(query_agents)
++    ):
++        # R3 runtime-only support reuse.  The online blocker-query contract makes
++        # these agent sets disjoint.  Prepare response banks only for the newly
++        # decoded exact blockers, then merge the per-agent support with the exact
++        # V42 first-pass support.
++        late_support, late_support_detail = _prepare_interaction_response_support_np(
++            np.asarray(agent_state, dtype=np.float32), int(sdc_index),
++            query_idx, np.ones(q, dtype=bool), query_traj, query_logits,
++            object_types, roadgraph, cfg,
++        )
++        prepared_support = dict(base_prepared_support)
++        prepared_support.update(late_support)
++        prepared_support_detail = _merge_interaction_response_support_details_np(
++            base_prepared_detail, late_support_detail,
++        )
++
+     expanded_selected, expanded_detail = _construct_interaction_aware_reachable_response_envelope_np(
+         agent_state, sdc_index, nominal_trajectories, cand_valid,
+         nominal_roadgraph_safe, macro_types, fallback_scores,
+@@ -5008,6 +5164,16 @@
+         object_types=object_types,
+         shared_compatibility_cache=shared_compatibility_cache,
+         shared_successor_context_cache=shared_successor_context_cache,
++        prepared_response_support=prepared_support,
++        prepared_response_support_detail=prepared_support_detail,
++        prepared_hypothesis_workspace=(
++            base_trace.get("prepared_hypothesis_workspace")
++            if isinstance(base_trace.get("prepared_hypothesis_workspace"), dict) else None
++        ),
++        prepared_unsupported_replay_cache=(
++            base_trace.get("unsupported_replay_cache")
++            if isinstance(base_trace.get("unsupported_replay_cache"), dict) else None
++        ),
+         known_nested_v39_empty=True,
+         hypothesis_indices=unsupported_hypotheses,
+     )
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/cowp/scripts/98_verify_v43r3_runtime_fidelity.py	2026-09-02 22:20:36.538784456 +0000
+@@ -0,0 +1,105 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++
++def _load(path: str) -> dict[str, Any]:
++    return json.loads(Path(path).read_text(encoding="utf-8"))
++
++
++def _eq(a: Any, b: Any, tol: float) -> bool:
++    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
++        return a == b
++    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
++        if isinstance(a, float) and math.isnan(a):
++            return isinstance(b, float) and math.isnan(b)
++        if isinstance(b, float) and math.isnan(b):
++            return False
++        return abs(float(a) - float(b)) <= tol
++    return a == b
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description="Verify V16.8.43R3 work-reuse repair is behaviorally identical to V43R2.")
++    ap.add_argument("--reference", required=True)
++    ap.add_argument("--candidate", required=True)
++    ap.add_argument("--output", required=True)
++    ap.add_argument("--reference-wall-seconds")
++    ap.add_argument("--candidate-wall-seconds")
++    ap.add_argument("--tol", type=float, default=1e-9)
++    args = ap.parse_args()
++
++    ref, cand = _load(args.reference), _load(args.candidate)
++    checks: list[dict[str, Any]] = []
++
++    def add(name: str, ok: bool, detail: Any = None) -> None:
++        checks.append({"name": name, "pass": bool(ok), "detail": detail})
++
++    add("method_identity", ref.get("method") == cand.get("method"), [ref.get("method"), cand.get("method")])
++    add("scenario_hash", ref.get("scenario_ids_sha256") == cand.get("scenario_ids_sha256"), [ref.get("scenario_ids_sha256"), cand.get("scenario_ids_sha256")])
++    add("num_rollouts", ref.get("num_rollouts") == cand.get("num_rollouts"), [ref.get("num_rollouts"), cand.get("num_rollouts")])
++
++    rr = {str(x["scenario_id"]): x for x in ref.get("scenario_results", [])}
++    cr = {str(x["scenario_id"]): x for x in cand.get("scenario_results", [])}
++    add("scenario_id_set", set(rr) == set(cr), {"reference": sorted(rr), "candidate": sorted(cr)})
++
++    mismatches: list[dict[str, Any]] = []
++    for sid in sorted(set(rr) & set(cr)):
++        rrow, crow = rr[sid], cr[sid]
++        for group in ("standard_metrics", "diagnostics"):
++            rd = rrow.get(group, {}) or {}
++            cd = crow.get(group, {}) or {}
++            # R3 is strictly work reuse: unlike R2, no logical/query accounting
++            # field is intended to change. Compare the entire common behavior
++            # surface and reject missing common fields as well.
++            for k in sorted(set(rd) | set(cd)):
++                a, b = rd.get(k, "<MISSING>"), cd.get(k, "<MISSING>")
++                if not _eq(a, b, args.tol):
++                    mismatches.append({
++                        "scenario_id": sid,
++                        "field": f"{group}.{k}",
++                        "reference": a,
++                        "candidate": b,
++                    })
++    add("full_profile_behavioral_equivalence", len(mismatches) == 0, {
++        "mismatch_count": len(mismatches),
++        "first_mismatches": mismatches[:100],
++    })
++
++    wall: dict[str, Any] = {}
++    if args.reference_wall_seconds and args.candidate_wall_seconds:
++        rsec = float(Path(args.reference_wall_seconds).read_text().strip())
++        csec = float(Path(args.candidate_wall_seconds).read_text().strip())
++        wall = {
++            "reference_seconds": rsec,
++            "candidate_seconds": csec,
++            "speedup": (rsec / csec) if csec > 0 else None,
++            "reduction_fraction": ((rsec - csec) / rsec) if rsec > 0 else None,
++        }
++
++    out = {
++        "schema_version": "v16.8.43r3_runtime_fidelity_v1",
++        "reference": args.reference,
++        "candidate": args.candidate,
++        "tolerance": args.tol,
++        "checks": checks,
++        "pass": all(x["pass"] for x in checks),
++        "wall_clock": wall,
++        "interpretation": (
++            "PASS means V43R3 response-support/workspace/replay reuse preserved every available R2 scenario metric and diagnostic. "
++            "R3 changes internal work only; therefore no blocker-query diagnostic exclusion is allowed."
++        ),
++    }
++    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
++    Path(args.output).write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(out, ensure_ascii=False, indent=2))
++    if not out["pass"]:
++        raise SystemExit(3)
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/cowp/scripts/99_analyze_v43r3_mandatory_gate19.py	2026-09-02 22:20:36.540302716 +0000
+@@ -0,0 +1,101 @@
++from __future__ import annotations
++
++import argparse
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++
++def _load(path: str) -> dict[str, Any]:
++    return json.loads(Path(path).read_text(encoding="utf-8"))
++
++
++def _rows(d: dict[str, Any]) -> dict[str, dict[str, Any]]:
++    return {str(r["scenario_id"]): r for r in d.get("scenario_results", [])}
++
++
++def _collision(row: dict[str, Any]) -> bool:
++    v = (row.get("standard_metrics", {}) or {}).get("CollisionRate")
++    return bool(isinstance(v, (int, float)) and math.isfinite(float(v)) and float(v) > 0.0)
++
++
++def _metric(row: dict[str, Any], key: str) -> float | None:
++    v = (row.get("standard_metrics", {}) or {}).get(key)
++    return float(v) if isinstance(v, (int, float)) and math.isfinite(float(v)) else None
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description="Mandatory 19-scene early gate from the two frozen V29 counterexample conditions.")
++    ap.add_argument("--cowp", required=True)
++    ap.add_argument("--rvr", required=True)
++    ap.add_argument("--method", required=True)
++    ap.add_argument("--ids", required=True)
++    ap.add_argument("--output", required=True)
++    args = ap.parse_args()
++
++    cowp, rvr, method = _rows(_load(args.cowp)), _rows(_load(args.rvr)), _rows(_load(args.method))
++    ids = [x.strip() for x in Path(args.ids).read_text().splitlines() if x.strip()]
++    if len(ids) != 19 or len(set(ids)) != 19:
++        raise SystemExit("gate19 manifest must contain exactly 19 unique IDs")
++    if set(method) != set(ids):
++        raise SystemExit(f"method result IDs do not match gate19 manifest: method={len(method)} manifest={len(ids)}")
++    missing = [sid for sid in ids if sid not in cowp or sid not in rvr]
++    if missing:
++        raise SystemExit(f"reference rows missing gate19 IDs: {missing}")
++
++    old_rescues = [sid for sid in ids if _collision(cowp[sid]) and not _collision(rvr[sid])]
++    old_induced = [sid for sid in ids if not _collision(cowp[sid]) and _collision(rvr[sid])]
++    if len(old_rescues) != 10 or len(old_induced) != 9 or set(old_rescues + old_induced) != set(ids):
++        raise SystemExit(f"historical partition mismatch: rescues={len(old_rescues)} induced={len(old_induced)}")
++
++    retained = [sid for sid in old_rescues if not _collision(method[sid])]
++    lost = [sid for sid in old_rescues if _collision(method[sid])]
++    avoided = [sid for sid in old_induced if not _collision(method[sid])]
++    induced_remaining = [sid for sid in old_induced if _collision(method[sid])]
++    mandatory_pass = len(retained) >= 5 and len(avoided) >= 7
++
++    ep_delta = []
++    kin_delta = 0
++    for sid in ids:
++        a, b = _metric(cowp[sid], "EP"), _metric(method[sid], "EP")
++        if a is not None and b is not None:
++            ep_delta.append(b - a)
++        ka = bool((_metric(cowp[sid], "KinematicsInfeasibilityRate") or 0.0) > 0)
++        kb = bool((_metric(method[sid], "KinematicsInfeasibilityRate") or 0.0) > 0)
++        kin_delta += int(kb) - int(ka)
++
++    out = {
++        "schema_version": "v16.8.43r3_mandatory_gate19_v1",
++        "classification": "early falsification only; cannot promote the algorithm and cannot replace full counterfactual48",
++        "n": 19,
++        "historical_rvr_rescue_ids": old_rescues,
++        "historical_rvr_induced_ids": old_induced,
++        "old_rvr_rescues_retained": len(retained),
++        "old_rvr_rescues_lost_ids": lost,
++        "old_rvr_induced_avoided": len(avoided),
++        "old_rvr_induced_remaining_ids": induced_remaining,
++        "frozen_thresholds": {"old_rvr_rescues_retained_min": 5, "old_rvr_induced_avoided_min": 7},
++        "mandatory_collision_counterexample_gate": {
++            "pass": bool(mandatory_pass),
++            "failed": [
++                *([] if len(retained) >= 5 else ["old_rvr_rescues_retained"]),
++                *([] if len(avoided) >= 7 else ["old_rvr_induced_avoided"]),
++            ],
++        },
++        "descriptive_only": {
++            "mean_ep_delta_vs_cowp": (sum(ep_delta) / len(ep_delta)) if ep_delta else None,
++            "kinematics_net_regression_scenes_vs_cowp": kin_delta,
++        },
++        "interpretation": (
++            "If this gate fails, full counterfactual48 must fail the already-frozen six-item conjunction, so the remaining 29 scenes are unnecessary. "
++            "If it passes, the remaining29 run is still mandatory because net collision, kinematics, EP and intervention gates require all 48 scenes."
++        ),
++    }
++    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
++    Path(args.output).write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps(out, ensure_ascii=False, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/cowp/scripts/100_stitch_v43r3_counterfactual48.py	2026-09-02 22:20:36.541629410 +0000
+@@ -0,0 +1,95 @@
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import math
++from pathlib import Path
++from typing import Any
++
++
++def _load(path: str) -> dict[str, Any]:
++    return json.loads(Path(path).read_text(encoding="utf-8"))
++
++
++def _num(v: Any) -> float | None:
++    if isinstance(v, bool):
++        return float(v)
++    if isinstance(v, (int, float)) and math.isfinite(float(v)):
++        return float(v)
++    return None
++
++
++def main() -> None:
++    ap = argparse.ArgumentParser(description="Stitch disjoint gate19 + remaining29 V43R3 results into the exact frozen counterfactual48 merged result.")
++    ap.add_argument("--gate19", required=True)
++    ap.add_argument("--remaining29", required=True)
++    ap.add_argument("--full-ids", required=True)
++    ap.add_argument("--output", required=True)
++    args = ap.parse_args()
++
++    parts = [_load(args.gate19), _load(args.remaining29)]
++    method = str(parts[0].get("method"))
++    checkpoint = parts[0].get("checkpoint")
++    for p in parts:
++        if str(p.get("method")) != method:
++            raise SystemExit("method mismatch across gate19/remaining29")
++        if p.get("checkpoint") != checkpoint:
++            raise SystemExit("checkpoint mismatch across gate19/remaining29")
++
++    rows: dict[str, dict[str, Any]] = {}
++    for p in parts:
++        for row in p.get("scenario_results", []):
++            sid = str(row["scenario_id"])
++            if sid in rows:
++                raise SystemExit(f"duplicate scenario across subsets: {sid}")
++            rows[sid] = row
++
++    full_ids = [x.strip() for x in Path(args.full_ids).read_text().splitlines() if x.strip()]
++    if len(full_ids) != 48 or len(set(full_ids)) != 48:
++        raise SystemExit("full counterfactual manifest must contain 48 unique IDs")
++    if set(rows) != set(full_ids):
++        missing = sorted(set(full_ids) - set(rows)); extra = sorted(set(rows) - set(full_ids))
++        raise SystemExit(f"stitched ID mismatch missing={missing} extra={extra}")
++    ordered = [rows[sid] for sid in full_ids]
++
++    buckets: dict[str, list[float]] = {}
++    fb_num = fb_den = 0.0
++    for row in ordered:
++        for k, v in (row.get("standard_metrics", {}) or {}).items():
++            nv = _num(v)
++            if nv is not None:
++                buckets.setdefault(k, []).append(nv)
++        dg = row.get("diagnostics", {}) or {}
++        n = float(dg.get("steps", 0) or 0)
++        fb_num += n * float(dg.get("fallback_step_rate", 0.0) or 0.0)
++        fb_den += n
++
++    full_hash = hashlib.sha256("\n".join(full_ids).encode()).hexdigest()
++    out = {
++        "schema_version": "cowp_waymax_exact_stitched_subset_merge_v1",
++        "method": method,
++        "checkpoint": checkpoint,
++        "scenario_ids_sha256": full_hash,
++        "num_rollouts": 48,
++        "num_shards_merged": sum(int(p.get("num_shards_merged", 0) or 0) for p in parts),
++        "input_files": [args.gate19, args.remaining29],
++        "standard_metric_summary": {k: sum(v) / len(v) for k, v in sorted(buckets.items()) if v},
++        "ClosedLoopFallbackStepRate": (fb_num / fb_den) if fb_den else None,
++        "scenario_results": ordered,
++        "shard_policy_diagnostic_summaries": [x for p in parts for x in p.get("shard_policy_diagnostic_summaries", [])],
++        "shard_failure_attribution_summaries": [x for p in parts for x in p.get("shard_failure_attribution_summaries", [])],
++        "shard_runtime_profiles": [x for p in parts for x in p.get("shard_runtime_profiles", [])],
++        "stitch_provenance": {
++            "gate19_n": len(parts[0].get("scenario_results", [])),
++            "remaining29_n": len(parts[1].get("scenario_results", [])),
++            "full_manifest": args.full_ids,
++        },
++    }
++    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
++    Path(args.output).write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    print(json.dumps({"method": method, "n": 48, "scenario_ids_sha256": full_hash, "standard_metric_summary": out["standard_metric_summary"]}, ensure_ascii=False, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/tests/test_v16_8_43r3_runtime_support_reuse.py	2026-09-02 22:16:37.255062992 +0000
+@@ -0,0 +1,161 @@
++from __future__ import annotations
++
++import numpy as np
++
++import cowp.waymax_eval.policy_wrapper as pw
++
++
++def _state(n: int = 8) -> np.ndarray:
++    state = np.zeros((n, 11), dtype=np.float32)
++    state[:, 7] = 4.5
++    state[:, 8] = 2.0
++    state[:, 10] = 1.0
++    return state
++
++
++def _constructor_args() -> tuple:
++    return (
++        _state(8), 0,
++        np.zeros((1, 4, 7), dtype=np.float32),
++        np.asarray([True]), np.asarray([True]), np.asarray([0]),
++        np.asarray([0.0]), np.asarray([0.0]),
++        np.zeros((1, 5), dtype=np.float32), np.asarray([0.0]),
++        {}, {}, 0.0,
++    )
++
++
++def test_r3_support_detail_merge_is_additive_for_disjoint_agent_builds() -> None:
++    base = {
++        "minimum_raw_mode_probability": 0.03,
++        "probability_floor": 0.02,
++        "required_root_mass": 0.75,
++        "minimum_root_count": 2,
++        "critical_slots": 4,
++        "agents_ready": 3,
++        "agents_rejected_invalid_prediction": 0,
++        "agents_rejected_root_count": 1,
++        "agents_rejected_root_mass": 0,
++        "agents_rejected_profile_feasibility": 0,
++        "retained_roots": 7,
++        "eligible_profiles": 19,
++        "profile_candidates": 42,
++        "canonical_support_mass_sum": 3.7,
++        "raw_support_mass_sum": 3.5,
++    }
++    late = {
++        "minimum_raw_mode_probability": 0.03,
++        "probability_floor": 0.02,
++        "required_root_mass": 0.75,
++        "minimum_root_count": 2,
++        "critical_slots": 2,
++        "agents_ready": 2,
++        "agents_rejected_invalid_prediction": 0,
++        "agents_rejected_root_count": 0,
++        "agents_rejected_root_mass": 0,
++        "agents_rejected_profile_feasibility": 0,
++        "retained_roots": 4,
++        "eligible_profiles": 11,
++        "profile_candidates": 24,
++        "canonical_support_mass_sum": 1.9,
++        "raw_support_mass_sum": 1.8,
++    }
++    out = pw._merge_interaction_response_support_details_np(base, late)
++    assert out["critical_slots"] == 6
++    assert out["agents_ready"] == 5
++    assert out["retained_roots"] == 11
++    assert out["eligible_profiles"] == 30
++    assert out["profile_candidates"] == 66
++    assert np.isclose(out["canonical_support_mass_sum"], 5.6)
++    assert np.isclose(out["raw_support_mass_sum"], 5.3)
++    for key in (
++        "minimum_raw_mode_probability", "probability_floor",
++        "required_root_mass", "minimum_root_count",
++    ):
++        assert out[key] == base[key]
++
++
++def test_r3_bc_iare_reuses_exact_v42_base_support_and_prepares_only_late_blockers(monkeypatch) -> None:
++    sentinel = {"parent_index": 4, "target": np.ones(5, dtype=np.float32)}
++    calls: list[dict] = []
++    prepared_calls: list[list[int]] = []
++
++    base_support = {1: {"ready": True, "retained_mass": 0.8, "roots": []}}
++    base_detail = {
++        "minimum_raw_mode_probability": 0.03,
++        "probability_floor": 0.02,
++        "required_root_mass": 0.75,
++        "minimum_root_count": 2,
++        "critical_slots": 1,
++        "agents_ready": 1,
++        "agents_rejected_invalid_prediction": 0,
++        "agents_rejected_root_count": 0,
++        "agents_rejected_root_mass": 0,
++        "agents_rejected_profile_feasibility": 0,
++        "retained_roots": 1,
++        "eligible_profiles": 2,
++        "profile_candidates": 3,
++        "canonical_support_mass_sum": 0.8,
++        "raw_support_mass_sum": 0.8,
++    }
++
++    def fake_v42(*args, **kwargs):
++        calls.append(dict(kwargs))
++        if len(calls) == 1:
++            trace = kwargs["internal_trace"]
++            trace["unsupported_hypothesis_indices"].extend([2, 5])
++            trace["unsupported_blocker_union"].update({3, 6})
++            trace["prepared_response_support"] = base_support
++            trace["prepared_response_support_detail"] = base_detail
++            return None, {
++                "interaction_support_agents_ready": 1,
++                "interaction_failure_reason": "no_interaction_certified_action",
++            }
++        assert kwargs["prepared_response_support"] is not None
++        assert set(kwargs["prepared_response_support"]) == {1, 3, 6}
++        merged = kwargs["prepared_response_support_detail"]
++        assert merged["critical_slots"] == 3
++        assert merged["agents_ready"] == 3
++        return sentinel, {
++            "interaction_support_agents_ready": 3,
++            "interaction_hypotheses_evaluated": 2,
++            "interaction_unsupported_blocker_rejects": 0,
++            "interaction_root_unrecoverable_rejects": 0,
++            "selected": True,
++        }
++
++    def fake_prepare(state, sdc_index, crit_idx, crit_valid, nat, logits, object_types, roadgraph, cfg):
++        idx = np.asarray(crit_idx, dtype=np.int64).reshape(-1)
++        prepared_calls.append(idx.tolist())
++        support = {int(i): {"ready": True, "retained_mass": 0.8, "roots": []} for i in idx}
++        detail = dict(base_detail)
++        detail.update({
++            "critical_slots": len(idx),
++            "agents_ready": len(idx),
++            "retained_roots": len(idx),
++            "eligible_profiles": 2 * len(idx),
++            "profile_candidates": 3 * len(idx),
++            "canonical_support_mass_sum": 0.8 * len(idx),
++            "raw_support_mass_sum": 0.8 * len(idx),
++        })
++        return support, detail
++
++    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_v42)
++    monkeypatch.setattr(pw, "_prepare_interaction_response_support_np", fake_prepare)
++
++    q = np.asarray([2, 3, 4, 5, 6, 7], dtype=np.int64)
++    selected, detail = pw._construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
++        *_constructor_args(),
++        base_candidate_index=0,
++        critical_track_index=np.asarray([1], dtype=np.int64),
++        critical_valid=np.asarray([True]),
++        natural_trajectories=np.zeros((1, 2, 4, 7), dtype=np.float32),
++        natural_logits=np.zeros((1, 2), dtype=np.float32),
++        blocker_query_track_index=q,
++        blocker_query_trajectories=np.zeros((len(q), 2, 4, 7), dtype=np.float32),
++        blocker_query_logits=np.zeros((len(q), 2), dtype=np.float32),
++        object_types=np.ones((8,), dtype=np.int32),
++    )
++    assert selected is sentinel
++    assert prepared_calls == [[3, 6]]
++    assert detail["blocker_conditioned_query_exact_blocker_agent_count"] == 2
++    assert detail["blocker_conditioned_query_ready_agent_count"] == 2
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/NEXT_RUN_COMMANDS_V16_8_43R3_RUNTIME_WORK_REUSE_CN.sh	2026-09-02 22:24:20.011774640 +0000
+@@ -0,0 +1,348 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# v16.8.43R3: engineering-only runtime-work reuse repair for BC-IARE
++#
++# Scientific branch selected by the frozen V40/V41 decision rule after repaired
++# V41 produced real interval-only actions but failed the inherited outcome gate.
++# The exact V42 RC-IARE policy is nested first. Only on a V42-empty recovery
++# step may BC-IARE add late-bound natural-root support for additional agents from
++# the frozen collision context; exact blocker use still occurs inside the hard
++# RC-IARE certificate. Every retained root must own
++# a low-burden, drivable, Waymax-kinematic response for current and one-step-
++# shifted ego tubes; simultaneous blockers must admit a jointly compatible
++# response assignment. All remaining physical/model/protocol layers stay frozen.
++#
++# Counterfactual48 is development evidence. The six-item conjunction gate is
++# unchanged and fail-closed. Mechanism diagnostics never override that gate.
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_43r3_runtime_work_reuse}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++EXACT_IDS="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++CF48_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37_IDS="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++PROFILE8_IDS="$SCRIPT_DIR/reference_manifests/v16_8_43_runtime_profile8_ids.txt"
++PROFILE4_IDS="$SCRIPT_DIR/reference_manifests/v16_8_43r3_runtime_profile4_ids.txt"
++GATE19_IDS="$SCRIPT_DIR/reference_manifests/v16_8_43_mandatory_gate19_ids.txt"
++REMAIN29_IDS="$SCRIPT_DIR/reference_manifests/v16_8_43_counterfactual_remaining29_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33_ROSH="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35_CPOSH="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36_FRONTIER="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37_RRB="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_CF48_V38_TUBE="$SCRIPT_DIR/reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json"
++REF_CF48_V39_TUBE="$SCRIPT_DIR/reference_results/v16_8_39_counterfactual48_conflict_window_control_reachable_tube_reference.json"
++REF_CF48_V42_IARE="$SCRIPT_DIR/reference_results/v16_8_42_counterfactual48_interaction_aware_reachable_response_envelope_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_FRESH37_RVR="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_rvr_reference.json"
++REF_EXACT_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++REF_EXACT_RVR="$SCRIPT_DIR/reference_results/v16_8_29_exact200_rvr_reference.json"
++
++EXPECTED_EXACT_SHA="3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f"
++EXPECTED_EQ16_SHA="81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760"
++EXPECTED_CF48_SHA="ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0"
++EXPECTED_FRESH37_SHA="ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481"
++EXPECTED_PROFILE8_SHA="d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
++EXPECTED_PROFILE4_SHA="69f73aedb8d1cfd0e065218d2c579659ddfd07845463cb4cc767987323e9af01"
++EXPECTED_GATE19_SHA="9bf3eb62e5c3c7471239d7bd9026d7341752c3640dbb6615a33641df2d7191b2"
++EXPECTED_REMAIN29_SHA="8e225f7bd125f9448ac17252fe881ff5c49abf733c6e70b3dd061eb9069aa1b0"
++mkdir -p "$OUT_ROOT"
++
++export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
++export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
++export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
++export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
++export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
++
++validate_manifest() {
++  local p="$1" n="$2" expected="$3"
++  [[ -s "$p" ]] || { echo "Missing ID manifest: $p" >&2; exit 2; }
++  python - "$p" "$n" "$expected" <<'PY'
++import hashlib,sys
++p,n,expected=sys.argv[1],int(sys.argv[2]),sys.argv[3]
++ids=[x.strip() for x in open(p,encoding='utf-8') if x.strip()]
++if len(ids)!=n: raise SystemExit(f"expected {n} IDs, got {len(ids)} in {p}")
++if len(set(ids))!=n: raise SystemExit(f"duplicate IDs in {p}")
++h=hashlib.sha256("\n".join(ids).encode()).hexdigest()
++if h!=expected: raise SystemExit(f"logical ID SHA mismatch: {h} != {expected}")
++print(f"manifest OK: n={n} logical_sha256={h} path={p}")
++PY
++}
++ensure_ids() {
++  validate_manifest "$EXACT_IDS" 200 "$EXPECTED_EXACT_SHA"
++  validate_manifest "$EQ16_IDS" 16 "$EXPECTED_EQ16_SHA"
++  validate_manifest "$CF48_IDS" 48 "$EXPECTED_CF48_SHA"
++  validate_manifest "$FRESH37_IDS" 37 "$EXPECTED_FRESH37_SHA"
++  validate_manifest "$PROFILE8_IDS" 8 "$EXPECTED_PROFILE8_SHA"
++  validate_manifest "$PROFILE4_IDS" 4 "$EXPECTED_PROFILE4_SHA"
++  validate_manifest "$GATE19_IDS" 19 "$EXPECTED_GATE19_SHA"
++  validate_manifest "$REMAIN29_IDS" 29 "$EXPECTED_REMAIN29_SHA"
++  cp "$EXACT_IDS" "$OUT_ROOT/waymax_exact_200_ids.txt"
++  cp "$EQ16_IDS" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++  cp "$CF48_IDS" "$OUT_ROOT/waymax_counterfactual48_ids.txt"
++  cp "$FRESH37_IDS" "$OUT_ROOT/waymax_v16_8_32_fresh37_ids.txt"
++  cp "$PROFILE8_IDS" "$OUT_ROOT/v16_8_43_runtime_profile8_ids.txt"
++  cp "$PROFILE4_IDS" "$OUT_ROOT/v16_8_43r3_runtime_profile4_ids.txt"
++  cp "$GATE19_IDS" "$OUT_ROOT/v16_8_43_mandatory_gate19_ids.txt"
++  cp "$REMAIN29_IDS" "$OUT_ROOT/v16_8_43_counterfactual_remaining29_ids.txt"
++}
++
++require_gate_pass() {
++  local analysis_json="$1" methods="$2" stage_label="$3"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing $stage_label analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" "$methods" "$stage_label" <<'PY' || exit 4
++import json,sys
++p,methods,stage=sys.argv[1],sys.argv[2],sys.argv[3]
++d=json.load(open(p,encoding='utf-8'))
++gates=d.get('preregistered_gate',{})
++for method in [x.strip() for x in methods.split(',') if x.strip()]:
++    if method!='cowp_blocker_conditioned_interaction_aware_reachable_response_envelope':
++        raise SystemExit(f'ERROR: {method} is not the V16.8.43 BC-IARE promotion candidate')
++    g=gates.get('blocker_conditioned_interaction_aware_reachable_response_envelope')
++    if not g or g.get('pass') is not True:
++        failed=[k for k,v in (g or {}).get('checks',{}).items() if not v]
++        raise SystemExit(f'ERROR: {method} did not pass {stage} preregistered gate; failed={failed}')
++print(f'promotion gate OK for {methods} at {stage}')
++PY
++}
++
++require_mandatory_gate19_pass() {
++  local analysis_json="$OUT_ROOT/gate19_v43r3_mandatory_collision_counterexample_gate.json"
++  [[ -s "$analysis_json" ]] || { echo "ERROR: missing mandatory gate19 analysis: $analysis_json" >&2; exit 4; }
++  python - "$analysis_json" <<'PYGATE' || exit 4
++import json,sys
++d=json.load(open(sys.argv[1],encoding='utf-8'))
++g=d.get('mandatory_collision_counterexample_gate',{})
++if g.get('pass') is not True:
++    raise SystemExit('ERROR: mandatory 19-scene counterexample gate failed; full counterfactual48 cannot pass the frozen conjunction gate')
++print('mandatory gate19 PASS: remaining29 rollout is scientifically justified')
++PYGATE
++}
++
++index_arg=()
++if [[ -s "$TFEX_INDEX" ]]; then
++  index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++else
++  echo "[warning] TFExample ID index missing: $TFEX_INDEX" >&2
++fi
++common_waymax=(
++  --data-config configs/data.yaml --label-config configs/label_cowp_v16_8.yaml --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax --checkpoint "$BASE_CKPT" --waymax-split validation --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw --ncf-gate-mode priority --witness-threshold 0.70 --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0 --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++run_colocated_shard() {
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5"
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    --no-progress --status-every 2 --output "$out"
++}
++run_profile8_parallel2() {
++  local method="${PROFILE_METHOD:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++  local tag="runtime_profile8_v43r3"
++  echo "=== performance-only profile8 method: $method ==="
++  local start end; start=$(date +%s)
++  CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$PROFILE8_IDS" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 0 \
++    --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 \
++    --output "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++  CUDA_VISIBLE_DEVICES=1 XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$PROFILE8_IDS" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 1 \
++    --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 \
++    --output "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++  wait "$p0"; wait "$p1"
++  end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++  python -m cowp.scripts.79_merge_waymax_exact_shards \
++    --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++    --output "$OUT_ROOT/${tag}_${method}_merged.json"
++}
++
++run_profile4_parallel2() {
++  local method="${PROFILE_METHOD:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++  local tag="runtime_profile4_v43r3"
++  echo "=== engineering-fidelity profile4 method: $method ==="
++  CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" --method "$method" --scenario-ids-file "$PROFILE4_IDS" --device cuda:0 --waymax-device gpu --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 0 --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 --output "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++  CUDA_VISIBLE_DEVICES=1 XLA_PYTHON_CLIENT_PREALLOCATE=false python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" --method "$method" --scenario-ids-file "$PROFILE4_IDS" --device cuda:0 --waymax-device gpu --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index 1 --profile-policy-runtime --profile-policy-sync --no-progress --status-every 1 --output "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++  wait "$p0"; wait "$p1"
++  python -m cowp.scripts.79_merge_waymax_exact_shards --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" --output "$OUT_ROOT/${tag}_${method}_merged.json"
++}
++
++run_parallel_methods() {
++  local tag="$1" ids="$2" methods="$3"
++  IFS=',' read -r -a arr <<< "$methods"
++  for method in "${arr[@]}"; do
++    echo "=== $tag method: $method ==="
++    local start end; start=$(date +%s)
++    run_colocated_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" & p0=$!
++    run_colocated_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" & p1=$!
++    wait "$p0"; wait "$p1"
++    end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++    python -m cowp.scripts.79_merge_waymax_exact_shards \
++      --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++      --output "$OUT_ROOT/${tag}_${method}_merged.json"
++  done
++}
++analyze_set() {
++  local stage="$1" tag="$2" cowp="$3" rvr="$4"
++  local args=(--cowp "$cowp" --rvr "$rvr" --stage "$stage" --development-selected \
++    --blocker-conditioned-interaction-aware-reachable-response-envelope "$OUT_ROOT/${tag}_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" \
++    --output "$OUT_ROOT/${tag}_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json")
++  if [[ "$stage" == "counterfactual48" ]]; then
++    args+=(--v33-rosh "$REF_CF48_V33_ROSH" \
++      --v35-control-projected-spectrum "$REF_CF48_V35_CPOSH" \
++      --v36-recovery-frontier "$REF_CF48_V36_FRONTIER" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37_RRB" \
++      --v38-shift-closed-tube "$REF_CF48_V38_TUBE" \
++      --v39-conflict-window-tube "$REF_CF48_V39_TUBE" \
++      --v42-interaction-aware-reachable-response-envelope "$REF_CF48_V42_IARE")
++  fi
++  python -m cowp.scripts.96_analyze_blocker_conditioned_interaction_aware_reachable_response_envelope "${args[@]}"
++}
++
++case "$MODE" in
++  sanity)
++    python -m py_compile cowp/models/cowp_model.py cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/rollout.py cowp/waymax_eval/metrics_cowp.py \
++      cowp/scripts/04_eval_closed_loop.py cowp/scripts/79_merge_waymax_exact_shards.py \
++      cowp/scripts/82_verify_cowp_equivalence.py cowp/scripts/88_analyze_control_projected_option_spectrum.py \
++      cowp/scripts/89_analyze_control_projected_recovery_frontier.py cowp/scripts/90_analyze_recourse_returnability_bridge.py \
++      cowp/scripts/92_analyze_conflict_window_control_reachable_tube.py cowp/scripts/93_analyze_shift_closed_first_action_viability_interval.py cowp/scripts/94_analyze_shift_closure_semantic_fidelity_repair.py cowp/scripts/96_analyze_blocker_conditioned_interaction_aware_reachable_response_envelope.py cowp/scripts/97_verify_v43r2_runtime_fidelity.py \
++      cowp/scripts/98_verify_v43r3_runtime_fidelity.py cowp/scripts/99_analyze_v43r3_mandatory_gate19.py cowp/scripts/100_stitch_v43r3_counterfactual48.py
++    python -m pytest -q \
++      tests/test_v16_8_43r3_runtime_support_reuse.py \
++      tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py \
++      tests/test_v16_8_42_interaction_aware_reachable_response_envelope.py \
++      tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py \
++      tests/test_v16_8_40_shift_closed_first_action_viability_interval.py \
++      tests/test_v16_8_39_conflict_window_control_reachable_tube.py \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py tests/test_v16_8_28_execution_integrity.py \
++      tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    if grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py; then
++      echo "ERROR: conventional-safety bypass exists" >&2; exit 3
++    fi
++    ensure_ids
++    echo "v16.8.43R3 BC-IARE runtime-work reuse sanity passed"
++    ;;
++  make_ids) ensure_ids ;;
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++  base_equivalence16_parallel2)
++    ensure_ids; run_parallel_methods "equivalence16" "$EQ16_IDS" "cowp"
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++  gate19_parallel2)
++    ensure_ids
++    run_parallel_methods "gate19_v43r3" "$GATE19_IDS" "${METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}" ;;
++  analyze_gate19)
++    python -m cowp.scripts.99_analyze_v43r3_mandatory_gate19 --cowp "$REF_CF48_COWP" --rvr "$REF_CF48_RVR" --method "$OUT_ROOT/gate19_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" --ids "$GATE19_IDS" --output "$OUT_ROOT/gate19_v43r3_mandatory_collision_counterexample_gate.json" ;;
++  remaining29_parallel2)
++    ensure_ids; require_mandatory_gate19_pass
++    run_parallel_methods "remaining29_v43r3" "$REMAIN29_IDS" "${METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}" ;;
++  stitch_counterfactual48)
++    require_mandatory_gate19_pass
++    python -m cowp.scripts.100_stitch_v43r3_counterfactual48 --gate19 "$OUT_ROOT/gate19_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" --remaining29 "$OUT_ROOT/remaining29_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" --full-ids "$CF48_IDS" --output "$OUT_ROOT/counterfactual48_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" ;;
++  counterfactual48_parallel2)
++    ensure_ids
++    echo "NOTE: direct full48 is exact-compatible; gate19->remaining29 is recommended for fail-fast development."
++    run_parallel_methods "counterfactual48_v43r3" "$CF48_IDS" "${METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}" ;;
++  analyze_counterfactual48)
++    [[ -s "$OUT_ROOT/counterfactual48_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" ]] || { echo "ERROR: stitch or run exact counterfactual48 first" >&2; exit 4; }
++    analyze_set "counterfactual48" "counterfactual48_v43r3" "$REF_CF48_COWP" "$REF_CF48_RVR" ;;
++  fresh37_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/counterfactual48_v43r3_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "counterfactual48"
++    run_parallel_methods "fresh37_v43r3" "$FRESH37_IDS" "$promoted" ;;
++  analyze_fresh37)
++    analyze_set "fresh37" "fresh37_v43r3" "$REF_FRESH37_COWP" "$REF_FRESH37_RVR" ;;
++  confirm200_parallel2)
++    ensure_ids
++    promoted="${PROMOTED_METHODS:-cowp_blocker_conditioned_interaction_aware_reachable_response_envelope}"
++    require_gate_pass "$OUT_ROOT/fresh37_v43r3_blocker_conditioned_interaction_aware_reachable_response_envelope_analysis.json" "$promoted" "fresh37"
++    run_parallel_methods "confirm_exact200" "$EXACT_IDS" "$promoted" ;;
++  analyze_confirm200)
++    analyze_set "exact200" "confirm_exact200" "$REF_EXACT_COWP" "$REF_EXACT_RVR" ;;
++  profile4_parallel2)
++    ensure_ids; run_profile4_parallel2 ;;
++  verify_profile4_r3)
++    python -m cowp.scripts.98_verify_v43r3_runtime_fidelity --reference "$SCRIPT_DIR/reference_results/v16_8_43r2_runtime_profile4_reference.json" --candidate "$OUT_ROOT/runtime_profile4_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" --output "$OUT_ROOT/runtime_profile4_v43r3_runtime_fidelity_equivalence.json" ;;
++  profile8_parallel2)
++    ensure_ids; run_profile8_parallel2 ;;
++  verify_profile8_r3)
++    python -m cowp.scripts.98_verify_v43r3_runtime_fidelity --reference "$SCRIPT_DIR/reference_results/v16_8_43r2_runtime_profile8_merged.json" --candidate "$OUT_ROOT/runtime_profile8_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json" --reference-wall-seconds "$SCRIPT_DIR/reference_results/v16_8_43r2_runtime_profile8_wall_seconds.txt" --candidate-wall-seconds "$OUT_ROOT/runtime_profile8_v43r3_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_wall_seconds.txt" --output "$OUT_ROOT/runtime_profile8_v43r3_runtime_fidelity_equivalence.json" ;;
++  help|*)
++    cat <<EOF
++V16.8.43R3 BC-IARE engineering-only fail-closed run order
++
++1) $0 sanity
++2) $0 make_ids
++3) $0 profile4_parallel2
++4) $0 verify_profile4_r3
++5) $0 gate19_parallel2
++6) $0 analyze_gate19
++
++EARLY STOP if mandatory_collision_counterexample_gate.pass != true.
++This 19-scene stage can only falsify; it never promotes.
++
++Only after gate19 PASS:
++  $0 remaining29_parallel2
++  $0 stitch_counterfactual48
++  $0 analyze_counterfactual48
++
++STOP unless:
++  preregistered_gate.blocker_conditioned_interaction_aware_reachable_response_envelope.pass == true
++
++The counterfactual48 Stage-1 conjunction remains exactly:
++  retain >=5/10 historical RVR rescues; avoid >=7/9 RVR-induced collisions;
++  remove >=3 net COWP collisions; add <=1 net kinematics failure;
++  paired mean EP delta >= -0.05; nonzero action-changing intervention.
++
++Only after Stage-1 pass:
++  PROMOTED_METHODS=cowp_blocker_conditioned_interaction_aware_reachable_response_envelope $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only after fresh37 pass:
++  PROMOTED_METHODS=cowp_blocker_conditioned_interaction_aware_reachable_response_envelope $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Engineering fidelity (never promotion evidence):
++  $0 profile4_parallel2
++  $0 verify_profile4_r3
++Optional wall-clock measurement:
++  $0 profile8_parallel2
++  $0 verify_profile8_r3
++
++Do not run fresh37 after a Stage-1 failure. Do not tune root probability floors,
++root mass coverage, burden budgets, response profiles, release schedules, action
++grids, controller limits, horizon, or scalar scores on counterfactual48. BC-IARE
++mechanism fields are attribution diagnostics, not substitute promotion criteria.
++EOF
++    ;;
++esac
+--- /dev/null	2026-09-02 22:11:57.106325844 +0000
++++ /mnt/data/work_v43/r3/ALGORITHM_CHANGELOG_V16_8_43R3.md	2026-09-02 22:26:24.483002762 +0000
+@@ -0,0 +1,51 @@
++# V16.8.43R3 — BC-IARE Runtime Work-Reuse Repair (engineering-only)
++
++**Scientific algorithm remains V16.8.43 BC-IARE. This is not V16.8.44 and does not alter the frozen six-item Stage-1 gate.**
++
++## Why this repair exists
++
++The uploaded result package contains reliable `equivalence16` and `profile8` engineering evidence, but no `counterfactual48` Stage-1 result. V43R2 is behaviorally equivalent to pre-R2 V43 on the same 8 profile scenes and improves wall-clock from 26,242 s to 20,649 s (1.2709x), yet selection still occupies about 99.2% of policy time. Therefore the only justified work before Stage-1 is semantics-preserving runtime elimination.
++
++## Exact work reuse
++
++V43R3 preserves the V42-first / V43-late-bound scientific semantics while removing duplicate work between the first RC-IARE pass and the blocker-conditioned repair pass:
++
++1. Reuse the first pass' prepared natural-root/response support for the original critical agents; prepare support only for newly late-bound exact blockers and merge the two disjoint support maps.
++2. Reuse the immutable ego hypothesis workspace from the first pass: semantic representatives, schedule family, controller-projected ego hypotheses, kinematics masks and first-action targets.
++3. For hypotheses whose only failure was `unsupported_collision_blocker`, reuse the first-pass successor/shift projection record and re-evaluate only the interaction support that became newly available.
++4. Preserve the logical reject/check diagnostics as scientific counters; implementation reuse is not allowed to change hard certificate membership or selection.
++
++No p_min/floor/mass/root-count/dedup/beta, response bank, social protected set, V39 schedule family, physical certificate, shift closure, controller limit, 8 s conventional horizon, fallback score, selector, dataset, loss or checkpoint is changed.
++
++## Lightweight fail-fast Stage-1 protocol
++
++The frozen six-item Gate contains two conditions that depend only on the historical V29 discordant set: retain at least 5/10 RVR rescues and avoid at least 7/9 RVR-induced collisions. V43R3 therefore adds a **mandatory 19-scene early falsification stage** containing exactly those 10+9 scenes.
++
++- If either of those two conditions fails on the 19 scenes, the full conjunction Gate is mathematically impossible to pass; stop and do not run the other 29 counterfactual48 scenes.
++- If both pass, run the remaining disjoint 29 scenes exactly once, stitch 19+29 back into the frozen 48-scene manifest, and run the unchanged V43 analyzer and all six Gate checks.
++- The 19-scene stage can only falsify. It never promotes a method and is not a substitute for counterfactual48.
++
++This protocol reduces failed-branch Stage-1 rollouts from 48 to 19 scenes (60.4% fewer) without changing any promotion criterion. It also avoids rerunning the 19 scenes if the branch passes, because the final 48 result is constructed from the exact disjoint union.
++
++## Engineering fidelity protocol
++
++A 4-scene profile subset is added for quick R3-vs-R2 behavioral fidelity. It is not promotion evidence. Full profile8 remains optional only when an end-to-end wall-clock number is desired.
++
++## Validation
++
++- V16.8.25→43R3 focused semantic/integrity suite: **109/109 passed**.
++- exact200/equivalence16/counterfactual48/fresh37/profile8/gate19/remaining29/profile4 manifest hashes: **PASS**.
++- Python compile and launcher syntax: **PASS**.
++- R3 end-to-end behavior and speed still require the server `profile4`/optional `profile8` rerun; no speedup beyond the measured R2 result is claimed locally.
++
++## Scientific interpretation is deliberately frozen
++
++Because the uploaded result package has no Stage-1 `counterfactual48`, V43R3 does **not**:
++
++- issue a V43 GO/STOP verdict;
++- promote or close a scientific algorithm family;
++- change the dominant scientific bottleneck beyond the V42→V43 preregistration;
++- design a V16.8.44 mechanism;
++- tune root/response thresholds on the profile scenes.
++
++The next scientific branch remains conditional on the original V43 preregistered interpretation after a reliable full Stage-1 result exists.

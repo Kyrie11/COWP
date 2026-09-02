@@ -1,0 +1,24 @@
+{
+  "schema_version": "cowp_v16_8_43r3_code_validation_v1",
+  "classification": "engineering-only; scientific method remains V16.8.43 BC-IARE",
+  "focused_tests": {
+    "passed": 109,
+    "failed": 0
+  },
+  "manifest_hashes": {
+    "exact200": "3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f",
+    "equivalence16": "81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760",
+    "counterfactual48": "ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0",
+    "fresh37": "ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481",
+    "profile8": "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead",
+    "profile4": "69f73aedb8d1cfd0e065218d2c579659ddfd07845463cb4cc767987323e9af01",
+    "mandatory_gate19": "9bf3eb62e5c3c7471239d7bd9026d7341752c3640dbb6615a33641df2d7191b2",
+    "remaining29": "8e225f7bd125f9448ac17252fe881ff5c49abf733c6e70b3dd061eb9069aa1b0"
+  },
+  "python_compile": "PASS",
+  "launcher_bash_syntax": "PASS",
+  "r3_server_behavioral_fidelity": "NOT RUN LOCALLY; run profile4 and verifier on server",
+  "r3_server_wall_clock": "NOT RUN LOCALLY",
+  "scientific_gate_status": "NOT AVAILABLE; uploaded results contain no counterfactual48",
+  "algorithm_attribution": "NOT ALLOWED FROM CURRENT UPLOAD"
+}

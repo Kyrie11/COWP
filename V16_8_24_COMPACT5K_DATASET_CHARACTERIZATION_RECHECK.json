@@ -1,0 +1,148 @@
+{
+  "schema_version": "cowp_v16_8_43r3_dataset_characterization_recheck_v1",
+  "source_root": "/mnt/data/work_v43/data/formal_v16_8_24_compact_full_5k",
+  "splits": {
+    "train": {
+      "scenes": 5000,
+      "malformed_rows": 0,
+      "audit_relevant_pair_rate": 0.42969642430550514,
+      "mean_scene_relevance_mass": 0.3316135632896214,
+      "critical_agent_count": {
+        "mean": 5.3846,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "conflict_region_selected_cap_saturation_rate": 0.9578,
+      "conflict_region_selected_count_mean": 63.0276,
+      "mechanism_unauditable_rate": 0.040671544775842214,
+      "protected_prio_root_coverage": 0.9945328517036025,
+      "protected_without_prio_root": 112,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.14894687935573797,
+      "obs_ineligible_rate": 0.0976846832894533,
+      "candidate_acceptance_rate_by_source": {
+        "LOGGED": 0.79,
+        "KEEP": 0.7616915422885572,
+        "ACCELERATE": 0.8264,
+        "YIELD": 0.8817940597449285,
+        "NEUTRAL": 0.9972,
+        "LANE_CHANGE": 0.9266,
+        "CREEP": 0.9884,
+        "TERMINAL": 0.5414834541905825,
+        "STOP": 0.6315160210425633,
+        "LEGACY_TIMING": 0.8745932124593212,
+        "PRIORITY_SMOOTH_YIELD": 0.20354708925199114,
+        "JOINT_ROUTE_NCF": 0.9548634619724667,
+        "ROBUST_BCTE": 0.9801122790253225
+      }
+    },
+    "val": {
+      "scenes": 1000,
+      "malformed_rows": 0,
+      "audit_relevant_pair_rate": 0.42863002173455794,
+      "mean_scene_relevance_mass": 0.3260818223154929,
+      "critical_agent_count": {
+        "mean": 5.387,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "conflict_region_selected_cap_saturation_rate": 0.955,
+      "conflict_region_selected_count_mean": 62.823,
+      "mechanism_unauditable_rate": 0.043437906070168925,
+      "protected_prio_root_coverage": 0.9936321332353661,
+      "protected_without_prio_root": 26,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.14923345623908402,
+      "obs_ineligible_rate": 0.1009120900446342,
+      "candidate_acceptance_rate_by_source": {
+        "LOGGED": 0.788,
+        "KEEP": 0.7695370831259333,
+        "ACCELERATE": 0.8276666666666667,
+        "YIELD": 0.8859261371738201,
+        "NEUTRAL": 0.997,
+        "LANE_CHANGE": 0.9365,
+        "CREEP": 0.989,
+        "STOP": 0.6238859180035651,
+        "LEGACY_TIMING": 0.8769864626250736,
+        "TERMINAL": 0.5454565514806479,
+        "ROBUST_BCTE": 0.9843125192248539,
+        "PRIORITY_SMOOTH_YIELD": 0.2064995628096765,
+        "JOINT_ROUTE_NCF": 0.9387755102040817
+      }
+    },
+    "heldout_test": {
+      "scenes": 1200,
+      "malformed_rows": 0,
+      "audit_relevant_pair_rate": 0.42949210300959645,
+      "mean_scene_relevance_mass": 0.3297856443154524,
+      "critical_agent_count": {
+        "mean": 5.338333333333333,
+        "p50": 6.0,
+        "p90": 6.0,
+        "max": 6
+      },
+      "conflict_region_selected_cap_saturation_rate": 0.9541666666666667,
+      "conflict_region_selected_count_mean": 62.78916666666667,
+      "mechanism_unauditable_rate": 0.04464564470808617,
+      "protected_prio_root_coverage": 0.994651306315573,
+      "protected_without_prio_root": 26,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "pair_neutral_unsafe_rate": 0.15049019607843137,
+      "obs_ineligible_rate": 0.09820261437908497,
+      "candidate_acceptance_rate_by_source": {
+        "LOGGED": 0.82,
+        "KEEP": 0.7769007062733694,
+        "ACCELERATE": 0.8366666666666667,
+        "YIELD": 0.8767693588676103,
+        "NEUTRAL": 0.9975,
+        "LANE_CHANGE": 0.9370833333333334,
+        "CREEP": 0.9916666666666667,
+        "TERMINAL": 0.5509600903614458,
+        "STOP": 0.631578947368421,
+        "LEGACY_TIMING": 0.906046511627907,
+        "ROBUST_BCTE": 0.9819947879649372,
+        "JOINT_ROUTE_NCF": 0.9760888129803587,
+        "PRIORITY_SMOOTH_YIELD": 0.21865260129465355
+      }
+    }
+  },
+  "cross_split_stability": {
+    "audit_relevant_pair_rate_range": [
+      0.42863002173455794,
+      0.42969642430550514
+    ],
+    "audit_relevant_pair_rate_span": 0.0010664025709472003,
+    "protected_prio_root_coverage_range": [
+      0.9936321332353661,
+      0.994651306315573
+    ],
+    "protected_prio_root_coverage_span": 0.0010191730802068255,
+    "mechanism_unauditable_rate_range": [
+      0.040671544775842214,
+      0.04464564470808617
+    ],
+    "conflict_region_selected_cap_saturation_rate_range": [
+      0.9541666666666667,
+      0.9578
+    ]
+  },
+  "interpretation": {
+    "rebuild_now": "NO",
+    "supporting_evidence": [
+      "train/val/heldout audit-relevant pair rates are tightly matched around 0.429",
+      "protected-priority PRIO-root coverage is about 99.36%-99.47%",
+      "rootless rate and <2 low-burden-root rate are zero on all splits",
+      "mechanism-unauditable fraction is only about 4.1%-4.5% and split-stable"
+    ],
+    "watch_items": [
+      "critical-agent count is capped at 6 and conflict-region selected-cap saturation is about 95.4%-95.8%; this is an online/support-capacity characteristic to audit, not evidence by itself that the compact-5k training set must be rebuilt",
+      "PRIORITY_SMOOTH_YIELD and TERMINAL proposals have substantially lower acceptance than most sources, so candidate-family coverage remains a possible long-term ceiling",
+      "Waymax logged replay does not supply counterfactual social-burden ground truth"
+    ]
+  }
+}

@@ -1,0 +1,207 @@
+{
+  "schema_version": "cowp_v16_8_43r3_current_result_reliability_audit_v1",
+  "uploaded_result_root": "/mnt/data/work_v43/results/v16_8_43r2_blocker_conditioned_runtime_fidelity_repair",
+  "inventory": [
+    "equivalence16_cowp_merged.json",
+    "equivalence16_cowp_s0.json",
+    "equivalence16_cowp_s1.json",
+    "equivalence16_cowp_vs_v16_8_29.json",
+    "equivalence16_cowp_wall_seconds.txt",
+    "runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_merged.json",
+    "runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_s0.json",
+    "runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_s1.json",
+    "runtime_profile8_v43r2_cowp_blocker_conditioned_interaction_aware_reachable_response_envelope_wall_seconds.txt",
+    "runtime_profile8_v43r2_runtime_fidelity_equivalence_RECHECK.json",
+    "v16_8_43_runtime_profile8_ids.txt",
+    "waymax_counterfactual48_ids.txt",
+    "waymax_equivalence16_ids.txt",
+    "waymax_exact_200_ids.txt",
+    "waymax_v16_8_32_fresh37_ids.txt"
+  ],
+  "checks": [
+    {
+      "name": "counterfactual48_stage1_results_present",
+      "pass": false,
+      "detail": {
+        "files_matching": [
+          "waymax_counterfactual48_ids.txt"
+        ]
+      }
+    },
+    {
+      "name": "equivalence16_shards_8_plus_8",
+      "pass": true,
+      "detail": {
+        "n0": 8,
+        "n1": 8
+      }
+    },
+    {
+      "name": "equivalence16_shards_disjoint",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "equivalence16_merged_union",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "equivalence16_reference_fields_zero_mismatch",
+      "pass": true,
+      "detail": {
+        "schema_version": "cowp_v16_8_29_base_equivalence_v1",
+        "scenarios": 16,
+        "fields_checked": 1120,
+        "atol": 1e-07,
+        "passed": true,
+        "mismatch_count_capped": 0,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "profile8_shards_4_plus_4",
+      "pass": true,
+      "detail": {
+        "n0": 4,
+        "n1": 4
+      }
+    },
+    {
+      "name": "profile8_shards_disjoint",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "profile8_merged_union",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "profile8_manifest_hash",
+      "pass": true,
+      "detail": {
+        "n": 8,
+        "sha256": "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
+      }
+    },
+    {
+      "name": "profile8_manifest_set_coverage",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "profile8_standard_metrics_reaggregate_zero_or_fp_convention",
+      "pass": true,
+      "detail": {
+        "max_abs_error": 0.0
+      }
+    },
+    {
+      "name": "profile8_shard0_online_mechanism_gt_false",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "profile8_shard1_online_mechanism_gt_false",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "v43r2_vs_v43_profile8_behavioral_fidelity",
+      "pass": true,
+      "detail": [
+        {
+          "name": "method_identity",
+          "pass": true,
+          "detail": [
+            "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+            "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"
+          ]
+        },
+        {
+          "name": "scenario_hash",
+          "pass": true,
+          "detail": [
+            "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead",
+            "d308abea9dd3c327c56410956b7a9faf94a8f2a92d37e77e2a5e5200d7e0cead"
+          ]
+        },
+        {
+          "name": "num_rollouts",
+          "pass": true,
+          "detail": [
+            8,
+            8
+          ]
+        },
+        {
+          "name": "scenario_id_set",
+          "pass": true,
+          "detail": {
+            "reference": [
+              "2c2395ec28c6a158",
+              "2fa07f444b825370",
+              "4201b435eda16cf2",
+              "9e3e5f19ee38f2e3",
+              "ad7d72d8adca3e25",
+              "ae01b0e36aaa41b4",
+              "b85168f48c8c9970",
+              "f55df4ea9e688069"
+            ],
+            "candidate": [
+              "2c2395ec28c6a158",
+              "2fa07f444b825370",
+              "4201b435eda16cf2",
+              "9e3e5f19ee38f2e3",
+              "ad7d72d8adca3e25",
+              "ae01b0e36aaa41b4",
+              "b85168f48c8c9970",
+              "f55df4ea9e688069"
+            ]
+          }
+        },
+        {
+          "name": "behavioral_profile_equivalence",
+          "pass": true,
+          "detail": {
+            "mismatch_count": 0,
+            "first_mismatches": []
+          }
+        }
+      ]
+    }
+  ],
+  "engineering_result_integrity_pass": true,
+  "stage1_counterfactual48_present": false,
+  "algorithm_attribution_allowed": false,
+  "decision": "ENGINEERING EVIDENCE RELIABLE; V43 ALGORITHM ATTRIBUTION NOT AVAILABLE; DO NOT ISSUE GO/STOP",
+  "runtime": {
+    "pre_r2_v43_profile8_wall_seconds": 26242.0,
+    "r2_profile8_wall_seconds": 20649.0,
+    "speedup": 1.2708605743619545,
+    "wall_reduction_fraction": 0.21313162106546757,
+    "r2_shards": [
+      {
+        "selection_mean_s_per_step": 63.93664500922823,
+        "selection_fraction": 0.9927133009455146,
+        "candidate_build_mean_s_per_step": 0.41380278737851767,
+        "model_forward_mean_s_per_step": 0.03428259224747308,
+        "policy_total_mean_s_per_step": 64.4059517972928
+      },
+      {
+        "selection_mean_s_per_step": 57.742332592199816,
+        "selection_fraction": 0.9919324542646095,
+        "candidate_build_mean_s_per_step": 0.4089801007161441,
+        "model_forward_mean_s_per_step": 0.035810440308705435,
+        "policy_total_mean_s_per_step": 58.21196024381352
+      }
+    ],
+    "dominant_runtime_component": "selection (~99.2% policy time on both shards)"
+  },
+  "scope_boundary": [
+    "equivalence16 and profile8 are sufficient to audit common-path/runtime-fidelity engineering behavior",
+    "profile8 is not the frozen 48-scene Stage-1 and cannot decide the six-item promotion gate",
+    "no dominant-bottleneck update or V44 scientific algorithm design is permitted under the user-specified reliability-first rule until Stage-1 exists"
+  ]
+}

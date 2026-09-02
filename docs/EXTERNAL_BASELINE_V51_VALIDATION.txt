@@ -1,0 +1,28 @@
+OC-RAP external baseline v51 validation
+=======================================
+Basis: user-uploaded OC-RAP-external-baselines-v50(2).zip + reports.zip
+
+Static validation:
+- bash -n run_safe_regime_external_baselines.sh: PASS
+- bash -n run_near_contact_external_baselines_2gpu_optimized.sh: PASS
+- bash -n run_contact_external_baselines.sh: PASS
+- bash -n run_all_regime_external_baselines_optimized.sh: PASS
+- py_compile modified Python modules: PASS
+
+Tests:
+- tests/models/test_external_baseline_loss_numerics.py
+- tests/models/test_external_regime_dataset_filter.py
+- tests/models/test_gameformer_gradient_stability.py
+- tests/models/test_external_gameformer_input_contract.py
+- tests/models/test_external_observation_only_policies.py
+- tests/test_external_baseline_cuda_runtime.py
+- tests/test_closed_loop_resume_optimization.py
+- tests/test_ocrap_closed_loop_hotpath.py
+- tests/simulation/test_closed_loop_timing_aggregation.py
+Result: 34 passed.
+
+Environment limitation:
+The user's /data0 datasets and two physical A30 GPUs are not mounted here, so no
+claim is made about full-dataset wall-clock speed or the exact first non-finite
+tensor in the original server log.  The code now fails fast with the component
+name if any remaining data-specific non-finite occurs.

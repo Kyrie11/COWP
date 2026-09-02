@@ -1,0 +1,30 @@
+external_baselines:
+  baseline: postimpact_mpc_lite
+  methods: [postimpact_mpc_lite]
+  max_candidates: 24
+  policy:
+    contact_dt: 0.1
+    contact_mu: 0.75
+    vehicle_mass: 1750.0
+    vehicle_iz: 2350.0
+    postimpact_gamma: 0.0
+    postimpact_dt: 0.1
+    postimpact_mu: 0.75
+    postimpact_sbd_margin: 4.0
+    postimpact_sbd_wrong_mode_penalty: 1.5
+    postimpact_sbd_terminal_speed_weight: 0.35
+    postimpact_lane_change_lateral_weight: 0.08
+    postimpact_yaw_rate_weight: 1.4
+    postimpact_yaw_acc_weight: 0.15
+    postimpact_terminal_speed_weight: 0.25
+    postimpact_accel_weight: 0.08
+    postimpact_steer_weight: 0.08
+    postimpact_jerk_weight: 0.02
+    postimpact_adhesion_weight: 1.1
+    postimpact_hard_weight: 8.0
+    postimpact_harm_weight: 2.5
+    postimpact_rejoin_weight: 0.20
+    postimpact_shared_drs_weight: 3.0
+    postimpact_yaw_rate_gate: 2.2
+    postimpact_adhesion_gate: 1.25
+    postimpact_hard_gate: 0.0

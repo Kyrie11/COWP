@@ -1,0 +1,24 @@
+external_baselines:
+  baseline: pdm_closed
+  methods: [pdm_closed]
+  max_candidates: 24
+  policy:
+    risk_dt: 0.1
+    risk_clearance_buffer_m: 0.75
+    risk_clearance_scale_m: 2.0
+    risk_collision_temperature_m: 0.8
+    risk_severity_speed_mps: 12.0
+    backup_deceleration_mps2: 5.0
+    backup_reaction_time_s: 0.25
+    cvar_alpha: 0.20
+    pdm_progress_weight: 5.0
+    pdm_ttc_weight: 5.0
+    pdm_comfort_weight: 2.0
+    pdm_deviation_weight: 0.20
+    pdm_backup_margin_weight: 0.10
+    pdm_collision_probability_gate: 0.45
+    pdm_min_clearance_gate_m: -0.25
+  training:
+    validate_dataset: true
+    device: cpu
+    epochs: 1

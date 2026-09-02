@@ -1,0 +1,24 @@
+OC-RAP external baseline v52 validation
+=======================================
+Basis: user-uploaded OC-RAP-external-baselines-v51-nan-speed(1).zip
+
+Changes validated:
+- removed named-regime purity filtering from external baseline dataset grouping
+- corrected GameFormer first-step future finite difference to use current origin
+- prevented atan2(0,0) in predicted-future heading backward path
+- FP32 geometric angle/difference transform under BF16 model AMP
+- hardened all differentiable-zero loss paths against 0 * NaN
+- non-finite gradient diagnostics now report offending parameter names
+- Safe learned training/offline evaluation uses dynamic two-GPU work queue
+- all-regime launcher propagates USE_DYNAMIC_SCHEDULER to all regime scripts
+
+Static validation:
+- bash -n Safe/Near/Contact/all-regime launchers: PASS
+- py_compile modified Python modules: PASS
+
+Regression tests:
+49 passed
+
+Environment limitation:
+No physical A30 or /data0 dataset is mounted here; full server training/closed-loop
+wall-clock execution was not claimed.

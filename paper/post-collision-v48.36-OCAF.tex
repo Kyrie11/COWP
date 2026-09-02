@@ -1,0 +1,950 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{algorithmic}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator{\softmin}{softmin}
+\DeclareMathOperator{\softmaxmax}{softmaxmax}
+\DeclareMathOperator{\sigmoid}{sigmoid}
+\DeclareMathOperator{\dist}{dist}
+\DeclareMathOperator{\Quantile}{Quantile}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\WQ}{WQ}
+\DeclareMathOperator{\UCB}{UCB}
+\DeclareMathOperator{\LCVaR}{LCVaR}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\cA}{\mathcal{A}}
+\newcommand{\cB}{\mathcal{B}}
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\cF}{\mathcal{F}}
+\newcommand{\cG}{\mathcal{G}}
+\newcommand{\cI}{\mathcal{I}}
+\newcommand{\cJ}{\mathcal{J}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cM}{\mathcal{M}}
+\newcommand{\cO}{\mathcal{O}}
+\newcommand{\cP}{\mathcal{P}}
+\newcommand{\cR}{\mathcal{R}}
+\newcommand{\cS}{\mathcal{S}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\cU}{\mathcal{U}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\calX}{\mathcal{X}}
+\newcommand{\rvn}{\mathrm{OC\mbox{-}MERO}}
+\newcommand{\cpdm}{\mathrm{ReCoT}}
+\newcommand{\rec}{\mathrm{rec}}
+\newcommand{\drv}{\mathrm{drv}}
+\newcommand{\exec}{\mathrm{exec}}
+\newcommand{\near}{\mathrm{near}}
+\newcommand{\contact}{\mathrm{contact}}
+\newcommand{\imp}{\mathrm{imp}}
+\newcommand{\terminal}{\mathrm{terminal}}
+\newcommand{\route}{\mathrm{route}}
+\newcommand{\wit}{\mathrm{wit}}
+\newcommand{\harm}{\mathrm{harm}}
+\newtheorem{proposition}{Proposition}
+
+\title{Observation-Consistent Recoverability as a Calibrated Planning Primitive for Autonomous Driving}
+
+\author{Anonymous Authors}
+
+\begin{document}
+\maketitle
+
+
+\begin{abstract}
+Autonomous vehicles cannot avoid every possible collision, occlusion-induced conflict, or post-contact disturbance.  A planner therefore should not only minimize immediate risk, but also preserve the ability to recover when a scene becomes critical.  We argue that \emph{recoverability} should be elevated to a first-class optimization target for autonomous-driving planning: an action is desirable only if it maintains deployable recovery headroom, not merely high nominal utility or low short-horizon collision risk.
+
+The key challenge is that recovery can be falsely certified.  A candidate action may appear recoverable if an oracle can choose a different recovery option for each hidden future, while the deployed vehicle cannot distinguish those futures after executing the action.  We call this mismatch the \emph{oracle-to-deployable recoverability gap}.  It exposes an important failure mode: a recovery option is valid only if it remains selectable from the post-action observation, rather than from hindsight knowledge of the latent future.
+
+We propose \textbf{OC-RAP}, an Observation-Consistent Recovery-Affordance Planner.  OC-RAP evaluates candidate actions by asking whether they preserve recovery options that are shared across observation-indistinguishable latent futures.  It rejects actions whose apparent recovery relies on oracle artifacts, while preserving the nominal action whenever deployable recovery headroom is sufficient.  This formulation turns recovery from a post-hoc emergency behavior into a calibrated action-admission and optimization criterion.  
+\end{abstract}
+
+
+\section{Introduction}
+\label{sec:introduction}
+
+Autonomous-driving safety is often framed as the problem of avoiding collisions.  This framing is necessary but incomplete.  Real vehicles cannot guarantee that every possible collision, occlusion-induced conflict, abrupt interaction, or post-contact disturbance will be avoided.  Even when the first hazardous event is unavoidable or has already occurred, the vehicle must still decide whether it can stop, stabilize, avoid a secondary collision, rejoin a route, or move toward a safer state.  Recent analyses of robotaxi crashes and post-impact control further show that safety failures may continue after the first contact, especially when the vehicle misinterprets the post-event scene or executes an unsafe recovery maneuver~\cite{koopman2024anatomy,yang2025post,ghosh2026post,wang2024post}.  These observations suggest a broader planning question: \emph{does the action chosen now preserve the ability to recover later?}
+
+We argue that recoverability should be treated as a first-class optimization target for autonomous-driving planning.  Current planners are commonly optimized or filtered by imitation quality, progress, comfort, rule compliance, risk-weighted cost, or short-horizon collision probability.  These objectives are essential for nominal driving, but they do not necessarily preserve the control authority, spatial margin, route topology, or post-contact stability needed for recovery.  Two actions can have similar immediate risk: one enters a narrow gap with no braking reserve or escape corridor, while the other leaves enough headroom to yield, stop, or rejoin.  A planner that only evaluates local safety may treat them as equivalent, even though their recoverability is fundamentally different.
+
+However, simply adding a recovery check is not enough, because apparent recovery can be an oracle artifact.  Consider a candidate merge into a constrained gap.  After executing the merge prefix, two latent futures may remain indistinguishable to the ego vehicle: in one, the adjacent vehicle yields; in the other, it accelerates into the gap.  With hindsight, an oracle can select ``continue'' in the first branch and ``brake or retreat'' in the second branch, certifying that every branch has some recovery option.  The deployed vehicle, however, receives only the post-prefix observation.  If that observation cannot distinguish the two futures, then it cannot know which recovery option to select.  The action is therefore not deployably recoverable, even though it is recoverable branch by branch.
+
+This example exposes a distinction that is central to this paper.  \emph{Local safety} asks whether an action has low immediate risk or satisfies short-horizon constraints.  \emph{Oracle recoverability} asks whether each hidden future admits some recovery behavior when the future identity is known.  \emph{Deployable recoverability} asks whether recovery remains selectable and executable using the observation available after the action is executed.  The last notion is the one that matters for a closed-loop autonomous system.  A recovery option is valid only if it is observation-consistent: latent futures that the vehicle cannot distinguish must admit a compatible recovery decision.
+
+Existing work provides important pieces of this problem but does not directly solve it.  Post-crash, post-impact, and collision-mitigation methods emphasize recovery after contact or near contact, but they often begin once the system is already in a critical regime~\cite{li2022vehicle,bosia2024real,wang2023integrated,parseh2023motion,wang2024post}.  Reachability, viability, control-barrier, backup-controller, and predictive-safety-filter methods provide formal tools for safe sets, invariant constraints, and backup feasibility~\cite{bansal2017hamilton,bansal2021deepreach,ames2019control,wabersich2021predictive,tearle2021predictive,kim2026backup}.  Yet these certificates are often state-wise, branch-wise, or tied to a prescribed backup behavior; they do not necessarily verify whether the recovery decision remains selectable under the vehicle's post-action observation.  Risk-aware, distributionally robust, and contingency planners reason about uncertainty and multiple futures~\cite{uryasev2000conditional,hakobyan2021wasserstein,safaoui2024distributionally,batkovic2020robust,nair2024predictive,li2023marc,mustafa2024racp}, but a scenario tree may still contain one feasible recovery branch per latent future while offering no single deployable recovery option for futures that remain observationally indistinguishable.  Standard closed-loop benchmarks further emphasize collision, comfort, progress, and rule compliance, but rarely measure whether a planner falsely admits actions whose recovery exists only under hindsight information~\cite{dosovitskiy2017carla,caesar2021nuplan,li2022metadrive,ettinger2021large,wilson2023argoverse,zhan2019interaction,caesar2020nuscenes,ding2025understanding,lu2025risk,hu2025survey}.
+
+We therefore focus on a specific failure mode: \emph{false recoverability admission}.  A planner falsely admits an action when the action appears recoverable under branch-wise or oracle evaluation, but does not preserve any recovery option that can be selected from the post-action observation.  This failure is different from ordinary prediction error or risk underestimation.  It occurs because the recovery certificate itself uses information that the deployed vehicle will not have.  Preventing this failure requires recoverability to be evaluated not only over possible futures, but also through the observation structure induced by the candidate action.
+
+To address this problem, we propose \textbf{OC-RAP}, an Observation-Consistent Recovery-Affordance Planner.  OC-RAP treats recoverability as a calibrated action-admission and optimization criterion.  For each candidate prefix, it predicts recovery-sufficient latent roots, groups roots that would be indistinguishable after the prefix, and evaluates whether a recovery option remains valid across each observation-equivalent group.  The core idea is simple: recovery is credited only when it is deployable from what the vehicle can observe, not when it is chosen with hidden branch identity.  A lower-tail recovery aggregation emphasizes low-headroom cases where recovery is most fragile, and a calibrated selector preserves the nominal action whenever it remains deployably recoverable while rejecting actions that rely on oracle artifacts or consume recovery headroom.
+
+This formulation changes the role of recovery in planning.  Recovery is not treated as a separate emergency controller that activates after nominal planning fails, nor as a terminal backup condition checked after a trajectory has already been proposed.  Instead, recoverability becomes part of the action-selection objective itself.  The planner should prefer high-utility actions when they preserve deployable recovery, but it should be willing to sacrifice nominal utility when the nominal action destroys recovery headroom or admits only oracle-dependent recovery.  In this way, OC-RAP connects nominal driving, low-headroom interaction, near-contact maneuvering, and post-contact stabilization under a single planning principle.
+
+This paper makes the following contributions:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Recoverability as a first-class planning objective.}
+    We formulate recoverability as an action-level optimization and admission target for autonomous driving, extending safety evaluation beyond immediate collision risk, nominal utility, or post-hoc emergency control.
+
+    \item \textbf{Oracle-to-deployable recoverability gap.}
+    We identify a partial-observability failure mode in which branch-wise recovery labels overestimate safety because different hidden futures require incompatible recovery options that the deployed vehicle cannot distinguish.
+
+    \item \textbf{Observation-consistent recovery admission.}
+    We propose OC-RAP, which admits a candidate action only when it preserves recovery options that remain valid across observation-indistinguishable latent futures, thereby preventing recovery certificates that depend on oracle artifacts.
+
+    \item \textbf{Calibrated recovery-preserving action selection.}
+    We design a calibrated selector that preserves nominal behavior when deployable recovery headroom is sufficient, rejects actions that consume recovery affordances, and evaluates planning quality through false recoverability admission, oracle--deployability gap, deployable recovery success, and nominal-utility preservation.
+\end{enumerate}
+
+
+
+\section{Related Work}
+
+\subsection{Post-Crash, Post-Impact, and Collision-Mitigation Planning}
+
+Post-crash and post-impact studies demonstrate that driving safety cannot be reduced to avoiding the first collision.  Analyses of real robotaxi crashes highlight that failures may continue after the initial event, especially when the vehicle misinterprets the post-contact world state or executes an unsafe recovery maneuver~\cite{koopman2024anatomy}.  Vehicle-control studies similarly emphasize that post-impact dynamics can lead to loss of stability, secondary collisions, and degraded controllability~\cite{wang2023integrated,parseh2023motion,wang2024post,yang2025post,ghosh2026post}.  Collision-mitigation and unavoidable-collision planning methods consider severity reduction, motion planning under impact risk, and real-time mitigation strategies~\cite{li2022vehicle,bosia2024real}.  These works establish the practical importance of recovery after contact or near contact.
+
+Our work is complementary but differs in its planning perspective.  Rather than starting only when a collision is imminent or has already occurred, we ask whether nominal and near-nominal actions preserve the recovery affordances needed if the scene later becomes critical.  In this sense, post-impact control provides an important target behavior, while our focus is the upstream admission of candidate prefixes that preserve deployable recovery headroom before the system loses options.
+
+\subsection{Reachability, Viability, Control Barrier Functions, and Safety Filters}
+
+Formal safety methods provide semantics for safe sets, reach-avoid sets, invariant sets, and backup feasibility.  Hamilton--Jacobi reachability and learned reachability approximations reason about safety and reachability in high-dimensional systems~\cite{bansal2017hamilton,bansal2021deepreach,lin2023generating,borquez2022parameter}.  Control barrier functions and predictive safety filters enforce invariance or constraint satisfaction for learning-enabled and nonlinear control systems~\cite{ames2019control,koller2018learning,wabersich2021predictive,tearle2021predictive}.  Backup-based safety filters compare different ways of certifying that a nominal controller can be safely overridden by a backup maneuver~\cite{kim2026backup}.  Stabilize-avoid formulations further connect safety with the ability to reach stabilizing behavior while avoiding unsafe sets~\cite{so2023solving}.
+
+These approaches are highly relevant to recoverability, but they do not by themselves resolve the oracle-to-deployable gap.  A backup or reachable set may certify that some safe behavior exists from a state, yet the certification may be state-wise, branch-wise, or based on a prescribed backup behavior.  Our question is different: after executing a candidate prefix under uncertainty, do the resulting post-prefix observations still admit a recovery choice that is compatible across indistinguishable latent futures?  The distinction is critical because a branch-wise existential recovery certificate can be true while no deployed policy can select the correct recovery behavior from the available observation.
+
+\subsection{Risk-Aware, Distributionally Robust, and Contingency Planning}
+
+Risk-aware planning methods account for uncertainty through chance constraints, conditional value-at-risk, distributional robustness, scenario trees, or multimodal prediction~\cite{uryasev2000conditional,hakobyan2021wasserstein,safaoui2024distributionally,batkovic2020robust,nair2024predictive}.  Contingency planners explicitly prepare for multiple possible futures and can maintain multiple policies or fallback plans for autonomous driving~\cite{li2023marc,mustafa2024racp}.  Formal driving models such as RSS also motivate structured safety reasoning in interactive traffic~\cite{shalev2017formal}.  These works move beyond single-trajectory planning and are natural baselines for recovery-aware decision making.
+
+The gap we address is not the absence of uncertainty modeling, but the deployability of the recovery decision.  A scenario tree can contain a feasible recovery branch for every latent future while still failing to provide a single observation-consistent recovery behavior for futures that remain indistinguishable after the candidate prefix.  Risk metrics can penalize harmful outcomes, but they need not detect that the planner's apparent recovery ability depends on hidden branch identity.  Our formulation therefore treats recoverability not merely as a scalar expected risk or tail cost, but as an observation-constrained property of the action being admitted.
+
+\subsection{Learning-Based Planning, World Models, and Benchmarks}
+
+Learning-based driving systems increasingly rely on large-scale datasets, simulators, world models, and closed-loop benchmarks~\cite{dosovitskiy2017carla,caesar2021nuplan,li2022metadrive,ettinger2021large,wilson2023argoverse,zhan2019interaction,althoff2017commonroad,krajewski2018highd,caesar2020nuscenes}.  Surveys of autonomous-driving planning, risk assessment, and world models summarize a broad landscape of prediction, decision making, interaction modeling, and closed-loop evaluation~\cite{ding2025understanding,lu2025risk,hu2025survey}.  These resources support increasingly realistic evaluation of nominal driving, interactive prediction, collision rate, progress, comfort, and rule compliance.
+
+However, standard benchmarks rarely measure whether a planner falsely admits an action because recovery appears possible only under an oracle view of the future.  A planner can score well on immediate collision avoidance or imitation metrics while entering states with low recovery headroom.  Conversely, a planner that preserves recovery affordances may intervene minimally in nominal scenes but behave differently in low-headroom or post-contact regimes.  This motivates evaluation protocols that directly measure false recoverability admission, deployable recovery success, and nominal-utility preservation across normal, near-critical, and post-contact scenarios.
+
+\subsection{Calibration, Conformal Risk Control, and Reliable Admission}
+
+Calibration and conformal prediction provide tools for turning uncertain predictions into statistically meaningful decision rules~\cite{vovk2005algorithmic,stephen2021gentle,angelopoulos2024conformal}.  Recent work applies conformal ideas to autonomous decision making and safety filtering, enabling risk control under imperfect predictions~\cite{lekeufack2024conformal,strawn2023conformal}.  These tools are important for reliable deployment because a recovery-aware planner should not merely estimate recovery headroom; it should also control the rate at which unsafe or unrecoverable candidates are admitted.
+
+In our story, calibration is a credibility mechanism rather than the central novelty.  The central question is what property should be calibrated: not generic prediction error alone, but observation-consistent deployable recoverability.  Once recoverability is defined as a post-prefix, observation-constrained action property, calibration can be used to control false recoverability admission while preserving nominal utility whenever the original action is already recoverable.
+
+
+
+
+
+% =========================
+% Suggested title
+% =========================
+% \title{Observation-Consistent Recoverability as a Calibrated Planning Primitive for Autonomous Driving}
+
+\section{Method}
+\label{sec:method}
+
+We propose \textbf{OC-RAP}, an \emph{Observation-Consistent Recovery-Affordance Planner}.  OC-RAP evaluates each executable candidate prefix by first predicting recovery-sufficient latent roots, collapsing them into post-prefix observation equivalence classes, and then asking whether each class admits a shared recovery policy with calibrated lower-tail margin.  The key design choice is the order of operations: recovery is not certified branch-wise.  A recovery option becomes admissible only after hidden futures that are indistinguishable to the deployed vehicle have been grouped together.
+
+At each planning step, the input scene history is
+\begin{equation}
+    h_t = \{x^e_{t-H:t}, \mathcal{X}_{t-H:t}, \mathcal{M}, \Omega_t\},
+\end{equation}
+where $x^e_{t-H:t}$ is the ego history, $\mathcal{X}_{t-H:t}$ denotes neighboring-agent histories, $\mathcal{M}$ is the local map and route graph, and $\Omega_t$ is an observation mask encoding sensor range, occlusion, and perception confidence.  OC-RAP receives a candidate set $\mathcal{A}_t=\{a_0,\ldots,a_N\}$, where $a_0$ is the nominal planner prefix and the remaining prefixes are dynamically feasible alternatives.  Each prefix is a short-horizon executable action rather than a full plan.  The selected prefix is then passed to a low-level controller.
+
+
+\subsection{Recovery-Sufficient Latent Root Generator}
+\label{subsec:rsrg}
+
+A standard world model attempts to predict a realistic future scene.  OC-RAP instead predicts only the latent factors that are sufficient for deciding whether a candidate prefix preserves deployable recovery headroom.  We call these factors \emph{recovery-sufficient roots}.  For a candidate prefix $a$, let $F$ denote the full latent future, $o$ the post-prefix observation, $g$ a recovery option, and $Y_g$ the signed recovery outcome.  A compressed root $z=\phi(F,a)$ is recovery-sufficient if
+\begin{equation}
+    p(Y_g \mid F,o,a,g)
+    =
+    p(Y_g \mid z,o,a,g),
+    \qquad \forall g \in \mathcal{G}.
+    \label{eq:recovery_sufficiency}
+\end{equation}
+Thus, after conditioning on $z$, the remaining details of the full future are unnecessary for evaluating recovery.  We additionally prefer minimal roots:
+\begin{equation}
+    \min_{\phi} I_\phi(z;F \mid o,a)
+    \quad
+    \mathrm{s.t.}
+    \quad
+    \mathcal{L}_{\rm rec}(z,o,a) \leq \epsilon.
+    \label{eq:minimal_root}
+\end{equation}
+This separates OC-RAP from future-complete world models: the goal is not realism for its own sake, but recovery-sufficient abstraction for deployable action admission.
+
+The root generator contains three encoders.  First, an agent-map transformer encodes neighboring agents and lane polylines.  Second, an ego-prefix encoder embeds ego dynamics and the candidate prefix.  Third, an optional semantic occupancy/occlusion BEV encoder summarizes drivable space, hidden regions, and perception confidence.  A root decoder with $K$ learned queries outputs
+\begin{equation}
+    \{(z_k,p_k)\}_{k=1}^{K}
+    =
+    Z_\psi(E_\theta(h_t,a)),
+    \qquad
+    \sum_{k=1}^{K}p_k=1.
+\end{equation}
+Each root summarizes recovery-relevant factors, such as agent intent, occlusion emergence, contact mode, control envelope, post-contact stability, and route-topology availability.  We keep these factors latent in the main model and expose their taxonomy only for label construction and interpretability.
+
+Training uses counterfactual prefix rollouts.  For each logged or simulated scene, we sample candidate prefixes, roll them out under multiple future roots, and query recovery teachers to obtain signed margins.  The root generator is trained to reconstruct recovery signatures rather than full trajectories:
+\begin{equation}
+    \mathcal{L}_{\rm root}
+    =
+    \mathcal{L}_{\rm assign}
+    +
+    \lambda_{\rm sig}\mathcal{L}_{\rm sig}
+    +
+    \lambda_{\rm ib}\mathcal{L}_{\rm ib}.
+    \label{eq:root_loss}
+\end{equation}
+Here $\mathcal{L}_{\rm assign}$ matches predicted roots to root clusters, $\mathcal{L}_{\rm sig}$ preserves the recovery-margin signature induced by each root, and $\mathcal{L}_{\rm ib}$ penalizes unnecessary future information.  Appendix~\ref{app:root_labels} gives the label construction and implementation details.
+
+\subsection{Post-Prefix Observation Equivalence Kernel}
+\label{subsec:obs_kernel}
+
+Deployable recoverability depends on what the vehicle can observe after executing the candidate prefix.  For each root $z_k$, OC-RAP predicts a post-prefix observation embedding
+\begin{equation}
+    e_k^o = O_\eta(h_t,a,z_k).
+\end{equation}
+Two roots are observation-equivalent under prefix $a$ if they induce post-prefix observations that the deployed system cannot reliably distinguish:
+\begin{equation}
+    z_i \sim_a z_j
+    \quad \Longleftrightarrow \quad
+    d_o(e_i^o,e_j^o)\leq \varepsilon_o.
+    \label{eq:obs_equiv}
+\end{equation}
+The induced equivalence class is denoted by $\mathcal{C}_a(o)$.  This definition is central: if two latent futures are in the same observation class, OC-RAP does not allow an oracle to select different hidden recovery maneuvers for them.  The recovery decision must be a function of the post-prefix observation:
+\begin{equation}
+    g = \pi_{\rm rec}(o).
+\end{equation}
+Therefore, all roots in the same observation class must share a compatible recovery option.
+
+For differentiable training and aggregation, we use a soft compatibility kernel
+\begin{equation}
+    C_{ij}
+    =
+    \exp\!\left(-d_o(e_i^o,e_j^o)^2/\tau_o\right).
+    \label{eq:compatibility}
+\end{equation}
+The observation kernel is trained with pairwise supervision obtained by rendering the post-prefix observation available to the ego vehicle under each counterfactual rollout:
+\begin{equation}
+    \mathcal{L}_{\rm obs}
+    =
+    - \sum_{i,j}
+    \left[
+        y_{ij}^{o}\log C_{ij}
+        +
+        (1-y_{ij}^{o})\log(1-C_{ij})
+    \right],
+    \label{eq:obs_loss}
+\end{equation}
+where $y_{ij}^{o}=1$ if two roots are indistinguishable under the sensor/occlusion model.  Appendix~\ref{app:obs_labels} specifies how $y_{ij}^{o}$ is computed from logged boxes, map visibility, and occlusion masks.
+
+\subsection{Affordance-Conditioned Recovery Margin Head}
+\label{subsec:recovery_margin}
+
+A recovery option in OC-RAP is not a fixed emergency trajectory.  It is an affordance-conditioned policy
+\begin{equation}
+    g_\ell = (r_\ell,\theta_\ell),
+\end{equation}
+where $r_\ell$ is a semantic recovery mode and $\theta_\ell$ contains mode-specific continuous parameters.  Examples include controlled stop, brake-in-lane, lateral escape, yield-and-rejoin, shoulder pull-over, contact mitigation, post-contact stabilization, and secondary-collision avoidance.  The parameterization is mode-specific and is detailed in Appendix~\ref{app:recovery_modes}.
+
+Given a candidate prefix, a root, and a recovery option, the margin head predicts a signed recovery margin:
+\begin{equation}
+    \hat m_{k\ell}
+    =
+    M_\omega(h_t,a,z_k,g_\ell).
+    \label{eq:margin_head}
+\end{equation}
+Positive margin means that the recovery option satisfies the relevant safety, control, and route constraints with slack; negative margin means that at least one recovery requirement is violated.  The margin target is computed by rolling out the candidate prefix, applying a recovery teacher, and taking the minimum normalized slack across recovery constraints:
+\begin{equation}
+    m^{\star}_{k\ell}
+    =
+    \min_q b_q(\xi_{a,z_k,g_\ell})/s_q.
+    \label{eq:signed_margin}
+\end{equation}
+Here $\xi_{a,z_k,g_\ell}$ is the counterfactual closed-loop trajectory after recovery option $g_\ell$, $b_q$ is a signed constraint function, and $s_q$ is a normalization scale.  The margin head is trained with a robust regression loss:
+\begin{equation}
+    \mathcal{L}_{\rm marg}
+    =
+    \sum_{k,\ell}
+    p_k \,
+    \rho\!\left(\hat m_{k\ell}-m^{\star}_{k\ell}\right).
+    \label{eq:margin_loss}
+\end{equation}
+
+This margin representation lets us distinguish oracle recoverability from deployable recoverability.  An oracle can choose a different recovery option for every hidden root:
+\begin{equation}
+    \widehat R_{\rm orc}(a)
+    =
+    \operatorname{LCVaR}_{\beta}
+    \left(
+        \left\{
+        \max_{\ell} \hat m_{k\ell}
+        \right\}_{k=1}^{K};
+        \{p_k\}_{k=1}^{K}
+    \right).
+    \label{eq:oracle_recovery}
+\end{equation}
+A deployed planner cannot do this.  It must first collapse roots by post-prefix observation and then choose one shared recovery option within each indistinguishable class.  OC-RAP therefore computes deployable recoverability by reversing the oracle order:
+\begin{equation}
+    \widehat R_{\rm dep}(a)
+    =
+    \operatorname{LCVaR}_{\alpha}
+    \left(
+        \left\{
+        \max_{\ell}
+        \operatorname{LCVaR}_{\beta}
+        \big(
+            \{\hat m_{j\ell}\}_{j};
+            \{\bar C_{ij}p_j\}_{j}
+        \big)
+        \right\}_{i=1}^{K};
+        \{p_i\}_{i=1}^{K}
+    \right),
+    \label{eq:deployable_recovery}
+\end{equation}
+where $\bar C_{ij}$ is the row-normalized compatibility weight.  Since the oracle maximizes over recovery options before enforcing observation consistency,
+\begin{equation}
+    \widehat R_{\rm orc}(a)
+    \geq
+    \widehat R_{\rm dep}(a).
+    \label{eq:oracle_gap}
+\end{equation}
+The inequality is strict when two indistinguishable roots require incompatible recovery options.  This is the source of false recoverability admission.
+
+\subsection{OC-MERO Aggregation and CRISP Action Selection}
+\label{subsec:ocmero_crisp}
+
+The aggregation operator in Eq.~\eqref{eq:deployable_recovery} is the \textbf{Observation-Consistent Monotone Existential Recovery Operator} (OC-MERO).  It takes the predicted roots, root probabilities, observation embeddings, compatibility matrix, recovery options, and signed margins, and returns three quantities:
+\begin{equation}
+    \widehat R_{\rm dep}(a), \qquad
+    \widehat R_{\rm orc}(a), \qquad
+    \widehat G(a)=\widehat R_{\rm orc}(a)-\widehat R_{\rm dep}(a).
+\end{equation}
+OC-MERO is existential because it searches for a feasible recovery option, observation-consistent because the option is shared across indistinguishable roots, lower-tail because it evaluates low-headroom cases, and monotone because increasing any recovery margin cannot decrease the aggregate score.
+
+The final selector, \textbf{CRISP} (\emph{Calibrated Recovery-Preserving Selector}), treats recoverability as an admission property rather than the sole objective.  Let $U(a)$ be nominal utility, $H(a)$ a hard-rule violation score, and $D(a)$ a harm or severity proxy.  CRISP selects
+\begin{equation}
+    a^\star
+    =
+    \arg\max_{a\in \mathcal{A}_t}
+    U(a)
+    \quad
+    \mathrm{s.t.}
+    \quad
+    \widehat R_{\rm dep}(a)\geq \widehat\gamma_{\rm rec},
+    \quad
+    H(a)\leq \gamma_H,
+    \quad
+    D(a)\leq \gamma_D.
+    \label{eq:crisp}
+\end{equation}
+If the nominal prefix $a_0$ satisfies the constraints, CRISP returns $a_0$ unchanged.  Thus OC-RAP intervenes only when nominal behavior fails to preserve deployable recovery headroom.  The threshold $\widehat\gamma_{\rm rec}$ is selected on a held-out calibration split to control false recoverability admission.
+
+During training, we add an anti-oracle loss on prefixes whose oracle label is recoverable but deployable label is not:
+\begin{equation}
+    I_{\rm art}^{\star}(a)
+    =
+    \mathbf{1}
+    \left[
+        R_{\rm orc}^{\star}(a)\geq 0
+        \;\wedge\;
+        R_{\rm dep}^{\star}(a)<0
+    \right].
+    \label{eq:artifact_indicator}
+\end{equation}
+The loss penalizes high predicted deployable recovery for oracle artifacts:
+\begin{equation}
+    \mathcal{L}_{\rm art}
+    =
+    \mathbb{E}_{a}
+    \left[
+        I_{\rm art}^{\star}(a)
+        \left[
+            \widehat R_{\rm dep}(a)-\delta_{\rm neg}
+        \right]_+
+    \right].
+    \label{eq:anti_oracle_loss}
+\end{equation}
+The complete objective is
+\begin{equation}
+    \mathcal{L}
+    =
+    \mathcal{L}_{\rm root}
+    +
+    \lambda_o \mathcal{L}_{\rm obs}
+    +
+    \lambda_m \mathcal{L}_{\rm marg}
+    +
+    \lambda_a \mathcal{L}_{\rm art}
+    +
+    \lambda_u \mathcal{L}_{\rm util}.
+    \label{eq:total_loss}
+\end{equation}
+$\mathcal{L}_{\rm util}$ distills nominal utility ranking from the base planner so that recovery admission does not unnecessarily degrade normal driving.
+
+\begin{algorithm}[t]
+\caption{Observation-Consistent Recovery-Affordance Planning}
+\label{alg:ocrap}
+\begin{algorithmic}[1]
+\REQUIRE Scene history $h_t$, candidate prefixes $\mathcal{A}_t$, recovery options $\mathcal{G}$, calibrated threshold $\widehat\gamma_{\rm rec}$.
+\FOR{each candidate prefix $a\in\mathcal{A}_t$}
+    \STATE Encode scene-prefix pair $e_{h,a}=E_\theta(h_t,a)$.
+    \STATE Predict recovery-sufficient roots $\{(z_k,p_k)\}_{k=1}^{K}=Z_\psi(e_{h,a})$.
+    \STATE Predict post-prefix observation embeddings $e_k^o=O_\eta(e_{h,a},z_k)$.
+    \STATE Build compatibility matrix $C_{ij}=\exp(-d_o(e_i^o,e_j^o)^2/\tau_o)$.
+    \STATE Predict recovery margins $\hat m_{k\ell}=M_\omega(e_{h,a},z_k,g_\ell)$.
+    \STATE Compute $\widehat R_{\rm dep}(a)$ and $\widehat R_{\rm orc}(a)$ using OC-MERO.
+\ENDFOR
+\STATE Form admissible set $\mathcal{A}_{\rm adm}$ using Eq.~\eqref{eq:crisp}.
+\IF{$a_0\in\mathcal{A}_{\rm adm}$}
+    \STATE \textbf{return} $a_0$.
+\ELSIF{$\mathcal{A}_{\rm adm}\neq\emptyset$}
+    \STATE \textbf{return} $\arg\max_{a\in\mathcal{A}_{\rm adm}} U(a)$.
+\ELSE
+    \STATE \textbf{return} minimum-risk prefix $\arg\max_{a\in\mathcal{A}_t}\widehat R_{\rm dep}(a)-\lambda_DD(a)$.
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+
+\section{Experiments}
+\label{sec:experiments}
+
+The experiments are designed to test the paper's central claim: a planner should not be judged only by nominal utility or immediate risk, but by whether it avoids false admission of actions whose recovery is only oracle-recoverable.  We evaluate OC-RAP on closed-loop simulation, counterfactual recovery labels, and regime-wise stress tests.
+
+\subsection{Datasets and Simulation Tools}
+\label{subsec:exp_data}
+
+Our primary benchmark is built from the Waymo Open Motion Dataset (WOMD) and Waymax.  WOMD provides large-scale interactive driving scenes with tracked agents and map annotations~\cite{ettinger2021large}.  Waymax enables closed-loop behavior simulation using WOMD-style bounding-box states, which matches OC-RAP's planner-level input and avoids confounding the study with raw perception.  We use MetaDrive for procedurally generated rare-event stress tests and domain-shift evaluation~\cite{li2022metadrive}.  CARLA is used only in optional sensor-level ablations where explicit field-of-view and occlusion rendering are required~\cite{dosovitskiy2017carla}.
+
+Each scenario is converted into a tuple
+\[
+    (h_t,a,z,o,g,m^\star),
+\]
+where $h_t$ is the scene history, $a$ is a candidate prefix, $z$ is a recovery-sufficient root label, $o$ is the post-prefix observation, $g$ is a recovery option, and $m^\star$ is the teacher recovery margin.  We split scenes into training, validation, calibration, and test sets.  The calibration split is used only to select $\widehat\gamma_{\rm rec}$.
+
+\subsection{Baselines}
+\label{subsec:baselines}
+
+We compare OC-RAP against five classes of baselines.
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Nominal planner.} The base imitation or utility planner without recovery-aware admission.
+    \item \textbf{Risk-aware planner.} A planner that aggregates predicted collision or harm risk using expectation or CVaR~\cite{uryasev2000conditional,hakobyan2021wasserstein,safaoui2024distributionally}.
+    \item \textbf{Oracle recovery filter.} A filter that accepts a prefix if each latent branch has some recovery option, corresponding to Eq.~\eqref{eq:oracle_recovery}.
+    \item \textbf{Backup safety filter.} A backup-based safety filter inspired by reachability, CBF, or predictive safety-filter methods~\cite{bansal2017hamilton,bansal2021deepreach,ames2019control,wabersich2021predictive,tearle2021predictive}.
+    \item \textbf{Contingency planner.} A multi-branch planner that maintains branch-specific contingency behavior but does not enforce post-prefix observation consistency~\cite{li2023marc,mustafa2024racp}.
+\end{enumerate}
+
+We also evaluate ablations:
+\begin{itemize}[leftmargin=*]
+    \item \textbf{OC-RAP w/o observation kernel}: roots are evaluated branch-wise.
+    \item \textbf{OC-RAP w/o lower-tail aggregation}: mean aggregation replaces LCVaR.
+    \item \textbf{OC-RAP w/o calibration}: fixed threshold is used.
+    \item \textbf{OC-RAP w/o anti-oracle loss}: $\mathcal{L}_{\rm art}$ is removed.
+    \item \textbf{Full-future root model}: the root generator predicts future trajectory clusters instead of recovery-sufficient roots.
+    \item \textbf{No occlusion BEV}: the model uses vectorized agents and maps only.
+\end{itemize}
+
+\subsection{Metrics}
+\label{subsec:metrics}
+
+\paragraph{False Recoverability Admission Rate.}
+The main metric is false recoverability admission rate:
+\begin{equation}
+    \mathrm{FRA}
+    =
+    \frac{
+        \sum_{a}
+        \mathbf{1}
+        [
+            a \in \mathcal{A}_{\rm admit}
+            \wedge
+            R_{\rm dep}^{\star}(a)<0
+        ]
+    }{
+        \sum_{a}
+        \mathbf{1}
+        [
+            a \in \mathcal{A}_{\rm admit}
+        ]
+    }.
+    \label{eq:fra}
+\end{equation}
+FRA measures how often the planner admits an action that is not deployably recoverable under the post-prefix observation.
+
+\paragraph{Oracle--Deployability Gap.}
+We report
+\begin{equation}
+    \mathrm{ODG}
+    =
+    \mathbb{E}_{a}
+    [
+        R_{\rm orc}^{\star}(a)
+        -
+        R_{\rm dep}^{\star}(a)
+    ].
+    \label{eq:odg}
+\end{equation}
+A large gap indicates that branch-wise recovery labels overestimate deployable recoverability.
+
+\paragraph{Deployable Recovery Success.}
+After executing a selected prefix, the recovery policy is allowed to condition only on the post-prefix observation, not on the hidden root.  We measure the fraction of cases in which recovery succeeds:
+\begin{equation}
+    \mathrm{DRS}
+    =
+    \Pr[
+        m^\star(a,z,\pi_{\rm rec}(o))\geq 0
+    ].
+    \label{eq:drs}
+\end{equation}
+
+\paragraph{Nominal Utility Preservation.}
+To ensure OC-RAP is not merely conservative, we report progress, comfort, route deviation, intervention rate, and distance from the nominal prefix:
+\begin{equation}
+    \mathrm{NUP}
+    =
+    1 -
+    \frac{
+        U(a_0)-U(a^\star)
+    }{
+        |U(a_0)|+\epsilon
+    }.
+    \label{eq:nup}
+\end{equation}
+
+\paragraph{Post-Contact and Secondary-Collision Metrics.}
+For contact and post-contact regimes, we report secondary-collision rate, stable-stop rate, maximum yaw-rate violation, route-rejoin success, and harm proxy such as $\Delta v$ or normalized impact severity.
+
+\paragraph{Calibration.}
+We evaluate whether the calibrated admission threshold controls false recovery admission on held-out scenes.  We report FRA at target levels $\delta\in\{1\%,5\%,10\%\}$ and reliability curves that compare predicted admissibility against empirical deployable recovery.
+
+\subsection{Regime-Wise Evaluation}
+\label{subsec:regime_eval}
+
+We partition scenarios into five regimes:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Normal}: sufficient nominal clearance and no imminent interaction.
+    \item \textbf{Low-headroom}: small braking, lateral, or route-rejoin margin.
+    \item \textbf{Occluded interaction}: hidden agents or ambiguous emergence roots.
+    \item \textbf{Near-contact}: collision or hard braking is plausible within the recovery horizon.
+    \item \textbf{Post-contact}: initial contact occurs and the vehicle must stabilize or avoid secondary collision.
+\end{enumerate}
+This breakdown tests whether the same recoverability criterion works across the normal-to-critical continuum.
+
+\subsection{Main Results}
+\label{subsec:main_results}
+
+Table~\ref{tab:main_results} reports the main comparison.  The expected outcome is that oracle and contingency baselines may achieve high nominal utility but admit more oracle artifacts, while OC-RAP reduces FRA and improves deployable recovery success with limited utility loss.
+
+\begin{table*}[t]
+\centering
+\caption{Main closed-loop results.  Lower is better for FRA, ODG, collision, and intervention rate.  Higher is better for DRS and NUP.}
+\label{tab:main_results}
+\begin{tabular}{lcccccc}
+\toprule
+Method & FRA $\downarrow$ & ODG $\downarrow$ & DRS $\uparrow$ & Collision $\downarrow$ & NUP $\uparrow$ & Intervention $\downarrow$ \\
+\midrule
+Nominal planner & -- & -- & -- & -- & -- & -- \\
+Risk-aware planner & -- & -- & -- & -- & -- & -- \\
+Backup safety filter & -- & -- & -- & -- & -- & -- \\
+Contingency planner & -- & -- & -- & -- & -- & -- \\
+Oracle recovery filter & -- & -- & -- & -- & -- & -- \\
+OC-RAP & \textbf{--} & \textbf{--} & \textbf{--} & \textbf{--} & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Ablation Studies}
+\label{subsec:ablation}
+
+Table~\ref{tab:ablation} isolates the effect of each component.  We expect the observation kernel and anti-oracle loss to be most important for reducing FRA, while lower-tail aggregation and calibration improve robustness under rare low-headroom roots.
+
+\begin{table*}[t]
+\centering
+\caption{Ablation study.}
+\label{tab:ablation}
+\begin{tabular}{lccccc}
+\toprule
+Variant & FRA $\downarrow$ & ODG $\downarrow$ & DRS $\uparrow$ & NUP $\uparrow$ & Calibration error $\downarrow$ \\
+\midrule
+OC-RAP full & \textbf{--} & \textbf{--} & \textbf{--} & -- & \textbf{--} \\
+w/o observation kernel & -- & -- & -- & -- & -- \\
+w/o lower-tail aggregation & -- & -- & -- & -- & -- \\
+w/o calibration & -- & -- & -- & -- & -- \\
+w/o anti-oracle loss & -- & -- & -- & -- & -- \\
+Full-future root model & -- & -- & -- & -- & -- \\
+No occlusion BEV & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Oracle Artifact Case Study}
+\label{subsec:case_study}
+
+We visualize representative cases where oracle recoverability is high but deployable recoverability is low.  Each visualization shows the candidate prefix, sampled roots, post-prefix observation classes, branch-wise best recovery options, and the shared recovery option selected by OC-RAP.  The key qualitative pattern is that the oracle filter selects incompatible hidden recovery maneuvers for indistinguishable roots, while OC-RAP rejects the prefix or selects a prefix that preserves a shared recovery affordance.
+
+\begin{figure}[t]
+\centering
+\fbox{\rule{0pt}{1.8in}\rule{0.95\linewidth}{0pt}}
+\caption{Placeholder visualization of an oracle artifact.  Two latent roots remain indistinguishable after the candidate prefix but require incompatible recovery maneuvers.}
+\label{fig:oracle_artifact}
+\end{figure}
+
+
+\appendix
+
+\section{Appendix}
+\label{sec:appendix}
+
+\subsection{Notation}
+\label{app:notation}
+
+\begin{table}[h]
+\centering
+\caption{Main notation.}
+\label{tab:notation}
+\begin{tabular}{ll}
+\toprule
+Symbol & Meaning \\
+\midrule
+$h_t$ & Scene history at planning time $t$ \\
+$a$ & Candidate executable prefix \\
+$a_0$ & Nominal planner prefix \\
+$F$ & Full latent future \\
+$z$ & Recovery-sufficient latent root \\
+$o$ & Post-prefix observation \\
+$g$ & Recovery option \\
+$m(a,z,g)$ & Signed recovery margin \\
+$R_{\rm orc}$ & Oracle recoverability \\
+$R_{\rm dep}$ & Deployable recoverability \\
+$C_{ij}$ & Observation compatibility between roots $i,j$ \\
+$\mathcal{G}$ & Recovery-option set \\
+$\mathcal{A}_t$ & Candidate-prefix set \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Dataset Construction}
+\label{app:dataset}
+
+\paragraph{Primary benchmark.}
+We use WOMD scenes with Waymax closed-loop simulation.  Each scene is sampled at 10 Hz.  Unless otherwise stated, we use a 1.0s history window, a 1.0s executable prefix horizon, and a 4.0s recovery horizon.  Agents outside the local observation region are ignored unless they can enter the ego reachable set within the recovery horizon.
+
+\paragraph{Observation region.}
+The default observation mask is an 80m-radius ego-centered region clipped by map visibility and occlusion.  We also evaluate 60m and 100m masks in ablation.  The mask contains three channels:
+\begin{enumerate}[leftmargin=*]
+    \item visible free space;
+    \item unknown or occluded space;
+    \item perception confidence for tracked agents.
+\end{enumerate}
+
+\paragraph{Scenario regimes.}
+Scenarios are assigned to regimes using teacher-computed margins:
+\begin{align}
+    \text{normal} &: \min_a R_{\rm dep}^{\star}(a) > \tau_{\rm high}, \\
+    \text{low-headroom} &: 0 < \max_a R_{\rm dep}^{\star}(a) \leq \tau_{\rm high}, \\
+    \text{near-contact} &: \min_t d_{\rm ego,agent}(t) < \tau_d, \\
+    \text{post-contact} &: \exists t \; \mathrm{contact}(t)=1, \\
+    \text{occluded} &: \mathrm{area}(\Omega_t^{\rm unknown}) > \tau_{\rm occ}.
+\end{align}
+
+\paragraph{MetaDrive stress tests.}
+MetaDrive is used to generate rare configurations that are underrepresented in logs: occluded emergence, blocked rejoin corridor, low-friction braking, lateral escape with hidden cut-in, and post-contact stabilization.  These scenarios are used for stress evaluation and not for calibration unless explicitly stated.
+
+\subsection{Candidate Prefix Generation}
+\label{app:candidate_prefix}
+
+Each candidate prefix is represented as $a=(\mu,\theta)$, where $\mu$ is a short-horizon prefix family and $\theta$ is a continuous rollout parameter.  We distinguish three prefix families because only some non-nominal prefixes are legitimate recovery maneuvers.  The nominal family contains the logged or base-planner prefix $\texttt{nominal}$.  The exploration family contains small perturbations around nominal acceleration and lateral offset, denoted $\texttt{perturb\_nominal}$; these prefixes improve local coverage but are never allowed to bypass recovery admission by themselves.  The semantic recovery family contains controlled maneuvers whose intent is to increase post-prefix recoverability:
+\begin{equation}
+\mathcal{U}_{\rm rec}(s)=
+\{\texttt{brake},\texttt{yield},\texttt{merge},\texttt{stabilize}\}
+\cup \{\texttt{pull\_over}:\mathrm{ShoulderSafe}(s)=1\}.
+\end{equation}
+Thus, a non-nominal candidate is not automatically a recovery maneuver.  It is recovery-eligible only if its macro family belongs to $\mathcal{U}_{\rm rec}(s)$ and its continuous parameter satisfies the corresponding dynamic, rule, and harm envelope.  In the Waymo closed-loop experiments used in this paper, shoulder availability is not reliably certified. Therefore $\texttt{pull\_over}$ remains subject to the same shared admission rule as every other candidate and can be admitted only when its continuous shoulder-feasibility margin is positive.
+
+% Insert after the CRISP selector paragraph.
+
+\paragraph{Continuous-headroom recovery admission.}
+CRISP uses one observation-conditioned admission rule for every candidate and every evaluation regime.  Regime labels are never provided to the network, no regime-specific threshold is fitted, and no macro family receives a relaxed certificate.  For candidate $a_i$ relative to nominal $a_0$, we form an executable action difference $\phi_i$ from prefix parameters, macro identity, prefix states, and controls.  Observation pressure $\psi_0$ is anchored on the unique nominal row and contains only information available at deployment, including ego state, surrounding-agent geometry, route context, map context, and occupancy evidence; candidate utility, oracle harm, feasibility labels, and future audit targets are excluded.
+
+The observation-conditioned action frontier (OCAF) is
+\begin{align}
+h_i &= P_a\phi_i + \|\phi_i\|_{\rm rms}P_d\operatorname{LN}(\phi_i),\\
+s_0 &= \tanh(P_o\psi_0),\\
+c_i &= P_c\left[h_i,\;h_i\odot s_0\right].
+\end{align}
+All projections on the action-to-context path are bias-free.  Consequently, $\phi_i=0$ implies $c_i=0$ exactly: scene context can modulate the predicted effect of an executed action, but cannot create an action-free recovery signal.  This interaction resolves a key ambiguity of an action-only bridge, where identical braking or steering increments could be assigned the same effect despite different clearance, contact pose, and relative motion.
+
+The calibrator predicts continuous signed component margins
+\begin{equation}
+F_i^{(k)}\in\{F_i^{\rm DRS},F_i^{\rm dep},F_i^{\rm gap},F_i^{\rm rule},F_i^{\rm harm}\},
+\end{equation}
+and combines them with a smooth non-compensatory minimum.  The free benefit logit is upper-bounded by this continuous safety frontier before the single shared rule is fitted on adaptation-development scenes.  Thus, a large predicted benefit or learned residual cannot compensate for an unsafe component, while the same continuous geometry remains non-degenerate from nominal driving through near contact and post-contact stabilization.  The named regimes are used only for stratified worst-case reporting and never as policy inputs or case-specific branches.
+
+\subsection{Encoder Architecture}
+\label{app:encoder}
+
+The scene encoder consists of:
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Agent tokens}: position, velocity, heading, size, type, track confidence, and history mask.
+    \item \textbf{Map tokens}: lane polyline points, boundary type, traffic-control state, route membership, and lane topology.
+    \item \textbf{Ego token}: ego dynamics, previous control, route progress, and candidate-prefix embedding.
+    \item \textbf{BEV tokens}: semantic occupancy, occlusion mask, drivable area, and unknown-space confidence.
+\end{enumerate}
+Agent and map tokens are encoded with a polyline transformer.  BEV tokens are encoded with a shallow CNN or patch transformer.  All tokens are fused by a set-attention module inspired by permutation-invariant set encoders~\cite{lee2019set} and latent-query architectures~\cite{jaegle2021perceiver}.  The root decoder uses $K$ learned queries and cross-attention over fused scene-prefix tokens.
+
+\subsection{Recovery-Sufficient Root Labels}
+\label{app:root_labels}
+
+For each training scene and candidate prefix, we construct root labels in four steps.
+
+\paragraph{Step 1: counterfactual rollout.}
+We roll out the candidate prefix under replayed agents, reactive sim agents, and sampled occlusion/contact/control perturbations.  Each rollout produces a full latent future $F_j$.
+
+\paragraph{Step 2: recovery teacher query.}
+For each $F_j$ and recovery option $g_\ell$, a recovery teacher solves a constrained rollout and returns a margin $m_{j\ell}^{\star}$.
+
+\paragraph{Step 3: recovery signature.}
+The recovery signature of $F_j$ is
+\begin{equation}
+    s_j =
+    [
+        m_{j1}^{\star},
+        \ldots,
+        m_{jL}^{\star},
+        c_j,
+        \kappa_j
+    ],
+\end{equation}
+where $c_j$ contains contact/control indicators and $\kappa_j$ contains route-topology indicators.
+
+\paragraph{Step 4: root clustering.}
+We cluster futures by recovery signature rather than raw trajectory distance:
+\begin{equation}
+    y_j^z
+    =
+    \operatorname{Cluster}(s_j).
+\end{equation}
+This ensures that roots distinguish futures only when they change recovery affordances.
+
+The assignment loss is
+\begin{equation}
+    \mathcal{L}_{\rm assign}
+    =
+    -\sum_{j,k}
+    \mathbf{1}[y_j^z=k]\log p_k.
+\end{equation}
+The signature-preservation loss is
+\begin{equation}
+    \mathcal{L}_{\rm sig}
+    =
+    \sum_{j,k}
+    \mathbf{1}[y_j^z=k]
+    \left\|
+        \hat s_k - s_j
+    \right\|_1.
+\end{equation}
+The information-bottleneck term is implemented as a KL penalty to a prefix-conditioned prior:
+\begin{equation}
+    \mathcal{L}_{\rm ib}
+    =
+    D_{\rm KL}
+    \left[
+        q_\psi(z\mid F,h_t,a)
+        \,\|\, 
+        p_\psi(z\mid h_t,a)
+    \right].
+\end{equation}
+
+\subsection{Observation Equivalence Supervision}
+\label{app:obs_labels}
+
+For each counterfactual root $z_i$, we render the post-prefix observation available to the ego vehicle:
+\begin{equation}
+    o_i^\star =
+    \mathcal{O}(h_t,a,z_i).
+\end{equation}
+The observation contains visible tracked boxes, visible drivable area, occlusion mask, ego dynamic state, and route-local map elements.  Two roots are labeled indistinguishable if
+\begin{equation}
+    y_{ij}^{o}
+    =
+    \mathbf{1}
+    \left[
+        d_{\rm box}(o_i^\star,o_j^\star)
+        +
+        \lambda_{\rm occ}d_{\rm occ}(o_i^\star,o_j^\star)
+        +
+        \lambda_{\rm dyn}d_{\rm ego}(o_i^\star,o_j^\star)
+        \leq
+        \varepsilon_o
+    \right].
+\end{equation}
+The box distance uses matched visible agents only.  Hidden agents do not contribute unless they become visible after the prefix.  This prevents supervision from leaking oracle future identity into the observation kernel.
+
+\subsection{Recovery Options and Continuous Parameters}
+\label{app:recovery_modes}
+
+We use the following recovery modes:
+\begin{equation}
+\mathcal{G}=
+\{
+\texttt{stop},
+\texttt{brake\_lane},
+\texttt{lateral\_escape},
+\texttt{yield\_rejoin},
+\texttt{pull\_over},
+\texttt{mitigate\_contact},
+\texttt{post\_contact\_stabilize},
+\texttt{avoid\_secondary}
+\}.
+\end{equation}
+
+Each mode has a parameter head:
+\begin{align}
+    \theta_{\texttt{stop}} &= [a_{\rm dec}, s_{\rm stop}], \\
+    \theta_{\texttt{brake\_lane}} &= [a_{\rm dec}, T_{\rm brake}], \\
+    \theta_{\texttt{lateral\_escape}} &= [d_y, v_{\rm tar}, T_{\rm lat}], \\
+    \theta_{\texttt{yield\_rejoin}} &= [a_{\rm yield}, s_{\rm gap}, T_{\rm rejoin}], \\
+    \theta_{\texttt{pull\_over}} &= [d_y, s_{\rm shoulder}, v_{\rm stop}], \\
+    \theta_{\texttt{mitigate\_contact}} &= [a_{\rm dec}, \Delta \psi, v_{\rm impact}], \\
+    \theta_{\texttt{post\_contact\_stabilize}} &= [k_\psi, k_r, a_{\rm decay}], \\
+    \theta_{\texttt{avoid\_secondary}} &= [d_y, a_{\rm dec}, s_{\rm clear}].
+\end{align}
+The parameter head predicts bounded values using mode-specific ranges.  A feasibility mask removes modes that are physically impossible under the current map and control envelope.
+
+\subsection{Teacher Margins}
+\label{app:teacher_margins}
+
+The teacher margin is the minimum normalized slack over recovery constraints:
+\begin{equation}
+    m^\star(a,z,g)
+    =
+    \min
+    \{
+        m_{\rm clr},
+        m_{\rm stop},
+        m_{\rm ctrl},
+        m_{\rm route},
+        m_{\rm harm},
+        m_{\rm stab},
+        m_{\rm sec}
+    \}.
+\end{equation}
+The components are:
+\begin{align}
+    m_{\rm clr} &= \min_t (d_{\rm min}(t)-d_{\rm safe})/s_d, \\
+    m_{\rm stop} &= (s_{\rm available}-s_{\rm stop})/s_s, \\
+    m_{\rm ctrl} &= \min_t (u_{\max}-\|u_t\|)/s_u, \\
+    m_{\rm route} &= (d_{\rm route}^{\max}-d_{\rm route})/s_r, \\
+    m_{\rm harm} &= (\Delta v_{\max}-\Delta v)/s_v, \\
+    m_{\rm stab} &= (r_{\max}-|r_t|)/s_r, \\
+    m_{\rm sec} &= \min_t (d_{\rm secondary}(t)-d_{\rm safe})/s_d.
+\end{align}
+For normal scenes, contact-related margins are inactive but still defined.  For post-contact scenes, stability and secondary-collision margins become active.  This allows one unified margin definition across regimes.
+
+\subsection{OC-MERO Implementation}
+\label{app:ocmero_impl}
+
+The weighted lower-tail operator is
+\begin{equation}
+    \operatorname{LCVaR}_{\alpha}(\{s_i\};\{w_i\})
+    =
+    \max_{\nu\in\mathbb{R}}
+    \left[
+        \nu
+        -
+        \frac{1}{\alpha}
+        \sum_i w_i[\nu-s_i]_+
+    \right].
+\end{equation}
+For each root $i$ and recovery option $\ell$, OC-MERO computes
+\begin{equation}
+    q_{i\ell}
+    =
+    \operatorname{LCVaR}_{\beta}
+    \left(
+        \{\hat m_{j\ell}\}_{j=1}^{K};
+        \{\bar C_{ij}p_j\}_{j=1}^{K}
+    \right),
+\end{equation}
+then chooses the shared recovery option
+\begin{equation}
+    r_i = \max_{\ell} q_{i\ell}.
+\end{equation}
+Finally,
+\begin{equation}
+    \widehat R_{\rm dep}(a)
+    =
+    \operatorname{LCVaR}_{\alpha}
+    (
+        \{r_i\}_{i=1}^{K};
+        \{p_i\}_{i=1}^{K}
+    ).
+\end{equation}
+The computational cost is $O(|\mathcal{A}|K^2L)$ due to the compatibility matrix and shared-recovery evaluation.  In practice, $K$ and $L$ are small, and compatibility can be sparsified by keeping the top-$M$ neighbors for each root.
+
+\subsection{Calibration}
+\label{app:calibration}
+
+Let $\mathcal{D}_{\rm cal}$ be a held-out calibration set with teacher deployable labels.  For a target false-admission level $\delta$, we select
+\begin{equation}
+    \widehat\gamma_{\rm rec}
+    =
+    Q_{1-\delta}
+    \left(
+        \{
+            \widehat R_{\rm dep}(a)
+            :
+            R_{\rm dep}^{\star}(a)<0,
+            \;
+            a\in\mathcal{D}_{\rm cal}
+        \}
+    \right),
+\end{equation}
+where $Q_{1-\delta}$ is the finite-sample upper quantile.  At test time, a prefix is admitted only if $\widehat R_{\rm dep}(a)\geq\widehat\gamma_{\rm rec}$.  This calibration targets the probability of admitting prefixes that are empirically not deployably recoverable.
+
+\subsection{Additional Evaluation Details}
+\label{app:eval_details}
+
+\paragraph{Closed-loop protocol.}
+At every step, each planner selects a 1.0s executable prefix.  The simulator advances for a shorter control interval, after which the planner replans.  For recovery evaluation, the selected prefix is executed fully before the recovery policy is allowed to act from the post-prefix observation.
+
+\paragraph{Oracle artifact mining.}
+We mine oracle artifacts by selecting prefixes satisfying
+\begin{equation}
+    R_{\rm orc}^{\star}(a)\geq 0,
+    \qquad
+    R_{\rm dep}^{\star}(a)<0.
+\end{equation}
+These cases are used for targeted evaluation and visualization.
+
+\paragraph{Reporting.}
+All metrics are reported with bootstrap confidence intervals over scenarios.  Regime-wise results are reported separately to avoid hiding rare but important failures under aggregate nominal performance.
+
+
+
+
+
+
+
+\bibliographystyle{IEEEtran}
+\bibliography{post-collision}
+
+\end{document}

@@ -1,0 +1,20 @@
+# Install from the parent directory to avoid OC-RAP/OC-RAP nesting.
+cd /home/senzeyu2/code
+unzip -o /path/to/OC-RAP-v48.74.2-OC-SVBW-ENGFIX-drop-in.zip
+cd /home/senzeyu2/code/OC-RAP
+
+# Optional manual fail-closed provenance preflight (the launcher runs it again).
+export PYTHONPATH="$PWD/src:$PWD${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONNOUSERSITE=1
+export OCRAP_V48_74_SIGNED_VIABILITY=1
+python tools/check_v48_74_runtime_code_contract.py \
+  --repo "$PWD" \
+  --output /home/senzeyu2/code/OC-RAP/runs/OC-RAP-v48.74-runtime-code-contract.manual.json
+
+# Original user command: unchanged.
+GPU0=0 GPU1=1 BASE_OUT=/home/senzeyu2/code/OC-RAP/runs \
+  bash scripts/run_v48_74_dcp_drfc_bcde_rifa_svbw_two_gpu.sh
+
+# Semantic mapping retained behind historical internal output directories:
+# coordinate 20 / response=false -> P74_FIRST_ORDER_SVBW
+# coordinate 21 / response=true  -> Q74_MAIN_OC_SVBW
