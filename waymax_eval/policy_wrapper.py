@@ -11,10 +11,10 @@ import numpy as np
 
 from cowp.core.constants import MacroType, ObjectType, PriorityRelation
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
-from cowp.geometry.collision import unsafe_between_bool
+from cowp.geometry.collision import unsafe_between, unsafe_between_bool
 from cowp.label.audit_relevance import canonical_root_weights
 from cowp.label.burden import adaptive_beta
-from cowp.label.safe_responses import build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
+from cowp.label.safe_responses import build_root_control_residual_trajectory, build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
 from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 

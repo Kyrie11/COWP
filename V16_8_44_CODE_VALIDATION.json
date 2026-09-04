@@ -1,0 +1,35 @@
+{
+  "schema_version": "v16_8_44_release_validation_v1",
+  "scientific_method": "cowp_root_conditioned_control_reachable_responder_support",
+  "v43_scientific_verdict": "STOP",
+  "v43_mandatory_gate": {
+    "historical_rvr_rescues_retained": "3/10 FAIL",
+    "historical_rvr_induced_avoided": "9/9 PASS"
+  },
+  "tests": {
+    "v44_dedicated": "2/2 passed",
+    "selected_regression": "27/27 passed",
+    "v25_to_v43r3_focused": "109/109 passed",
+    "v44_sanity_selected": "29/29 passed"
+  },
+  "compile": "PASS",
+  "shell_syntax": "PASS",
+  "conventional_safety_bypass_scan": "PASS",
+  "server_waymax_v44": "NOT RUN in local environment",
+  "file_sha256": {
+    "cowp/label/safe_responses.py": "84906ed3645d5b51ee4847ec040e0e9c99ce55ecb6dbf14be5cfb0b439add833",
+    "cowp/waymax_eval/policy_wrapper.py": "753cc79e335b9350640361b94f1354b0dda964a991890a85a0183c6789d8a870",
+    "cowp/waymax_eval/rollout.py": "f8abbbfd5b11942f00d30d15ef2a5adae5521127884a99c4b9c3ba5282d3a463",
+    "cowp/waymax_eval/metrics_cowp.py": "0aed4874d2b478a86fe38f1c614efc0fade3786d9a70aa29131a382ebdabdddd",
+    "cowp/scripts/101_analyze_root_conditioned_control_reachable_responder_support.py": "247936f3be9fac4de415d4feb9e58f84389da08478f8cf92a1efd30c68dd0607",
+    "scripts/102_analyze_v44_failfast_counterexamples.py": "b72ad8623807af8c630bce8cd37a64745d9341245aa8462314605de7f9228795",
+    "scripts/103_stitch_v44_counterfactual48.py": "d7ab58a4e70d0b9451bc5c009bbd2192617efd8241151eb42dd755fcf3584aa0",
+    "tests/test_v16_8_44_root_conditioned_control_reachable_responder_support.py": "cfaca4a6d4f441013be11ec083dda2f818d76e020f4da72355c2228fc9779761",
+    "NEXT_RUN_COMMANDS_V16_8_44_ROOT_CONDITIONED_CONTROL_REACHABLE_RESPONDER_SUPPORT_CN.sh": "fd9b20b7b9dc7a0a29ea6566afbdac7fbe3cbe97dbd7ca779c9c0fdab9d8fc6f",
+    "ALGORITHM_CHANGELOG.md": "17c4fe00a748f90f468d40cccc08e8f059c2bab683488483029fd305141ee7f8",
+    "ALGORITHM_CHANGELOG_V16_8_44.md": "2c19787c6112f4a9003165c896ec036652acc8f1217317e40afcb003e7560ca3",
+    "CURRENT_ANALYSIS_V16_8_44_CN.md": "af7c872cb57730b96f329ec2994f0574d707e2c75e4e7c6de36b61d0ff950ce6",
+    "V16_8_43R3_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json": "226ccf8dba5f3a1e0fb52a24d440faf050d7eea7046a2a9debcc12fe8689062c",
+    "V16_8_24_COMPACT5K_REAUDIT_WITH_PROVENANCE_CAVEAT.json": "2479318ab8485e98cbe1c8520635e82ee4d3ffb45f16ce77c60e5131a9a9f823"
+  }
+}

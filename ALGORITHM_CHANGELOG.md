@@ -5481,3 +5481,121 @@ Because the uploaded result package has no Stage-1 `counterfactual48`, V43R3 doe
 - tune root/response thresholds on the profile scenes.
 
 The next scientific branch remains conditional on the original V43 preregistered interpretation after a reliable full Stage-1 result exists.
+
+---
+
+# V16.8.43 scientific result — BC-IARE STOP / support-indexing family closed
+
+The V43R3 mandatory 19-scene Stage-1 early gate is reliable and sufficient to make a
+scientific STOP decision. Independent audit passes all blocking integrity checks: exact
+manifest/shard union, zero-error metric recomputation, checkpoint/method identity,
+online-GT disabled, R3↔R2 profile4 behavioral equivalence, and independent reconstruction
+of the historical 10 RVR-rescue + 9 RVR-induced discordant set.
+
+Frozen necessary conditions:
+
+```text
+historical RVR rescues retained >= 5/10 : V43 = 3/10  FAIL
+historical RVR induced avoided >= 7/9   : V43 = 9/9   PASS
+```
+
+Because the first condition depends only on those ten historical rescue scenes, no result
+on the disjoint remaining29 can repair 3/10. Therefore `remaining29` was correctly not run.
+This is protocol-compliant fail-fast, not missing scientific evidence.
+
+Mechanism attribution is stronger than the headline gate:
+
+- late-bound blocker query is active in 18/19 mandatory scenes;
+- V43 produces **zero BC-IARE-only selected actions** on gate19 and is behaviorally
+  identical to V42 on the mandatory set;
+- in the 7 historical rescues that remain lost, six query-active scenes average roughly
+  8.6 unsupported-blocker rejects per query attempt versus roughly 126.1
+  root-unrecoverable rejects per query attempt;
+- exact blockers are generally model-visible and response-ready after late binding.
+
+Hence the prior P0 `fixed scene-level blocker support indexing / coverage` is falsified as
+the dominant actionable bottleneck. **Close the blocker-indexing patch family.** Preserve
+late-bound exact-blocker lookup only as a diagnostic/support-completion instrument; do not
+continue increasing query scope, max critical agents, or social protected-agent count.
+
+The preregistered next branch is activated exactly as specified after V42:
+
+> **P0 = root-conditioned control-reachable responder support.**
+>
+> For each retained natural root of each exact blocker, determine whether a low-burden,
+> road/kinematic-feasible response exists that remains safe against the ego recovery tube
+> and frozen environment in both current and one-step-shifted certificates.
+
+Keep the `fccd9a25a2a57a73` late-collision case separate as P1 certificate→multi-step
+invariance/model-mismatch evidence. Accepted-path Kinematics also remains a separate
+secondary branch.
+
+# V16.8.44 — Root-Conditioned Control-Reachable Responder Support (RC-CRRS)
+
+**Classification: scientific probe of response-support completeness; not yet a promoted
+paper method.**
+
+## Single changed scientific variable
+
+V42/V43 use a finite same-root analytic responder bank. V43 shows that after exact blocker
+support is available, the dominant rejection is no longer `unsupported blocker` but
+`retained root has no safe response`. V44 therefore changes only the *within-root response
+support construction* for a root that has no fixed-bank ego+environment-safe profile.
+
+For that root V44:
+
+1. preserves the exact frozen natural-root trajectory geometry;
+2. derives response duration from the last unsafe event of the identity root against the
+   current/shifted ego tube or frozen environment rather than adding another duration grid;
+3. searches only within inherited physical acceleration/deceleration bounds;
+4. applies the unchanged burden beta, roadgraph, Waymax inverse-dynamics, current+shift ego
+   safety, bidirectional environment safety, and exact multi-blocker CSP;
+5. uses deterministic dyadic bracketing followed by fixed bisection to find a minimum-
+   magnitude feasible same-root residual once a safe bracket exists.
+
+The extension is invoked only after the exact V43 late-bound support pass reaches a retained
+root with no fixed-bank safe profile. V42 and V43 legacy paths remain flag-off and nested.
+
+## Explicit freezes
+
+No change to p_min, probability floor, retained mass, minimum roots, root dedup, adaptive
+beta, NaturalDecoder, RCOT/BCOT, protected-priority social set, V39 ego tube/schedules,
+8-second conventional contract, controller limits, selector/fallback score, checkpoint,
+loss, dataset split, or proposal bank.
+
+## New diagnostics
+
+V44 records control-reachable-response attempts, profiles found, profile evaluations and
+roots completed inside the exact blocker-conditioned query. These counters are diagnostic;
+they do not alter the frozen six-item outcome gate.
+
+## Fail-fast development protocol
+
+V43 retained 3/10 historical RVR rescues and lost 7. To reach the immutable >=5/10 rescue
+condition, V44 must recover at least 2 of those 7. Therefore:
+
+```text
+lost7 full 80-step closed loop
+  <2 newly rescued -> STOP immediately
+  >=2 -> run retained3 and require total historical rescue retention >=5/10
+          -> run induced9 and require >=7/9 avoided
+             -> only then run remaining29, stitch the exact frozen counterfactual48,
+                and evaluate all six preregistered conditions.
+```
+
+This reduces the most likely failed branch from 48 to **7** Waymax scenes (85.4% fewer)
+without weakening any promotion criterion. The 80-step per-scene horizon is not shortened,
+because historical failures can emerge late under replanning.
+
+## Family status after V43
+
+- Natural roots / RCOT / BCOT / protected-priority certificate / set-preservation: **Freeze**.
+- V39 conflict-window control/shift-closed ego tube: **Retain / Freeze**.
+- V40/V41 first-action interval: **Archive**.
+- V42 policy: **Gate FAIL / Archive**, interaction-aware hard-support concept retained.
+- V43 BC-IARE policy: **STOP / Archive**.
+- fixed-scene-support / blocker-indexing enlargement family: **Closed**.
+- V44 root-conditioned control-reachable response support: **Open P0 probe**.
+- generic root-threshold/burden tuning, certificate relaxation, response-duration grids:
+  **Prohibited**.
+- certificate→multi-step invariance and accepted-path Kinematics: **separate later branches**.

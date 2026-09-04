@@ -1,0 +1,48 @@
+{
+  "schema_version": "v16_8_24_compact5k_reaudit_with_provenance_caveat_v1",
+  "split_characterization": {
+    "train": {
+      "scenes": 5000,
+      "audit_relevant_pair_rate": 0.4297,
+      "protected_prio_root_coverage": 0.99453,
+      "rootless_rate": 0.0
+    },
+    "val": {
+      "scenes": 1000,
+      "audit_relevant_pair_rate": 0.42863,
+      "protected_prio_root_coverage": 0.99363,
+      "rootless_rate": 0.0
+    },
+    "heldout": {
+      "scenes": 1200,
+      "audit_relevant_pair_rate": 0.42949,
+      "protected_prio_root_coverage": 0.99465,
+      "rootless_rate": 0.0
+    }
+  },
+  "historical_watch_items": {
+    "critical_agent_cap": 6,
+    "conflict_region_selected_cap_saturation_approx": "95.4%-95.8%",
+    "weak_proposal_families": [
+      "PRIORITY_SMOOTH_YIELD",
+      "TERMINAL"
+    ]
+  },
+  "raw_uploaded_train_cache_verifier": {
+    "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v2",
+    "pass": false,
+    "files": 5000,
+    "inspected": 5000,
+    "valid_scene_rate": 1.0,
+    "any_ncf_scene_rate": 0.3104,
+    "silent_blocker_count": 0,
+    "irrelevant_blocker_count": 58243,
+    "reason": "irrelevant pair blockers=58243"
+  },
+  "current_code_semantics_check": {
+    "fresh_witness_irrelevant_pair": "vacuously pair_noncoercive=True",
+    "paper_aligned_training_recompute": "pair = base_pair & audit_target; pair_good = (~pair) | certificate predicates",
+    "interpretation": "The archived cache verifier is not a clean publication-grade provenance artifact. Current training-time recomputation masks irrelevant pairs, so this does not currently explain V43 online root-unrecoverable failures, but serialization/runtime equivalence must be repaired or proven before final publication claims."
+  },
+  "decision": "Do not rebuild the dataset now. Freeze scientific data split/labels for algorithm iteration, but open a separate provenance-integrity repair before final retraining/publication."
+}

@@ -160,6 +160,30 @@ def _root_residual_trajectory(
     return out.astype(np.float32)
 
 
+def build_root_control_residual_trajectory(
+    root: np.ndarray,
+    cfg: dict,
+    *,
+    accel_mps2: float,
+    duration_s: float,
+    start_delay_s: float = 0.0,
+) -> np.ndarray:
+    """Expose the exact same-root arc-length residual for online reachability.
+
+    V16.8.44 uses the same geometry-preserving time warp as the offline
+    root-conditioned transport labels, but solves the residual magnitude and
+    duration from the current interaction rather than choosing another fixed
+    response primitive.
+    """
+    return _root_residual_trajectory(
+        root,
+        dt=float(cfg.get("time", {}).get("dt", 0.1)),
+        accel=float(accel_mps2),
+        start_delay_s=float(start_delay_s),
+        duration_s=float(duration_s),
+    )
+
+
 def build_root_recovery_trajectory_bank(root: np.ndarray, cfg: dict) -> list[np.ndarray]:
     """Precompute the candidate-independent same-root recovery tube.
 

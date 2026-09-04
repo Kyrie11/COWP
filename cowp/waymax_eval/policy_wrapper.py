@@ -11,10 +11,10 @@ import numpy as np
 
 from cowp.core.constants import MacroType, ObjectType, PriorityRelation
 from cowp.planning.set_preservation_selector import select_set_preservation_frontier_1d
-from cowp.geometry.collision import unsafe_between_bool
+from cowp.geometry.collision import unsafe_between, unsafe_between_bool
 from cowp.label.audit_relevance import canonical_root_weights
 from cowp.label.burden import adaptive_beta
-from cowp.label.safe_responses import build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
+from cowp.label.safe_responses import build_root_control_residual_trajectory, build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
 from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
@@ -120,7 +120,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -4168,6 +4168,212 @@ def _merge_interaction_response_support_details_np(
     return out
 
 
+
+def _root_conditioned_control_reachable_response_profiles_np(
+    agent_state: np.ndarray,
+    agent_index: int,
+    object_type: int,
+    root: np.ndarray,
+    beta: float,
+    current_ego_trajectory: np.ndarray,
+    shifted_ego_trajectory: np.ndarray,
+    environment: list[dict[str, Any]],
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    *,
+    profile_index_base: int = 10000,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Candidate-conditioned same-root control-reachable response completion.
+
+    V16.8.43 showed that exact blockers can be decoded and made response-ready,
+    yet many retained roots remain unrecoverable under the frozen finite response
+    bank.  This helper does *not* relax root probability, burden, roadgraph,
+    kinematics, ego safety, environment safety, or joint-CSP semantics.  It only
+    replaces a finite primitive miss with a bounded control search on the exact
+    same root geometry.
+
+    The search horizon is event-conditioned: the residual is active only through
+    the last unsafe event of the identity root against the current/shifted ego or
+    frozen environment.  Acceleration bounds come from the already-frozen vehicle
+    limits.  Within each sign branch, a deterministic dyadic/bisection search
+    finds the minimum-magnitude low-burden control residual that satisfies the
+    unchanged current+shift interaction certificate.
+    """
+    detail: dict[str, Any] = {
+        "attempted": True,
+        "event_last_step": -1,
+        "duration_s": 0.0,
+        "branches_evaluated": 0,
+        "profile_evaluations": 0,
+        "static_feasible_evaluations": 0,
+        "dynamic_safe_evaluations": 0,
+        "profiles_found": 0,
+        "best_abs_accel_mps2": None,
+        "failure_reason": "none",
+    }
+    state = np.asarray(agent_state, dtype=np.float32)
+    root = np.asarray(root, dtype=np.float32)
+    current_ego = np.asarray(current_ego_trajectory, dtype=np.float32)
+    shifted_ego = np.asarray(shifted_ego_trajectory, dtype=np.float32)
+    if root.ndim != 2 or root.shape[0] <= 0 or root.shape[1] < 7:
+        detail["failure_reason"] = "invalid_root"
+        return [], detail
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    shifted_root = _shift_append_terminal_reference_np(root, dt)
+
+    # Locate the identity root's actual unsafe time support under exactly the
+    # predicates used by the certificate.  This avoids adding another tuned
+    # response-duration family.
+    event_steps: list[int] = []
+    try:
+        res = unsafe_between(current_ego, root, cfg, agent_type=int(object_type))
+        event_steps.extend(np.flatnonzero(np.asarray(res.event_mask, dtype=bool)).tolist())
+        res = unsafe_between(shifted_ego, shifted_root, cfg, agent_type=int(object_type))
+        event_steps.extend(np.flatnonzero(np.asarray(res.event_mask, dtype=bool)).tolist())
+    except Exception:
+        pass
+    for actor in environment:
+        actor_type = int(actor["object_type"])
+        actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
+        actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
+        for left, right, right_type in (
+            (root, actor_cur, actor_type),
+            (actor_cur, root, int(object_type)),
+            (shifted_root, actor_shift, actor_type),
+            (actor_shift, shifted_root, int(object_type)),
+        ):
+            try:
+                res = unsafe_between(left, right, cfg, agent_type=right_type)
+                event_steps.extend(np.flatnonzero(np.asarray(res.event_mask, dtype=bool)).tolist())
+            except Exception:
+                continue
+    if not event_steps:
+        # A root reaching this code path should have failed the fixed profile
+        # certificate.  No identity event means the failure is not a control-
+        # reachable timing problem and should remain fail-closed.
+        detail["failure_reason"] = "no_identity_unsafe_event"
+        return [], detail
+    last_step = int(max(event_steps))
+    duration_s = float(min(max((last_step + 1) * dt, dt), root.shape[0] * dt))
+    detail["event_last_step"] = last_step
+    detail["duration_s"] = duration_s
+
+    cand_cfg = cfg.get("candidate", {})
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 0.0)
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 0.0)
+
+    eval_cache: dict[float, tuple[dict[str, Any] | None, bool]] = {}
+
+    def evaluate(accel: float) -> tuple[dict[str, Any] | None, bool]:
+        key = float(round(float(accel), 8))
+        if key in eval_cache:
+            return eval_cache[key]
+        detail["profile_evaluations"] = int(detail["profile_evaluations"]) + 1
+        try:
+            tr = build_root_control_residual_trajectory(
+                root, cfg, accel_mps2=float(accel), duration_s=duration_s, start_delay_s=0.0,
+            )
+            burden_entry = prepare_root_recovery_burden_bank(
+                root, [tr], cfg, object_type=int(object_type), rho=PriorityRelation.AGENT_PRIORITY,
+            )[0]
+            burden = float(burden_entry[0])
+            if burden > float(beta) + 1.0e-9 or not bool(_roadgraph_drivable_mask(tr, roadgraph)):
+                eval_cache[key] = (None, False)
+                return eval_cache[key]
+            kin_ok, kin = _trajectory_waymax_kinematic_safe_np(state[int(agent_index)], tr, cfg)
+            shifted = _shift_append_terminal_reference_np(tr, dt)
+            response_successor = _agent_state_after_future_sample_np(state[int(agent_index)], tr[0])
+            shift_kin_ok, shift_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
+            if not (kin_ok and shift_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
+                eval_cache[key] = (None, False)
+                return eval_cache[key]
+            detail["static_feasible_evaluations"] = int(detail["static_feasible_evaluations"]) + 1
+            dynamic_safe = not (
+                unsafe_between_bool(current_ego, tr, cfg, agent_type=int(object_type))
+                or unsafe_between_bool(shifted_ego, shifted, cfg, agent_type=int(object_type))
+            )
+            if dynamic_safe:
+                for actor in environment:
+                    actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
+                    actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
+                    actor_type = int(actor["object_type"])
+                    if (
+                        unsafe_between_bool(tr, actor_cur, cfg, agent_type=actor_type)
+                        or unsafe_between_bool(actor_cur, tr, cfg, agent_type=int(object_type))
+                        or unsafe_between_bool(shifted, actor_shift, cfg, agent_type=actor_type)
+                        or unsafe_between_bool(actor_shift, shifted, cfg, agent_type=int(object_type))
+                    ):
+                        dynamic_safe = False
+                        break
+            rec = {
+                "profile_index": int(profile_index_base + len(eval_cache)),
+                "trajectory": tr,
+                "shifted_trajectory": shifted,
+                "burden": burden,
+                "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
+                "current_kinematic": kin,
+                "shifted_kinematic": shift_kin,
+                "control_reachable_extension": True,
+                "residual_accel_mps2": float(accel),
+                "residual_duration_s": float(duration_s),
+            }
+            if dynamic_safe:
+                detail["dynamic_safe_evaluations"] = int(detail["dynamic_safe_evaluations"]) + 1
+            eval_cache[key] = (rec, bool(dynamic_safe))
+            return eval_cache[key]
+        except Exception:
+            eval_cache[key] = (None, False)
+            return eval_cache[key]
+
+    found: list[dict[str, Any]] = []
+    # Search each direction independently.  The dyadic sequence is a numerical
+    # root-finding device, not a tunable behavior bank: it spans the inherited
+    # physical interval, then bisection minimizes the magnitude once a safe
+    # bracket is found.
+    for sign, bound in ((-1.0, max_decel), (1.0, max_accel)):
+        if bound <= 1.0e-9:
+            continue
+        detail["branches_evaluated"] = int(detail["branches_evaluated"]) + 1
+        magnitudes = [float(bound) * (2.0 ** (-j)) for j in range(6, -1, -1)]
+        prev_mag = 0.0
+        first_safe: tuple[float, dict[str, Any]] | None = None
+        for mag in magnitudes:
+            rec, ok = evaluate(sign * mag)
+            if ok and rec is not None:
+                first_safe = (mag, rec)
+                break
+            prev_mag = mag
+        if first_safe is None:
+            continue
+        hi_mag, hi_rec = first_safe
+        lo_mag = prev_mag if prev_mag < hi_mag else 0.0
+        # Tighten the control boundary without exposing a version-specific
+        # threshold.  Eight iterations are sufficient at vehicle-scale units and
+        # are fixed across all experiments.
+        for _ in range(8):
+            mid = 0.5 * (lo_mag + hi_mag)
+            rec, ok = evaluate(sign * mid)
+            if ok and rec is not None:
+                hi_mag, hi_rec = mid, rec
+            else:
+                lo_mag = mid
+        found.append(hi_rec)
+
+    # Remove numerical duplicates and sort by the same burden-first semantics as
+    # the frozen response bank.
+    unique: list[dict[str, Any]] = []
+    for rec in sorted(found, key=lambda x: (float(x["burden"]), abs(float(x["residual_accel_mps2"])))):
+        if not any(np.allclose(rec["trajectory"], old["trajectory"], rtol=0.0, atol=1.0e-6) for old in unique):
+            rec = dict(rec)
+            rec["profile_index"] = int(profile_index_base + len(unique))
+            unique.append(rec)
+    detail["profiles_found"] = int(len(unique))
+    if unique:
+        detail["best_abs_accel_mps2"] = float(min(abs(float(x["residual_accel_mps2"])) for x in unique))
+    else:
+        detail["failure_reason"] = "no_low_burden_control_reachable_profile"
+    return unique, detail
+
 def _interaction_aware_recovery_certificate_np(
     agent_state: np.ndarray,
     successor_state: np.ndarray,
@@ -4183,6 +4389,7 @@ def _interaction_aware_recovery_certificate_np(
     response_support: dict[int, dict[str, Any]],
     object_types: np.ndarray,
     compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+    allow_control_reachable_response_extension: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """Certify one ego tube under universal low-burden same-root response support."""
     current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
@@ -4210,6 +4417,10 @@ def _interaction_aware_recovery_certificate_np(
         "interaction_joint_compatibility_cache_hits": 0,
         "interaction_successor_context_cache_hits": 0,
         "supported_root_count": 0,
+        "control_reachable_response_attempts": 0,
+        "control_reachable_response_profiles_found": 0,
+        "control_reachable_response_profile_evaluations": 0,
+        "control_reachable_response_selected_roots": 0,
         "minimum_retained_root_mass": 0.0,
         "maximum_selected_response_burden": 0.0,
         "current_residual_certificate": {},
@@ -4364,6 +4575,23 @@ def _interaction_aware_recovery_certificate_np(
                 if environment_safe:
                     environment_safe_profiles.append(profile)
             environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
+            if not environment_safe_profiles and bool(allow_control_reachable_response_extension):
+                detail["control_reachable_response_attempts"] = int(detail["control_reachable_response_attempts"]) + 1
+                extra_profiles, extra_detail = _root_conditioned_control_reachable_response_profiles_np(
+                    np.asarray(agent_state, dtype=np.float32), int(agent_index), int(object_type),
+                    np.asarray(root.get("trajectory"), dtype=np.float32),
+                    float(agent_support.get("beta", 0.0)),
+                    np.asarray(current_ego_trajectory, dtype=np.float32),
+                    np.asarray(shifted_ego_trajectory, dtype=np.float32),
+                    environment, roadgraph, cfg,
+                    profile_index_base=10000 + 100 * int(root_ordinal),
+                )
+                detail["control_reachable_response_profiles_found"] = int(detail["control_reachable_response_profiles_found"]) + int(extra_detail.get("profiles_found", 0))
+                detail["control_reachable_response_profile_evaluations"] = int(detail["control_reachable_response_profile_evaluations"]) + int(extra_detail.get("profile_evaluations", 0))
+                if extra_profiles:
+                    detail["control_reachable_response_selected_roots"] = int(detail["control_reachable_response_selected_roots"]) + 1
+                    environment_safe_profiles.extend(extra_profiles)
+                    environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
             if not environment_safe_profiles:
                 detail["failure_reason"] = (
                     "retained_root_has_no_ego_safe_response"
@@ -4536,6 +4764,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     known_nested_v39_empty: bool = False,
     hypothesis_indices: np.ndarray | None = None,
     internal_trace: dict[str, Any] | None = None,
+    allow_control_reachable_response_extension: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
 
@@ -4586,6 +4815,10 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         "interaction_environment_compatibility_cache_hits": 0,
         "interaction_joint_compatibility_cache_hits": 0,
         "interaction_successor_context_cache_hits": 0,
+        "interaction_control_reachable_response_attempts": 0,
+        "interaction_control_reachable_response_profiles_found": 0,
+        "interaction_control_reachable_response_profile_evaluations": 0,
+        "interaction_control_reachable_response_selected_roots": 0,
         "interaction_selected_blocker_count": 0,
         "interaction_selected_root_count": 0,
         "interaction_selected_minimum_root_mass": 0.0,
@@ -4836,6 +5069,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             projected[j], kin_ok[j], shifted_projected[0], shifted_kin_ok[0],
             roadgraph, cfg, current_collision_context, shifted_collision_context,
             response_support, object_types, compatibility_cache=compatibility_cache,
+            allow_control_reachable_response_extension=bool(allow_control_reachable_response_extension),
         )
         reason = str(interaction_detail.get("failure_reason", "unknown"))
         detail["interaction_environment_compatibility_checks"] = int(
@@ -4859,6 +5093,18 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         detail["interaction_joint_compatibility_cache_hits"] = int(
             detail["interaction_joint_compatibility_cache_hits"]
         ) + int(interaction_detail.get("interaction_joint_compatibility_cache_hits", 0))
+        detail["interaction_control_reachable_response_attempts"] = int(
+            detail["interaction_control_reachable_response_attempts"]
+        ) + int(interaction_detail.get("control_reachable_response_attempts", 0))
+        detail["interaction_control_reachable_response_profiles_found"] = int(
+            detail["interaction_control_reachable_response_profiles_found"]
+        ) + int(interaction_detail.get("control_reachable_response_profiles_found", 0))
+        detail["interaction_control_reachable_response_profile_evaluations"] = int(
+            detail["interaction_control_reachable_response_profile_evaluations"]
+        ) + int(interaction_detail.get("control_reachable_response_profile_evaluations", 0))
+        detail["interaction_control_reachable_response_selected_roots"] = int(
+            detail["interaction_control_reachable_response_selected_roots"]
+        ) + int(interaction_detail.get("control_reachable_response_selected_roots", 0))
         if not interaction_ok:
             if reason == "no_collision_blocker":
                 detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
@@ -4941,6 +5187,10 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             "interaction_selected_minimum_root_mass": float(interaction_detail.get("minimum_retained_root_mass", 0.0)),
             "interaction_selected_maximum_response_burden": float(interaction_detail.get("maximum_selected_response_burden", 0.0)),
             "interaction_selected_profile_evaluations": int(interaction_detail.get("response_profile_evaluations", 0)),
+            "interaction_selected_control_reachable_response_attempts": int(interaction_detail.get("control_reachable_response_attempts", 0)),
+            "interaction_selected_control_reachable_response_profiles_found": int(interaction_detail.get("control_reachable_response_profiles_found", 0)),
+            "interaction_selected_control_reachable_response_profile_evaluations": int(interaction_detail.get("control_reachable_response_profile_evaluations", 0)),
+            "interaction_selected_control_reachable_response_selected_roots": int(interaction_detail.get("control_reachable_response_selected_roots", 0)),
             "interaction_selected_environment_agent_count": int(interaction_detail.get("environment_agent_count", 0)),
             "interaction_selected_environment_compatibility_checks": int(interaction_detail.get("interaction_environment_compatibility_checks", 0)),
             "interaction_selected_responses": interaction_detail.get("selected_responses", []),
@@ -4976,6 +5226,7 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     blocker_query_logits: np.ndarray | None,
     object_types: np.ndarray,
     blocker_query_decoder: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]] | None = None,
+    allow_control_reachable_response_extension: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.43 late-bound blocker-conditioned support completion.
 
@@ -5027,6 +5278,10 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         "blocker_conditioned_query_environment_cache_hits": 0,
         "blocker_conditioned_query_joint_cache_hits": 0,
         "blocker_conditioned_query_successor_context_cache_hits": 0,
+        "blocker_conditioned_query_control_reachable_response_attempts": 0,
+        "blocker_conditioned_query_control_reachable_response_profiles_found": 0,
+        "blocker_conditioned_query_control_reachable_response_profile_evaluations": 0,
+        "blocker_conditioned_query_control_reachable_response_selected_roots": 0,
         "blocker_conditioned_query_candidate_agents_before_exact_filter": 0,
         "blocker_conditioned_query_exact_blocker_agent_count": 0,
         "blocker_conditioned_query_replayed_hypothesis_count": 0,
@@ -5176,6 +5431,7 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         ),
         known_nested_v39_empty=True,
         hypothesis_indices=unsupported_hypotheses,
+        allow_control_reachable_response_extension=bool(allow_control_reachable_response_extension),
     )
     support_detail = expanded_detail.get("interaction_support_detail", {})
     base_ready = int(base_detail.get("interaction_support_agents_ready", 0))
@@ -5192,6 +5448,18 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     )
     detail["blocker_conditioned_query_root_unrecoverable_rejects"] = int(
         expanded_detail.get("interaction_root_unrecoverable_rejects", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_attempts"] = int(
+        expanded_detail.get("interaction_control_reachable_response_attempts", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_profiles_found"] = int(
+        expanded_detail.get("interaction_control_reachable_response_profiles_found", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_profile_evaluations"] = int(
+        expanded_detail.get("interaction_control_reachable_response_profile_evaluations", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_selected_roots"] = int(
+        expanded_detail.get("interaction_control_reachable_response_selected_roots", 0)
     )
     detail["blocker_conditioned_query_environment_cache_hits"] = int(
         expanded_detail.get("interaction_environment_compatibility_cache_hits", 0)
@@ -7375,7 +7643,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -7592,7 +7860,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -7628,6 +7896,7 @@ class COWPWaymaxPolicy:
                         "cowp_shift_closed_first_action_viability_interval",
                         "cowp_interaction_aware_reachable_response_envelope",
                         "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+                        "cowp_root_conditioned_control_reachable_responder_support",
                     }:
                         # V38 constructs nominal/all-horizon lower/all-horizon upper
                         # controller tubes. V39 keeps that support nested and adds
@@ -7658,6 +7927,7 @@ class COWPWaymaxPolicy:
                         if method in {
                             "cowp_interaction_aware_reachable_response_envelope",
                             "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+                            "cowp_root_conditioned_control_reachable_responder_support",
                         }:
                             natural_out = pred.get("natural", {})
                             natural_traj_t = natural_out.get("traj") if isinstance(natural_out, dict) else None
@@ -7675,7 +7945,7 @@ class COWPWaymaxPolicy:
                                 batch_np["cowp/critical/valid"][0], dtype=bool
                             )
                             object_types_np = _extract_object_types_np(state, int(agent_state.shape[0]))
-                            if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+                            if method in {"cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"}:
                                 # Query scope is inherited from the frozen causal
                                 # collision context, not from an enlarged social
                                 # critical set.  Only non-critical nearby actors are
@@ -7727,6 +7997,7 @@ class COWPWaymaxPolicy:
                                     blocker_query_decoder=lambda exact_idx: self._decode_blocker_conditioned_natural_queries_np(
                                         batch, pred, exact_idx,
                                     ),
+                                    allow_control_reachable_response_extension=(method == "cowp_root_conditioned_control_reachable_responder_support"),
                                 )
                             else:
                                 selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
@@ -7776,7 +8047,9 @@ class COWPWaymaxPolicy:
                         select_mask = self.torch.zeros_like(cand_valid)
                         select_mask[int(chosen)] = True
                         select_score = fallback_score
-                        if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+                        if method == "cowp_root_conditioned_control_reachable_responder_support":
+                            fallback_reason = "no_conventional_use_root_conditioned_control_reachable_responder_support"
+                        elif method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
                             fallback_reason = "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope"
                         elif method == "cowp_interaction_aware_reachable_response_envelope":
                             fallback_reason = "no_conventional_use_interaction_aware_reachable_response_envelope"
@@ -8355,6 +8628,7 @@ class COWPWaymaxPolicy:
                 "cowp_shift_closed_first_action_viability_interval",
                 "cowp_interaction_aware_reachable_response_envelope",
                 "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+                "cowp_root_conditioned_control_reachable_responder_support",
             }:
                 selected_contract_target = (
                     np.asarray(recovery_tube_target_override, dtype=np.float32)
@@ -8714,6 +8988,10 @@ class COWPWaymaxPolicy:
                 "recovery_tube_blocker_conditioned_query_environment_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_environment_cache_hits", 0)),
                 "recovery_tube_blocker_conditioned_query_joint_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_joint_cache_hits", 0)),
                 "recovery_tube_blocker_conditioned_query_successor_context_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_successor_context_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_attempts": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_attempts", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_profiles_found": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_profiles_found", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_profile_evaluations": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_profile_evaluations", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_selected_roots": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_selected_roots", 0)),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
@@ -8756,7 +9034,9 @@ class COWPWaymaxPolicy:
             traj = np.asarray(recovery_tube_trajectory_override, dtype=np.float32)
             execution_target = np.asarray(recovery_tube_target_override, dtype=np.float32)
             execution_accel = float(recovery_tube_accel_override)
-            if method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
+            if method == "cowp_root_conditioned_control_reachable_responder_support":
+                execution_source = "root_conditioned_control_reachable_responder_support"
+            elif method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
                 execution_source = "blocker_conditioned_interaction_aware_reachable_response_envelope"
             elif method == "cowp_interaction_aware_reachable_response_envelope":
                 execution_source = "interaction_aware_reachable_response_envelope"

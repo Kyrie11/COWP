@@ -1,0 +1,323 @@
+{
+  "schema_version": "independent_v16_8_43r3_reliability_attribution_audit_v1",
+  "blocking_checks_pass": true,
+  "checks": [
+    {
+      "name": "gate19_manifest_unique",
+      "pass": true,
+      "detail": 19
+    },
+    {
+      "name": "remaining29_manifest_unique",
+      "pass": true,
+      "detail": 29
+    },
+    {
+      "name": "gate19_remaining29_disjoint",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "gate19_plus_remaining29_equals_cf48",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "gate19_manifest_hash_matches_result",
+      "pass": true,
+      "detail": [
+        "9bf3eb62e5c3c7471239d7bd9026d7341752c3640dbb6615a33641df2d7191b2",
+        "9bf3eb62e5c3c7471239d7bd9026d7341752c3640dbb6615a33641df2d7191b2"
+      ]
+    },
+    {
+      "name": "profile4_hash_matches",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "shards_no_overlap",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "shards_union_exact_gate19",
+      "pass": true,
+      "detail": [
+        10,
+        9,
+        19
+      ]
+    },
+    {
+      "name": "merged_exact_gate19",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "merged_rows_exact_from_shards",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "core_summary_zero_error",
+      "pass": true,
+      "detail": {
+        "CR": 0.0,
+        "CollisionRate": 0.0,
+        "OffroadRate": 0.0,
+        "KinematicsInfeasibilityRate": 0.0,
+        "EP": 0.0,
+        "MetricSteps": 0.0,
+        "WaymaxAny/OverlapMetric": 0.0,
+        "WaymaxAny/OffroadMetric": 0.0,
+        "WaymaxAny/KinematicsInfeasibilityMetric": 0.0
+      }
+    },
+    {
+      "name": "checkpoint_same_shards",
+      "pass": true,
+      "detail": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt"
+    },
+    {
+      "name": "method_identity",
+      "pass": true,
+      "detail": "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"
+    },
+    {
+      "name": "online_mechanism_gt_disabled",
+      "pass": true,
+      "detail": null
+    },
+    {
+      "name": "profile4_fidelity_pass",
+      "pass": true,
+      "detail": [
+        {
+          "name": "method_identity",
+          "pass": true,
+          "detail": [
+            "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
+            "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope"
+          ]
+        },
+        {
+          "name": "scenario_hash",
+          "pass": true,
+          "detail": [
+            "69f73aedb8d1cfd0e065218d2c579659ddfd07845463cb4cc767987323e9af01",
+            "69f73aedb8d1cfd0e065218d2c579659ddfd07845463cb4cc767987323e9af01"
+          ]
+        },
+        {
+          "name": "num_rollouts",
+          "pass": true,
+          "detail": [
+            4,
+            4
+          ]
+        },
+        {
+          "name": "scenario_id_set",
+          "pass": true,
+          "detail": {
+            "reference": [
+              "2c2395ec28c6a158",
+              "2fa07f444b825370",
+              "4201b435eda16cf2",
+              "ae01b0e36aaa41b4"
+            ],
+            "candidate": [
+              "2c2395ec28c6a158",
+              "2fa07f444b825370",
+              "4201b435eda16cf2",
+              "ae01b0e36aaa41b4"
+            ]
+          }
+        },
+        {
+          "name": "full_profile_behavioral_equivalence",
+          "pass": true,
+          "detail": {
+            "mismatch_count": 0,
+            "first_mismatches": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "historical_rescue_set_exact_10",
+      "pass": true,
+      "detail": [
+        "c9b1c562b6ff31e5",
+        "9e3e5f19ee38f2e3",
+        "ad7d72d8adca3e25",
+        "fccd9a25a2a57a73",
+        "b85168f48c8c9970",
+        "9ccf60966ec93c20",
+        "2c2395ec28c6a158",
+        "7c6ac47c0deee2af",
+        "f8d5d2f0f7cf5825",
+        "40f2d8b336a3dafc"
+      ]
+    },
+    {
+      "name": "historical_induced_set_exact_9",
+      "pass": true,
+      "detail": [
+        "fe51445d725b8b8b",
+        "3919ccd73c0fabd7",
+        "fb9d8277036a53f3",
+        "d632f1919fe4bab",
+        "c34fe8e79cdf1161",
+        "7721ff4800156886",
+        "f8d4c735825e5d81",
+        "6418b0c9e2e4b093",
+        "1e015170763b9002"
+      ]
+    },
+    {
+      "name": "gate_counts_independently_recomputed",
+      "pass": true,
+      "detail": {
+        "retained": 3,
+        "avoided": 9
+      }
+    },
+    {
+      "name": "v43_equals_v42_gate19_core_metrics",
+      "pass": true,
+      "detail": {
+        "mismatch_count": 0,
+        "examples": []
+      }
+    },
+    {
+      "name": "blocker_conditioned_selection_zero_on_gate19",
+      "pass": true,
+      "detail": []
+    },
+    {
+      "name": "late_bound_query_mechanism_exercised",
+      "pass": true,
+      "detail": {
+        "scenes": 18,
+        "ids": [
+          "c9b1c562b6ff31e5",
+          "9e3e5f19ee38f2e3",
+          "ad7d72d8adca3e25",
+          "b85168f48c8c9970",
+          "9ccf60966ec93c20",
+          "2c2395ec28c6a158",
+          "7c6ac47c0deee2af",
+          "f8d5d2f0f7cf5825",
+          "40f2d8b336a3dafc",
+          "fe51445d725b8b8b",
+          "3919ccd73c0fabd7",
+          "fb9d8277036a53f3",
+          "d632f1919fe4bab",
+          "c34fe8e79cdf1161",
+          "7721ff4800156886",
+          "f8d4c735825e5d81",
+          "6418b0c9e2e4b093",
+          "1e015170763b9002"
+        ]
+      }
+    },
+    {
+      "name": "lost_rescues_query_root_unrecoverable_dominates_unsupported",
+      "pass": true,
+      "detail": {
+        "mean_root_unrecoverable": 126.12760079247421,
+        "mean_unsupported": 8.560734774105027,
+        "n_query_active_lost": 6
+      }
+    },
+    {
+      "name": "preregistered_early_stop_logic",
+      "pass": true,
+      "detail": {
+        "retained": 3,
+        "threshold": 5,
+        "avoided": 9,
+        "threshold2": 7
+      }
+    }
+  ],
+  "gate19": {
+    "n": 19,
+    "collision": 7,
+    "offroad": 1,
+    "kinematics": 2,
+    "mean_ep": 1.4695575362757634,
+    "wall_seconds": 22249.0,
+    "old_rvr_rescues_retained": 3,
+    "old_rvr_induced_avoided": 9,
+    "mandatory_gate_pass": false
+  },
+  "v43_vs_v42_on_gate19": {
+    "core_metric_mismatch_count": 0
+  },
+  "mechanism_groups": {
+    "lost7": {
+      "recovery_tube_blocker_query_attempt_step_rate": 0.8142857142857143,
+      "recovery_tube_blocker_query_selection_rate_on_certified_steps": 0.0,
+      "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": 16.276773247026412,
+      "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": 8.216209654500794,
+      "mean_recovery_tube_blocker_query_ready_agents_on_attempts": 7.668400147434958,
+      "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": 166.1709752473993,
+      "mean_recovery_tube_blocker_query_unsupported_rejects_on_attempts": 8.560734774105027,
+      "mean_recovery_tube_blocker_query_root_unrecoverable_rejects_on_attempts": 126.12760079247421,
+      "recovery_tube_certificate_step_rate": 0.012499999999999999,
+      "recovery_tube_nested_v42_selection_rate_on_certified_steps": 1.0,
+      "recovery_tube_action_change_step_rate": 0.012499999999999999
+    },
+    "retained3": {
+      "recovery_tube_blocker_query_attempt_step_rate": 0.32916666666666666,
+      "recovery_tube_blocker_query_selection_rate_on_certified_steps": 0.0,
+      "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": 13.10207768744354,
+      "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": 3.6781842818428188,
+      "mean_recovery_tube_blocker_query_ready_agents_on_attempts": 3.2953929539295395,
+      "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": 151.12308039747063,
+      "mean_recovery_tube_blocker_query_unsupported_rejects_on_attempts": 23.442863595302622,
+      "mean_recovery_tube_blocker_query_root_unrecoverable_rejects_on_attempts": 114.13188798554653,
+      "recovery_tube_certificate_step_rate": 0.09999999999999999,
+      "recovery_tube_nested_v42_selection_rate_on_certified_steps": 1.0,
+      "recovery_tube_action_change_step_rate": 0.09999999999999999
+    },
+    "induced9": {
+      "recovery_tube_blocker_query_attempt_step_rate": 0.5013888888888889,
+      "recovery_tube_blocker_query_selection_rate_on_certified_steps": 0.0,
+      "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": 13.036077389813409,
+      "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": 4.466640640419906,
+      "mean_recovery_tube_blocker_query_ready_agents_on_attempts": 3.492925127178164,
+      "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": 97.76542706561567,
+      "mean_recovery_tube_blocker_query_unsupported_rejects_on_attempts": 40.05195174010305,
+      "mean_recovery_tube_blocker_query_root_unrecoverable_rejects_on_attempts": 51.579942101339014,
+      "recovery_tube_certificate_step_rate": 0.027777777777777776,
+      "recovery_tube_nested_v42_selection_rate_on_certified_steps": 1.0,
+      "recovery_tube_action_change_step_rate": 0.027777777777777776
+    },
+    "gate19": {
+      "recovery_tube_blocker_query_attempt_step_rate": 0.5894736842105263,
+      "recovery_tube_blocker_query_selection_rate_on_certified_steps": 0.0,
+      "mean_recovery_tube_blocker_query_candidate_agents_before_exact_filter_on_attempts": 14.127309391822767,
+      "mean_recovery_tube_blocker_query_exact_blocker_agents_on_attempts": 5.585087585350688,
+      "mean_recovery_tube_blocker_query_ready_agents_on_attempts": 4.851828105055658,
+      "mean_recovery_tube_blocker_query_replayed_hypotheses_on_attempts": 129.46021868151936,
+      "mean_recovery_tube_blocker_query_unsupported_rejects_on_attempts": 26.78669806063697,
+      "mean_recovery_tube_blocker_query_root_unrecoverable_rejects_on_attempts": 86.85448597908533,
+      "recovery_tube_certificate_step_rate": 0.03355263157894737,
+      "recovery_tube_nested_v42_selection_rate_on_certified_steps": 1.0,
+      "recovery_tube_action_change_step_rate": 0.03355263157894737
+    }
+  },
+  "mechanism_interpretation": {
+    "late_bound_query_attempt_scene_count": 18,
+    "late_bound_query_selected_scene_count": 0,
+    "lost7_query_active_root_unrecoverable_mean": 126.12760079247421,
+    "lost7_query_active_unsupported_mean": 8.560734774105027
+  },
+  "scientific_verdict": "STOP",
+  "reason": "Frozen mandatory rescue-retention condition failed: 3/10 < 5/10. Full six-item Stage-1 conjunction is therefore mathematically impossible; remaining29 is correctly skipped."
+}

@@ -459,7 +459,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "first_zero_valid_candidate_policy_step": int(first_zero_valid) if first_zero_valid is not None else None,
             "first_zero_conventional_candidate_policy_step": int(first_zero_conventional) if first_zero_conventional is not None else None,
             "no_certificate_step_rate": float(sum(x == "no_certificate_use_least_coercive_conventional" for x in reasons) / max(n, 1)),
-            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube", "no_conventional_use_conflict_window_control_reachable_tube", "no_conventional_use_shift_closed_first_action_viability_interval", "no_conventional_use_interaction_aware_reachable_response_envelope", "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope"} for x in reasons) / max(n, 1)),
+            "no_conventional_step_rate": float(sum(x in {"no_conventional_use_least_coercive_valid", "no_conventional_use_recursive_viability", "no_conventional_use_rvr_pareto_guard", "no_conventional_use_successor_option_viability", "no_conventional_use_bihorizon_option_viability", "no_conventional_use_successor_restore_only", "no_conventional_use_trihorizon_option_persistence", "no_conventional_use_sov_recovery_commitment", "no_conventional_use_sov_dominance_hysteresis", "no_conventional_use_recovery_option_spectrum_hysteresis", "no_conventional_use_transition_guarded_rosh", "no_conventional_use_executable_option_spectrum_hysteresis", "no_conventional_use_waymax_kinematic_guarded_rosh", "no_conventional_use_control_projected_option_spectrum_hysteresis", "no_conventional_use_control_projected_recovery_frontier", "no_conventional_use_recourse_returnability_bridge", "no_conventional_use_shift_closed_control_reachable_tube", "no_conventional_use_conflict_window_control_reachable_tube", "no_conventional_use_shift_closed_first_action_viability_interval", "no_conventional_use_interaction_aware_reachable_response_envelope", "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope", "no_conventional_use_root_conditioned_control_reachable_responder_support"} for x in reasons) / max(n, 1)),
             "recursive_viability_recovery_step_rate": float(sum(x == "no_conventional_use_recursive_viability" for x in reasons) / max(n, 1)),
             "rvr_pareto_guard_step_rate": float(sum(x == "no_conventional_use_rvr_pareto_guard" for x in reasons) / max(n, 1)),
             "successor_option_viability_step_rate": float(sum(x == "no_conventional_use_successor_option_viability" for x in reasons) / max(n, 1)),
@@ -480,6 +480,7 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             "shift_closed_first_action_viability_interval_step_rate": float(sum(x == "no_conventional_use_shift_closed_first_action_viability_interval" for x in reasons) / max(n, 1)),
             "interaction_aware_reachable_response_envelope_step_rate": float(sum(x == "no_conventional_use_interaction_aware_reachable_response_envelope" for x in reasons) / max(n, 1)),
             "blocker_conditioned_interaction_aware_reachable_response_envelope_step_rate": float(sum(x == "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope" for x in reasons) / max(n, 1)),
+            "root_conditioned_control_reachable_responder_support_step_rate": float(sum(x == "no_conventional_use_root_conditioned_control_reachable_responder_support" for x in reasons) / max(n, 1)),
             "recovery_switch_step_rate": _mean("recovery_switch_applied"),
             "successor_option_probe_step_rate": _mean("successor_option_probe_used"),
             "second_successor_option_probe_step_rate": _mean("second_successor_option_probe_used"),
@@ -847,6 +848,22 @@ def policy_diagnostic_scenario_rows(rollouts: list[dict]) -> list[dict]:
             ) if n else None,
             "mean_recovery_tube_blocker_query_root_unrecoverable_rejects_on_attempts": _mean(
                 "recovery_tube_blocker_conditioned_query_root_unrecoverable_rejects",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_control_reachable_response_attempts_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_attempts",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_control_reachable_response_profiles_found_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_profiles_found",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_control_reachable_response_profile_evaluations_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_profile_evaluations",
+                mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
+            ) if n else None,
+            "mean_recovery_tube_blocker_query_control_reachable_response_selected_roots_on_attempts": _mean(
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_selected_roots",
                 mask=np.asarray([bool(r.get("recovery_tube_blocker_conditioned_query_attempted", False)) for r in rows], dtype=bool),
             ) if n else None,
             "mean_recovery_tube_blocker_query_environment_cache_hits_on_attempts": _mean(
