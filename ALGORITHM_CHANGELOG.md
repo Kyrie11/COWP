@@ -5599,3 +5599,54 @@ because historical failures can emerge late under replanning.
 - generic root-threshold/burden tuning, certificate relaxation, response-duration grids:
   **Prohibited**.
 - certificate→multi-step invariance and accepted-path Kinematics: **separate later branches**.
+
+---
+
+# V16.8.44R1 — Dynamic-Profile Cache Fidelity Repair + Exact Runtime Work Reuse (engineering-only)
+
+**Scientific method remains V16.8.44 RC-CRRS. No GO/STOP, promotion, bottleneck tightening, algorithm-family closure, threshold change, model retraining, dataset change, or paper-method change is authorized from the uploaded V44 lost7 result.**
+
+## Why the uploaded V44 result is not scientifically attributable
+
+The uploaded lost7 package is structurally coherent (7/7 exact manifest, disjoint 4+3 shards, merged standard metrics reproduce with zero numerical error) and reports 0/7 newly rescued. However, V44 introduces candidate-conditioned control-reachable responder profiles while the shared joint-CSP cache inherited from V42/V43 identified a profile only by
+
+```text
+(agent_index, root_ordinal, profile_index)
+```
+
+For a V44 dynamic profile, `profile_index` is reused across ego hypotheses even though residual acceleration/duration and therefore response geometry can differ. A joint-compatibility decision computed for one hypothesis can consequently be reused for a different trajectory in a later hypothesis. The uploaded logs contain both extensive V44 dynamic profile generation and shared joint-cache hits, but do not identify whether a particular hit was fixed-bank or dynamic. The effect cannot be excluded post hoc, so the observed 0/7 cannot be used to issue the preregistered V44 STOP.
+
+A deterministic regression reproduces the defect: pre-repair, a first compatible hypothesis caches `True`, then a second geometry-incompatible hypothesis with the same dynamic `profile_index` incorrectly passes via one stale joint-cache hit. R1 makes the second hypothesis correctly fail `no_jointly_compatible_response_envelope` with zero stale hit.
+
+## Correctness repair
+
+R1 changes only implementation identity/work reuse:
+
+1. Frozen response-bank profiles keep the original per-root index identity.
+2. Control-reachable dynamic profiles are cached by exact `(residual_accel_mps2, residual_duration_s)` identity inside the immutable `(agent, root)` namespace. These parameters deterministically define the dynamic trajectory on the fixed natural root.
+3. Both environment compatibility and cross-agent joint-CSP compatibility use this semantic profile identity, eliminating cross-hypothesis aliasing.
+4. Selected-response diagnostics now record whether the accepted response came from the control-reachable extension and, when applicable, its residual acceleration/duration.
+
+No burden, natural-root, probability mass, roadgraph, inverse-dynamics, current/shift safety, environment, joint-CSP, ego-hypothesis, selector, fallback, horizon, checkpoint, or preregistered gate predicate changes.
+
+## Runtime-only exact work reuse
+
+Uploaded lost7 required 30,368 s (~8.44 h) for 7 scenes and reconstructed 83,263 completion attempts / 1,350,867 profile evaluations. R1 therefore reuses only candidate-independent work within one policy step:
+
+- same `(agent, root, duration, residual)` trajectory construction;
+- burden / roadgraph / current+shift responder kinematics;
+- root↔frozen-environment unsafe-event support per `(agent, root, environment actor)`;
+- dynamic responder↔frozen-environment compatibility per semantic profile identity.
+
+Ego-conditioned current/shift collision checks are still recomputed for every hypothesis. Logical scientific counters remain unchanged; additional cache-hit counters expose implementation reuse. No server speedup number is claimed until the repaired lost7 rerun.
+
+## Validation and next scientific action
+
+Local focused regression/sanity after the repair must pass before rerun. The exact frozen V44 Stage-A rule remains:
+
+```text
+repaired lost7 newly rescued >= 2/7 -> continue to retained3
+repaired lost7 newly rescued <  2/7 -> scientific V44 STOP
+```
+
+The old uploaded `lost7_failfast_gate.json` is quarantined as **non-attributable** and must never be reused as V44 evidence. The rerun writes to a new R1 output root and records policy runtime diagnostics.

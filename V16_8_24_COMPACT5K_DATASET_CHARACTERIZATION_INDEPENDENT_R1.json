@@ -1,0 +1,177 @@
+{
+  "schema_version": "compact5k_dataset_characterization_independent_r1",
+  "split_manifest": {
+    "seed": "cowp-v16.8.24-compact-5k",
+    "train": 5000,
+    "val": 1000,
+    "heldout_test": 1200,
+    "train_selection_source": "historical_promoted_cache",
+    "validation_selection_source": "historical_promoted_cache",
+    "historical_train_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_train",
+    "historical_validation_cache": "/data0/senzeyu2/dataset/COWP/formal/tensor_cache_val",
+    "test_definition": "held-out subset of official WOMD validation; official WOMD test future is hidden"
+  },
+  "split_integrity": {
+    "train": {
+      "count": 5000,
+      "unique": 5000
+    },
+    "val": {
+      "count": 1000,
+      "unique": 1000
+    },
+    "heldout": {
+      "count": 1200,
+      "unique": 1200
+    },
+    "train_val_overlap": 0,
+    "train_heldout_overlap": 0,
+    "val_heldout_overlap": 0
+  },
+  "split_statistics": {
+    "train": {
+      "scenes": 5000,
+      "audit_relevant_pair_rate": 0.42969642430550514,
+      "critical_agent_count_mean": 5.3846,
+      "critical_agent_cap_observed": 6,
+      "conflict_region_selected_cap_saturation_rate": 0.9578,
+      "protected_prio_root_coverage": 0.9945328517036025,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.040671544775842214,
+      "pair_neutral_unsafe_rate": 0.14894687935573797,
+      "obs_ineligible_rate": 0.0976846832894533,
+      "candidate_acceptance_terminal": 0.5414834541905825,
+      "candidate_acceptance_priority_smooth_yield": 0.20354708925199114,
+      "candidate_acceptance_robust_bcte": 0.9801122790253225,
+      "candidate_acceptance_joint_route_ncf": 0.9548634619724667
+    },
+    "val": {
+      "scenes": 1000,
+      "audit_relevant_pair_rate": 0.42863002173455794,
+      "critical_agent_count_mean": 5.387,
+      "critical_agent_cap_observed": 6,
+      "conflict_region_selected_cap_saturation_rate": 0.955,
+      "protected_prio_root_coverage": 0.9936321332353661,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.043437906070168925,
+      "pair_neutral_unsafe_rate": 0.14923345623908402,
+      "obs_ineligible_rate": 0.1009120900446342,
+      "candidate_acceptance_terminal": 0.5454565514806479,
+      "candidate_acceptance_priority_smooth_yield": 0.2064995628096765,
+      "candidate_acceptance_robust_bcte": 0.9843125192248539,
+      "candidate_acceptance_joint_route_ncf": 0.9387755102040817
+    },
+    "heldout": {
+      "scenes": 1200,
+      "audit_relevant_pair_rate": 0.42949210300959645,
+      "critical_agent_count_mean": 5.338333333333333,
+      "critical_agent_cap_observed": 6,
+      "conflict_region_selected_cap_saturation_rate": 0.9541666666666667,
+      "protected_prio_root_coverage": 0.994651306315573,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.04464564470808617,
+      "pair_neutral_unsafe_rate": 0.15049019607843137,
+      "obs_ineligible_rate": 0.09820261437908497,
+      "candidate_acceptance_terminal": 0.5509600903614458,
+      "candidate_acceptance_priority_smooth_yield": 0.21865260129465355,
+      "candidate_acceptance_robust_bcte": 0.9819947879649372,
+      "candidate_acceptance_joint_route_ncf": 0.9760888129803587
+    }
+  },
+  "cross_split_assessment": {
+    "audit_relevant_pair_rate": {
+      "min": 0.42863002173455794,
+      "max": 0.42969642430550514,
+      "range": 0.0010664025709472003
+    },
+    "critical_agent_count_mean": {
+      "min": 5.338333333333333,
+      "max": 5.387,
+      "range": 0.048666666666666636
+    },
+    "conflict_region_selected_cap_saturation_rate": {
+      "min": 0.9541666666666667,
+      "max": 0.9578,
+      "range": 0.0036333333333332662
+    },
+    "protected_prio_root_coverage": {
+      "min": 0.9936321332353661,
+      "max": 0.994651306315573,
+      "range": 0.0010191730802068255
+    },
+    "mechanism_unauditable_rate": {
+      "min": 0.040671544775842214,
+      "max": 0.04464564470808617,
+      "range": 0.003974099932243957
+    },
+    "pair_neutral_unsafe_rate": {
+      "min": 0.14894687935573797,
+      "max": 0.15049019607843137,
+      "range": 0.0015433167226933941
+    },
+    "obs_ineligible_rate": {
+      "min": 0.0976846832894533,
+      "max": 0.1009120900446342,
+      "range": 0.003227406755180892
+    }
+  },
+  "known_caveat": {
+    "schema_version": "cowp_v16_8_9_self_contained_cache_integrity_v2",
+    "pass": false,
+    "cache_dir": "/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k/tensor_cache_train",
+    "files": 5000,
+    "inspected": 5000,
+    "allowlist_size": 5000,
+    "missing_allowlist_count": 0,
+    "extra_allowlist_count": 0,
+    "broken_symlink_count": 0,
+    "symlink_count": 0,
+    "missing_required_key_counts": {},
+    "read_errors": [],
+    "scenario_id_mismatch_examples": [],
+    "valid_scene_rate_inspected": 1.0,
+    "any_ncf_scene_rate_inspected": 0.3104,
+    "proposal_source_candidate_counts_inspected": {
+      "KEEP": 7655,
+      "ACCELERATE": 12396,
+      "YIELD": 30906,
+      "LANE_CHANGE": 46330,
+      "CREEP": 4942,
+      "NEUTRAL": 4986,
+      "TERMINAL": 121791,
+      "LOGGED": 3950,
+      "STOP": 5282,
+      "LEGACY_TIMING": 7525,
+      "ROBUST_BCTE": 16411,
+      "PRIORITY_SMOOTH_YIELD": 7437,
+      "JOINT_ROUTE_NCF": 4231
+    },
+    "silent_blocker_count": 0,
+    "irrelevant_blocker_count": 58243,
+    "affected_root_mismatch_count": 0,
+    "conflict_root_mismatch_count": 0,
+    "retained_root_mismatch_count": 0,
+    "canonical_root_weight_mismatch_count": 0,
+    "affected_definition_error_count": 0,
+    "burden_only_definition_error_count": 0,
+    "require_sdc_paths": true,
+    "sdc_paths_missing_marker_count": 0,
+    "sdc_paths_not_ready_count": 0,
+    "reasons": [
+      "irrelevant pair blockers=58243"
+    ]
+  },
+  "interpretation": {
+    "current_status": "No evidence in the uploaded compact-5k artifacts that split instability, missing natural roots, or low-burden-root sparsity is the dominant current bottleneck.",
+    "do_not_rebuild_now": true,
+    "watch_items": [
+      "critical-agent cap is saturated at p50/p90=6 and conflict-region selected cap saturates ~95.4-95.8%",
+      "PRIORITY_SMOOTH_YIELD and TERMINAL have materially lower proposal acceptance than ROBUST_BCTE/JOINT_ROUTE_NCF",
+      "train cache verifier pass=false due 58,243 irrelevant-pair blockers; publication requires cache serialization repair or explicit cache-to-runtime semantic-equivalence proof"
+    ],
+    "heldout_definition": "held-out subset of official WOMD validation; official WOMD test future is hidden"
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "schema_version": "v16_8_44_result_reliability_audit_r1",
+  "scientific_method": "cowp_root_conditioned_control_reachable_responder_support",
+  "stage": "lost7 preregistered Stage A",
+  "raw_observation": {
+    "lost7_new_rescues": 0,
+    "gate_pass_reported": false,
+    "collision_rate": 1.0,
+    "num_rollouts": 7
+  },
+  "integrity_checks": {
+    "manifest_expected_count": 7,
+    "manifest_unique": true,
+    "merged_count": 7,
+    "merged_unique": true,
+    "merged_exact_manifest": true,
+    "shard_counts": [
+      4,
+      3
+    ],
+    "shard_overlap": [],
+    "shard_union_exact_manifest": true,
+    "method": "cowp_root_conditioned_control_reachable_responder_support",
+    "checkpoint_path": "/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all/cowp_all_best.pt",
+    "num_shards_merged": 2,
+    "metric_recompute_max_abs_error": 0.0,
+    "metric_recompute_errors": {
+      "CR": 0.0,
+      "CollisionRate": 0.0,
+      "EP": 0.0,
+      "KinematicsInfeasibilityRate": 0.0,
+      "OffroadRate": 0.0,
+      "WaymaxAny/KinematicsInfeasibilityMetric": 0.0,
+      "WaymaxAny/OffroadMetric": 0.0,
+      "WaymaxAny/OverlapMetric": 0.0,
+      "WaymaxFinal/KinematicsInfeasibilityMetric": 0.0,
+      "WaymaxFinal/OffroadMetric": 0.0,
+      "WaymaxFinal/OverlapMetric": 0.0,
+      "WaymaxFinal/ProgressionMetric": 0.0
+    },
+    "shard_union_count": 7
+  },
+  "mechanism_work_reconstructed": {
+    "query_attempt_steps": 456,
+    "completion_attempts": 83263,
+    "profiles_found": 26485,
+    "profile_evaluations": 1350867,
+    "selected_roots": 26477,
+    "environment_cache_hits": 3008752,
+    "joint_cache_hits": 52882,
+    "root_unrecoverable_rejects": 56786,
+    "unsupported_rejects": 3987,
+    "hypotheses_evaluated": 75434
+  },
+  "runtime": {
+    "lost7_wall_seconds": 30368,
+    "lost7_wall_hours": 8.435555555555556,
+    "seconds_per_scene": 4338.285714285715,
+    "v43r3_gate19_wall_seconds_reference": 22249,
+    "v43r3_gate19_seconds_per_scene": 1171.0,
+    "v44_to_v43r3_per_scene_slowdown": 3.7047700378187143,
+    "runtime_profile_enabled_in_uploaded_result": false
+  },
+  "blocking_correctness_defect": {
+    "name": "candidate-conditioned dynamic response profile cache aliasing",
+    "location": "cowp/waymax_eval/policy_wrapper.py::_interaction_aware_recovery_certificate_np pair_compatible",
+    "cause": "V44 control-reachable profiles reuse profile_index across ego hypotheses although residual acceleration/duration and trajectory are hypothesis-dependent; the shared joint-CSP cache key used only (agent_index, root_ordinal, profile_index).",
+    "why_current_logs_cannot_exclude_impact": "V44 generated many dynamic profiles and the uploaded lost7 logs contain shared joint-cache hits, but do not record whether each hit involved fixed or dynamic profiles. Therefore stale cross-hypothesis compatibility reuse cannot be ruled out post hoc.",
+    "minimal_reproduction_before_repair": {
+      "first_hypothesis": "PASS",
+      "second_hypothesis_true_geometry": "JOINT_INCOMPATIBLE",
+      "second_hypothesis_v44_cached_result": "PASS",
+      "second_joint_cache_hits": 1
+    },
+    "minimal_reproduction_after_r1": {
+      "first_hypothesis": "PASS",
+      "second_hypothesis": "JOINT_INCOMPATIBLE FAIL",
+      "second_joint_cache_hits": 0
+    }
+  },
+  "attribution_verdict": "BLOCKED_REPAIR_ONLY",
+  "scientific_go_stop": "NOT_AVAILABLE",
+  "promotion_decision": "NOT_AVAILABLE",
+  "algorithm_family_closure": "NONE_NEW_FROM_V44_RESULT",
+  "required_next_scientific_action": "rerun the exact frozen lost7 Stage A with V16.8.44R1; only if repaired lost7_new_rescues < 2/7 may V44 be scientifically STOPped.",
+  "provenance_boundary": "Uploaded result JSON identifies method/checkpoint path but does not embed a cryptographic hash of the exact executed code bytes or checkpoint bytes. This is secondary to the blocking cache-correctness defect.",
+  "file_sha256": {
+    "lost7_cowp_root_conditioned_control_reachable_responder_support_merged.json": "b2674c480c9d509632d46683aedf8d040465d43c5e98f6ff8f1caef08299c094",
+    "lost7_cowp_root_conditioned_control_reachable_responder_support_s0.json": "a7f8c9d34873bd36f96756f72fe58b34eb41276a3a6f349b3b7d68eb544f3e99",
+    "lost7_cowp_root_conditioned_control_reachable_responder_support_s1.json": "fdca7277b125f35bf76fb872c83b7a8cc172ee563b3708715d68fd354c63299f",
+    "lost7_failfast_gate.json": "e557409f2e4beecaf5d5530ad16809fb2682bbf0b49ac1d86b77e775f6c54ee8",
+    "lost7_cowp_root_conditioned_control_reachable_responder_support_wall_seconds.txt": "417d18b87781016d41ff46ff12f9f76c939971b8b11a05d832b697aa1102d691"
+  }
+}

@@ -4169,6 +4169,30 @@ def _merge_interaction_response_support_details_np(
 
 
 
+def _response_profile_compatibility_identity_np(profile: dict[str, Any]) -> tuple[Any, ...]:
+    """Return a cache identity that is invariant iff response geometry is invariant.
+
+    Frozen response-bank profiles are immutable within a policy step, so their
+    per-root ``profile_index`` remains a sufficient identity.  V16.8.44's
+    control-reachable completion is candidate-conditioned, however: the same
+    numerical profile index is intentionally reused for different ego hypotheses.
+    For those profiles, compatibility caching must therefore include the exact
+    control residual parameters that deterministically define the trajectory on
+    the fixed natural root.  The enclosing cache key also contains agent/root.
+    """
+    if bool(profile.get("control_reachable_extension", False)):
+        try:
+            accel = np.float64(float(profile["residual_accel_mps2"])).tobytes()
+            duration = np.float64(float(profile["residual_duration_s"])).tobytes()
+            return ("control_reachable", accel, duration)
+        except Exception:
+            # Fail-safe exact fallback for malformed diagnostic-only profiles.
+            cur = np.ascontiguousarray(np.asarray(profile.get("trajectory"), dtype=np.float32))
+            shifted = np.ascontiguousarray(np.asarray(profile.get("shifted_trajectory"), dtype=np.float32))
+            return ("control_reachable_trajectory", cur.shape, cur.tobytes(), shifted.shape, shifted.tobytes())
+    return ("fixed", int(profile.get("profile_index", -1)))
+
+
 def _root_conditioned_control_reachable_response_profiles_np(
     agent_state: np.ndarray,
     agent_index: int,
@@ -4182,6 +4206,8 @@ def _root_conditioned_control_reachable_response_profiles_np(
     cfg: dict,
     *,
     profile_index_base: int = 10000,
+    root_ordinal: int = -1,
+    compatibility_cache: dict[str, dict[Any, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Candidate-conditioned same-root control-reachable response completion.
 
@@ -4207,6 +4233,9 @@ def _root_conditioned_control_reachable_response_profiles_np(
         "profile_evaluations": 0,
         "static_feasible_evaluations": 0,
         "dynamic_safe_evaluations": 0,
+        "static_profile_cache_hits": 0,
+        "environment_event_cache_hits": 0,
+        "environment_compatibility_cache_hits": 0,
         "profiles_found": 0,
         "best_abs_accel_mps2": None,
         "failure_reason": "none",
@@ -4220,6 +4249,9 @@ def _root_conditioned_control_reachable_response_profiles_np(
         return [], detail
     dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
     shifted_root = _shift_append_terminal_reference_np(root, dt)
+    if compatibility_cache is None:
+        compatibility_cache = {}
+    environment_event_cache = compatibility_cache.setdefault("control_reachable_environment_events", {})
 
     # Locate the identity root's actual unsafe time support under exactly the
     # predicates used by the certificate.  This avoids adding another tuned
@@ -4236,17 +4268,26 @@ def _root_conditioned_control_reachable_response_profiles_np(
         actor_type = int(actor["object_type"])
         actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
         actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
-        for left, right, right_type in (
-            (root, actor_cur, actor_type),
-            (actor_cur, root, int(object_type)),
-            (shifted_root, actor_shift, actor_type),
-            (actor_shift, shifted_root, int(object_type)),
-        ):
-            try:
-                res = unsafe_between(left, right, cfg, agent_type=right_type)
-                event_steps.extend(np.flatnonzero(np.asarray(res.event_mask, dtype=bool)).tolist())
-            except Exception:
-                continue
+        event_key = (int(agent_index), int(root_ordinal), int(actor.get("agent_index", -1)))
+        actor_event_steps = environment_event_cache.get(event_key)
+        if actor_event_steps is None:
+            actor_events: list[int] = []
+            for left, right, right_type in (
+                (root, actor_cur, actor_type),
+                (actor_cur, root, int(object_type)),
+                (shifted_root, actor_shift, actor_type),
+                (actor_shift, shifted_root, int(object_type)),
+            ):
+                try:
+                    res = unsafe_between(left, right, cfg, agent_type=right_type)
+                    actor_events.extend(np.flatnonzero(np.asarray(res.event_mask, dtype=bool)).tolist())
+                except Exception:
+                    continue
+            actor_event_steps = tuple(actor_events)
+            environment_event_cache[event_key] = actor_event_steps
+        else:
+            detail["environment_event_cache_hits"] = int(detail["environment_event_cache_hits"]) + 1
+        event_steps.extend(actor_event_steps)
     if not event_steps:
         # A root reaching this code path should have failed the fixed profile
         # certificate.  No identity event means the failure is not a control-
@@ -4262,68 +4303,108 @@ def _root_conditioned_control_reachable_response_profiles_np(
     max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 0.0)
     max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 0.0)
 
+    # Engineering-only work reuse.  Static profile construction depends on the
+    # current actor state, fixed natural root, roadgraph/config, duration and
+    # residual acceleration, but not on the ego hypothesis.  The cache lifetime
+    # is one policy step and the enclosing (agent, root) namespace is immutable.
+    static_profile_cache = compatibility_cache.setdefault("control_reachable_static", {})
+    compatibility_cache.setdefault("control_reachable_environment_events", {})
+    environment_cache = compatibility_cache.setdefault("environment", {})
     eval_cache: dict[float, tuple[dict[str, Any] | None, bool]] = {}
+    cache_namespace = (int(agent_index), int(root_ordinal))
 
     def evaluate(accel: float) -> tuple[dict[str, Any] | None, bool]:
         key = float(round(float(accel), 8))
         if key in eval_cache:
             return eval_cache[key]
         detail["profile_evaluations"] = int(detail["profile_evaluations"]) + 1
-        try:
-            tr = build_root_control_residual_trajectory(
-                root, cfg, accel_mps2=float(accel), duration_s=duration_s, start_delay_s=0.0,
-            )
-            burden_entry = prepare_root_recovery_burden_bank(
-                root, [tr], cfg, object_type=int(object_type), rho=PriorityRelation.AGENT_PRIORITY,
-            )[0]
-            burden = float(burden_entry[0])
-            if burden > float(beta) + 1.0e-9 or not bool(_roadgraph_drivable_mask(tr, roadgraph)):
-                eval_cache[key] = (None, False)
-                return eval_cache[key]
-            kin_ok, kin = _trajectory_waymax_kinematic_safe_np(state[int(agent_index)], tr, cfg)
-            shifted = _shift_append_terminal_reference_np(tr, dt)
-            response_successor = _agent_state_after_future_sample_np(state[int(agent_index)], tr[0])
-            shift_kin_ok, shift_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
-            if not (kin_ok and shift_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
-                eval_cache[key] = (None, False)
-                return eval_cache[key]
-            detail["static_feasible_evaluations"] = int(detail["static_feasible_evaluations"]) + 1
-            dynamic_safe = not (
-                unsafe_between_bool(current_ego, tr, cfg, agent_type=int(object_type))
-                or unsafe_between_bool(shifted_ego, shifted, cfg, agent_type=int(object_type))
-            )
-            if dynamic_safe:
-                for actor in environment:
-                    actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
-                    actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
-                    actor_type = int(actor["object_type"])
-                    if (
-                        unsafe_between_bool(tr, actor_cur, cfg, agent_type=actor_type)
-                        or unsafe_between_bool(actor_cur, tr, cfg, agent_type=int(object_type))
-                        or unsafe_between_bool(shifted, actor_shift, cfg, agent_type=actor_type)
-                        or unsafe_between_bool(actor_shift, shifted, cfg, agent_type=int(object_type))
-                    ):
-                        dynamic_safe = False
-                        break
-            rec = {
-                "profile_index": int(profile_index_base + len(eval_cache)),
-                "trajectory": tr,
-                "shifted_trajectory": shifted,
-                "burden": burden,
-                "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
-                "current_kinematic": kin,
-                "shifted_kinematic": shift_kin,
-                "control_reachable_extension": True,
-                "residual_accel_mps2": float(accel),
-                "residual_duration_s": float(duration_s),
-            }
-            if dynamic_safe:
-                detail["dynamic_safe_evaluations"] = int(detail["dynamic_safe_evaluations"]) + 1
-            eval_cache[key] = (rec, bool(dynamic_safe))
-            return eval_cache[key]
-        except Exception:
+        accel_bits = np.float64(float(accel)).tobytes()
+        duration_bits = np.float64(float(duration_s)).tobytes()
+        static_key = (cache_namespace, duration_bits, accel_bits)
+        sentinel = object()
+        static_rec = static_profile_cache.get(static_key, sentinel)
+        if static_rec is not sentinel:
+            detail["static_profile_cache_hits"] = int(detail["static_profile_cache_hits"]) + 1
+        else:
+            try:
+                tr = build_root_control_residual_trajectory(
+                    root, cfg, accel_mps2=float(accel), duration_s=duration_s, start_delay_s=0.0,
+                )
+                burden_entry = prepare_root_recovery_burden_bank(
+                    root, [tr], cfg, object_type=int(object_type), rho=PriorityRelation.AGENT_PRIORITY,
+                )[0]
+                burden = float(burden_entry[0])
+                if burden > float(beta) + 1.0e-9 or not bool(_roadgraph_drivable_mask(tr, roadgraph)):
+                    static_rec = None
+                else:
+                    kin_ok, kin = _trajectory_waymax_kinematic_safe_np(state[int(agent_index)], tr, cfg)
+                    shifted = _shift_append_terminal_reference_np(tr, dt)
+                    response_successor = _agent_state_after_future_sample_np(state[int(agent_index)], tr[0])
+                    shift_kin_ok, shift_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
+                    if not (kin_ok and shift_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
+                        static_rec = None
+                    else:
+                        static_rec = {
+                            "trajectory": tr,
+                            "shifted_trajectory": shifted,
+                            "burden": burden,
+                            "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
+                            "current_kinematic": kin,
+                            "shifted_kinematic": shift_kin,
+                            "control_reachable_extension": True,
+                            "residual_accel_mps2": float(accel),
+                            "residual_duration_s": float(duration_s),
+                        }
+            except Exception:
+                static_rec = None
+            static_profile_cache[static_key] = static_rec
+        if static_rec is None:
             eval_cache[key] = (None, False)
             return eval_cache[key]
+
+        # Preserve logical mechanism counters even when static work is reused.
+        detail["static_feasible_evaluations"] = int(detail["static_feasible_evaluations"]) + 1
+        rec = dict(static_rec)
+        rec["profile_index"] = int(profile_index_base + len(eval_cache))
+        dynamic_safe = not (
+            unsafe_between_bool(current_ego, np.asarray(rec["trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+            or unsafe_between_bool(shifted_ego, np.asarray(rec["shifted_trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+        )
+        if dynamic_safe:
+            profile_identity = _response_profile_compatibility_identity_np(rec)
+            for actor in environment:
+                actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
+                actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
+                actor_type = int(actor["object_type"])
+                env_key = (
+                    int(agent_index), int(root_ordinal), profile_identity, int(actor.get("agent_index", -1)),
+                )
+                env_ok = environment_cache.get(env_key)
+                if env_ok is None:
+                    try:
+                        current_bad = (
+                            unsafe_between_bool(np.asarray(rec["trajectory"], dtype=np.float32), actor_cur, cfg, agent_type=actor_type)
+                            or unsafe_between_bool(actor_cur, np.asarray(rec["trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+                        )
+                        shifted_bad = (
+                            unsafe_between_bool(np.asarray(rec["shifted_trajectory"], dtype=np.float32), actor_shift, cfg, agent_type=actor_type)
+                            or unsafe_between_bool(actor_shift, np.asarray(rec["shifted_trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+                        )
+                        env_ok = bool(not (current_bad or shifted_bad))
+                    except Exception:
+                        env_ok = False
+                    environment_cache[env_key] = bool(env_ok)
+                else:
+                    detail["environment_compatibility_cache_hits"] = int(
+                        detail["environment_compatibility_cache_hits"]
+                    ) + 1
+                if not bool(env_ok):
+                    dynamic_safe = False
+                    break
+        if dynamic_safe:
+            detail["dynamic_safe_evaluations"] = int(detail["dynamic_safe_evaluations"]) + 1
+        eval_cache[key] = (rec, bool(dynamic_safe))
+        return eval_cache[key]
 
     found: list[dict[str, Any]] = []
     # Search each direction independently.  The dyadic sequence is a numerical
@@ -4388,7 +4469,7 @@ def _interaction_aware_recovery_certificate_np(
     shifted_collision_context: dict[str, Any],
     response_support: dict[int, dict[str, Any]],
     object_types: np.ndarray,
-    compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+    compatibility_cache: dict[str, dict[Any, Any]] | None = None,
     allow_control_reachable_response_extension: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """Certify one ego tube under universal low-burden same-root response support."""
@@ -4420,6 +4501,9 @@ def _interaction_aware_recovery_certificate_np(
         "control_reachable_response_attempts": 0,
         "control_reachable_response_profiles_found": 0,
         "control_reachable_response_profile_evaluations": 0,
+        "control_reachable_response_static_cache_hits": 0,
+        "control_reachable_response_environment_event_cache_hits": 0,
+        "control_reachable_response_environment_cache_hits": 0,
         "control_reachable_response_selected_roots": 0,
         "minimum_retained_root_mass": 0.0,
         "maximum_selected_response_burden": 0.0,
@@ -4532,7 +4616,8 @@ def _interaction_aware_recovery_certificate_np(
                         detail["interaction_environment_compatibility_checks"]
                     ) + 1
                     cache_key = (
-                        int(agent_index), int(root_ordinal), int(profile.get("profile_index", -1)),
+                        int(agent_index), int(root_ordinal),
+                        _response_profile_compatibility_identity_np(profile),
                         int(actor["agent_index"]),
                     )
                     cached = environment_cache.get(cache_key)
@@ -4585,9 +4670,14 @@ def _interaction_aware_recovery_certificate_np(
                     np.asarray(shifted_ego_trajectory, dtype=np.float32),
                     environment, roadgraph, cfg,
                     profile_index_base=10000 + 100 * int(root_ordinal),
+                    root_ordinal=int(root_ordinal),
+                    compatibility_cache=compatibility_cache,
                 )
                 detail["control_reachable_response_profiles_found"] = int(detail["control_reachable_response_profiles_found"]) + int(extra_detail.get("profiles_found", 0))
                 detail["control_reachable_response_profile_evaluations"] = int(detail["control_reachable_response_profile_evaluations"]) + int(extra_detail.get("profile_evaluations", 0))
+                detail["control_reachable_response_static_cache_hits"] = int(detail["control_reachable_response_static_cache_hits"]) + int(extra_detail.get("static_profile_cache_hits", 0))
+                detail["control_reachable_response_environment_event_cache_hits"] = int(detail["control_reachable_response_environment_event_cache_hits"]) + int(extra_detail.get("environment_event_cache_hits", 0))
+                detail["control_reachable_response_environment_cache_hits"] = int(detail["control_reachable_response_environment_cache_hits"]) + int(extra_detail.get("environment_compatibility_cache_hits", 0))
                 if extra_profiles:
                     detail["control_reachable_response_selected_roots"] = int(detail["control_reachable_response_selected_roots"]) + 1
                     environment_safe_profiles.extend(extra_profiles)
@@ -4634,10 +4724,12 @@ def _interaction_aware_recovery_certificate_np(
             return True
         compatibility_checks += 1
         left = (
-            int(node["agent_index"]), int(node["root_ordinal"]), int(profile.get("profile_index", -1)),
+            int(node["agent_index"]), int(node["root_ordinal"]),
+            _response_profile_compatibility_identity_np(profile),
         )
         right = (
-            int(other_node["agent_index"]), int(other_node["root_ordinal"]), int(other_profile.get("profile_index", -1)),
+            int(other_node["agent_index"]), int(other_node["root_ordinal"]),
+            _response_profile_compatibility_identity_np(other_profile),
         )
         cache_key = tuple(sorted((left, right)))
         cached = joint_cache.get(cache_key)
@@ -4719,6 +4811,15 @@ def _interaction_aware_recovery_certificate_np(
             "root_weight": float(root.get("weight", 0.0)),
             "profile_index": int(accepted_profile["profile_index"]),
             "burden": burden,
+            "control_reachable_extension": bool(accepted_profile.get("control_reachable_extension", False)),
+            "residual_accel_mps2": (
+                float(accepted_profile["residual_accel_mps2"])
+                if "residual_accel_mps2" in accepted_profile else None
+            ),
+            "residual_duration_s": (
+                float(accepted_profile["residual_duration_s"])
+                if "residual_duration_s" in accepted_profile else None
+            ),
         })
     detail.update({
         "interaction_joint_compatibility_checks": int(compatibility_checks),
@@ -4755,7 +4856,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     natural_trajectories: np.ndarray,
     natural_logits: np.ndarray,
     object_types: np.ndarray,
-    shared_compatibility_cache: dict[str, dict[Any, bool]] | None = None,
+    shared_compatibility_cache: dict[str, dict[Any, Any]] | None = None,
     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] | None = None,
     prepared_response_support: dict[int, dict[str, Any]] | None = None,
     prepared_response_support_detail: dict[str, Any] | None = None,
@@ -4818,6 +4919,9 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         "interaction_control_reachable_response_attempts": 0,
         "interaction_control_reachable_response_profiles_found": 0,
         "interaction_control_reachable_response_profile_evaluations": 0,
+        "interaction_control_reachable_response_static_cache_hits": 0,
+        "interaction_control_reachable_response_environment_event_cache_hits": 0,
+        "interaction_control_reachable_response_environment_cache_hits": 0,
         "interaction_control_reachable_response_selected_roots": 0,
         "interaction_selected_blocker_count": 0,
         "interaction_selected_root_count": 0,
@@ -5000,10 +5104,12 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     # comparable to V42; cache-hit counters are additional diagnostics only.
     compatibility_cache = shared_compatibility_cache
     if compatibility_cache is None:
-        compatibility_cache = {"environment": {}, "joint": {}}
+        compatibility_cache = {"environment": {}, "joint": {}, "control_reachable_static": {}, "control_reachable_environment_events": {}}
     else:
         compatibility_cache.setdefault("environment", {})
         compatibility_cache.setdefault("joint", {})
+        compatibility_cache.setdefault("control_reachable_static", {})
+        compatibility_cache.setdefault("control_reachable_environment_events", {})
     successor_context_cache = shared_successor_context_cache
     if successor_context_cache is None:
         successor_context_cache = {}
@@ -5102,6 +5208,15 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         detail["interaction_control_reachable_response_profile_evaluations"] = int(
             detail["interaction_control_reachable_response_profile_evaluations"]
         ) + int(interaction_detail.get("control_reachable_response_profile_evaluations", 0))
+        detail["interaction_control_reachable_response_static_cache_hits"] = int(
+            detail["interaction_control_reachable_response_static_cache_hits"]
+        ) + int(interaction_detail.get("control_reachable_response_static_cache_hits", 0))
+        detail["interaction_control_reachable_response_environment_event_cache_hits"] = int(
+            detail["interaction_control_reachable_response_environment_event_cache_hits"]
+        ) + int(interaction_detail.get("control_reachable_response_environment_event_cache_hits", 0))
+        detail["interaction_control_reachable_response_environment_cache_hits"] = int(
+            detail["interaction_control_reachable_response_environment_cache_hits"]
+        ) + int(interaction_detail.get("control_reachable_response_environment_cache_hits", 0))
         detail["interaction_control_reachable_response_selected_roots"] = int(
             detail["interaction_control_reachable_response_selected_roots"]
         ) + int(interaction_detail.get("control_reachable_response_selected_roots", 0))
@@ -5242,8 +5357,8 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     by the wider collision audit (up to 24), creating a support-indexing false
     negative.  The extension does *not* enlarge the social NCF critical set.
     """
-    shared_compatibility_cache: dict[str, dict[Any, bool]] = {
-        "environment": {}, "joint": {},
+    shared_compatibility_cache: dict[str, dict[Any, Any]] = {
+        "environment": {}, "joint": {}, "control_reachable_static": {}, "control_reachable_environment_events": {},
     }
     shared_successor_context_cache: dict[bytes, tuple[np.ndarray, dict[str, Any]]] = {}
     base_trace: dict[str, Any] = {
@@ -5281,6 +5396,9 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         "blocker_conditioned_query_control_reachable_response_attempts": 0,
         "blocker_conditioned_query_control_reachable_response_profiles_found": 0,
         "blocker_conditioned_query_control_reachable_response_profile_evaluations": 0,
+        "blocker_conditioned_query_control_reachable_response_static_cache_hits": 0,
+        "blocker_conditioned_query_control_reachable_response_environment_event_cache_hits": 0,
+        "blocker_conditioned_query_control_reachable_response_environment_cache_hits": 0,
         "blocker_conditioned_query_control_reachable_response_selected_roots": 0,
         "blocker_conditioned_query_candidate_agents_before_exact_filter": 0,
         "blocker_conditioned_query_exact_blocker_agent_count": 0,
@@ -5457,6 +5575,15 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     )
     detail["blocker_conditioned_query_control_reachable_response_profile_evaluations"] = int(
         expanded_detail.get("interaction_control_reachable_response_profile_evaluations", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_static_cache_hits"] = int(
+        expanded_detail.get("interaction_control_reachable_response_static_cache_hits", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_environment_event_cache_hits"] = int(
+        expanded_detail.get("interaction_control_reachable_response_environment_event_cache_hits", 0)
+    )
+    detail["blocker_conditioned_query_control_reachable_response_environment_cache_hits"] = int(
+        expanded_detail.get("interaction_control_reachable_response_environment_cache_hits", 0)
     )
     detail["blocker_conditioned_query_control_reachable_response_selected_roots"] = int(
         expanded_detail.get("interaction_control_reachable_response_selected_roots", 0)
@@ -8991,6 +9118,9 @@ class COWPWaymaxPolicy:
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_attempts": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_attempts", 0)),
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_profiles_found": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_profiles_found", 0)),
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_profile_evaluations": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_profile_evaluations", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_static_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_static_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_environment_event_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_environment_event_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_control_reachable_response_environment_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_environment_cache_hits", 0)),
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_selected_roots": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_selected_roots", 0)),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),

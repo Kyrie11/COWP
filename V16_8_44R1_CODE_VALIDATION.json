@@ -1,0 +1,28 @@
+{
+  "version": "V16.8.44R1",
+  "branch": "DYNAMIC_PROFILE_CACHE_FIDELITY_REPAIR",
+  "scientific_method_id": "cowp_root_conditioned_control_reachable_responder_support",
+  "scientific_status": "ENGINEERING_ONLY_REPAIR; V16.8.44 lost7 attribution remains blocked until exact frozen lost7 rerun",
+  "algorithmic_variables_changed": false,
+  "blocking_bug_fixed": "candidate-conditioned dynamic responder profiles previously aliased in environment/joint compatibility caches via reused profile_index; cache identity now binds actual residual geometry",
+  "runtime_reuse_added": "candidate-independent dynamic trajectory/burden/roadgraph/kinematics and frozen-environment event/compatibility work reused; ego current/shift checks remain hypothesis-specific",
+  "launcher_bash_n_pass": true,
+  "sanity_returncode": 0,
+  "sanity_stdout": "........................................................................ [ 63%]\n..........................................                               [100%]\n114 passed in 1.98s\nV16.8.44R1 dynamic-profile cache-fidelity sanity PASS",
+  "sanity_stderr": "",
+  "expected_focused_tests": 114,
+  "focused_tests_pass": true,
+  "old_v44_outputs_reusable": false,
+  "required_next_scientific_action": "rerun lost7_parallel2 with R1 from a fresh output directory; analyze_lost7; apply unchanged >=2/7 fail-fast gate",
+  "sha256": {
+    "cowp/waymax_eval/policy_wrapper.py": "58ab2d7e211e7fd847df623a09ee9c018278a64bcfad65aeabc963b0bc889622",
+    "tests/test_v16_8_44_root_conditioned_control_reachable_responder_support.py": "c18f4160e29c9d4f384fe81c8facd72d07a90a52808e48af4eaae1d663c4bcc6",
+    "NEXT_RUN_COMMANDS_V16_8_44R1_DYNAMIC_PROFILE_CACHE_FIDELITY_REPAIR_CN.sh": "ce04f9302d1f14596ad326ca80935462820f2d473765872b0fd96794786859e0",
+    "ALGORITHM_CHANGELOG.md": "ce626dde2497f394ce3582c3a3a11f80a7daa905a7a3d25236546eaca422587f",
+    "ALGORITHM_CHANGELOG_V16_8_44R1.md": "98e9d47b4413b1825bf024b2b4b0f085c251eb1ec598e2736702c232aa4c5d00",
+    "V16_8_44_RESULT_RELIABILITY_AUDIT_NONATTRIBUTABLE.json": "ace06eb0355771b06c32cadbe2fc135f77f18fd383719f1b34894b2be140672a",
+    "V16_8_24_COMPACT5K_DATASET_CHARACTERIZATION_INDEPENDENT_R1.json": "d5c37cba8d2ae31aa9ecd8bc4189f2a96357c3cd94770027ffb9a3d17b425d0c",
+    "CURRENT_ANALYSIS_V16_8_44R1_ENGINEERING_ONLY_CN.md": "a8e17edf9024db6e37850e080516cfe95b5a9fbbb442de47fb69eb94142a38e3",
+    "COWP_V16_8_44_TO_V16_8_44R1_DYNAMIC_PROFILE_CACHE_FIDELITY_REPAIR.patch": "d8870b30e1c3f2c8c82cb33a44aab5f86be010d749aad4e8f32179512f8642ca"
+  }
+}
