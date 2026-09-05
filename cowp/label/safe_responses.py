@@ -184,6 +184,117 @@ def build_root_control_residual_trajectory(
     )
 
 
+
+def build_root_control_sequence_residual_trajectory(
+    root: np.ndarray,
+    cfg: dict,
+    *,
+    accel_sequence_mps2: np.ndarray,
+) -> np.ndarray:
+    """Apply a time-varying longitudinal residual while preserving root geometry.
+
+    V16.8.45 RCRSO proposes a *set* of same-root longitudinal control sequences
+    rather than a scalar constant-acceleration residual.  This constructor keeps
+    exactly the same geometric contract as :func:`_root_residual_trajectory`:
+    the root polyline/topology is immutable and only its time parametrization is
+    changed.  The zero sequence is therefore an exact identity response.
+
+    ``accel_sequence_mps2[t]`` is the residual longitudinal acceleration applied
+    over edge ``t``.  Values are proposal parameters only; online/offline hard
+    verifiers remain responsible for burden, roadgraph, inverse dynamics,
+    current/shift ego safety, environment safety and exact joint CSP.
+    """
+    out = np.asarray(root, dtype=np.float32).copy()
+    if out.ndim != 2 or out.shape[1] < 7 or len(out) == 0:
+        raise ValueError(f"root trajectory must be [T,7], got {out.shape}")
+    seq = np.asarray(accel_sequence_mps2, dtype=np.float32).reshape(-1)
+    if seq.size == 0:
+        return out
+    if seq.size != len(out):
+        # Deterministic interpolation makes low-dimensional knot sequences useful
+        # without creating a second geometry implementation.
+        xp = np.linspace(0.0, 1.0, max(seq.size, 1), dtype=np.float32)
+        xq = np.linspace(0.0, 1.0, len(out), dtype=np.float32)
+        seq = np.interp(xq, xp, seq).astype(np.float32)
+    if not np.isfinite(seq).all():
+        raise ValueError("accel_sequence_mps2 contains non-finite values")
+    if float(np.max(np.abs(seq))) < 1.0e-9:
+        return out
+
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    root_speed = np.linalg.norm(out[:, 3:5], axis=-1).astype(np.float32)
+    delta_v = np.zeros(len(out), dtype=np.float32)
+    dv = 0.0
+    for t in range(len(out)):
+        dv += float(seq[t]) * dt
+        # Same contract as the scalar residual: never reverse root direction.
+        dv = max(dv, -float(root_speed[t]))
+        delta_v[t] = float(dv)
+
+    xy = out[:, :2].copy()
+    seg = np.linalg.norm(np.diff(xy, axis=0), axis=-1)
+    root_s = np.concatenate([np.zeros(1, dtype=np.float32), np.cumsum(seg, dtype=np.float32)])
+    delta_s = np.cumsum(delta_v * dt, dtype=np.float32)
+    query_s = np.maximum(root_s + delta_s, 0.0)
+    heading_unwrapped = np.unwrap(out[:, 2].astype(np.float64))
+    inside_s = np.minimum(query_s, root_s[-1])
+    x_new = np.interp(inside_s, root_s, xy[:, 0]).astype(np.float32)
+    y_new = np.interp(inside_s, root_s, xy[:, 1]).astype(np.float32)
+    yaw_new = np.interp(inside_s, root_s, heading_unwrapped).astype(np.float32)
+    beyond = query_s > root_s[-1]
+    if np.any(beyond):
+        terminal_tangent = np.array(
+            [np.cos(heading_unwrapped[-1]), np.sin(heading_unwrapped[-1])], dtype=np.float32
+        )
+        extension = (query_s[beyond] - root_s[-1])[:, None]
+        xy_ext = xy[-1][None, :] + extension * terminal_tangent[None, :]
+        x_new[beyond] = xy_ext[:, 0]
+        y_new[beyond] = xy_ext[:, 1]
+        yaw_new[beyond] = float(heading_unwrapped[-1])
+    out[:, 0] = x_new
+    out[:, 1] = y_new
+    out[:, 2] = ((yaw_new + np.pi) % (2.0 * np.pi) - np.pi).astype(np.float32)
+    new_speed = np.maximum(root_speed + delta_v, 0.0)
+    tangent = np.stack([np.cos(out[:, 2]), np.sin(out[:, 2])], axis=-1).astype(np.float32)
+    out[:, 3:5] = tangent * new_speed[:, None]
+    return out.astype(np.float32)
+
+
+def expand_root_control_knots(
+    control_knots: np.ndarray,
+    horizon: int,
+    cfg: dict,
+) -> np.ndarray:
+    """Map normalized RCRSO knots to a bounded acceleration-residual sequence.
+
+    Knots are expected in ``[-1, 1]``.  Negative and positive residuals inherit
+    the already-frozen candidate deceleration/acceleration limits respectively;
+    this helper does not enlarge those limits.  Linear interpolation is fixed and
+    contains no outcome-tuned switch-time grid.
+    """
+    knots = np.asarray(control_knots, dtype=np.float32).reshape(-1)
+    if knots.size == 0:
+        return np.zeros(int(horizon), dtype=np.float32)
+    knots = np.clip(knots, -1.0, 1.0)
+    x = np.linspace(0.0, 1.0, knots.size, dtype=np.float32)
+    q = np.linspace(0.0, 1.0, int(horizon), dtype=np.float32)
+    normalized = np.interp(q, x, knots).astype(np.float32)
+    cand_cfg = cfg.get("candidate", {})
+    max_decel = max(float(cand_cfg.get("max_decel_mps2", 6.0)), 0.0)
+    max_accel = max(float(cand_cfg.get("max_accel_mps2", 4.0)), 0.0)
+    return np.where(normalized < 0.0, normalized * max_decel, normalized * max_accel).astype(np.float32)
+
+
+def build_root_control_knot_residual_trajectory(
+    root: np.ndarray,
+    cfg: dict,
+    *,
+    control_knots: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Convenience wrapper returning ``(trajectory, expanded_accel_sequence)``."""
+    seq = expand_root_control_knots(control_knots, len(np.asarray(root)), cfg)
+    return build_root_control_sequence_residual_trajectory(root, cfg, accel_sequence_mps2=seq), seq
+
 def build_root_recovery_trajectory_bank(root: np.ndarray, cfg: dict) -> list[np.ndarray]:
     """Precompute the candidate-independent same-root recovery tube.
 

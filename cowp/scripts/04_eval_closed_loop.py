@@ -110,7 +110,9 @@ def main() -> None:
     ap.add_argument("--secondary-witness-threshold", type=float, default=0.85, help="Severe witness threshold for priority/soft gate diagnostics.")
     ap.add_argument("--secondary-opr-alpha", type=float, default=0.10, help="Severe low-option-preservation threshold used with secondary witness threshold.")
     ap.add_argument("--soft-ncf-penalty", type=float, default=1.5, help="Score penalty weight for non-hard coercion evidence in priority/soft gates.")
-    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, cowp_shift_closed_control_reachable_tube, cowp_conflict_window_control_reachable_tube, cowp_shift_closed_first_action_viability_interval, cowp_interaction_aware_reachable_response_envelope, cowp_blocker_conditioned_interaction_aware_reachable_response_envelope, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--method", default="cowp", help="Evaluation method/internal baseline: cowp, cowp_cert_utility, cowp_fallback_outcome, cowp_recursive_viability, cowp_rvr_pareto_guard, cowp_successor_option_viability, cowp_bihorizon_option_viability, cowp_successor_restore_only, cowp_trihorizon_option_persistence, cowp_sov_recovery_commitment, cowp_sov_dominance_hysteresis, cowp_recovery_option_spectrum_hysteresis, cowp_transition_guarded_rosh, cowp_executable_option_spectrum_hysteresis, cowp_waymax_kinematic_guarded_rosh, cowp_control_projected_option_spectrum_hysteresis, cowp_control_projected_recovery_frontier, cowp_recourse_returnability_bridge, cowp_shift_closed_control_reachable_tube, cowp_conflict_window_control_reachable_tube, cowp_shift_closed_first_action_viability_interval, cowp_interaction_aware_reachable_response_envelope, cowp_blocker_conditioned_interaction_aware_reachable_response_envelope, cowp_root_conditioned_control_reachable_responder_support, cowp_verified_root_conditioned_recourse_set_operator, universal_ncf, soft_burden_cost_only, idm_lattice, conventional_safety, planner_score_only, etc.")
+    ap.add_argument("--rcrso-checkpoint", default=None, help="Separate V16.8.45 RCRSO proposal checkpoint. Required only for cowp_verified_root_conditioned_recourse_set_operator.")
+    ap.add_argument("--rcrso-query-count", type=int, default=None, help="Reproduction-only K. Must equal selected_k stored in the RCRSO checkpoint; never tune on lost7/CF48.")
     ap.add_argument("--methods", default=None, help="Comma-separated learned_offline methods evaluated in one shared checkpoint/cache pass.")
     ap.add_argument("--offline-fallback", choices=["conservative", "stop_like"], default="stop_like", help="For learned_offline, what to do when no candidate passes the gate. conservative marks fallback (-1); stop_like selects neutral/yield/stop candidates when present.")
     ap.add_argument("--adaptive-frontier-margin", type=float, default=0.20, help="Scene-adaptive P-NCF frontier margin used when absolute witness calibration rejects every candidate.")
@@ -344,6 +346,8 @@ def main() -> None:
                 outcome_risk_threshold=args.outcome_risk_threshold,
                 profile_policy_runtime=bool(args.profile_policy_runtime),
                 profile_policy_runtime_sync=bool(args.profile_policy_sync),
+                rcrso_checkpoint=args.rcrso_checkpoint,
+                rcrso_query_count=args.rcrso_query_count,
             )
         else:
             raise ValueError("--mode waymax requires either --checkpoint for the built-in COWP policy wrapper or --policy-fn module:function.")
@@ -378,6 +382,8 @@ def main() -> None:
             "mode": "waymax",
             "method": args.method,
             "checkpoint": args.checkpoint,
+            "rcrso_checkpoint": args.rcrso_checkpoint,
+            "rcrso_query_count": args.rcrso_query_count,
             "policy_fn": args.policy_fn,
             "ncf_gate_mode": args.ncf_gate_mode,
             "waymax_split": args.waymax_split,

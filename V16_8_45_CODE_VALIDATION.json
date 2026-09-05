@@ -1,0 +1,35 @@
+{
+  "version": "V16.8.45",
+  "dedicated_tests": {
+    "passed": 6,
+    "failed": 0
+  },
+  "focused_semantic_integrity": {
+    "passed": 120,
+    "failed": 0,
+    "warning": "PyTorch Transformer nested-tensor warning only"
+  },
+  "python_compile": "PASS",
+  "launcher_bash_syntax": "PASS",
+  "synthetic_train_stage0_smoke": {
+    "train": "PASS",
+    "stage0_fail_closed": "PASS",
+    "expected_exit_code": 4
+  },
+  "full_repository": {
+    "status": "HISTORICAL_COLLECTION_ERRORS",
+    "same_on_pristine_v44r1": true,
+    "note": "Not counted as V45 regression."
+  },
+  "server_waymax_closed_loop": "NOT_RUN_LOCAL_ENVIRONMENT",
+  "scientific_contract": {
+    "base_cowp_frozen": true,
+    "hard_verifier_frozen": true,
+    "rcrso_is_proposal_only": true,
+    "lost7_not_used_for_K": true,
+    "rollout_horizon_steps": 80,
+    "dataset_rebuilt": false
+  },
+  "manifest_hashes": "PASS",
+  "final_focused_sanity": "120/120 PASS"
+}

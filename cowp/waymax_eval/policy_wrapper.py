@@ -14,7 +14,12 @@ from cowp.planning.set_preservation_selector import select_set_preservation_fron
 from cowp.geometry.collision import unsafe_between, unsafe_between_bool
 from cowp.label.audit_relevance import canonical_root_weights
 from cowp.label.burden import adaptive_beta
-from cowp.label.safe_responses import build_root_control_residual_trajectory, build_root_recovery_trajectory_bank, prepare_root_recovery_burden_bank
+from cowp.label.safe_responses import (
+    build_root_control_knot_residual_trajectory,
+    build_root_control_residual_trajectory,
+    build_root_recovery_trajectory_bank,
+    prepare_root_recovery_burden_bank,
+)
 from cowp.label.trajectory_primitives import constant_accel_trajectory, priority_hold_release_trajectory, smooth_arrival_trajectory, smooth_stop_trajectory, smooth_terminal_speed_arrival_trajectory, repair_planar_kinematics
 from cowp.utils.checkpoint_compat import compatible_state_dict, strip_compiled_prefix
 
@@ -120,7 +125,7 @@ def _canonical_online_method(method: str | None, gate_mode: str | None = None) -
             "Use a separately retrained ablation checkpoint/config for Waymax."
         )
     g = str(gate_mode or "priority").lower()
-    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"} and g == "hard":
+    if m in {"cowp", "cowp_cert_utility", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support", "cowp_verified_root_conditioned_recourse_set_operator"} and g == "hard":
         g = "priority"
     if m == "universal_ncf":
         g = "hard"
@@ -4180,6 +4185,15 @@ def _response_profile_compatibility_identity_np(profile: dict[str, Any]) -> tupl
     control residual parameters that deterministically define the trajectory on
     the fixed natural root.  The enclosing cache key also contains agent/root.
     """
+    if bool(profile.get("rcrso_extension", False)):
+        try:
+            knots = np.ascontiguousarray(np.asarray(profile["rcrso_control_knots"], dtype=np.float32).reshape(-1))
+            seq = np.ascontiguousarray(np.asarray(profile["rcrso_accel_sequence_mps2"], dtype=np.float32).reshape(-1))
+            return ("rcrso", knots.shape, knots.tobytes(), seq.shape, seq.tobytes())
+        except Exception:
+            cur = np.ascontiguousarray(np.asarray(profile.get("trajectory"), dtype=np.float32))
+            shifted = np.ascontiguousarray(np.asarray(profile.get("shifted_trajectory"), dtype=np.float32))
+            return ("rcrso_trajectory", cur.shape, cur.tobytes(), shifted.shape, shifted.tobytes())
     if bool(profile.get("control_reachable_extension", False)):
         try:
             accel = np.float64(float(profile["residual_accel_mps2"])).tobytes()
@@ -4192,6 +4206,204 @@ def _response_profile_compatibility_identity_np(profile: dict[str, Any]) -> tupl
             return ("control_reachable_trajectory", cur.shape, cur.tobytes(), shifted.shape, shifted.tobytes())
     return ("fixed", int(profile.get("profile_index", -1)))
 
+
+
+def _verified_root_conditioned_recourse_set_profiles_np(
+    agent_state: np.ndarray,
+    agent_index: int,
+    object_type: int,
+    root: np.ndarray,
+    beta: float,
+    current_ego_trajectory: np.ndarray,
+    shifted_ego_trajectory: np.ndarray,
+    environment: list[dict[str, Any]],
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    proposal_control_knots: np.ndarray,
+    *,
+    profile_index_base: int = 20000,
+    root_ordinal: int = -1,
+    compatibility_cache: dict[str, dict[Any, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Hard-verify a learned RCRSO proposal set without changing V42--V44 semantics.
+
+    The neural operator only supplies longitudinal knot proposals.  Admission is
+    decided here using the unchanged burden, roadgraph, Waymax inverse-dynamics,
+    current/shift ego-safety and responder-environment predicates.  The returned
+    profiles still pass through the original exact multi-root/multi-blocker CSP.
+    Consequently the learned model can improve proposal completeness but cannot
+    turn a verifier-invalid response into a certificate.
+    """
+    detail: dict[str, Any] = {
+        "attempted": True,
+        "proposal_count": 0,
+        "profile_evaluations": 0,
+        "burden_rejects": 0,
+        "roadgraph_or_waymax_kinematic_rejects": 0,
+        "ego_current_rejects": 0,
+        "ego_shift_rejects": 0,
+        "environment_current_or_shift_rejects": 0,
+        "verified_profiles": 0,
+        "root_verified_set_nonempty": False,
+        "failure_reason": "none",
+        "environment_compatibility_cache_hits": 0,
+        "proposal_outcomes": [],
+    }
+    root = np.asarray(root, dtype=np.float32)
+    state = np.asarray(agent_state, dtype=np.float32)
+    current_ego = np.asarray(current_ego_trajectory, dtype=np.float32)
+    shifted_ego = np.asarray(shifted_ego_trajectory, dtype=np.float32)
+    proposals = np.asarray(proposal_control_knots, dtype=np.float32)
+    if root.ndim != 2 or root.shape[0] <= 0 or root.shape[1] < 7:
+        detail["failure_reason"] = "root_intrinsic_invalid"
+        return [], detail
+    if proposals.ndim == 1:
+        proposals = proposals[None, :]
+    if proposals.ndim != 2 or proposals.shape[0] <= 0 or not np.isfinite(proposals).all():
+        detail["failure_reason"] = "no_proposals"
+        return [], detail
+    detail["proposal_count"] = int(proposals.shape[0])
+    detail["proposal_outcomes"] = ["unprocessed"] * int(proposals.shape[0])
+    dt = max(float(cfg.get("time", {}).get("dt", 0.1)), 1.0e-6)
+    if compatibility_cache is None:
+        compatibility_cache = {}
+    environment_cache = compatibility_cache.setdefault("environment", {})
+    static_cache = compatibility_cache.setdefault("rcrso_static", {})
+    verified: list[dict[str, Any]] = []
+    seen_geometry: set[tuple[Any, ...]] = set()
+
+    for qidx, knots in enumerate(proposals):
+        detail["profile_evaluations"] = int(detail["profile_evaluations"]) + 1
+        knots = np.clip(np.asarray(knots, dtype=np.float32).reshape(-1), -1.0, 1.0)
+        static_key = (
+            int(agent_index), int(root_ordinal), int(object_type),
+            knots.shape, np.ascontiguousarray(knots).tobytes(),
+        )
+        static_rec = static_cache.get(static_key, "__missing__")
+        if static_rec == "__missing__":
+            try:
+                tr, accel_sequence = build_root_control_knot_residual_trajectory(
+                    root, cfg, control_knots=knots,
+                )
+                burden_entry = prepare_root_recovery_burden_bank(
+                    root, [tr], cfg, object_type=int(object_type), rho=PriorityRelation.AGENT_PRIORITY,
+                )[0]
+                burden = float(burden_entry[0])
+                if burden > float(beta) + 1.0e-9:
+                    static_rec = {"reject": "burden"}
+                elif not bool(_roadgraph_drivable_mask(tr, roadgraph)):
+                    static_rec = {"reject": "road_or_kin"}
+                else:
+                    kin_ok, kin = _trajectory_waymax_kinematic_safe_np(state[int(agent_index)], tr, cfg)
+                    shifted = _shift_append_terminal_reference_np(tr, dt)
+                    response_successor = _agent_state_after_future_sample_np(state[int(agent_index)], tr[0])
+                    shift_kin_ok, shift_kin = _trajectory_waymax_kinematic_safe_np(response_successor, shifted, cfg)
+                    if not (kin_ok and shift_kin_ok and bool(_roadgraph_drivable_mask(shifted, roadgraph))):
+                        static_rec = {"reject": "road_or_kin"}
+                    else:
+                        static_rec = {
+                            "trajectory": np.asarray(tr, dtype=np.float32),
+                            "shifted_trajectory": np.asarray(shifted, dtype=np.float32),
+                            "burden": burden,
+                            "burden_components": np.asarray(burden_entry[1], dtype=np.float32),
+                            "current_kinematic": kin,
+                            "shifted_kinematic": shift_kin,
+                            "rcrso_extension": True,
+                            "rcrso_control_knots": knots.astype(np.float32),
+                            "rcrso_accel_sequence_mps2": np.asarray(accel_sequence, dtype=np.float32),
+                        }
+            except Exception:
+                static_rec = {"reject": "road_or_kin"}
+            static_cache[static_key] = static_rec
+        if isinstance(static_rec, dict) and static_rec.get("reject") == "burden":
+            detail["burden_rejects"] = int(detail["burden_rejects"]) + 1
+            detail["proposal_outcomes"][qidx] = "no_low_burden_static_control"
+            continue
+        if isinstance(static_rec, dict) and static_rec.get("reject") == "road_or_kin":
+            detail["roadgraph_or_waymax_kinematic_rejects"] = int(detail["roadgraph_or_waymax_kinematic_rejects"]) + 1
+            detail["proposal_outcomes"][qidx] = "roadgraph_or_waymax_kinematic_reject"
+            continue
+        rec = dict(static_rec)
+        rec["profile_index"] = int(profile_index_base + qidx)
+        try:
+            if unsafe_between_bool(current_ego, np.asarray(rec["trajectory"], dtype=np.float32), cfg, agent_type=int(object_type)):
+                detail["ego_current_rejects"] = int(detail["ego_current_rejects"]) + 1
+                detail["proposal_outcomes"][qidx] = "ego_current_reject"
+                continue
+        except Exception:
+            detail["ego_current_rejects"] = int(detail["ego_current_rejects"]) + 1
+            detail["proposal_outcomes"][qidx] = "ego_current_reject"
+            continue
+        try:
+            if unsafe_between_bool(shifted_ego, np.asarray(rec["shifted_trajectory"], dtype=np.float32), cfg, agent_type=int(object_type)):
+                detail["ego_shift_rejects"] = int(detail["ego_shift_rejects"]) + 1
+                detail["proposal_outcomes"][qidx] = "ego_shift_reject"
+                continue
+        except Exception:
+            detail["ego_shift_rejects"] = int(detail["ego_shift_rejects"]) + 1
+            detail["proposal_outcomes"][qidx] = "ego_shift_reject"
+            continue
+
+        profile_identity = _response_profile_compatibility_identity_np(rec)
+        env_ok = True
+        for actor in environment:
+            cache_key = (
+                int(agent_index), int(root_ordinal), profile_identity,
+                int(actor.get("agent_index", -1)),
+            )
+            cached = environment_cache.get(cache_key)
+            if cached is None:
+                try:
+                    actor_cur = np.asarray(actor["trajectory"], dtype=np.float32)
+                    actor_shift = np.asarray(actor["shifted_trajectory"], dtype=np.float32)
+                    actor_type = int(actor["object_type"])
+                    current_bad = (
+                        unsafe_between_bool(np.asarray(rec["trajectory"], dtype=np.float32), actor_cur, cfg, agent_type=actor_type)
+                        or unsafe_between_bool(actor_cur, np.asarray(rec["trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+                    )
+                    shifted_bad = (
+                        unsafe_between_bool(np.asarray(rec["shifted_trajectory"], dtype=np.float32), actor_shift, cfg, agent_type=actor_type)
+                        or unsafe_between_bool(actor_shift, np.asarray(rec["shifted_trajectory"], dtype=np.float32), cfg, agent_type=int(object_type))
+                    )
+                    cached = bool(not (current_bad or shifted_bad))
+                except Exception:
+                    cached = False
+                environment_cache[cache_key] = bool(cached)
+            else:
+                detail["environment_compatibility_cache_hits"] = int(detail["environment_compatibility_cache_hits"]) + 1
+            if not bool(cached):
+                env_ok = False
+                break
+        if not env_ok:
+            detail["environment_current_or_shift_rejects"] = int(detail["environment_current_or_shift_rejects"]) + 1
+            detail["proposal_outcomes"][qidx] = "environment_current_or_shift_reject"
+            continue
+        geom_id = _response_profile_compatibility_identity_np(rec)
+        if geom_id in seen_geometry:
+            detail["proposal_outcomes"][qidx] = "root_verified_set_nonempty_duplicate"
+            continue
+        seen_geometry.add(geom_id)
+        detail["proposal_outcomes"][qidx] = "root_verified_set_nonempty"
+        verified.append(rec)
+
+    verified.sort(key=lambda p: (float(p.get("burden", np.inf)), int(p.get("profile_index", 0))))
+    detail["verified_profiles"] = int(len(verified))
+    detail["root_verified_set_nonempty"] = bool(verified)
+    if verified:
+        detail["failure_reason"] = "root_verified_set_nonempty"
+    elif int(detail["burden_rejects"]) >= int(detail["proposal_count"]):
+        detail["failure_reason"] = "no_low_burden_static_control"
+    elif int(detail["roadgraph_or_waymax_kinematic_rejects"]) > 0:
+        detail["failure_reason"] = "roadgraph_or_waymax_kinematic_reject"
+    elif int(detail["ego_current_rejects"]) > 0:
+        detail["failure_reason"] = "ego_current_reject"
+    elif int(detail["ego_shift_rejects"]) > 0:
+        detail["failure_reason"] = "ego_shift_reject"
+    elif int(detail["environment_current_or_shift_rejects"]) > 0:
+        detail["failure_reason"] = "environment_current_or_shift_reject"
+    else:
+        detail["failure_reason"] = "no_verified_proposal"
+    return verified, detail
 
 def _root_conditioned_control_reachable_response_profiles_np(
     agent_state: np.ndarray,
@@ -4471,6 +4683,7 @@ def _interaction_aware_recovery_certificate_np(
     object_types: np.ndarray,
     compatibility_cache: dict[str, dict[Any, Any]] | None = None,
     allow_control_reachable_response_extension: bool = False,
+    verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Certify one ego tube under universal low-burden same-root response support."""
     current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
@@ -4505,6 +4718,20 @@ def _interaction_aware_recovery_certificate_np(
         "control_reachable_response_environment_event_cache_hits": 0,
         "control_reachable_response_environment_cache_hits": 0,
         "control_reachable_response_selected_roots": 0,
+        "rcrso_attempts": 0,
+        "rcrso_proposals": 0,
+        "rcrso_profile_evaluations": 0,
+        "rcrso_verified_profiles": 0,
+        "rcrso_selected_roots": 0,
+        "rcrso_burden_rejects": 0,
+        "rcrso_roadgraph_or_waymax_kinematic_rejects": 0,
+        "rcrso_ego_current_rejects": 0,
+        "rcrso_ego_shift_rejects": 0,
+        "rcrso_environment_rejects": 0,
+        "rcrso_environment_cache_hits": 0,
+        "rcrso_joint_assignment_profiles": 0,
+        "rcrso_joint_assignment_used": False,
+        "rcrso_failure_taxonomy": Counter(),
         "minimum_retained_root_mass": 0.0,
         "maximum_selected_response_burden": 0.0,
         "current_residual_certificate": {},
@@ -4587,7 +4814,18 @@ def _interaction_aware_recovery_certificate_np(
         agent_support = response_support[int(agent_index)]
         minimum_mass = min(minimum_mass, float(agent_support.get("retained_mass", 0.0)))
         object_type = int(agent_support.get("object_type", int(ObjectType.UNKNOWN)))
-        for root_ordinal, root in enumerate(agent_support.get("roots", [])):
+        roots = list(agent_support.get("roots", []))
+        # V16.8.45 runtime-only fail-fast ordering.  When RCRSO is active, roots
+        # whose frozen profile domain is already empty are the only roots that
+        # can require a learned proposal.  Evaluating those scarce domains first
+        # can terminate an impossible universal-root certificate earlier.  The
+        # exact CSP below re-sorts successful nodes deterministically, so this
+        # ordering cannot change hard-set membership or the selected response.
+        root_order = list(range(len(roots)))
+        if verified_recourse_set_proposal_fn is not None:
+            root_order.sort(key=lambda q: (len(roots[q].get("profiles", [])), int(q)))
+        for root_ordinal in root_order:
+            root = roots[root_ordinal]
             root_count += 1
             detail["response_root_checks"] = int(detail["response_root_checks"]) + 1
             ego_safe_count = 0
@@ -4682,6 +4920,40 @@ def _interaction_aware_recovery_certificate_np(
                     detail["control_reachable_response_selected_roots"] = int(detail["control_reachable_response_selected_roots"]) + 1
                     environment_safe_profiles.extend(extra_profiles)
                     environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
+            if not environment_safe_profiles and verified_recourse_set_proposal_fn is not None:
+                detail["rcrso_attempts"] = int(detail["rcrso_attempts"]) + 1
+                extra_profiles, extra_detail = verified_recourse_set_proposal_fn(
+                    agent_state=np.asarray(agent_state, dtype=np.float32),
+                    agent_index=int(agent_index),
+                    object_type=int(object_type),
+                    root=np.asarray(root.get("trajectory"), dtype=np.float32),
+                    root_weight=float(root.get("weight", 0.0)),
+                    root_mode_indices=tuple(int(x) for x in root.get("mode_indices", ())),
+                    beta=float(agent_support.get("beta", 0.0)),
+                    current_ego_trajectory=np.asarray(current_ego_trajectory, dtype=np.float32),
+                    shifted_ego_trajectory=np.asarray(shifted_ego_trajectory, dtype=np.float32),
+                    environment=environment,
+                    roadgraph=roadgraph,
+                    cfg=cfg,
+                    profile_index_base=20000 + 100 * int(root_ordinal),
+                    root_ordinal=int(root_ordinal),
+                    compatibility_cache=compatibility_cache,
+                )
+                detail["rcrso_proposals"] = int(detail["rcrso_proposals"]) + int(extra_detail.get("proposal_count", 0))
+                detail["rcrso_profile_evaluations"] = int(detail["rcrso_profile_evaluations"]) + int(extra_detail.get("profile_evaluations", 0))
+                detail["rcrso_verified_profiles"] = int(detail["rcrso_verified_profiles"]) + int(extra_detail.get("verified_profiles", 0))
+                detail["rcrso_burden_rejects"] = int(detail["rcrso_burden_rejects"]) + int(extra_detail.get("burden_rejects", 0))
+                detail["rcrso_roadgraph_or_waymax_kinematic_rejects"] = int(detail["rcrso_roadgraph_or_waymax_kinematic_rejects"]) + int(extra_detail.get("roadgraph_or_waymax_kinematic_rejects", 0))
+                detail["rcrso_ego_current_rejects"] = int(detail["rcrso_ego_current_rejects"]) + int(extra_detail.get("ego_current_rejects", 0))
+                detail["rcrso_ego_shift_rejects"] = int(detail["rcrso_ego_shift_rejects"]) + int(extra_detail.get("ego_shift_rejects", 0))
+                detail["rcrso_environment_rejects"] = int(detail["rcrso_environment_rejects"]) + int(extra_detail.get("environment_current_or_shift_rejects", 0))
+                detail["rcrso_environment_cache_hits"] = int(detail["rcrso_environment_cache_hits"]) + int(extra_detail.get("environment_compatibility_cache_hits", 0))
+                reason_key = str(extra_detail.get("failure_reason", "unknown"))
+                detail["rcrso_failure_taxonomy"][reason_key] += 1
+                if extra_profiles:
+                    detail["rcrso_selected_roots"] = int(detail["rcrso_selected_roots"]) + 1
+                    environment_safe_profiles.extend(extra_profiles)
+                    environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
             if not environment_safe_profiles:
                 detail["failure_reason"] = (
                     "retained_root_has_no_ego_safe_response"
@@ -4690,6 +4962,7 @@ def _interaction_aware_recovery_certificate_np(
                 detail["failed_agent_index"] = int(agent_index)
                 detail["failed_root_ordinal"] = int(root_ordinal)
                 detail["failed_root_stage"] = "ego" if ego_safe_count <= 0 else "environment"
+                detail["rcrso_failure_taxonomy"] = dict(detail.get("rcrso_failure_taxonomy", {}))
                 return False, detail
             root_nodes.append({
                 "agent_index": int(agent_index),
@@ -4787,12 +5060,18 @@ def _interaction_aware_recovery_certificate_np(
         return False
 
     if not assign_node(0):
+        # Failure taxonomy is diagnostic only; the exact CSP predicate itself is
+        # unchanged.  Record whether a learned verified set reached the joint
+        # assignment stage but remained mutually incompatible across blockers.
+        if int(detail.get("rcrso_verified_profiles", 0)) > 0:
+            detail["rcrso_failure_taxonomy"]["joint_csp_incompatible"] += 1
         detail.update({
             "failure_reason": "no_jointly_compatible_response_envelope",
             "interaction_joint_compatibility_checks": int(compatibility_checks),
             "interaction_joint_compatibility_rejects": int(compatibility_rejects),
             "interaction_joint_assignment_backtracks": int(backtracks),
         })
+        detail["rcrso_failure_taxonomy"] = dict(detail.get("rcrso_failure_taxonomy", {}))
         return False, detail
 
     selected_responses: list[dict[str, Any]] = []
@@ -4812,6 +5091,7 @@ def _interaction_aware_recovery_certificate_np(
             "profile_index": int(accepted_profile["profile_index"]),
             "burden": burden,
             "control_reachable_extension": bool(accepted_profile.get("control_reachable_extension", False)),
+            "rcrso_extension": bool(accepted_profile.get("rcrso_extension", False)),
             "residual_accel_mps2": (
                 float(accepted_profile["residual_accel_mps2"])
                 if "residual_accel_mps2" in accepted_profile else None
@@ -4821,6 +5101,9 @@ def _interaction_aware_recovery_certificate_np(
                 if "residual_duration_s" in accepted_profile else None
             ),
         })
+    rcrso_assignment_profiles = int(sum(bool(x.get("rcrso_extension", False)) for x in selected_responses))
+    detail["rcrso_joint_assignment_profiles"] = rcrso_assignment_profiles
+    detail["rcrso_joint_assignment_used"] = bool(rcrso_assignment_profiles > 0)
     detail.update({
         "interaction_joint_compatibility_checks": int(compatibility_checks),
         "interaction_joint_compatibility_rejects": int(compatibility_rejects),
@@ -4832,6 +5115,7 @@ def _interaction_aware_recovery_certificate_np(
         "maximum_selected_response_burden": float(maximum_burden),
         "selected_responses": selected_responses,
     })
+    detail["rcrso_failure_taxonomy"] = dict(detail.get("rcrso_failure_taxonomy", {}))
     return True, detail
 
 
@@ -4866,6 +5150,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     hypothesis_indices: np.ndarray | None = None,
     internal_trace: dict[str, Any] | None = None,
     allow_control_reachable_response_extension: bool = False,
+    verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
 
@@ -4923,6 +5208,20 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         "interaction_control_reachable_response_environment_event_cache_hits": 0,
         "interaction_control_reachable_response_environment_cache_hits": 0,
         "interaction_control_reachable_response_selected_roots": 0,
+        "interaction_rcrso_attempts": 0,
+        "interaction_rcrso_proposals": 0,
+        "interaction_rcrso_profile_evaluations": 0,
+        "interaction_rcrso_verified_profiles": 0,
+        "interaction_rcrso_selected_roots": 0,
+        "interaction_rcrso_burden_rejects": 0,
+        "interaction_rcrso_roadgraph_or_waymax_kinematic_rejects": 0,
+        "interaction_rcrso_ego_current_rejects": 0,
+        "interaction_rcrso_ego_shift_rejects": 0,
+        "interaction_rcrso_environment_rejects": 0,
+        "interaction_rcrso_environment_cache_hits": 0,
+        "interaction_rcrso_joint_assignment_profiles": 0,
+        "interaction_rcrso_certified_hypotheses": 0,
+        "interaction_rcrso_failure_taxonomy": {},
         "interaction_selected_blocker_count": 0,
         "interaction_selected_root_count": 0,
         "interaction_selected_minimum_root_mass": 0.0,
@@ -5176,6 +5475,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             roadgraph, cfg, current_collision_context, shifted_collision_context,
             response_support, object_types, compatibility_cache=compatibility_cache,
             allow_control_reachable_response_extension=bool(allow_control_reachable_response_extension),
+            verified_recourse_set_proposal_fn=verified_recourse_set_proposal_fn,
         )
         reason = str(interaction_detail.get("failure_reason", "unknown"))
         detail["interaction_environment_compatibility_checks"] = int(
@@ -5220,6 +5520,32 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         detail["interaction_control_reachable_response_selected_roots"] = int(
             detail["interaction_control_reachable_response_selected_roots"]
         ) + int(interaction_detail.get("control_reachable_response_selected_roots", 0))
+        for _dst, _src in (
+            ("interaction_rcrso_attempts", "rcrso_attempts"),
+            ("interaction_rcrso_proposals", "rcrso_proposals"),
+            ("interaction_rcrso_profile_evaluations", "rcrso_profile_evaluations"),
+            ("interaction_rcrso_verified_profiles", "rcrso_verified_profiles"),
+            ("interaction_rcrso_selected_roots", "rcrso_selected_roots"),
+            ("interaction_rcrso_burden_rejects", "rcrso_burden_rejects"),
+            ("interaction_rcrso_roadgraph_or_waymax_kinematic_rejects", "rcrso_roadgraph_or_waymax_kinematic_rejects"),
+            ("interaction_rcrso_ego_current_rejects", "rcrso_ego_current_rejects"),
+            ("interaction_rcrso_ego_shift_rejects", "rcrso_ego_shift_rejects"),
+            ("interaction_rcrso_environment_rejects", "rcrso_environment_rejects"),
+            ("interaction_rcrso_environment_cache_hits", "rcrso_environment_cache_hits"),
+        ):
+            detail[_dst] = int(detail.get(_dst, 0)) + int(interaction_detail.get(_src, 0))
+        detail["interaction_rcrso_joint_assignment_profiles"] = int(
+            detail.get("interaction_rcrso_joint_assignment_profiles", 0)
+        ) + int(interaction_detail.get("rcrso_joint_assignment_profiles", 0))
+        if bool(interaction_ok and interaction_detail.get("rcrso_joint_assignment_used", False)):
+            detail["interaction_rcrso_certified_hypotheses"] = int(
+                detail.get("interaction_rcrso_certified_hypotheses", 0)
+            ) + 1
+        _tax = interaction_detail.get("rcrso_failure_taxonomy", {})
+        if isinstance(_tax, dict):
+            _outer_tax = detail.setdefault("interaction_rcrso_failure_taxonomy", {})
+            for _key, _value in _tax.items():
+                _outer_tax[str(_key)] = int(_outer_tax.get(str(_key), 0)) + int(_value)
         if not interaction_ok:
             if reason == "no_collision_blocker":
                 detail["interaction_no_blocker_rejects"] = int(detail["interaction_no_blocker_rejects"]) + 1
@@ -5306,6 +5632,8 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             "interaction_selected_control_reachable_response_profiles_found": int(interaction_detail.get("control_reachable_response_profiles_found", 0)),
             "interaction_selected_control_reachable_response_profile_evaluations": int(interaction_detail.get("control_reachable_response_profile_evaluations", 0)),
             "interaction_selected_control_reachable_response_selected_roots": int(interaction_detail.get("control_reachable_response_selected_roots", 0)),
+            "interaction_selected_rcrso_assignment_profiles": int(interaction_detail.get("rcrso_joint_assignment_profiles", 0)),
+            "interaction_selected_uses_rcrso": bool(interaction_detail.get("rcrso_joint_assignment_used", False)),
             "interaction_selected_environment_agent_count": int(interaction_detail.get("environment_agent_count", 0)),
             "interaction_selected_environment_compatibility_checks": int(interaction_detail.get("interaction_environment_compatibility_checks", 0)),
             "interaction_selected_responses": interaction_detail.get("selected_responses", []),
@@ -5342,6 +5670,7 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     object_types: np.ndarray,
     blocker_query_decoder: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]] | None = None,
     allow_control_reachable_response_extension: bool = False,
+    verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.43 late-bound blocker-conditioned support completion.
 
@@ -5550,6 +5879,7 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         known_nested_v39_empty=True,
         hypothesis_indices=unsupported_hypotheses,
         allow_control_reachable_response_extension=bool(allow_control_reachable_response_extension),
+        verified_recourse_set_proposal_fn=verified_recourse_set_proposal_fn,
     )
     support_detail = expanded_detail.get("interaction_support_detail", {})
     base_ready = int(base_detail.get("interaction_support_agents_ready", 0))
@@ -5588,6 +5918,22 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
     detail["blocker_conditioned_query_control_reachable_response_selected_roots"] = int(
         expanded_detail.get("interaction_control_reachable_response_selected_roots", 0)
     )
+    detail["blocker_conditioned_query_rcrso_attempts"] = int(expanded_detail.get("interaction_rcrso_attempts", 0))
+    detail["blocker_conditioned_query_rcrso_proposals"] = int(expanded_detail.get("interaction_rcrso_proposals", 0))
+    detail["blocker_conditioned_query_rcrso_profile_evaluations"] = int(expanded_detail.get("interaction_rcrso_profile_evaluations", 0))
+    detail["blocker_conditioned_query_rcrso_verified_profiles"] = int(expanded_detail.get("interaction_rcrso_verified_profiles", 0))
+    detail["blocker_conditioned_query_rcrso_selected_roots"] = int(expanded_detail.get("interaction_rcrso_selected_roots", 0))
+    detail["blocker_conditioned_query_rcrso_burden_rejects"] = int(expanded_detail.get("interaction_rcrso_burden_rejects", 0))
+    detail["blocker_conditioned_query_rcrso_roadgraph_or_waymax_kinematic_rejects"] = int(expanded_detail.get("interaction_rcrso_roadgraph_or_waymax_kinematic_rejects", 0))
+    detail["blocker_conditioned_query_rcrso_ego_current_rejects"] = int(expanded_detail.get("interaction_rcrso_ego_current_rejects", 0))
+    detail["blocker_conditioned_query_rcrso_ego_shift_rejects"] = int(expanded_detail.get("interaction_rcrso_ego_shift_rejects", 0))
+    detail["blocker_conditioned_query_rcrso_environment_rejects"] = int(expanded_detail.get("interaction_rcrso_environment_rejects", 0))
+    detail["blocker_conditioned_query_rcrso_environment_cache_hits"] = int(expanded_detail.get("interaction_rcrso_environment_cache_hits", 0))
+    detail["blocker_conditioned_query_rcrso_joint_assignment_profiles"] = int(expanded_detail.get("interaction_rcrso_joint_assignment_profiles", 0))
+    detail["blocker_conditioned_query_rcrso_certified_hypotheses"] = int(expanded_detail.get("interaction_rcrso_certified_hypotheses", 0))
+    detail["blocker_conditioned_query_rcrso_selected_assignment_profiles"] = int(expanded_detail.get("interaction_selected_rcrso_assignment_profiles", 0))
+    detail["blocker_conditioned_query_rcrso_selected"] = bool(expanded_detail.get("interaction_selected_uses_rcrso", False))
+    detail["blocker_conditioned_query_rcrso_failure_taxonomy"] = dict(expanded_detail.get("interaction_rcrso_failure_taxonomy", {}))
     detail["blocker_conditioned_query_environment_cache_hits"] = int(
         expanded_detail.get("interaction_environment_compatibility_cache_hits", 0)
     )
@@ -7021,6 +7367,8 @@ class COWPWaymaxPolicy:
     outcome_risk_threshold: float = 1.10
     profile_policy_runtime: bool = False
     profile_policy_runtime_sync: bool = False
+    rcrso_checkpoint: str | None = None
+    rcrso_query_count: int | None = None
 
     def __post_init__(self) -> None:
         import torch
@@ -7037,6 +7385,48 @@ class COWPWaymaxPolicy:
         self.model.eval()
         self.torch = torch
         self.dev = dev
+        self.rcrso_model = None
+        self.rcrso_cfg = None
+        self.rcrso_selected_k = None
+        if str(self.method).lower() == "cowp_verified_root_conditioned_recourse_set_operator":
+            if not self.rcrso_checkpoint:
+                raise ValueError(
+                    "V16.8.45 RCRSO requires --rcrso-checkpoint. The recourse operator is a "
+                    "separate proposal-completeness model; the base COWP checkpoint remains frozen."
+                )
+            from cowp.models.recourse_set_operator import RCRSOConfig, RootConditionedRecourseSetTransformer
+            rckpt = torch.load(str(self.rcrso_checkpoint), map_location="cpu")
+            rcfg = RCRSOConfig.from_dict(rckpt.get("rcrso_config", rckpt.get("cfg", {})))
+            rmodel = RootConditionedRecourseSetTransformer(rcfg)
+            state_dict = rckpt.get("model", rckpt.get("state_dict"))
+            if not isinstance(state_dict, dict):
+                raise ValueError("RCRSO checkpoint must contain a model/state_dict mapping")
+            rmodel.load_state_dict(strip_compiled_prefix(state_dict), strict=True)
+            contract = dict(rckpt.get("contract", {}) or {})
+            stage0 = dict(rckpt.get("stage0_support_audit", {}) or {})
+            stage0_gate = dict(stage0.get("stage0_support_gate", {}) or {})
+            if contract.get("selected_k_status") != "frozen_validation_selected" or stage0_gate.get("pass") is not True:
+                raise ValueError(
+                    "RCRSO online evaluation requires a Stage-0-selected checkpoint whose frozen validation support gate passed. "
+                    "Do not run lost7/counterfactual48 with rcrso_best_unselected.pt."
+                )
+            selected_k = int(rckpt.get("selected_k", rcfg.max_queries))
+            if self.rcrso_query_count is not None:
+                requested_k = int(self.rcrso_query_count)
+                # Runtime override is allowed only to reproduce a value already
+                # frozen in the checkpoint metadata.  Lost7 must not tune K.
+                if requested_k != selected_k:
+                    raise ValueError(
+                        f"--rcrso-query-count={requested_k} disagrees with checkpoint selected_k={selected_k}. "
+                        "Choose K on the frozen validation support panel and store it in the checkpoint."
+                    )
+            if not (1 <= selected_k <= int(rcfg.max_queries)):
+                raise ValueError(f"Invalid RCRSO selected_k={selected_k}; max_queries={rcfg.max_queries}")
+            rmodel.to(dev)
+            rmodel.eval()
+            self.rcrso_model = rmodel
+            self.rcrso_cfg = rcfg
+            self.rcrso_selected_k = selected_k
         if dev.type == "cuda":
             try:
                 torch.cuda.empty_cache()
@@ -7125,6 +7515,71 @@ class COWPWaymaxPolicy:
             traj_t[0].detach().cpu().numpy().astype(np.float32, copy=False),
             logits_t[0].detach().cpu().numpy().astype(np.float32, copy=False),
         )
+
+
+    def _rcrso_verified_response_profiles_np(self, **kwargs: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Run one batched RCRSO proposal forward, then the frozen hard verifier."""
+        if self.rcrso_model is None or self.rcrso_cfg is None or self.rcrso_selected_k is None:
+            raise RuntimeError("RCRSO proposal callback invoked without a loaded RCRSO checkpoint")
+        from cowp.models.recourse_set_operator import build_rcrso_features_np
+
+        root = np.asarray(kwargs["root"], dtype=np.float32)
+        root_modes = tuple(int(x) for x in kwargs.get("root_mode_indices", ()))
+        root_source = 0
+        try:
+            mode_source = getattr(self.model.natural_decoder, "mode_source", None)
+            if self.torch.is_tensor(mode_source) and root_modes:
+                j = int(root_modes[0])
+                if 0 <= j < int(mode_source.numel()):
+                    root_source = int(mode_source[j].detach().cpu().item())
+        except Exception:
+            root_source = 0
+        features = build_rcrso_features_np(
+            root=root,
+            root_mass=float(kwargs.get("root_weight", 0.0)),
+            root_source=int(root_source),
+            blocker_state=np.asarray(kwargs["agent_state"], dtype=np.float32)[int(kwargs["agent_index"])],
+            current_ego_trajectory=np.asarray(kwargs["current_ego_trajectory"], dtype=np.float32),
+            shifted_ego_trajectory=np.asarray(kwargs["shifted_ego_trajectory"], dtype=np.float32),
+            environment=list(kwargs["environment"]),
+            cfg=self.rcrso_cfg,
+            verifier_cfg=kwargs["cfg"],
+            blocker_object_type=int(kwargs["object_type"]),
+        )
+        torch = self.torch
+        def tensor(x: np.ndarray) -> Any:
+            return torch.as_tensor(np.asarray(x), device=self.dev, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            out = self.rcrso_model(
+                root_tokens=tensor(features["root_tokens"]),
+                ego_tokens=tensor(features["ego_tokens"]),
+                environment_tokens=tensor(features["environment_tokens"]),
+                blocker_state=tensor(features["blocker_state"]),
+                conflict_features=tensor(features["conflict_features"]),
+                query_count=int(self.rcrso_selected_k),
+            )
+        knots = out["control_knots"][0].detach().cpu().numpy().astype(np.float32, copy=False)
+        # Proposal ordering may use the auxiliary head to fail-fast expensive
+        # verification, but it never changes set membership.  Every K slot is
+        # verified, so sorting cannot alter certificate soundness/completeness.
+        logits = out.get("feasible_logits")
+        if self.torch.is_tensor(logits):
+            order = np.argsort(-logits[0].detach().cpu().numpy().astype(np.float64), kind="stable")
+            knots = knots[order]
+        profiles, detail = _verified_root_conditioned_recourse_set_profiles_np(
+            np.asarray(kwargs["agent_state"], dtype=np.float32),
+            int(kwargs["agent_index"]), int(kwargs["object_type"]), root,
+            float(kwargs["beta"]),
+            np.asarray(kwargs["current_ego_trajectory"], dtype=np.float32),
+            np.asarray(kwargs["shifted_ego_trajectory"], dtype=np.float32),
+            list(kwargs["environment"]), kwargs["roadgraph"], kwargs["cfg"], knots,
+            profile_index_base=int(kwargs.get("profile_index_base", 20000)),
+            root_ordinal=int(kwargs.get("root_ordinal", -1)),
+            compatibility_cache=kwargs.get("compatibility_cache"),
+        )
+        detail["query_count"] = int(self.rcrso_selected_k)
+        detail["operator_checkpoint"] = str(self.rcrso_checkpoint)
+        return profiles, detail
 
     def _trajectory_to_action(
         self,
@@ -7770,7 +8225,7 @@ class COWPWaymaxPolicy:
                     selection_mask = certificate_accepted
                 adjusted_scores = scores
 
-            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"} and gate_mode in {"priority", "soft"}:
+            if method in {"cowp", "cowp_fallback_outcome", "cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support", "cowp_verified_root_conditioned_recourse_set_operator"} and gate_mode in {"priority", "soft"}:
                 pcfg_selector = self.cfg.get("planning", {})
                 physical_ok = (
                     (action_risk <= float(pcfg_selector.get("candidate_hard_max_action_risk", 0.45)))
@@ -7987,7 +8442,7 @@ class COWPWaymaxPolicy:
                 fallback_reason = "no_certificate_use_least_coercive_conventional"
             elif bool(fallback_flags[2]):
                 fallback_used = True
-                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"}:
+                if method in {"cowp_recursive_viability", "cowp_rvr_pareto_guard", "cowp_successor_option_viability", "cowp_bihorizon_option_viability", "cowp_successor_restore_only", "cowp_trihorizon_option_persistence", "cowp_sov_recovery_commitment", "cowp_sov_dominance_hysteresis", "cowp_recovery_option_spectrum_hysteresis", "cowp_transition_guarded_rosh", "cowp_executable_option_spectrum_hysteresis", "cowp_waymax_kinematic_guarded_rosh", "cowp_control_projected_option_spectrum_hysteresis", "cowp_control_projected_recovery_frontier", "cowp_recourse_returnability_bridge", "cowp_shift_closed_control_reachable_tube", "cowp_conflict_window_control_reachable_tube", "cowp_shift_closed_first_action_viability_interval", "cowp_interaction_aware_reachable_response_envelope", "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support", "cowp_verified_root_conditioned_recourse_set_operator"}:
                     # Historical v16.8.29--35 recovery probes use the same controlled
                     # base-vs-global-RVR pair. V16.8.36 deliberately keeps both as
                     # references but expands the *current* support to one existing-bank
@@ -8024,6 +8479,7 @@ class COWPWaymaxPolicy:
                         "cowp_interaction_aware_reachable_response_envelope",
                         "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
                         "cowp_root_conditioned_control_reachable_responder_support",
+                        "cowp_verified_root_conditioned_recourse_set_operator",
                     }:
                         # V38 constructs nominal/all-horizon lower/all-horizon upper
                         # controller tubes. V39 keeps that support nested and adds
@@ -8055,6 +8511,7 @@ class COWPWaymaxPolicy:
                             "cowp_interaction_aware_reachable_response_envelope",
                             "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope",
                             "cowp_root_conditioned_control_reachable_responder_support",
+                            "cowp_verified_root_conditioned_recourse_set_operator",
                         }:
                             natural_out = pred.get("natural", {})
                             natural_traj_t = natural_out.get("traj") if isinstance(natural_out, dict) else None
@@ -8072,7 +8529,7 @@ class COWPWaymaxPolicy:
                                 batch_np["cowp/critical/valid"][0], dtype=bool
                             )
                             object_types_np = _extract_object_types_np(state, int(agent_state.shape[0]))
-                            if method in {"cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support"}:
+                            if method in {"cowp_blocker_conditioned_interaction_aware_reachable_response_envelope", "cowp_root_conditioned_control_reachable_responder_support", "cowp_verified_root_conditioned_recourse_set_operator"}:
                                 # Query scope is inherited from the frozen causal
                                 # collision context, not from an enlarged social
                                 # critical set.  Only non-critical nearby actors are
@@ -8125,6 +8582,10 @@ class COWPWaymaxPolicy:
                                         batch, pred, exact_idx,
                                     ),
                                     allow_control_reachable_response_extension=(method == "cowp_root_conditioned_control_reachable_responder_support"),
+                                    verified_recourse_set_proposal_fn=(
+                                        self._rcrso_verified_response_profiles_np
+                                        if method == "cowp_verified_root_conditioned_recourse_set_operator" else None
+                                    ),
                                 )
                             else:
                                 selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
@@ -8176,6 +8637,8 @@ class COWPWaymaxPolicy:
                         select_score = fallback_score
                         if method == "cowp_root_conditioned_control_reachable_responder_support":
                             fallback_reason = "no_conventional_use_root_conditioned_control_reachable_responder_support"
+                        elif method == "cowp_verified_root_conditioned_recourse_set_operator":
+                            fallback_reason = "no_conventional_use_verified_root_conditioned_recourse_set_operator"
                         elif method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
                             fallback_reason = "no_conventional_use_blocker_conditioned_interaction_aware_reachable_response_envelope"
                         elif method == "cowp_interaction_aware_reachable_response_envelope":
@@ -9122,6 +9585,22 @@ class COWPWaymaxPolicy:
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_environment_event_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_environment_event_cache_hits", 0)),
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_environment_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_environment_cache_hits", 0)),
                 "recovery_tube_blocker_conditioned_query_control_reachable_response_selected_roots": int(recovery_tube_detail.get("blocker_conditioned_query_control_reachable_response_selected_roots", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_attempts": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_attempts", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_proposals": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_proposals", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_profile_evaluations": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_profile_evaluations", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_verified_profiles": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_verified_profiles", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_selected_roots": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_selected_roots", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_burden_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_burden_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_roadgraph_or_waymax_kinematic_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_roadgraph_or_waymax_kinematic_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_ego_current_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_ego_current_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_ego_shift_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_ego_shift_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_environment_rejects": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_environment_rejects", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_environment_cache_hits": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_environment_cache_hits", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_joint_assignment_profiles": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_joint_assignment_profiles", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_certified_hypotheses": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_certified_hypotheses", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_selected_assignment_profiles": int(recovery_tube_detail.get("blocker_conditioned_query_rcrso_selected_assignment_profiles", 0)),
+                "recovery_tube_blocker_conditioned_query_rcrso_selected": bool(recovery_tube_detail.get("blocker_conditioned_query_rcrso_selected", False)),
+                "recovery_tube_blocker_conditioned_query_rcrso_failure_taxonomy": dict(recovery_tube_detail.get("blocker_conditioned_query_rcrso_failure_taxonomy", {})),
                 "selected_waymax_kinematic_feasible": bool(selected_waymax_kinematic_feasible),
                 "selected_waymax_inverse_accel": float(selected_waymax_inverse_accel),
                 "selected_waymax_steering_curvature": float(selected_waymax_steering),
@@ -9166,6 +9645,8 @@ class COWPWaymaxPolicy:
             execution_accel = float(recovery_tube_accel_override)
             if method == "cowp_root_conditioned_control_reachable_responder_support":
                 execution_source = "root_conditioned_control_reachable_responder_support"
+            elif method == "cowp_verified_root_conditioned_recourse_set_operator":
+                execution_source = "verified_root_conditioned_recourse_set_operator"
             elif method == "cowp_blocker_conditioned_interaction_aware_reachable_response_envelope":
                 execution_source = "blocker_conditioned_interaction_aware_reachable_response_envelope"
             elif method == "cowp_interaction_aware_reachable_response_envelope":
@@ -9241,6 +9722,8 @@ def make_cowp_policy(
     outcome_risk_threshold: float = 1.10,
     profile_policy_runtime: bool = False,
     profile_policy_runtime_sync: bool = False,
+    rcrso_checkpoint: str | None = None,
+    rcrso_query_count: int | None = None,
 ) -> COWPWaymaxPolicy:
     return COWPWaymaxPolicy(
         checkpoint=checkpoint,
@@ -9260,4 +9743,6 @@ def make_cowp_policy(
         outcome_risk_threshold=outcome_risk_threshold,
         profile_policy_runtime=profile_policy_runtime,
         profile_policy_runtime_sync=profile_policy_runtime_sync,
+        rcrso_checkpoint=rcrso_checkpoint,
+        rcrso_query_count=rcrso_query_count,
     )

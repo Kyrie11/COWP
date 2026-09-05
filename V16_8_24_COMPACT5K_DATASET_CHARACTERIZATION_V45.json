@@ -1,0 +1,55 @@
+{
+  "version": "V16.8.45 dataset decision snapshot",
+  "decision": "FREEZE_NO_REBUILD_CURRENTLY",
+  "splits": {
+    "train": {
+      "scenes": 5000,
+      "audit_relevant_pair_rate": 0.42969642430550514,
+      "protected_prio_root_coverage": 0.9945328517036025,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.040671544775842214,
+      "critical_agent_mean": 5.3846,
+      "critical_agent_cap": 6,
+      "selected_cap_saturation_rate": 0.9578,
+      "priority_smooth_yield_acceptance": 0.20354708925199114,
+      "terminal_acceptance": 0.5414834541905825
+    },
+    "val": {
+      "scenes": 1000,
+      "audit_relevant_pair_rate": 0.42863002173455794,
+      "protected_prio_root_coverage": 0.9936321332353661,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.043437906070168925,
+      "critical_agent_mean": 5.387,
+      "critical_agent_cap": 6,
+      "selected_cap_saturation_rate": 0.955,
+      "priority_smooth_yield_acceptance": 0.2064995628096765,
+      "terminal_acceptance": 0.5454565514806479
+    },
+    "heldout_test": {
+      "scenes": 1200,
+      "audit_relevant_pair_rate": 0.42949210300959645,
+      "protected_prio_root_coverage": 0.994651306315573,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.04464564470808617,
+      "critical_agent_mean": 5.338333333333333,
+      "critical_agent_cap": 6,
+      "selected_cap_saturation_rate": 0.9541666666666667,
+      "priority_smooth_yield_acceptance": 0.21865260129465355,
+      "terminal_acceptance": 0.5509600903614458
+    }
+  },
+  "provenance_caveat": {
+    "verify_cache_train_pass": false,
+    "irrelevant_blocker_count": 58243,
+    "current_interpretation": "No evidence this causes the V44R1 online failure; publication artifact should repair serialization or prove cache-to-runtime semantic equivalence."
+  },
+  "later_watch_items": [
+    "critical_agent_cap_saturation",
+    "PRIORITY_SMOOTH_YIELD acceptance",
+    "TERMINAL acceptance"
+  ]
+}
