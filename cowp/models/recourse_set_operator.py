@@ -176,6 +176,7 @@ def build_rcrso_features_np(
     cfg: RCRSOConfig | dict[str, Any] | None = None,
     verifier_cfg: dict[str, Any] | None = None,
     blocker_object_type: int = 0,
+    precomputed_environment_event_steps: list[int] | tuple[int, ...] | np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Create deterministic blocker/root-local RCRSO features.
 
@@ -274,7 +275,14 @@ def build_rcrso_features_np(
     ego_shift = event_interval(sh, root, int(blocker_object_type))
     env_events: list[int] = []
     env_horizon = max(len(root), 1)
-    if verifier_cfg is not None:
+    if precomputed_environment_event_steps is not None:
+        # Engineering-only exact work reuse.  V44 analytic completion computes the
+        # same four directional root/environment current+shift unsafe event masks
+        # before RCRSO feature construction.  Reusing those integer event indices
+        # preserves the conflict token exactly and avoids repeating polygon/RSS/TTC
+        # geometry for every ego candidate.
+        env_events = [int(x) for x in np.asarray(precomputed_environment_event_steps).reshape(-1)]
+    elif verifier_cfg is not None:
         try:
             from cowp.geometry.collision import unsafe_between
             for actor in environment:

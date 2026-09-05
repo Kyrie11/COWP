@@ -3763,12 +3763,12 @@ def _constant_velocity_trajectory_from_state_np(
     return tr
 
 
-def _trajectory_waymax_kinematic_safe_np(
+def _trajectory_waymax_kinematic_safe_literal_np(
     current: np.ndarray,
     trajectory: np.ndarray,
     cfg: dict,
 ) -> tuple[bool, dict[str, int | float | str]]:
-    """Require every response edge to satisfy Waymax's inverse-dynamics metric."""
+    """Literal V16.8.45R1 edge-by-edge reference for fidelity regression."""
     tr = np.asarray(trajectory, dtype=np.float32)
     if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
         return False, {
@@ -3802,6 +3802,60 @@ def _trajectory_waymax_kinematic_safe_np(
         "max_abs_accel_mps2": float(max_acc),
         "max_abs_steering_curvature": float(max_steer),
         "contract_source": contract_source,
+    }
+
+
+def _trajectory_waymax_kinematic_safe_np(
+    current: np.ndarray,
+    trajectory: np.ndarray,
+    cfg: dict,
+) -> tuple[bool, dict[str, int | float | str]]:
+    """Vectorized exact-equivalent Waymax inverse-dynamics trajectory check.
+
+    V16.8.45R1 called ``_waymax_kinematic_transition_np`` once per edge in
+    Python.  Every edge current state after t=0 is, by construction, exactly the
+    preceding realized trajectory sample.  We therefore build the same [H,D]
+    current-state matrix once and evaluate all H inverse transitions in one batch.
+    This changes only evaluation order; thresholds, float64 inverse-dynamics math,
+    first-failure semantics and diagnostics are preserved.
+    """
+    tr = np.asarray(trajectory, dtype=np.float32)
+    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
+        return False, {
+            "failure_step": 0,
+            "max_abs_accel_mps2": float("inf"),
+            "max_abs_steering_curvature": float("inf"),
+            "contract_source": "invalid_response_trajectory",
+        }
+    cur0 = np.asarray(current, dtype=np.float32).reshape(-1)
+    H = int(tr.shape[0])
+    width = max(int(cur0.size), 11)
+    currents = np.zeros((H, width), dtype=np.float32)
+    currents[:, : cur0.size] = cur0[None, :]
+    if H > 1:
+        prev = tr[:-1]
+        currents[1:, 0:2] = prev[:, 0:2]
+        currents[1:, 3:5] = prev[:, 3:5]
+        currents[1:, 5] = np.linalg.norm(prev[:, 3:5], axis=-1)
+        currents[1:, 6] = prev[:, 2]
+        currents[1:, 7] = np.maximum(prev[:, 5], 0.1)
+        currents[1:, 8] = np.maximum(prev[:, 6], 0.1)
+        currents[1:, 10] = 1.0
+    targets = np.asarray(tr[:, [0, 1, 2, 3, 4]], dtype=np.float32)
+    feasible, accel, steering, contract = _waymax_kinematic_transition_np(currents, targets, cfg)
+    feasible = np.asarray(feasible, dtype=bool).reshape(-1)
+    accel = np.asarray(accel, dtype=np.float32).reshape(-1)
+    steering = np.asarray(steering, dtype=np.float32).reshape(-1)
+    bad = np.flatnonzero(~feasible)
+    failure_step = int(bad[0]) if bad.size else -1
+    n_eval = failure_step + 1 if failure_step >= 0 else H
+    max_acc = float(np.max(np.abs(accel[:n_eval]), initial=0.0))
+    max_steer = float(np.max(np.abs(steering[:n_eval]), initial=0.0))
+    return bool(failure_step < 0), {
+        "failure_step": int(failure_step),
+        "max_abs_accel_mps2": max_acc,
+        "max_abs_steering_curvature": max_steer,
+        "contract_source": str(contract.get("contract_source", "unknown")),
     }
 
 

@@ -295,7 +295,7 @@ PY
       --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
 
   profile4_parallel2)
-    require_closed_loop_preflight; run_subset runtime_profile4_v45r1 "$PROFILE4" "$METHOD" 1 ;;
+    require_closed_loop_preflight; run_subset runtime_profile4_v45r2 "$PROFILE4" "$METHOD" 1 ;;
 
   lost7_parallel2)
     require_closed_loop_preflight; run_subset lost7 "$LOST7" "$METHOD" 1 ;;
@@ -372,9 +372,9 @@ PY
 
   help|*)
     cat <<EOF
-V16.8.45R1 RCRSO semantic-fidelity repair — recommended order
+V16.8.45R2 RCRSO sidecar performance/observability repair — recommended order
 
-IMPORTANT: do not reuse V16.8.45 sidecar/checkpoint/output directories. R1 defaults use new paths.
+IMPORTANT: do not reuse V16.8.45/V16.8.45R1 sidecar/checkpoint/output directories. R2 engineering defaults use new paths.
 
 Offline operator / support gate (no Waymax closed loop):
   $0 sanity

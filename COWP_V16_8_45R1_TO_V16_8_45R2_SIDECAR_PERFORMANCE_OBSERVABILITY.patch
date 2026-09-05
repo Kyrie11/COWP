@@ -1,0 +1,729 @@
+diff --git a/NEXT_RUN_COMMANDS_V16_8_45R1_RCRSO_CN.sh b/NEXT_RUN_COMMANDS_V16_8_45R2_RCRSO_SIDECAR_PERF_CN.sh
+similarity index 80%
+rename from NEXT_RUN_COMMANDS_V16_8_45R1_RCRSO_CN.sh
+rename to NEXT_RUN_COMMANDS_V16_8_45R2_RCRSO_SIDECAR_PERF_CN.sh
+index 423cc71..26e1868 100755
+--- a/NEXT_RUN_COMMANDS_V16_8_45R1_RCRSO_CN.sh
++++ b/NEXT_RUN_COMMANDS_V16_8_45R2_RCRSO_SIDECAR_PERF_CN.sh
+@@ -15,12 +15,12 @@ BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
+ 
+ # V45 has a separate proposal-completeness operator checkpoint.  The base COWP
+ # model, NaturalDecoder, RCOT and BCOT remain frozen.
+-SIDECAR_ROOT="${SIDECAR_ROOT:-$COWP_ROOT/recourse_sidecar_v16_8_45r1}"
+-RCRSO_RUN="${RCRSO_RUN:-outputs/v16_8_45r1_rcrso_operator}"
++SIDECAR_ROOT="${SIDECAR_ROOT:-$COWP_ROOT/recourse_sidecar_v16_8_45r2}"
++RCRSO_RUN="${RCRSO_RUN:-outputs/v16_8_45r2_rcrso_operator}"
+ RCRSO_UNSELECTED="${RCRSO_UNSELECTED:-$RCRSO_RUN/rcrso_best_unselected.pt}"
+ RCRSO_CKPT="${RCRSO_CKPT:-$RCRSO_RUN/rcrso_stage0_selected.pt}"
+ STAGE0_JSON="${STAGE0_JSON:-$RCRSO_RUN/stage0_val_support_audit.json}"
+-OUT_ROOT="${OUT_ROOT:-outputs/v16_8_45r1_rcrso_closed_loop}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_45r2_rcrso_closed_loop}"
+ METHOD="cowp_verified_root_conditioned_recourse_set_operator"
+ mkdir -p "$RCRSO_RUN" "$OUT_ROOT"
+ 
+@@ -28,6 +28,17 @@ TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train}"
+ VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val}"
+ HELDOUT_CACHE="${HELDOUT_CACHE:-$COWP_ROOT/tensor_cache_heldout_test}"
+ 
++# Engineering-only sidecar performance/observability knobs.  They never alter
++# proposal counts, hard predicates, root semantics, or Stage-0 thresholds.
++SIDECAR_PROGRESS_EVERY_SECONDS="${SIDECAR_PROGRESS_EVERY_SECONDS:-30}"
++SIDECAR_SAVE_MODE="${SIDECAR_SAVE_MODE:-compressed}"  # set uncompressed for faster build if disk allows
++CPU_COUNT="$(python - <<'PYCPU'
++import os
++print(os.cpu_count() or 8)
++PYCPU
++)"
++SIDECAR_AUTO_SHARDS="${SIDECAR_AUTO_SHARDS:-$(( CPU_COUNT < 8 ? 4 : (CPU_COUNT < 24 ? 8 : 12) ))}"
++
+ # Frozen development manifests.  They are not publication holdouts.
+ EXACT200="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
+ EQ16="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
+@@ -123,25 +134,58 @@ run_subset(){
+ }
+ 
+ build_sidecar_split(){
+-  local split="$1" cache="$2" shards="$3" max_examples="$4" sobol="$5"
++  local split="$1" cache="$2" shards="$3" max_examples="$4" sobol="$5" max_scenes_per_shard="${6:-}" output_root="${7:-$SIDECAR_ROOT}"
+   [[ -d "$cache" ]] || { echo "ERROR: cache dir missing: $cache" >&2; exit 4; }
+-  rm -rf "$SIDECAR_ROOT/$split"
+-  mkdir -p "$SIDECAR_ROOT/$split"
+-  local pids=()
++  rm -rf "$output_root/$split"
++  mkdir -p "$output_root/$split"
++  local pids=() start end
++  start=$(date +%s)
++  echo "[sidecar] split=$split shards=$shards cpu_count=$CPU_COUNT max_examples/scene=$max_examples sobol=$sobol save_mode=$SIDECAR_SAVE_MODE"
++  echo "[sidecar] progress every ${SIDECAR_PROGRESS_EVERY_SECONDS}s; per-shard logs: $RCRSO_RUN/sidecar_${split}_s*of${shards}.log"
+   for ((s=0;s<shards;s++)); do
+-    OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+-    python -m cowp.scripts.104_build_rcrso_sidecar \
+-      --cache-dir "$cache" --output-root "$SIDECAR_ROOT" --split "$split" \
+-      --label-config configs/label_cowp_v16_8.yaml --data-config configs/data.yaml --eval-config configs/eval_cowp_v16_8.yaml \
+-      --max-examples-per-scene "$max_examples" --max-positive-controls 32 --rich-sobol-proposals "$sobol" --control-knots 8 --environment-cap 24 \
+-      --forbidden-id-file "$EXACT200" --num-shards "$shards" --shard-index "$s" \
+-      > "$RCRSO_RUN/sidecar_${split}_s${s}of${shards}.log" 2>&1 &
++    local log="$RCRSO_RUN/sidecar_${split}_s${s}of${shards}.log"
++    local max_scene_args=()
++    [[ -n "$max_scenes_per_shard" ]] && max_scene_args=(--max-scenes "$max_scenes_per_shard")
++    (
++      set -o pipefail
++      PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
++      python -m cowp.scripts.104_build_rcrso_sidecar \
++        --cache-dir "$cache" --output-root "$output_root" --split "$split" \
++        --label-config configs/label_cowp_v16_8.yaml --data-config configs/data.yaml --eval-config configs/eval_cowp_v16_8.yaml \
++        --max-examples-per-scene "$max_examples" --max-positive-controls 32 --rich-sobol-proposals "$sobol" --control-knots 8 --environment-cap 24 \
++        --forbidden-id-file "$EXACT200" --num-shards "$shards" --shard-index "$s" \
++        --progress-every-seconds "$SIDECAR_PROGRESS_EVERY_SECONDS" --profile-timing --save-mode "$SIDECAR_SAVE_MODE" \
++        "${max_scene_args[@]}" 2>&1 | sed -u "s/^/[sidecar $split s${s}\/${shards}] /" | tee "$log"
++    ) &
+     pids+=("$!")
+   done
+-  for p in "${pids[@]}"; do wait "$p"; done
+-  python scripts/111_merge_rcrso_sidecar_shards.py --root "$SIDECAR_ROOT" --split "$split" --num-shards "$shards"
++  local failed=0
++  for p in "${pids[@]}"; do
++    if ! wait "$p"; then failed=1; fi
++  done
++  [[ "$failed" == "0" ]] || { echo "ERROR: at least one sidecar shard failed" >&2; exit 4; }
++  python scripts/111_merge_rcrso_sidecar_shards.py --root "$output_root" --split "$split" --num-shards "$shards"
++  end=$(date +%s)
++  echo $((end-start)) > "$RCRSO_RUN/sidecar_${split}_${shards}shards_wall_seconds.txt"
++  echo "[sidecar] DONE split=$split wall=$((end-start))s output=$output_root/$split"
++  python - "$output_root" "$split" "$shards" <<'PYSUM'
++import json,sys
++from pathlib import Path
++root=Path(sys.argv[1]); split=sys.argv[2]; n=int(sys.argv[3])
++rows=[]
++for s in range(n):
++    p=root/f"summary_{split}_s{s}of{n}.json"
++    if p.is_file(): rows.append(json.load(open(p)))
++if not rows: raise SystemExit
++keys=set().union(*(r.get("timing_seconds",{}).keys() for r in rows))
++t={k:sum(float(r.get("timing_seconds",{}).get(k,0)) for r in rows) for k in keys}
++work=sum(v for k,v in t.items() if k!="wall")
++print("[sidecar timing aggregate]", " ".join(f"{k}={v:.1f}s({100*v/work:.1f}%)" for k,v in sorted(t.items()) if k!="wall" and work>0))
++print("[sidecar cache aggregate]", " ".join(f"{k}={sum(int(r.get('counts',{}).get(k,0)) for r in rows)}" for k in ["analytic_profile_evaluations","analytic_environment_cache_hits","rcrso_profile_evaluations","rcrso_environment_cache_hits","teacher_proposals","teacher_verified"]))
++PYSUM
+ }
+ 
++
+ case "$MODE" in
+   sanity)
+     python -m py_compile \
+@@ -173,7 +217,7 @@ case "$MODE" in
+       tests/test_v16_8_28_execution_integrity.py tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
+     ! grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py
+     ! grep -R "log_trajectory\|mechanism_ground_truth" -n cowp/models/recourse_set_operator.py cowp/scripts/104_build_rcrso_sidecar.py cowp/scripts/105_train_rcrso.py cowp/scripts/106_eval_rcrso_support.py
+-    echo "V16.8.45R1 RCRSO semantic/integrity sanity PASS" ;;
++    echo "V16.8.45R2 sidecar-performance semantic/integrity sanity PASS" ;;
+ 
+   make_ids)
+     python - <<'PY'
+@@ -210,11 +254,21 @@ PY
+     python -m cowp.scripts.104_build_rcrso_sidecar \
+       --cache-dir "$VAL_CACHE" --output-root "$RCRSO_RUN/sidecar_smoke" --split val \
+       --max-scenes 2 --max-examples-per-scene 12 --rich-sobol-proposals 4 --max-positive-controls 8 \
+-      --forbidden-id-file "$EXACT200" ;;
++      --forbidden-id-file "$EXACT200" --progress-every-seconds 5 --profile-timing --save-mode "$SIDECAR_SAVE_MODE" ;;
+ 
+   build_sidecar_train_parallel4)
+     build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-4}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
+ 
++  build_sidecar_train_parallel8)
++    build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-8}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
++
++  build_sidecar_train_auto)
++    build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-$SIDECAR_AUTO_SHARDS}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
++
++  profile_sidecar_train8)
++    rm -rf "$RCRSO_RUN/sidecar_profile8"
++    build_sidecar_split train "$TRAIN_CACHE" 4 "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" 2 "$RCRSO_RUN/sidecar_profile8" ;;
++
+   build_sidecar_val_parallel2)
+     build_sidecar_split val "$VAL_CACHE" "${SIDECAR_VAL_SHARDS:-2}" "${SIDECAR_VAL_MAX_EXAMPLES_PER_SCENE:-32}" "${SIDECAR_VAL_SOBOL_PROPOSALS:-48}" ;;
+ 
+@@ -241,7 +295,7 @@ PY
+       --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
+ 
+   profile4_parallel2)
+-    require_closed_loop_preflight; run_subset runtime_profile4_v45r1 "$PROFILE4" "$METHOD" 1 ;;
++    require_closed_loop_preflight; run_subset runtime_profile4_v45r2 "$PROFILE4" "$METHOD" 1 ;;
+ 
+   lost7_parallel2)
+     require_closed_loop_preflight; run_subset lost7 "$LOST7" "$METHOD" 1 ;;
+@@ -318,15 +372,18 @@ PY
+ 
+   help|*)
+     cat <<EOF
+-V16.8.45R1 RCRSO semantic-fidelity repair — recommended order
++V16.8.45R2 RCRSO sidecar performance/observability repair — recommended order
+ 
+-IMPORTANT: do not reuse V16.8.45 sidecar/checkpoint/output directories. R1 defaults use new paths.
++IMPORTANT: do not reuse V16.8.45/V16.8.45R1 sidecar/checkpoint/output directories. R2 engineering defaults use new paths.
+ 
+ Offline operator / support gate (no Waymax closed loop):
+   $0 sanity
+   $0 make_ids
+   $0 sidecar_smoke
++  $0 profile_sidecar_train8
+   $0 build_sidecar_train_parallel4
++  $0 build_sidecar_train_parallel8
++  $0 build_sidecar_train_auto
+   $0 build_sidecar_val_parallel2
+   $0 train_rcrso
+   $0 stage0_support
+diff --git a/cowp/models/recourse_set_operator.py b/cowp/models/recourse_set_operator.py
+index b5df214..b4b78c2 100644
+--- a/cowp/models/recourse_set_operator.py
++++ b/cowp/models/recourse_set_operator.py
+@@ -176,6 +176,7 @@ def build_rcrso_features_np(
+     cfg: RCRSOConfig | dict[str, Any] | None = None,
+     verifier_cfg: dict[str, Any] | None = None,
+     blocker_object_type: int = 0,
++    precomputed_environment_event_steps: list[int] | tuple[int, ...] | np.ndarray | None = None,
+ ) -> dict[str, np.ndarray]:
+     """Create deterministic blocker/root-local RCRSO features.
+ 
+@@ -274,7 +275,14 @@ def build_rcrso_features_np(
+     ego_shift = event_interval(sh, root, int(blocker_object_type))
+     env_events: list[int] = []
+     env_horizon = max(len(root), 1)
+-    if verifier_cfg is not None:
++    if precomputed_environment_event_steps is not None:
++        # Engineering-only exact work reuse.  V44 analytic completion computes the
++        # same four directional root/environment current+shift unsafe event masks
++        # before RCRSO feature construction.  Reusing those integer event indices
++        # preserves the conflict token exactly and avoids repeating polygon/RSS/TTC
++        # geometry for every ego candidate.
++        env_events = [int(x) for x in np.asarray(precomputed_environment_event_steps).reshape(-1)]
++    elif verifier_cfg is not None:
+         try:
+             from cowp.geometry.collision import unsafe_between
+             for actor in environment:
+diff --git a/cowp/scripts/104_build_rcrso_sidecar.py b/cowp/scripts/104_build_rcrso_sidecar.py
+index 2d0af7e..23dbcc5 100644
+--- a/cowp/scripts/104_build_rcrso_sidecar.py
++++ b/cowp/scripts/104_build_rcrso_sidecar.py
+@@ -3,6 +3,8 @@ from __future__ import annotations
+ import argparse
+ import hashlib
+ import json
++import sys
++import time
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -21,6 +23,28 @@ from cowp.waymax_eval.policy_wrapper import (
+ )
+ 
+ 
++_SIDECAR_WANTED_KEYS: set[str] = {
++    # State + identity/alignment inputs.  Prefix form intentionally covers both
++    # shaped debug caches and canonicalized raw WOMD state fields.
++    "state/", "womd/state/",
++    "scenario/id", "womd/scenario/id", "scenario_id",
++    "cowp/critical/",
++    # Ego hypotheses.
++    "cowp/candidates/trajectory", "cowp/candidates/valid",
++    # Natural-root contract.
++    "cowp/natural/traj", "cowp/natural/weight", "cowp/natural/source",
++    "cowp/natural/valid", "cowp/natural/beta",
++    # Fixed teacher-response fields only; avoid decompressing unrelated dense heads.
++    "cowp/response/traj", "cowp/response/valid", "cowp/response/is_safe",
++    "cowp/response/is_low_burden", "cowp/response/root_index",
++    "cowp/response/burden_total",
++    "cowp/transport/response_root_index", "cowp/transport/canonical_root_weight",
++    "cowp/audit/canonical_root_weight", "cowp/audit/pair_relevant",
++    # Raw WOMD vector map fields used by the frozen roadgraph predicate.
++    "roadgraph_samples/", "womd/roadgraph_samples/",
++}
++
++
+ def _scenario_id(path: Path, data: dict[str, np.ndarray]) -> str:
+     for key in ("scenario/id", "womd/scenario/id", "scenario_id"):
+         if key in data:
+@@ -335,6 +359,12 @@ def main() -> None:
+     ap.add_argument("--forbidden-id-file",action="append",default=[])
+     ap.add_argument("--num-shards",type=int,default=1)
+     ap.add_argument("--shard-index",type=int,default=0)
++    ap.add_argument("--progress-every-seconds",type=float,default=30.0,
++                    help="Emit one flushed progress/timing line per shard at this wall-time cadence; <=0 disables.")
++    ap.add_argument("--save-mode",choices=["compressed","uncompressed"],default="compressed",
++                    help="NPZ storage mode. uncompressed is byte-identical after load and can materially reduce build CPU time at higher disk cost.")
++    ap.add_argument("--profile-timing",action="store_true",
++                    help="Accumulate sidecar stage timings in progress lines and summary JSON.")
+     args=ap.parse_args()
+     if args.num_shards < 1 or not (0 <= args.shard_index < args.num_shards):
+         raise ValueError(f"invalid shard {args.shard_index}/{args.num_shards}")
+@@ -348,6 +378,43 @@ def main() -> None:
+     outdir=Path(args.output_root)/args.split; outdir.mkdir(parents=True,exist_ok=True)
+     rcrso_cfg=RCRSOConfig(control_knots=int(args.control_knots))
+     manifest=[]; counts={"scenes":0,"examples":0,"forbidden_skipped":0,"positive_examples":0,"analytic_nonempty":0,"rich_verified":0}
++    timings={
++        "load_schema_s":0.0, "environment_s":0.0, "analytic_completion_s":0.0,
++        "proposal_verify_s":0.0, "features_context_s":0.0, "write_s":0.0,
++    }
++    run_start=time.perf_counter(); last_progress=run_start
++    scanned=0
++    shard_path_count=sum(1 for i in range(len(ds.paths)) if i % int(args.num_shards) == int(args.shard_index))
++    if args.max_scenes is not None:
++        shard_path_count=min(shard_path_count,int(args.max_scenes)+len(forbidden))
++    save_npz=np.savez_compressed if args.save_mode=="compressed" else np.savez
++
++    def emit_progress(force: bool=False) -> None:
++        nonlocal last_progress
++        now=time.perf_counter()
++        if not force and (float(args.progress_every_seconds)<=0.0 or now-last_progress<float(args.progress_every_seconds)):
++            return
++        elapsed=max(now-run_start,1.0e-9)
++        done=max(scanned,1)
++        scene_rate=float(counts["scenes"])/elapsed
++        scan_rate=float(scanned)/elapsed
++        remaining=max(int(shard_path_count)-int(scanned),0)
++        eta=(remaining/max(scan_rate,1.0e-9)) if scan_rate>0 else float("inf")
++        phase_total=sum(float(v) for v in timings.values())
++        phase_txt=" ".join(
++            f"{k.replace('_s','')}={100.0*float(v)/phase_total:.0f}%"
++            for k,v in timings.items() if phase_total>0 and float(v)>0
++        )
++        msg=(
++            f"[RCRSO-sidecar {args.split} s{args.shard_index}/{args.num_shards}] "
++            f"scan={scanned}/{shard_path_count} scenes={counts['scenes']} groups={counts.get('hypothesis_groups',0)} "
++            f"examples={counts['examples']} proposals={counts.get('teacher_proposals',0)} verified={counts.get('teacher_verified',0)} "
++            f"elapsed={elapsed/60.0:.1f}m rate={scene_rate:.3f}scene/s eta={eta/60.0:.1f}m"
++        )
++        if args.profile_timing and phase_txt:
++            msg += " timing["+phase_txt+"]"
++        print(msg, file=sys.stderr, flush=True)
++        last_progress=now
+     try:
+         import torch
+         sobol=torch.quasirandom.SobolEngine(dimension=int(args.control_knots),scramble=False)
+@@ -359,7 +426,9 @@ def main() -> None:
+         if scene_i % int(args.num_shards) != int(args.shard_index):
+             continue
+         if args.max_scenes is not None and counts["scenes"]>=args.max_scenes: break
+-        data=ds.load(scene_i,None); sid=_scenario_id(path,data)
++        scanned += 1
++        _t0=time.perf_counter()
++        data=ds.load(scene_i,_SIDECAR_WANTED_KEYS); sid=_scenario_id(path,data)
+         if sid in forbidden:
+             counts["forbidden_skipped"]+=1; continue
+         required=("cowp/candidates/trajectory","cowp/candidates/valid","cowp/critical/track_index","cowp/critical/valid","cowp/natural/traj","cowp/natural/weight","cowp/natural/source","cowp/natural/valid","cowp/natural/beta","cowp/response/traj","cowp/response/valid","cowp/response/is_safe","cowp/response/is_low_burden")
+@@ -377,7 +446,16 @@ def main() -> None:
+         rroot=np.asarray(data.get("cowp/response/root_index", data.get("cowp/transport/response_root_index", np.full(rv.shape,-1))),int)
+         rbur=np.asarray(data.get("cowp/response/burden_total",np.zeros(rv.shape)),float)
+         pair_rel=np.asarray(data.get("cowp/audit/pair_relevant",np.ones((cand.shape[0],crit.shape[0]),bool)),bool)
++        timings["load_schema_s"] += time.perf_counter()-_t0
+         counts["scenes"]+=1; made=0
++        # V44R1 compatibility caches are semantically valid for the lifetime of one
++        # observed scene: static response geometry and responder/environment checks
++        # do not depend on which ego candidate is being verified.  V45R1 discarded
++        # these caches on every (candidate,root), causing massive exact recomputation.
++        scene_compatibility_cache: dict[str, dict[Any, Any]] = {}
++        successor_for_env=_one_step_cv_successor_for_environment(state,sdc,cfg)
++        environment_context_cache: dict[tuple[int,int], list[dict[str,Any]]] = {}
++        blocker_order_cache: dict[int,np.ndarray] = {}
+         for k in range(min(cand.shape[0],cvalid.size)):
+             if not cvalid[k]: continue
+             ego_cur=cand[k]; ego_shift=_shift_append_terminal_reference_np(ego_cur,float(cfg.get("time",{}).get("dt",0.1)))
+@@ -410,18 +488,27 @@ def main() -> None:
+             counts["hypothesis_groups"] = int(counts.get("hypothesis_groups",0)) + 1
+             for a,j,m in group_contexts:
+                     root=nat[a,m]
+-                    env=[]
+-                    successor_for_env=_one_step_cv_successor_for_environment(state,sdc,cfg)
+-                    dists=np.linalg.norm(state[:,:2]-state[j,:2][None],axis=-1); order=np.argsort(dists)
+-                    for e in order:
+-                        e=int(e)
+-                        if e in (sdc,j) or state[e,10]<=0.5: continue
+-                        curcv=_constant_velocity_trajectory_from_state_np(state,e,len(root),cfg)
+-                        if curcv is None: continue
+-                        shiftedcv=_constant_velocity_trajectory_from_state_np(successor_for_env,e,len(root),cfg)
+-                        if shiftedcv is None: continue
+-                        env.append({"agent_index":e,"object_type":int(obj[e]) if e<obj.size else 0,"trajectory":curcv,"shifted_trajectory":shiftedcv})
+-                        if len(env)>=args.environment_cap: break
++                    _t_env=time.perf_counter()
++                    env_key=(int(j),int(len(root)))
++                    env=environment_context_cache.get(env_key)
++                    if env is None:
++                        order=blocker_order_cache.get(int(j))
++                        if order is None:
++                            dists=np.linalg.norm(state[:,:2]-state[j,:2][None],axis=-1)
++                            order=np.argsort(dists)
++                            blocker_order_cache[int(j)]=order
++                        env=[]
++                        for e in order:
++                            e=int(e)
++                            if e in (sdc,j) or state[e,10]<=0.5: continue
++                            curcv=_constant_velocity_trajectory_from_state_np(state,e,len(root),cfg)
++                            if curcv is None: continue
++                            shiftedcv=_constant_velocity_trajectory_from_state_np(successor_for_env,e,len(root),cfg)
++                            if shiftedcv is None: continue
++                            env.append({"agent_index":e,"object_type":int(obj[e]) if e<obj.size else 0,"trajectory":curcv,"shifted_trajectory":shiftedcv})
++                            if len(env)>=args.environment_cap: break
++                        environment_context_cache[env_key]=env
++                    timings["environment_s"] += time.perf_counter()-_t_env
+                     # Build a teacher *proposal* pool first.  Stored response labels
+                     # and V44 analytic trajectories were generated under related but
+                     # not identical contracts, and inverse-mapping a trajectory to 8
+@@ -434,7 +521,13 @@ def main() -> None:
+                             if not (rv[k,a,r] and rsafe[k,a,r] and rlow[k,a,r]): continue
+                             if rroot.shape==rv.shape and int(rroot[k,a,r]) not in (-1,m): continue
+                             teacher_knots.append(_response_to_normalized_knots(root,rt[k,a,r],cfg,args.control_knots)); teacher_source.append(0)
+-                    analytic,ad=_root_conditioned_control_reachable_response_profiles_np(state,j,int(obj[j]) if j<obj.size else 0,root,float(beta[a]),ego_cur,ego_shift,env,road,cfg,root_ordinal=m,compatibility_cache={})
++                    _t_analytic=time.perf_counter()
++                    analytic,ad=_root_conditioned_control_reachable_response_profiles_np(
++                        state,j,int(obj[j]) if j<obj.size else 0,root,float(beta[a]),ego_cur,ego_shift,env,road,cfg,
++                        root_ordinal=m,compatibility_cache=scene_compatibility_cache)
++                    timings["analytic_completion_s"] += time.perf_counter()-_t_analytic
++                    counts["analytic_profile_evaluations"] = int(counts.get("analytic_profile_evaluations",0)) + int(ad.get("profile_evaluations",0))
++                    counts["analytic_environment_cache_hits"] = int(counts.get("analytic_environment_cache_hits",0)) + int(ad.get("environment_compatibility_cache_hits",0)) + int(ad.get("environment_event_cache_hits",0))
+                     if analytic: counts["analytic_nonempty"]+=1
+                     for rec in analytic:
+                         teacher_knots.append(_response_to_normalized_knots(root,rec["trajectory"],cfg,args.control_knots)); teacher_source.append(1)
+@@ -452,10 +545,14 @@ def main() -> None:
+                         if old is None or int(src)<int(old[1]): proposal_map[key]=(q,int(src))
+                     proposal_entries=list(proposal_map.values())
+                     proposal_arr=np.stack([x[0] for x in proposal_entries],axis=0).astype(np.float32) if proposal_entries else np.zeros((0,args.control_knots),np.float32)
++                    _t_verify=time.perf_counter()
+                     verified,vd=_verified_root_conditioned_recourse_set_profiles_np(
+                         state,j,int(obj[j]) if j<obj.size else 0,root,float(beta[a]),ego_cur,ego_shift,env,road,cfg,proposal_arr,
+-                        profile_index_base=30000,root_ordinal=m,compatibility_cache={}
++                        profile_index_base=30000,root_ordinal=m,compatibility_cache=scene_compatibility_cache
+                     ) if len(proposal_arr) else ([],{"proposal_outcomes":[]})
++                    timings["proposal_verify_s"] += time.perf_counter()-_t_verify
++                    counts["rcrso_profile_evaluations"] = int(counts.get("rcrso_profile_evaluations",0)) + int(vd.get("profile_evaluations",0))
++                    counts["rcrso_environment_cache_hits"] = int(counts.get("rcrso_environment_cache_hits",0)) + int(vd.get("environment_compatibility_cache_hits",0))
+                     outcomes=list(vd.get("proposal_outcomes", []))
+                     verified_by_index={int(rec.get("profile_index",30000))-30000:rec for rec in verified}
+                     pos_knots=[]; pos_burden=[]; pos_source=[]; rejected_controls=[]
+@@ -505,7 +602,27 @@ def main() -> None:
+                             if len(kept)>=N: break
+                         for ni,(q,code) in enumerate(kept): neg[ni]=q; nvalid[ni]=True; nreason[ni]=code
+                         counts["hard_negative_examples"] = int(counts.get("hard_negative_examples",0)) + int(nvalid.sum())
+-                    features=build_rcrso_features_np(root=root,root_mass=float(canonical_w[a,m]),root_source=int(ns[a,m]),blocker_state=state[j],current_ego_trajectory=ego_cur,shifted_ego_trajectory=ego_shift,environment=env,cfg=rcrso_cfg,verifier_cfg=cfg,blocker_object_type=int(obj[j]) if j<obj.size else 0)
++                    _t_features=time.perf_counter()
++                    # The analytic teacher pass immediately above has already
++                    # evaluated the exact four-direction root/environment event
++                    # masks and placed them in the shared per-scene cache.  Feed
++                    # those identical event indices into feature construction
++                    # instead of recomputing them a second time.
++                    _event_cache=scene_compatibility_cache.get("control_reachable_environment_events",{})
++                    _env_event_steps=[]
++                    _event_cache_complete=True
++                    for _actor in env:
++                        _ek=(int(j),int(m),int(_actor.get("agent_index",-1)))
++                        if _ek not in _event_cache:
++                            _event_cache_complete=False; break
++                        _env_event_steps.extend(_event_cache[_ek])
++                    features=build_rcrso_features_np(
++                        root=root,root_mass=float(canonical_w[a,m]),root_source=int(ns[a,m]),blocker_state=state[j],
++                        current_ego_trajectory=ego_cur,shifted_ego_trajectory=ego_shift,environment=env,cfg=rcrso_cfg,
++                        verifier_cfg=cfg,blocker_object_type=int(obj[j]) if j<obj.size else 0,
++                        precomputed_environment_event_steps=_env_event_steps if _event_cache_complete else None)
++                    if _event_cache_complete:
++                        counts["feature_environment_event_reuse_examples"] = int(counts.get("feature_environment_event_reuse_examples",0)) + 1
+                     E=args.environment_cap*2; envtok=np.zeros((E,rcrso_cfg.environment_feature_dim),np.float32); envvalid=np.zeros(E,bool); rawenv=features["environment_tokens"]; nenv=min(E,len(rawenv)); envtok[:nenv]=rawenv[:nenv]; envvalid[:nenv]=True
+                     sh=int.from_bytes(hashlib.sha256(sid.encode()).digest()[:8],"little",signed=False) & ((1<<63)-1)
+                     hyp=(k*1000000)+(j*1000)+m; hyp_group=k
+@@ -520,12 +637,18 @@ def main() -> None:
+                     # arbitrary file order or let an empty subset become vacuously
+                     # drivable.
+                     rxy,rh,rtpe,rvld=_sidecar_roadgraph_subset(road,root,ego_cur,ego_shift)
+-                    np.savez_compressed(outdir/name,root_tokens=features["root_tokens"],ego_tokens=features["ego_tokens"],environment_tokens=envtok,environment_valid=envvalid,blocker_state=features["blocker_state"],conflict_features=features["conflict_features"],target_control_knots=targets,target_valid=tvalid,target_burden=tb,target_source=ts,negative_control_knots=neg,negative_valid=nvalid,negative_reason=nreason,root_mass=np.float32(canonical_w[a,m]),root_source=np.int64(ns[a,m]),fixed_verified_nonempty=np.bool_(any(x==0 for x in pos_source)),analytic_verified_nonempty=np.bool_(bool(analytic)),scenario_hash=np.int64(sh),hypothesis_id=np.int64(hyp),hypothesis_group_id=np.int64(hyp_group),candidate_index=np.int64(k),agent_index=np.int64(j),root_index=np.int64(m),root_trajectory=np.asarray(root,np.float32),blocker_state_global=np.asarray(state[j],np.float32),blocker_object_type=np.int64(obj[j] if j<obj.size else 0),beta=np.float32(beta[a]),ego_current=np.asarray(ego_cur,np.float32),ego_shifted=np.asarray(ego_shift,np.float32),environment_current=env_cur,environment_shifted=env_shift,environment_object_type=env_obj,environment_agent_index=env_idx,roadgraph_xy=rxy,roadgraph_heading=rh,roadgraph_types=rtpe,roadgraph_valid=rvld)
++                    timings["features_context_s"] += time.perf_counter()-_t_features
++                    _t_write=time.perf_counter()
++                    save_npz(outdir/name,root_tokens=features["root_tokens"],ego_tokens=features["ego_tokens"],environment_tokens=envtok,environment_valid=envvalid,blocker_state=features["blocker_state"],conflict_features=features["conflict_features"],target_control_knots=targets,target_valid=tvalid,target_burden=tb,target_source=ts,negative_control_knots=neg,negative_valid=nvalid,negative_reason=nreason,root_mass=np.float32(canonical_w[a,m]),root_source=np.int64(ns[a,m]),fixed_verified_nonempty=np.bool_(any(x==0 for x in pos_source)),analytic_verified_nonempty=np.bool_(bool(analytic)),scenario_hash=np.int64(sh),hypothesis_id=np.int64(hyp),hypothesis_group_id=np.int64(hyp_group),candidate_index=np.int64(k),agent_index=np.int64(j),root_index=np.int64(m),root_trajectory=np.asarray(root,np.float32),blocker_state_global=np.asarray(state[j],np.float32),blocker_object_type=np.int64(obj[j] if j<obj.size else 0),beta=np.float32(beta[a]),ego_current=np.asarray(ego_cur,np.float32),ego_shifted=np.asarray(ego_shift,np.float32),environment_current=env_cur,environment_shifted=env_shift,environment_object_type=env_obj,environment_agent_index=env_idx,roadgraph_xy=rxy,roadgraph_heading=rh,roadgraph_types=rtpe,roadgraph_valid=rvld)
++                    timings["write_s"] += time.perf_counter()-_t_write
+                     manifest.append({"file":name,"scenario_id":sid,"candidate_index":k,"agent_index":j,"root_index":m,"verified_targets":int(tvalid.sum()),"fixed_nonempty":bool(any(x==0 for x in pos_source)),"analytic_nonempty":bool(analytic)})
+                     counts["examples"]+=1; counts["positive_examples"]+=int(bool(tvalid.any())); made+=1
++                    emit_progress(False)
++        emit_progress(False)
+     suffix = "" if int(args.num_shards) == 1 else f"_s{int(args.shard_index)}of{int(args.num_shards)}"
+     (Path(args.output_root)/f"manifest_{args.split}{suffix}.jsonl").write_text("\n".join(json.dumps(x,sort_keys=True) for x in manifest)+("\n" if manifest else ""),encoding="utf-8")
+-    summary={"version":"V16.8.45R1","split":args.split,"cache_dir":str(args.cache_dir),"forbidden_id_count":len(forbidden),"num_shards":int(args.num_shards),"shard_index":int(args.shard_index),"counts":counts,"rcrso_config":rcrso_cfg.to_dict(),"contract":{"base_compact5k_modified":False,"lost7_or_counterfactual48_allowed":False,"hard_verifier_semantics":"V42-V44 frozen predicates","rich_proposal_source":"deterministic Sobol knots; proposals admitted only after hard verifier","hard_negative_source":"frozen-verifier-rejected teacher/Sobol controls retained nearest to verified support","canonical_root_weight_semantics":"cached audit/transport canonical weights or shared canonical_root_weights fallback","required_root_mass":float(required_root_mass),"minimum_root_count":int(minimum_root_count),"max_roots_per_agent":int(max_roots_per_agent)}}
++    emit_progress(True)
++    summary={"version":"V16.8.45R2-engineering","split":args.split,"cache_dir":str(args.cache_dir),"forbidden_id_count":len(forbidden),"num_shards":int(args.num_shards),"shard_index":int(args.shard_index),"counts":counts,"timing_seconds":{**timings,"wall":float(time.perf_counter()-run_start)},"save_mode":args.save_mode,"rcrso_config":rcrso_cfg.to_dict(),"contract":{"base_compact5k_modified":False,"lost7_or_counterfactual48_allowed":False,"hard_verifier_semantics":"V42-V44 frozen predicates","rich_proposal_source":"deterministic Sobol knots; proposals admitted only after hard verifier","hard_negative_source":"frozen-verifier-rejected teacher/Sobol controls retained nearest to verified support","canonical_root_weight_semantics":"cached audit/transport canonical weights or shared canonical_root_weights fallback","required_root_mass":float(required_root_mass),"minimum_root_count":int(minimum_root_count),"max_roots_per_agent":int(max_roots_per_agent)}}
+     (Path(args.output_root)/f"summary_{args.split}{suffix}.json").write_text(json.dumps(summary,indent=2,sort_keys=True),encoding="utf-8")
+     print(json.dumps(summary,indent=2,sort_keys=True))
+ 
+diff --git a/cowp/scripts/105_train_rcrso.py b/cowp/scripts/105_train_rcrso.py
+index 1525523..698f666 100644
+--- a/cowp/scripts/105_train_rcrso.py
++++ b/cowp/scripts/105_train_rcrso.py
+@@ -110,7 +110,7 @@ def main():
+             for k,v in st.items(): sums[k]=sums.get(k,0.0)+v*bs
+         train_stats={k:v/max(n,1) for k,v in sums.items()}; val_stats=_eval(model,va,device,cfg.max_queries)
+         rec={"epoch":epoch,"train":train_stats,"val":val_stats,"seconds":time.time()-t0}; hist.append(rec); print(json.dumps(rec,sort_keys=True))
+-        payload={"version":"V16.8.45R1","model":model.state_dict(),"rcrso_config":cfg.to_dict(),"selected_k":cfg.max_queries,"epoch":epoch,"train_stats":train_stats,"val_stats":val_stats,"contract":{"base_cowp_frozen":True,"hard_verifier_not_learned":True,"selected_k_status":"provisional_until_stage0_validation"}}
++        payload={"version":"V16.8.45R2-engineering","scientific_method":"V16.8.45 RCRSO unchanged","model":model.state_dict(),"rcrso_config":cfg.to_dict(),"selected_k":cfg.max_queries,"epoch":epoch,"train_stats":train_stats,"val_stats":val_stats,"contract":{"base_cowp_frozen":True,"hard_verifier_not_learned":True,"selected_k_status":"provisional_until_stage0_validation"}}
+         torch.save(payload,outdir/"rcrso_last.pt")
+         if val_stats["set"]<best:
+             best=val_stats["set"]; torch.save(payload,outdir/"rcrso_best_unselected.pt")
+diff --git a/cowp/scripts/106_eval_rcrso_support.py b/cowp/scripts/106_eval_rcrso_support.py
+index dcf7b0b..a539a29 100644
+--- a/cowp/scripts/106_eval_rcrso_support.py
++++ b/cowp/scripts/106_eval_rcrso_support.py
+@@ -263,7 +263,7 @@ def main():
+     selected=min((x for x in curves if x["FullHypothesisRootCoverage"]+1e-12>=target),key=lambda x:x["K"])
+     baseline_best=max(baseline["fixed_bank"]["FullHypothesisRootCoverage"],baseline["v44_analytic_extension"]["FullHypothesisRootCoverage"])
+     lift=selected["FullHypothesisRootCoverage"]-baseline_best; gate=lift+1e-12>=args.minimum_full_hypothesis_coverage_lift_pp/100.0 and selected["VerifiedRootRecall"]>0.0
+-    summary={"version":"V16.8.45R1","split":args.split,"examples":len(records),"eligible_examples":len(eligible_records),"hypothesis_groups_all":len(groups_all),"hypothesis_groups":len(groups),"structural_ineligible_hypothesis_groups":0,"oracle_positive_roots":len(oracle),"teacher_verified_positive_roots":len(oracle),"oracle_positive_definition":"known verifier-positive control in the frozen finite sidecar teacher pool; not proof of exhaustive recourse existence","baseline":baseline,"rcrso_curve":curves,"plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,"selected_k":selected["K"],"selected_metrics":selected,"coverage_lift_over_best_frozen_baseline":lift,"minimum_required_lift_pp":args.minimum_full_hypothesis_coverage_lift_pp,"stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},"verifier_calls":total_verifier_calls,"wall_seconds":time.time()-t0,"contract":{"K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,"hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True,"stage0_matches_online_extension_semantics":True,"rcrso_verified_profiles_augment_frozen_domains_after_nested_v43_failure":True,"empty_frozen_static_root_domains_are_valid_proposal_completeness_targets":True,"stage0_panel_role":"outcome-blind label-root support proxy; closed-loop lost7 remains the causal policy gate"}}
++    summary={"version":"V16.8.45R2-engineering","scientific_method":"V16.8.45 RCRSO unchanged","split":args.split,"examples":len(records),"eligible_examples":len(eligible_records),"hypothesis_groups_all":len(groups_all),"hypothesis_groups":len(groups),"structural_ineligible_hypothesis_groups":0,"oracle_positive_roots":len(oracle),"teacher_verified_positive_roots":len(oracle),"oracle_positive_definition":"known verifier-positive control in the frozen finite sidecar teacher pool; not proof of exhaustive recourse existence","baseline":baseline,"rcrso_curve":curves,"plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,"selected_k":selected["K"],"selected_metrics":selected,"coverage_lift_over_best_frozen_baseline":lift,"minimum_required_lift_pp":args.minimum_full_hypothesis_coverage_lift_pp,"stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},"verifier_calls":total_verifier_calls,"wall_seconds":time.time()-t0,"contract":{"K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,"hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True,"stage0_matches_online_extension_semantics":True,"rcrso_verified_profiles_augment_frozen_domains_after_nested_v43_failure":True,"empty_frozen_static_root_domains_are_valid_proposal_completeness_targets":True,"stage0_panel_role":"outcome-blind label-root support proxy; closed-loop lost7 remains the causal policy gate"}}
+     Path(args.output).parent.mkdir(parents=True,exist_ok=True); Path(args.output).write_text(json.dumps(summary,indent=2,sort_keys=True),encoding="utf-8")
+     selected_ckpt=dict(ckpt); selected_ckpt["selected_k"]=int(selected["K"]); selected_ckpt["stage0_support_audit"]=summary; selected_ckpt["contract"]={**dict(selected_ckpt.get("contract",{})),"selected_k_status":"frozen_validation_selected","stage0_support_gate_pass":bool(gate)}; torch.save(selected_ckpt,args.selected_checkpoint)
+     print(json.dumps(summary,indent=2,sort_keys=True))
+diff --git a/cowp/waymax_eval/policy_wrapper.py b/cowp/waymax_eval/policy_wrapper.py
+index ecde46d..5ee4197 100644
+--- a/cowp/waymax_eval/policy_wrapper.py
++++ b/cowp/waymax_eval/policy_wrapper.py
+@@ -3763,12 +3763,12 @@ def _constant_velocity_trajectory_from_state_np(
+     return tr
+ 
+ 
+-def _trajectory_waymax_kinematic_safe_np(
++def _trajectory_waymax_kinematic_safe_literal_np(
+     current: np.ndarray,
+     trajectory: np.ndarray,
+     cfg: dict,
+ ) -> tuple[bool, dict[str, int | float | str]]:
+-    """Require every response edge to satisfy Waymax's inverse-dynamics metric."""
++    """Literal V16.8.45R1 edge-by-edge reference for fidelity regression."""
+     tr = np.asarray(trajectory, dtype=np.float32)
+     if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
+         return False, {
+@@ -3805,6 +3805,60 @@ def _trajectory_waymax_kinematic_safe_np(
+     }
+ 
+ 
++def _trajectory_waymax_kinematic_safe_np(
++    current: np.ndarray,
++    trajectory: np.ndarray,
++    cfg: dict,
++) -> tuple[bool, dict[str, int | float | str]]:
++    """Vectorized exact-equivalent Waymax inverse-dynamics trajectory check.
++
++    V16.8.45R1 called ``_waymax_kinematic_transition_np`` once per edge in
++    Python.  Every edge current state after t=0 is, by construction, exactly the
++    preceding realized trajectory sample.  We therefore build the same [H,D]
++    current-state matrix once and evaluate all H inverse transitions in one batch.
++    This changes only evaluation order; thresholds, float64 inverse-dynamics math,
++    first-failure semantics and diagnostics are preserved.
++    """
++    tr = np.asarray(trajectory, dtype=np.float32)
++    if tr.ndim != 2 or tr.shape[0] <= 0 or tr.shape[1] < 7 or not np.isfinite(tr[:, :7]).all():
++        return False, {
++            "failure_step": 0,
++            "max_abs_accel_mps2": float("inf"),
++            "max_abs_steering_curvature": float("inf"),
++            "contract_source": "invalid_response_trajectory",
++        }
++    cur0 = np.asarray(current, dtype=np.float32).reshape(-1)
++    H = int(tr.shape[0])
++    width = max(int(cur0.size), 11)
++    currents = np.zeros((H, width), dtype=np.float32)
++    currents[:, : cur0.size] = cur0[None, :]
++    if H > 1:
++        prev = tr[:-1]
++        currents[1:, 0:2] = prev[:, 0:2]
++        currents[1:, 3:5] = prev[:, 3:5]
++        currents[1:, 5] = np.linalg.norm(prev[:, 3:5], axis=-1)
++        currents[1:, 6] = prev[:, 2]
++        currents[1:, 7] = np.maximum(prev[:, 5], 0.1)
++        currents[1:, 8] = np.maximum(prev[:, 6], 0.1)
++        currents[1:, 10] = 1.0
++    targets = np.asarray(tr[:, [0, 1, 2, 3, 4]], dtype=np.float32)
++    feasible, accel, steering, contract = _waymax_kinematic_transition_np(currents, targets, cfg)
++    feasible = np.asarray(feasible, dtype=bool).reshape(-1)
++    accel = np.asarray(accel, dtype=np.float32).reshape(-1)
++    steering = np.asarray(steering, dtype=np.float32).reshape(-1)
++    bad = np.flatnonzero(~feasible)
++    failure_step = int(bad[0]) if bad.size else -1
++    n_eval = failure_step + 1 if failure_step >= 0 else H
++    max_acc = float(np.max(np.abs(accel[:n_eval]), initial=0.0))
++    max_steer = float(np.max(np.abs(steering[:n_eval]), initial=0.0))
++    return bool(failure_step < 0), {
++        "failure_step": int(failure_step),
++        "max_abs_accel_mps2": max_acc,
++        "max_abs_steering_curvature": max_steer,
++        "contract_source": str(contract.get("contract_source", "unknown")),
++    }
++
++
+ def _collision_blocking_agent_indices_against_context(
+     trajectory: np.ndarray,
+     context: dict[str, Any],
+diff --git a/scripts/112_benchmark_v45r2_sidecar_hotspots.py b/scripts/112_benchmark_v45r2_sidecar_hotspots.py
+new file mode 100755
+index 0000000..de627ac
+--- /dev/null
++++ b/scripts/112_benchmark_v45r2_sidecar_hotspots.py
+@@ -0,0 +1,74 @@
++from __future__ import annotations
++import argparse, json, time
++from pathlib import Path
++import numpy as np
++from cowp.core.config import load_config
++from cowp.models.recourse_set_operator import build_rcrso_features_np, RCRSOConfig
++from cowp.geometry.collision import unsafe_between
++from cowp.waymax_eval.policy_wrapper import (
++    _trajectory_waymax_kinematic_safe_np,
++    _trajectory_waymax_kinematic_safe_literal_np,
++    _verified_root_conditioned_recourse_set_profiles_np,
++)
++
++def make_case(cfg):
++    H=80; dt=float(cfg.get('time',{}).get('dt',0.1))
++    state=np.zeros((26,11),np.float32); state[:,10]=1.; state[:,7:10]=[4.5,1.8,1.6]
++    state[1,3]=5.; state[1,5]=5.
++    root=np.zeros((H,7),np.float32); t=np.arange(1,H+1,dtype=np.float32)*dt
++    root[:,0]=5*t; root[:,3]=5; root[:,5:7]=[4.5,1.8]
++    env=[]
++    for e in range(2,26):
++        tr=root.copy(); tr[:,1]=100+e*5
++        env.append({'agent_index':e,'object_type':1,'trajectory':tr,'shifted_trajectory':np.vstack([tr[1:],tr[-1:]])})
++    road={'xy':np.zeros((0,2),np.float32),'heading':np.zeros(0,np.float32),'valid':np.zeros(0,bool),'types':np.zeros(0,np.int32)}
++    rng=np.random.default_rng(20260845); props=rng.uniform(-.3,.3,(32,8)).astype(np.float32)
++    egos=[]
++    for i in range(10):
++        ego=root.copy(); ego[:,1]=50+i
++        egos.append((ego,np.vstack([ego[1:],ego[-1:]])))
++    return state,root,env,road,props,egos
++
++def bench(fn, n=1000):
++    t=time.perf_counter();
++    for _ in range(n): fn()
++    return time.perf_counter()-t
++
++def main():
++    ap=argparse.ArgumentParser(); ap.add_argument('--output',default='V16_8_45R2_SIDECAR_MICROBENCHMARK.json'); args=ap.parse_args()
++    cfg=load_config('configs/label_cowp_v16_8.yaml','configs/data.yaml','configs/eval_cowp_v16_8.yaml')
++    state,root,env,road,props,egos=make_case(cfg)
++    cur=state[1].copy(); tr=root.copy()
++    lit=bench(lambda:_trajectory_waymax_kinematic_safe_literal_np(cur,tr,cfg),1000)
++    vec=bench(lambda:_trajectory_waymax_kinematic_safe_np(cur,tr,cfg),1000)
++    def fresh():
++        for ego,shift in egos:
++            _verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache={})
++    def shared():
++        cache={}
++        for ego,shift in egos:
++            _verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache=cache)
++    fresh_s=bench(fresh,1); shared_s=bench(shared,1)
++    # Feature construction used to recompute four directional root/environment
++    # unsafe-event masks even though V44 analytic completion had already produced
++    # the identical event indices.
++    event_steps=[]; shifted_root=np.vstack([root[1:],root[-1:]])
++    for actor in env:
++        for left,right,right_type in ((root,actor['trajectory'],actor['object_type']),(actor['trajectory'],root,1),(shifted_root,actor['shifted_trajectory'],actor['object_type']),(actor['shifted_trajectory'],shifted_root,1)):
++            event_steps.extend(np.flatnonzero(np.asarray(unsafe_between(left,right,cfg,agent_type=int(right_type)).event_mask,bool)).tolist())
++    fcfg=RCRSOConfig()
++    feature_recompute=bench(lambda:[build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=state[1],current_ego_trajectory=e,shifted_ego_trajectory=s,environment=env,cfg=fcfg,verifier_cfg=cfg,blocker_object_type=1) for e,s in egos[:5]],1)
++    feature_reuse=bench(lambda:[build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=state[1],current_ego_trajectory=e,shifted_ego_trajectory=s,environment=env,cfg=fcfg,verifier_cfg=cfg,blocker_object_type=1,precomputed_environment_event_steps=event_steps) for e,s in egos[:5]],1)
++    out={
++        'version':'V16.8.45R2-engineering',
++        'kinematics_literal_1000_s':lit,'kinematics_vectorized_1000_s':vec,'kinematics_speedup':lit/max(vec,1e-12),
++        'verifier_10_candidates_fresh_cache_s':fresh_s,'verifier_10_candidates_shared_scene_cache_s':shared_s,
++        'verifier_cache_speedup':fresh_s/max(shared_s,1e-12),
++        'feature_5_candidates_recompute_environment_events_s':feature_recompute,
++        'feature_5_candidates_reuse_environment_events_s':feature_reuse,
++        'feature_event_reuse_speedup':feature_recompute/max(feature_reuse,1e-12),
++        'note':'synthetic component benchmark only; not a server end-to-end claim',
++    }
++    Path(args.output).write_text(json.dumps(out,indent=2,sort_keys=True),encoding='utf-8')
++    print(json.dumps(out,indent=2,sort_keys=True))
++if __name__=='__main__': main()
+diff --git a/tests/test_v16_8_45_rcrso.py b/tests/test_v16_8_45_rcrso.py
+index 244ecd3..ed3729a 100644
+--- a/tests/test_v16_8_45_rcrso.py
++++ b/tests/test_v16_8_45_rcrso.py
+@@ -392,3 +392,87 @@ def test_stage0_uses_verified_fixed_plus_learned_set_and_keeps_static_holes():
+     assert 'empty_frozen_static_root_domains_are_valid_proposal_completeness_targets' in src
+     assert 'fixed_if_nonempty_else_rcrso' not in src
+     assert 'all(bool(x["online_static_support_nonempty"]) for x in rr)' not in src
++
++
++def test_v45r2_vectorized_waymax_kinematics_matches_literal_reference_randomized():
++    import numpy as np
++    from cowp.core.config import load_config
++    from cowp.waymax_eval.policy_wrapper import (
++        _trajectory_waymax_kinematic_safe_np,
++        _trajectory_waymax_kinematic_safe_literal_np,
++    )
++    cfg = load_config('configs/label_cowp_v16_8.yaml','configs/data.yaml','configs/eval_cowp_v16_8.yaml')
++    rng = np.random.default_rng(20260845)
++    for _ in range(120):
++        h = int(rng.integers(1, 81))
++        cur = np.zeros(11, np.float32)
++        cur[0:2] = rng.normal(0, 5, 2)
++        speed0 = float(rng.uniform(0, 16))
++        yaw0 = float(rng.uniform(-np.pi, np.pi))
++        cur[3:5] = speed0 * np.array([np.cos(yaw0), np.sin(yaw0)], np.float32)
++        cur[5] = speed0; cur[6] = yaw0; cur[7:10] = [4.5,1.8,1.6]; cur[10] = 1
++        tr = np.zeros((h,7), np.float32)
++        pos = cur[:2].astype(np.float64).copy(); yaw = yaw0; speed = speed0
++        for t in range(h):
++            speed = max(0.0, speed + float(rng.normal(0, 0.35)))
++            yaw = float((yaw + rng.normal(0, 0.025) + np.pi) % (2*np.pi) - np.pi)
++            vel = speed * np.array([np.cos(yaw), np.sin(yaw)])
++            pos = pos + vel * 0.1
++            tr[t,:2] = pos; tr[t,2] = yaw; tr[t,3:5] = vel; tr[t,5:7] = [4.5,1.8]
++        a, da = _trajectory_waymax_kinematic_safe_literal_np(cur, tr, cfg)
++        b, db = _trajectory_waymax_kinematic_safe_np(cur, tr, cfg)
++        assert a == b
++        assert da['failure_step'] == db['failure_step']
++        assert da['contract_source'] == db['contract_source']
++        assert np.isclose(da['max_abs_accel_mps2'], db['max_abs_accel_mps2'], rtol=0, atol=1e-6)
++        assert np.isclose(da['max_abs_steering_curvature'], db['max_abs_steering_curvature'], rtol=0, atol=1e-6)
++
++
++def test_v45r2_precomputed_environment_event_steps_preserve_rcrso_features():
++    import numpy as np
++    from cowp.geometry.collision import unsafe_between
++    root = _root(12)
++    blocker = np.zeros(11, np.float32); blocker[3]=4.0; blocker[5]=4.0; blocker[7:10]=[4.5,1.8,1.6]; blocker[10]=1.0
++    ego = root.copy(); ego[:,1] += 1.0
++    shift = np.concatenate([ego[1:], ego[-1:]], axis=0)
++    actor = root.copy(); actor[:,1] += 2.0
++    actor_shift = np.concatenate([actor[1:], actor[-1:]], axis=0)
++    env=[{"agent_index":2,"object_type":1,"trajectory":actor,"shifted_trajectory":actor_shift}]
++    vcfg={"time":{"dt":0.1},"unsafe":{}}
++    steps=[]
++    shifted_root=np.concatenate([root[1:],root[-1:]],axis=0)
++    for left,right,right_type in ((root,actor,1),(actor,root,1),(shifted_root,actor_shift,1),(actor_shift,shifted_root,1)):
++        steps.extend(np.flatnonzero(np.asarray(unsafe_between(left,right,vcfg,agent_type=right_type).event_mask,bool)).tolist())
++    a=build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=blocker,current_ego_trajectory=ego,shifted_ego_trajectory=shift,environment=env,cfg=RCRSOConfig(),verifier_cfg=vcfg,blocker_object_type=1)
++    b=build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=blocker,current_ego_trajectory=ego,shifted_ego_trajectory=shift,environment=env,cfg=RCRSOConfig(),verifier_cfg=vcfg,blocker_object_type=1,precomputed_environment_event_steps=steps)
++    for k in a:
++        np.testing.assert_allclose(a[k],b[k],rtol=0,atol=0)
++
++
++def test_v45r2_scene_shared_verifier_cache_preserves_candidate_results():
++    import numpy as np
++    from cowp.core.config import load_config
++    from cowp.waymax_eval.policy_wrapper import _verified_root_conditioned_recourse_set_profiles_np
++    cfg=load_config('configs/label_cowp_v16_8.yaml','configs/data.yaml','configs/eval_cowp_v16_8.yaml')
++    H=16; dt=0.1
++    state=np.zeros((7,11),np.float32); state[:,10]=1.; state[:,7:10]=[4.5,1.8,1.6]
++    state[1,3]=4.; state[1,5]=4.
++    root=np.zeros((H,7),np.float32); root[:,0]=np.arange(1,H+1)*dt*4.; root[:,3]=4.; root[:,5:7]=[4.5,1.8]
++    env=[]
++    for e in range(2,6):
++        tr=root.copy(); tr[:,1]=30.+e*4
++        env.append({'agent_index':e,'object_type':1,'trajectory':tr,'shifted_trajectory':np.concatenate([tr[1:],tr[-1:]],axis=0)})
++    road={'xy':np.zeros((0,2),np.float32),'heading':np.zeros(0,np.float32),'valid':np.zeros(0,bool),'types':np.zeros(0,np.int32)}
++    props=np.linspace(-.2,.2,8*8,dtype=np.float32).reshape(8,8)
++    egos=[]
++    for dy in (10.,11.,12.):
++        ego=root.copy(); ego[:,1]=dy; egos.append((ego,np.concatenate([ego[1:],ego[-1:]],axis=0)))
++    fresh=[]
++    for ego,shift in egos:
++        v,d=_verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache={})
++        fresh.append(([int(x['profile_index']) for x in v], list(d['proposal_outcomes'])))
++    cache={}; shared=[]
++    for ego,shift in egos:
++        v,d=_verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache=cache)
++        shared.append(([int(x['profile_index']) for x in v], list(d['proposal_outcomes'])))
++    assert fresh==shared

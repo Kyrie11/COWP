@@ -1,0 +1,69 @@
+{
+  "classification": "sidecar performance/observability engineering-only",
+  "focused_tests": {
+    "failed": 0,
+    "passed": 139,
+    "warnings": 2
+  },
+  "full_repository_collection": {
+    "attribution": "same collection error set reproduced in pristine uploaded V16.8.45R1 tree; not introduced by R2",
+    "collection_error_count": 14,
+    "collection_errors": [
+      "tests/test_cli_overrides_and_metrics.py",
+      "tests/test_core.py",
+      "tests/test_v16_8_29_recovery_viability.py",
+      "tests/test_v48_25_integrity_bridge.py",
+      "tests/test_v48_41_fcfr.py",
+      "tests/test_v48_42_hpfr.py",
+      "tests/test_v48_45_6_stage_isolation_io.py",
+      "tests/test_v48_47_dsofr.py",
+      "tests/test_v48_48_native_certificate_preservation.py",
+      "tests/test_v48_56_runtime_optimization.py",
+      "tests/test_v48_66_acrw.py",
+      "tests/test_v48_71_borw.py",
+      "tests/test_v48_79_pstc.py",
+      "tests/test_v48_83_crtf.py"
+    ],
+    "exit_code": 2,
+    "note": "focused semantic/integrity suite is the release regression gate; full repository depends on missing historical/external OCRAP modules and archived API",
+    "passed": false
+  },
+  "gpu_policy": {
+    "dual_gpu_ddp_not_enabled": "small model/input-pipeline tradeoff requires separate profiling while preserving global batch/seed contract",
+    "rcrso_training_single_a30_supported": true,
+    "reason": "preserve frozen CPU hard-verifier boolean semantics until a dedicated CUDA equivalence gate exists",
+    "sidecar_authoritative_cuda_verifier_enabled": false,
+    "stage0_cuda_supported": true
+  },
+  "launcher_bash_syntax": true,
+  "microbenchmark": {
+    "feature_5_candidates_recompute_environment_events_s": 0.07697450699993169,
+    "feature_5_candidates_reuse_environment_events_s": 0.015838503000054516,
+    "feature_event_reuse_speedup": 4.8599610076575255,
+    "kinematics_literal_1000_s": 3.8027983840000843,
+    "kinematics_speedup": 46.01779106063461,
+    "kinematics_vectorized_1000_s": 0.08263756899998498,
+    "note": "synthetic component benchmark only; not a server end-to-end claim",
+    "verifier_10_candidates_fresh_cache_s": 3.307243657000072,
+    "verifier_10_candidates_shared_scene_cache_s": 0.3944639740000184,
+    "verifier_cache_speedup": 8.38414627187201,
+    "version": "V16.8.45R2-engineering"
+  },
+  "python_compile": true,
+  "recommended_server_profile": "profile_sidecar_train8",
+  "scientific_contract_unchanged": {
+    "closed_loop_80_steps": true,
+    "compact5k": true,
+    "counterfactual48_gate": true,
+    "hard_verifier": true,
+    "lost7_gate": true,
+    "stage0_gate": true
+  },
+  "scientific_method": "V16.8.45 RCRSO unchanged",
+  "semantic_equivalence_regressions": {
+    "fresh_vs_shared_scene_verifier_cache": true,
+    "recomputed_vs_precomputed_environment_event_features": true,
+    "vectorized_vs_literal_waymax_kinematics": true
+  },
+  "version": "V16.8.45R2-engineering"
+}

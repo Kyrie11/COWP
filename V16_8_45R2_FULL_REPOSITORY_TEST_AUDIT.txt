@@ -1,0 +1,159 @@
+
+==================================== ERRORS ====================================
+___________ ERROR collecting tests/test_cli_overrides_and_metrics.py ___________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_cli_overrides_and_metrics.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_cli_overrides_and_metrics.py:3: in <module>
+    from ocrap.cli.main import make_parser, build_cfg
+E   ModuleNotFoundError: No module named 'ocrap'
+_____________________ ERROR collecting tests/test_core.py ______________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_core.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_core.py:5: in <module>
+    from ocrap.lcv import finite_sample_upper_quantile, weighted_lcvar
+E   ModuleNotFoundError: No module named 'ocrap'
+__________ ERROR collecting tests/test_v16_8_29_recovery_viability.py __________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v16_8_29_recovery_viability.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v16_8_29_recovery_viability.py:11: in <module>
+    from cowp.waymax_eval.policy_wrapper import (
+E   ImportError: cannot import name '_recovery_bridge_viability_mask' from 'cowp.waymax_eval.policy_wrapper' (/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/cowp/waymax_eval/policy_wrapper.py)
+____________ ERROR collecting tests/test_v48_25_integrity_bridge.py ____________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_25_integrity_bridge.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_25_integrity_bridge.py:8: in <module>
+    from ocrap.cli.train import _finalize_direct_policy_stats
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_41_fcfr.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_41_fcfr.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_41_fcfr.py:8: in <module>
+    from ocrap.models.encoders import FlatFeatureLayout
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_42_hpfr.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_42_hpfr.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_42_hpfr.py:7: in <module>
+    from ocrap.models.encoders import FlatFeatureLayout
+E   ModuleNotFoundError: No module named 'ocrap'
+__________ ERROR collecting tests/test_v48_45_6_stage_isolation_io.py __________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_45_6_stage_isolation_io.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_45_6_stage_isolation_io.py:11: in <module>
+    from ocrap.data.serialization import load_npz, load_npz_selected
+E   ModuleNotFoundError: No module named 'ocrap'
+_________________ ERROR collecting tests/test_v48_47_dsofr.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_47_dsofr.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_47_dsofr.py:8: in <module>
+    from ocrap.models.losses import (
+E   ModuleNotFoundError: No module named 'ocrap'
+____ ERROR collecting tests/test_v48_48_native_certificate_preservation.py _____
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_48_native_certificate_preservation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_48_native_certificate_preservation.py:7: in <module>
+    from ocrap.models.encoders import FlatFeatureLayout
+E   ModuleNotFoundError: No module named 'ocrap'
+__________ ERROR collecting tests/test_v48_56_runtime_optimization.py __________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_56_runtime_optimization.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_56_runtime_optimization.py:8: in <module>
+    from ocrap.models.data import MODEL_SAMPLE_NPZ_KEYS, TEACHER_PCD_NPZ_KEYS
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_66_acrw.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_66_acrw.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_66_acrw.py:10: in <module>
+    from ocrap.cli.train import _absolute_feasibility_bce
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_71_borw.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_71_borw.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_71_borw.py:8: in <module>
+    from ocrap.cli.train import _semantic_witness_checkpoint_feature_contract
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_79_pstc.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_79_pstc.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_79_pstc.py:7: in <module>
+    from ocrap.algorithms.ocmero import oc_mero
+E   ModuleNotFoundError: No module named 'ocrap'
+__________________ ERROR collecting tests/test_v48_83_crtf.py __________________
+ImportError while importing test module '/mnt/data/COWP_V16_8_45R2_SIDECAR_PERFORMANCE_OBSERVABILITY/tests/test_v48_83_crtf.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v48_83_crtf.py:6: in <module>
+    from ocrap.models.ocrap import OCRAPModel
+E   ModuleNotFoundError: No module named 'ocrap'
+=========================== short test summary info ============================
+ERROR tests/test_cli_overrides_and_metrics.py
+ERROR tests/test_core.py
+ERROR tests/test_v16_8_29_recovery_viability.py
+ERROR tests/test_v48_25_integrity_bridge.py
+ERROR tests/test_v48_41_fcfr.py
+ERROR tests/test_v48_42_hpfr.py
+ERROR tests/test_v48_45_6_stage_isolation_io.py
+ERROR tests/test_v48_47_dsofr.py
+ERROR tests/test_v48_48_native_certificate_preservation.py
+ERROR tests/test_v48_56_runtime_optimization.py
+ERROR tests/test_v48_66_acrw.py
+ERROR tests/test_v48_71_borw.py
+ERROR tests/test_v48_79_pstc.py
+ERROR tests/test_v48_83_crtf.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 14 errors during collection !!!!!!!!!!!!!!!!!!!
+14 errors in 3.29s

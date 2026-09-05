@@ -5706,3 +5706,13 @@ V16.8.45R1 is an engineering/semantic-fidelity repair, not a new scientific algo
 The most important online correction is structural: frozen V43 is still exact-nested first. Only after V43 has no hard certificate may RCRSO populate retained-root proposal holes or augment hard-verified root domains for joint-CSP diversity. An empty frozen response domain is **not** considered feasible; learned profiles enter only after the unchanged burden, roadgraph, Waymax kinematics, ego current/shift, environment and exact CSP verification. Thus R1 restores the intended completeness-only role of RCRSO without weakening soundness.
 
 Scientific status remains **UNRESOLVED** until R1 executes the frozen sequence `Stage-0 support → equivalence16 → lost7 → retained3 → induced9 → remaining29/CF48`. No V46 branch is authorized from the original V45 crash/partial outputs. Full preregistration and convergence rules are recorded in `ALGORITHM_CHANGELOG_V16_8_45R1.md`.
+
+---
+
+# V16.8.45R2 — RCRSO Sidecar Performance / Observability Repair
+
+Engineering-only revision. Scientific RCRSO semantics and every preregistered gate remain unchanged. Sidecar construction now reuses scene-level semantic hard-verifier caches, vectorizes the unchanged Waymax inverse-kinematic trajectory audit, reuses analytic root↔environment unsafe-event indices for RCRSO conflict features, partially loads tensor-cache fields, and exposes optional uncompressed sidecar writes. The launcher streams per-shard progress/timing to the terminal and adds `profile_sidecar_train8`, `build_sidecar_train_parallel8`, and CPU-count-aware `build_sidecar_train_auto`.
+
+Synthetic repeated-work profiling shows ~46× kinematics, ~8.38× shared-cache verifier, and ~4.86× environment-event feature subcomponent speedups; these are **not** server end-to-end claims. The authoritative sidecar hard verifier remains CPU/NumPy in R2 to preserve exact frozen predicate semantics. A30 GPU use remains recommended for RCRSO training/Stage-0 forward, not for authoritative hard-set membership until a separate CUDA equivalence gate exists.
+
+Scientific status remains **UNRESOLVED**; no V46 branch is authorized by this engineering revision.

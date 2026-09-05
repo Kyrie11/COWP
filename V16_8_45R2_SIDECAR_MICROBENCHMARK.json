@@ -1,0 +1,13 @@
+{
+  "feature_5_candidates_recompute_environment_events_s": 0.07697450699993169,
+  "feature_5_candidates_reuse_environment_events_s": 0.015838503000054516,
+  "feature_event_reuse_speedup": 4.8599610076575255,
+  "kinematics_literal_1000_s": 3.8027983840000843,
+  "kinematics_speedup": 46.01779106063461,
+  "kinematics_vectorized_1000_s": 0.08263756899998498,
+  "note": "synthetic component benchmark only; not a server end-to-end claim",
+  "verifier_10_candidates_fresh_cache_s": 3.307243657000072,
+  "verifier_10_candidates_shared_scene_cache_s": 0.3944639740000184,
+  "verifier_cache_speedup": 8.38414627187201,
+  "version": "V16.8.45R2-engineering"
+}

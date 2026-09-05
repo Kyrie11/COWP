@@ -392,3 +392,87 @@ def test_stage0_uses_verified_fixed_plus_learned_set_and_keeps_static_holes():
     assert 'empty_frozen_static_root_domains_are_valid_proposal_completeness_targets' in src
     assert 'fixed_if_nonempty_else_rcrso' not in src
     assert 'all(bool(x["online_static_support_nonempty"]) for x in rr)' not in src
+
+
+def test_v45r2_vectorized_waymax_kinematics_matches_literal_reference_randomized():
+    import numpy as np
+    from cowp.core.config import load_config
+    from cowp.waymax_eval.policy_wrapper import (
+        _trajectory_waymax_kinematic_safe_np,
+        _trajectory_waymax_kinematic_safe_literal_np,
+    )
+    cfg = load_config('configs/label_cowp_v16_8.yaml','configs/data.yaml','configs/eval_cowp_v16_8.yaml')
+    rng = np.random.default_rng(20260845)
+    for _ in range(120):
+        h = int(rng.integers(1, 81))
+        cur = np.zeros(11, np.float32)
+        cur[0:2] = rng.normal(0, 5, 2)
+        speed0 = float(rng.uniform(0, 16))
+        yaw0 = float(rng.uniform(-np.pi, np.pi))
+        cur[3:5] = speed0 * np.array([np.cos(yaw0), np.sin(yaw0)], np.float32)
+        cur[5] = speed0; cur[6] = yaw0; cur[7:10] = [4.5,1.8,1.6]; cur[10] = 1
+        tr = np.zeros((h,7), np.float32)
+        pos = cur[:2].astype(np.float64).copy(); yaw = yaw0; speed = speed0
+        for t in range(h):
+            speed = max(0.0, speed + float(rng.normal(0, 0.35)))
+            yaw = float((yaw + rng.normal(0, 0.025) + np.pi) % (2*np.pi) - np.pi)
+            vel = speed * np.array([np.cos(yaw), np.sin(yaw)])
+            pos = pos + vel * 0.1
+            tr[t,:2] = pos; tr[t,2] = yaw; tr[t,3:5] = vel; tr[t,5:7] = [4.5,1.8]
+        a, da = _trajectory_waymax_kinematic_safe_literal_np(cur, tr, cfg)
+        b, db = _trajectory_waymax_kinematic_safe_np(cur, tr, cfg)
+        assert a == b
+        assert da['failure_step'] == db['failure_step']
+        assert da['contract_source'] == db['contract_source']
+        assert np.isclose(da['max_abs_accel_mps2'], db['max_abs_accel_mps2'], rtol=0, atol=1e-6)
+        assert np.isclose(da['max_abs_steering_curvature'], db['max_abs_steering_curvature'], rtol=0, atol=1e-6)
+
+
+def test_v45r2_precomputed_environment_event_steps_preserve_rcrso_features():
+    import numpy as np
+    from cowp.geometry.collision import unsafe_between
+    root = _root(12)
+    blocker = np.zeros(11, np.float32); blocker[3]=4.0; blocker[5]=4.0; blocker[7:10]=[4.5,1.8,1.6]; blocker[10]=1.0
+    ego = root.copy(); ego[:,1] += 1.0
+    shift = np.concatenate([ego[1:], ego[-1:]], axis=0)
+    actor = root.copy(); actor[:,1] += 2.0
+    actor_shift = np.concatenate([actor[1:], actor[-1:]], axis=0)
+    env=[{"agent_index":2,"object_type":1,"trajectory":actor,"shifted_trajectory":actor_shift}]
+    vcfg={"time":{"dt":0.1},"unsafe":{}}
+    steps=[]
+    shifted_root=np.concatenate([root[1:],root[-1:]],axis=0)
+    for left,right,right_type in ((root,actor,1),(actor,root,1),(shifted_root,actor_shift,1),(actor_shift,shifted_root,1)):
+        steps.extend(np.flatnonzero(np.asarray(unsafe_between(left,right,vcfg,agent_type=right_type).event_mask,bool)).tolist())
+    a=build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=blocker,current_ego_trajectory=ego,shifted_ego_trajectory=shift,environment=env,cfg=RCRSOConfig(),verifier_cfg=vcfg,blocker_object_type=1)
+    b=build_rcrso_features_np(root=root,root_mass=.8,root_source=1,blocker_state=blocker,current_ego_trajectory=ego,shifted_ego_trajectory=shift,environment=env,cfg=RCRSOConfig(),verifier_cfg=vcfg,blocker_object_type=1,precomputed_environment_event_steps=steps)
+    for k in a:
+        np.testing.assert_allclose(a[k],b[k],rtol=0,atol=0)
+
+
+def test_v45r2_scene_shared_verifier_cache_preserves_candidate_results():
+    import numpy as np
+    from cowp.core.config import load_config
+    from cowp.waymax_eval.policy_wrapper import _verified_root_conditioned_recourse_set_profiles_np
+    cfg=load_config('configs/label_cowp_v16_8.yaml','configs/data.yaml','configs/eval_cowp_v16_8.yaml')
+    H=16; dt=0.1
+    state=np.zeros((7,11),np.float32); state[:,10]=1.; state[:,7:10]=[4.5,1.8,1.6]
+    state[1,3]=4.; state[1,5]=4.
+    root=np.zeros((H,7),np.float32); root[:,0]=np.arange(1,H+1)*dt*4.; root[:,3]=4.; root[:,5:7]=[4.5,1.8]
+    env=[]
+    for e in range(2,6):
+        tr=root.copy(); tr[:,1]=30.+e*4
+        env.append({'agent_index':e,'object_type':1,'trajectory':tr,'shifted_trajectory':np.concatenate([tr[1:],tr[-1:]],axis=0)})
+    road={'xy':np.zeros((0,2),np.float32),'heading':np.zeros(0,np.float32),'valid':np.zeros(0,bool),'types':np.zeros(0,np.int32)}
+    props=np.linspace(-.2,.2,8*8,dtype=np.float32).reshape(8,8)
+    egos=[]
+    for dy in (10.,11.,12.):
+        ego=root.copy(); ego[:,1]=dy; egos.append((ego,np.concatenate([ego[1:],ego[-1:]],axis=0)))
+    fresh=[]
+    for ego,shift in egos:
+        v,d=_verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache={})
+        fresh.append(([int(x['profile_index']) for x in v], list(d['proposal_outcomes'])))
+    cache={}; shared=[]
+    for ego,shift in egos:
+        v,d=_verified_root_conditioned_recourse_set_profiles_np(state,1,1,root,100.,ego,shift,env,road,cfg,props,root_ordinal=0,compatibility_cache=cache)
+        shared.append(([int(x['profile_index']) for x in v], list(d['proposal_outcomes'])))
+    assert fresh==shared
