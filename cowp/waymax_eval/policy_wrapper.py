@@ -3891,6 +3891,8 @@ def _prepare_interaction_response_support_np(
     object_types: np.ndarray,
     roadgraph: dict[str, np.ndarray],
     cfg: dict,
+    *,
+    allow_empty_profile_roots: bool = False,
 ) -> tuple[dict[int, dict[str, Any]], dict[str, Any]]:
     """Build a causal, root-conditioned response envelope once per planning step.
 
@@ -3899,8 +3901,11 @@ def _prepare_interaction_response_support_np(
     label/SetTransport probability distribution: p_min filtering, support
     renormalization and probability-floor smoothing remain distinct operations.
     Geometric deduplication then merges canonical mass without changing its sum.
-    Every retained root must own at least one low-burden, drivable and
-    Waymax-kinematic profile in both current and one-step-shifted form.
+    By default every retained root must own at least one low-burden, drivable
+    and Waymax-kinematic frozen profile in both current and one-step-shifted
+    form.  V16.8.45R1 can explicitly preserve an otherwise-empty retained root
+    as a *proposal hole* so that RCRSO may try to populate it later; this does
+    not mark any response feasible and does not relax the downstream verifier.
     """
     state = np.asarray(agent_state, dtype=np.float32)
     crit_idx = np.asarray(critical_track_index, dtype=np.int64).reshape(-1)
@@ -3939,6 +3944,8 @@ def _prepare_interaction_response_support_np(
         "agents_rejected_root_count": 0,
         "agents_rejected_root_mass": 0,
         "agents_rejected_profile_feasibility": 0,
+        "agents_ready_with_proposal_holes": 0,
+        "retained_roots_with_empty_fixed_profile_domain": 0,
         "retained_roots": 0,
         "eligible_profiles": 0,
         "profile_candidates": 0,
@@ -4106,6 +4113,9 @@ def _prepare_interaction_response_support_np(
             })
             if not profile_records:
                 all_roots_ready = False
+                aggregate["retained_roots_with_empty_fixed_profile_domain"] = int(
+                    aggregate["retained_roots_with_empty_fixed_profile_domain"]
+                ) + 1
         record.update({
             "retained_raw_mass": float(cumulative_raw_mass),
             "retained_mass": float(cumulative_mass),
@@ -4115,13 +4125,17 @@ def _prepare_interaction_response_support_np(
             "roots": prepared_roots,
         })
         aggregate["retained_roots"] = int(aggregate["retained_roots"]) + int(len(prepared_roots))
-        if not all_roots_ready:
+        if not all_roots_ready and not bool(allow_empty_profile_roots):
             record["reason"] = "root_has_no_low_burden_shift_closed_profile"
             aggregate["agents_rejected_profile_feasibility"] = int(aggregate["agents_rejected_profile_feasibility"]) + 1
             support[agent_index] = record
             continue
         record["ready"] = True
-        record["reason"] = "ready"
+        if not all_roots_ready:
+            record["reason"] = "ready_with_verified_proposal_holes"
+            aggregate["agents_ready_with_proposal_holes"] = int(aggregate["agents_ready_with_proposal_holes"]) + 1
+        else:
+            record["reason"] = "ready"
         aggregate["agents_ready"] = int(aggregate["agents_ready"]) + 1
         old = support.get(agent_index)
         if old is None or (not bool(old.get("ready", False))) or float(record["retained_mass"]) > float(old.get("retained_mass", -1.0)):
@@ -4150,6 +4164,8 @@ def _merge_interaction_response_support_details_np(
         "agents_rejected_root_count",
         "agents_rejected_root_mass",
         "agents_rejected_profile_feasibility",
+        "agents_ready_with_proposal_holes",
+        "retained_roots_with_empty_fixed_profile_domain",
         "retained_roots",
         "eligible_profiles",
         "profile_candidates",
@@ -4684,6 +4700,7 @@ def _interaction_aware_recovery_certificate_np(
     compatibility_cache: dict[str, dict[Any, Any]] | None = None,
     allow_control_reachable_response_extension: bool = False,
     verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
+    augment_with_verified_recourse_set_proposals: bool = False,
 ) -> tuple[bool, dict[str, Any]]:
     """Certify one ego tube under universal low-burden same-root response support."""
     current_blockers, current_blocker_detail = _collision_blocking_agent_indices_against_context(
@@ -4920,7 +4937,9 @@ def _interaction_aware_recovery_certificate_np(
                     detail["control_reachable_response_selected_roots"] = int(detail["control_reachable_response_selected_roots"]) + 1
                     environment_safe_profiles.extend(extra_profiles)
                     environment_safe_profiles.sort(key=lambda p: (float(p["burden"]), int(p["profile_index"])))
-            if not environment_safe_profiles and verified_recourse_set_proposal_fn is not None:
+            if verified_recourse_set_proposal_fn is not None and (
+                bool(augment_with_verified_recourse_set_proposals) or not environment_safe_profiles
+            ):
                 detail["rcrso_attempts"] = int(detail["rcrso_attempts"]) + 1
                 extra_profiles, extra_detail = verified_recourse_set_proposal_fn(
                     agent_state=np.asarray(agent_state, dtype=np.float32),
@@ -5151,6 +5170,8 @@ def _construct_interaction_aware_reachable_response_envelope_np(
     internal_trace: dict[str, Any] | None = None,
     allow_control_reachable_response_extension: bool = False,
     verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
+    allow_empty_fixed_root_domains: bool = False,
+    augment_with_verified_recourse_set_proposals: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """V16.8.42 root-conditioned interaction-aware reachable-response envelope.
 
@@ -5264,6 +5285,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
         response_support, support_detail = _prepare_interaction_response_support_np(
             state, int(sdc_index), critical_track_index, critical_valid,
             natural_trajectories, natural_logits, object_types, roadgraph, cfg,
+            allow_empty_profile_roots=bool(allow_empty_fixed_root_domains),
         )
     else:
         # V16.8.43R3 engineering-only fast path: response support is a
@@ -5476,6 +5498,7 @@ def _construct_interaction_aware_reachable_response_envelope_np(
             response_support, object_types, compatibility_cache=compatibility_cache,
             allow_control_reachable_response_extension=bool(allow_control_reachable_response_extension),
             verified_recourse_set_proposal_fn=verified_recourse_set_proposal_fn,
+            augment_with_verified_recourse_set_proposals=bool(augment_with_verified_recourse_set_proposals),
         )
         reason = str(interaction_detail.get("failure_reason", "unknown"))
         detail["interaction_environment_compatibility_checks"] = int(
@@ -5963,6 +5986,199 @@ def _construct_blocker_conditioned_interaction_aware_reachable_response_envelope
         "interaction_response_selected": True,
     })
     return expanded_selected, selected_detail
+
+
+def _construct_verified_root_conditioned_recourse_set_operator_np(
+    agent_state: np.ndarray,
+    sdc_index: int,
+    nominal_trajectories: np.ndarray,
+    cand_valid: np.ndarray,
+    nominal_roadgraph_safe: np.ndarray,
+    macro_types: np.ndarray,
+    fallback_scores: np.ndarray,
+    collision_prefix_steps: np.ndarray,
+    action_targets: np.ndarray,
+    action_accels: np.ndarray,
+    roadgraph: dict[str, np.ndarray],
+    cfg: dict,
+    previous_longitudinal_accel: float,
+    *,
+    base_candidate_index: int,
+    critical_track_index: np.ndarray,
+    critical_valid: np.ndarray,
+    natural_trajectories: np.ndarray,
+    natural_logits: np.ndarray,
+    blocker_query_track_index: np.ndarray,
+    blocker_query_trajectories: np.ndarray | None,
+    blocker_query_logits: np.ndarray | None,
+    object_types: np.ndarray,
+    blocker_query_decoder: Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]] | None,
+    verified_recourse_set_proposal_fn: Callable[..., tuple[list[dict[str, Any]], dict[str, Any]]],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """V16.8.45R1 fidelity wrapper for verified learned recourse-set completion.
+
+    RCRSO is a strict support expansion, not a replacement for the mature V43
+    certificate.  First run the frozen V43 BC-IARE path *without* learned
+    proposals and return it byte-for-byte at the decision-object level whenever
+    it succeeds.  Only when that hard set is empty do we build an expanded
+    model-visible natural-root support domain and allow the learned operator to
+    add hard-verified response profiles.
+
+    The important R1 correction is that a retained natural root is allowed to
+    reach the learned proposal callback even when its frozen response bank has
+    zero statically feasible profiles.  Such a root is merely a proposal hole:
+    it is never marked response-feasible until an RCRSO proposal independently
+    passes burden, roadgraph, Waymax kinematics, ego current/shift, environment
+    and the exact joint CSP.  Learned profiles also augment nonempty frozen root
+    domains in the RCRSO-only pass, so proposal diversity can repair a joint-CSP
+    completeness failure without changing any verifier predicate.
+    """
+    nested_selected, nested_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+        agent_state, sdc_index, nominal_trajectories, cand_valid,
+        nominal_roadgraph_safe, macro_types, fallback_scores,
+        collision_prefix_steps, action_targets, action_accels,
+        roadgraph, cfg, previous_longitudinal_accel,
+        base_candidate_index=int(base_candidate_index),
+        critical_track_index=critical_track_index,
+        critical_valid=critical_valid,
+        natural_trajectories=natural_trajectories,
+        natural_logits=natural_logits,
+        blocker_query_track_index=blocker_query_track_index,
+        blocker_query_trajectories=blocker_query_trajectories,
+        blocker_query_logits=blocker_query_logits,
+        object_types=object_types,
+        blocker_query_decoder=blocker_query_decoder,
+        allow_control_reachable_response_extension=False,
+        verified_recourse_set_proposal_fn=None,
+    )
+    if nested_selected is not None:
+        detail = dict(nested_detail)
+        detail.update({
+            "rcrso_full_support_pass_attempted": False,
+            "rcrso_full_support_pass_selected": False,
+            "rcrso_nested_v43_selected": True,
+        })
+        return nested_selected, detail
+
+    base_idx = np.asarray(critical_track_index, dtype=np.int64).reshape(-1)
+    base_valid = np.asarray(critical_valid, dtype=bool).reshape(-1)
+    base_traj = np.asarray(natural_trajectories, dtype=np.float32)
+    base_logits = np.asarray(natural_logits, dtype=np.float32)
+    a = min(
+        base_idx.size, base_valid.size,
+        base_traj.shape[0] if base_traj.ndim == 4 else 0,
+        base_logits.shape[0] if base_logits.ndim == 2 else 0,
+    )
+    base_idx = base_idx[:a]
+    base_valid = base_valid[:a]
+    base_traj = base_traj[:a] if base_traj.ndim == 4 else np.zeros((0, 0, 0, 7), dtype=np.float32)
+    base_logits = base_logits[:a] if base_logits.ndim == 2 else np.zeros((0, 0), dtype=np.float32)
+
+    query_idx = np.asarray(blocker_query_track_index, dtype=np.int64).reshape(-1)
+    # Keep query order deterministic and disjoint from the scene-level critical
+    # slots.  This changes only the recovery support query domain, never the
+    # social protected/critical set used by RCOT/BCOT.
+    base_agents = {int(x) for x, ok in zip(base_idx.tolist(), base_valid.tolist()) if bool(ok)}
+    seen: set[int] = set()
+    query_clean: list[int] = []
+    for x in query_idx.tolist():
+        j = int(x)
+        if j < 0 or j in base_agents or j in seen:
+            continue
+        seen.add(j)
+        query_clean.append(j)
+    query_idx = np.asarray(query_clean, dtype=np.int64)
+
+    if query_idx.size:
+        if blocker_query_decoder is not None:
+            qtraj, qlogits = blocker_query_decoder(query_idx)
+            qtraj = np.asarray(qtraj, dtype=np.float32)
+            qlogits = np.asarray(qlogits, dtype=np.float32)
+        else:
+            qtraj = np.asarray(blocker_query_trajectories, dtype=np.float32) if blocker_query_trajectories is not None else np.zeros((0, 0, 0, 7), dtype=np.float32)
+            qlogits = np.asarray(blocker_query_logits, dtype=np.float32) if blocker_query_logits is not None else np.zeros((0, 0), dtype=np.float32)
+        q = min(
+            query_idx.size,
+            qtraj.shape[0] if qtraj.ndim == 4 else 0,
+            qlogits.shape[0] if qlogits.ndim == 2 else 0,
+        )
+        query_idx = query_idx[:q]
+        qtraj = qtraj[:q] if qtraj.ndim == 4 else np.zeros((0, 0, 0, 7), dtype=np.float32)
+        qlogits = qlogits[:q] if qlogits.ndim == 2 else np.zeros((0, 0), dtype=np.float32)
+    else:
+        q = 0
+        qtraj = np.zeros((0, 0, 0, 7), dtype=np.float32)
+        qlogits = np.zeros((0, 0), dtype=np.float32)
+
+    if a > 0 and q > 0:
+        combined_idx = np.concatenate([base_idx, query_idx], axis=0)
+        combined_valid = np.concatenate([base_valid, np.ones(q, dtype=bool)], axis=0)
+        combined_traj = np.concatenate([base_traj, qtraj], axis=0)
+        combined_logits = np.concatenate([base_logits, qlogits], axis=0)
+    elif a > 0:
+        combined_idx, combined_valid, combined_traj, combined_logits = base_idx, base_valid, base_traj, base_logits
+    else:
+        combined_idx = query_idx.copy()
+        combined_valid = np.ones(q, dtype=bool)
+        combined_traj = qtraj.copy()
+        combined_logits = qlogits.copy()
+
+    learned_selected, learned_detail = _construct_interaction_aware_reachable_response_envelope_np(
+        agent_state, sdc_index, nominal_trajectories, cand_valid,
+        nominal_roadgraph_safe, macro_types, fallback_scores,
+        collision_prefix_steps, action_targets, action_accels,
+        roadgraph, cfg, previous_longitudinal_accel,
+        base_candidate_index=int(base_candidate_index),
+        critical_track_index=combined_idx,
+        critical_valid=combined_valid,
+        natural_trajectories=combined_traj,
+        natural_logits=combined_logits,
+        object_types=object_types,
+        known_nested_v39_empty=True,
+        allow_control_reachable_response_extension=False,
+        verified_recourse_set_proposal_fn=verified_recourse_set_proposal_fn,
+        allow_empty_fixed_root_domains=True,
+        augment_with_verified_recourse_set_proposals=True,
+    )
+    detail = dict(nested_detail)
+    detail.update({
+        "rcrso_full_support_pass_attempted": True,
+        "rcrso_full_support_query_agent_count": int(q),
+        "rcrso_full_support_combined_agent_count": int(combined_idx.size),
+        "rcrso_full_support_pass_selected": bool(learned_selected is not None),
+        "rcrso_nested_v43_selected": False,
+        "rcrso_full_support_failure_reason": str(
+            learned_detail.get("interaction_failure_reason", "none" if learned_selected is not None else "unknown")
+        ),
+        # Preserve existing V45 diagnostic field names used by the analyzer.
+        "blocker_conditioned_query_rcrso_attempts": int(learned_detail.get("interaction_rcrso_attempts", 0)),
+        "blocker_conditioned_query_rcrso_proposals": int(learned_detail.get("interaction_rcrso_proposals", 0)),
+        "blocker_conditioned_query_rcrso_profile_evaluations": int(learned_detail.get("interaction_rcrso_profile_evaluations", 0)),
+        "blocker_conditioned_query_rcrso_verified_profiles": int(learned_detail.get("interaction_rcrso_verified_profiles", 0)),
+        "blocker_conditioned_query_rcrso_selected_roots": int(learned_detail.get("interaction_rcrso_selected_roots", 0)),
+        "blocker_conditioned_query_rcrso_burden_rejects": int(learned_detail.get("interaction_rcrso_burden_rejects", 0)),
+        "blocker_conditioned_query_rcrso_roadgraph_or_waymax_kinematic_rejects": int(learned_detail.get("interaction_rcrso_roadgraph_or_waymax_kinematic_rejects", 0)),
+        "blocker_conditioned_query_rcrso_ego_current_rejects": int(learned_detail.get("interaction_rcrso_ego_current_rejects", 0)),
+        "blocker_conditioned_query_rcrso_ego_shift_rejects": int(learned_detail.get("interaction_rcrso_ego_shift_rejects", 0)),
+        "blocker_conditioned_query_rcrso_environment_rejects": int(learned_detail.get("interaction_rcrso_environment_rejects", 0)),
+        "blocker_conditioned_query_rcrso_environment_cache_hits": int(learned_detail.get("interaction_rcrso_environment_cache_hits", 0)),
+        "blocker_conditioned_query_rcrso_joint_assignment_profiles": int(learned_detail.get("interaction_rcrso_joint_assignment_profiles", 0)),
+        "blocker_conditioned_query_rcrso_certified_hypotheses": int(learned_detail.get("interaction_rcrso_certified_hypotheses", 0)),
+        "blocker_conditioned_query_rcrso_selected_assignment_profiles": int(learned_detail.get("interaction_selected_rcrso_assignment_profiles", 0)),
+        "blocker_conditioned_query_rcrso_selected": bool(learned_detail.get("interaction_selected_uses_rcrso", False)),
+        "blocker_conditioned_query_rcrso_failure_taxonomy": dict(learned_detail.get("interaction_rcrso_failure_taxonomy", {})),
+    })
+    if learned_selected is None:
+        return None, detail
+    selected_detail = dict(learned_detail)
+    selected_detail.update(detail)
+    selected_detail.update({
+        "selected": True,
+        "selected_certificate_kind": "verified_root_conditioned_recourse_set_operator",
+        "selected_is_interaction_response": True,
+        "interaction_response_selected": True,
+    })
+    return learned_selected, selected_detail
 
 def _collision_free_against_constant_velocity(
     traj: np.ndarray,
@@ -8567,26 +8783,40 @@ class COWPWaymaxPolicy:
                                 # Defer NaturalDecoder work until that frozen V42 trace identifies
                                 # the blocker subset; this preserves certificate semantics while
                                 # avoiding queries for irrelevant nearby actors.
-                                selected_tube, recovery_tube_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
-                                    *common_tube_args,
-                                    base_candidate_index=int(recovery_base_candidate),
-                                    critical_track_index=critical_idx_np,
-                                    critical_valid=critical_valid_np,
-                                    natural_trajectories=natural_traj_np,
-                                    natural_logits=natural_logits_np,
-                                    blocker_query_track_index=query_indices,
-                                    blocker_query_trajectories=None,
-                                    blocker_query_logits=None,
-                                    object_types=object_types_np,
-                                    blocker_query_decoder=lambda exact_idx: self._decode_blocker_conditioned_natural_queries_np(
-                                        batch, pred, exact_idx,
-                                    ),
-                                    allow_control_reachable_response_extension=(method == "cowp_root_conditioned_control_reachable_responder_support"),
-                                    verified_recourse_set_proposal_fn=(
-                                        self._rcrso_verified_response_profiles_np
-                                        if method == "cowp_verified_root_conditioned_recourse_set_operator" else None
-                                    ),
+                                blocker_decoder=lambda exact_idx: self._decode_blocker_conditioned_natural_queries_np(
+                                    batch, pred, exact_idx,
                                 )
+                                if method == "cowp_verified_root_conditioned_recourse_set_operator":
+                                    selected_tube, recovery_tube_detail = _construct_verified_root_conditioned_recourse_set_operator_np(
+                                        *common_tube_args,
+                                        base_candidate_index=int(recovery_base_candidate),
+                                        critical_track_index=critical_idx_np,
+                                        critical_valid=critical_valid_np,
+                                        natural_trajectories=natural_traj_np,
+                                        natural_logits=natural_logits_np,
+                                        blocker_query_track_index=query_indices,
+                                        blocker_query_trajectories=None,
+                                        blocker_query_logits=None,
+                                        object_types=object_types_np,
+                                        blocker_query_decoder=blocker_decoder,
+                                        verified_recourse_set_proposal_fn=self._rcrso_verified_response_profiles_np,
+                                    )
+                                else:
+                                    selected_tube, recovery_tube_detail = _construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np(
+                                        *common_tube_args,
+                                        base_candidate_index=int(recovery_base_candidate),
+                                        critical_track_index=critical_idx_np,
+                                        critical_valid=critical_valid_np,
+                                        natural_trajectories=natural_traj_np,
+                                        natural_logits=natural_logits_np,
+                                        blocker_query_track_index=query_indices,
+                                        blocker_query_trajectories=None,
+                                        blocker_query_logits=None,
+                                        object_types=object_types_np,
+                                        blocker_query_decoder=blocker_decoder,
+                                        allow_control_reachable_response_extension=(method == "cowp_root_conditioned_control_reachable_responder_support"),
+                                        verified_recourse_set_proposal_fn=None,
+                                    )
                             else:
                                 selected_tube, recovery_tube_detail = _construct_interaction_aware_reachable_response_envelope_np(
                                     *common_tube_args,

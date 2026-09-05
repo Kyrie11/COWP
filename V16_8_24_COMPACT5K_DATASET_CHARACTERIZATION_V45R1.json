@@ -1,0 +1,76 @@
+{
+  "audit_version": "V16.8.45R1_dataset_reaudit",
+  "source_archive": "formal_v16_8_24_compact_full_5k(1).zip",
+  "archive_contents_note": "This upload contains manifests/profile/natural-support/cache-verifier audit artifacts, not the server tensor_cache_train/val NPZ payloads. The flat-roadgraph conclusion is additionally grounded in the project raw-WOMD cache/dataloader contract and the user server traceback.",
+  "decision": "FREEZE_DATASET_DO_NOT_REBUILD_FOR_V45R1",
+  "splits": {
+    "train": {
+      "scenes": 5000,
+      "audit_relevant_pair_rate": 0.42969642430550514,
+      "protected_prio_root_coverage": 0.9945328517036025,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.040671544775842214,
+      "critical_agent_mean": 5.3846,
+      "critical_agent_p50": 6.0,
+      "critical_agent_p90": 6.0,
+      "critical_agent_max": 6,
+      "selected_cap_saturation_rate": 0.9578,
+      "priority_smooth_yield_acceptance": 0.20354708925199114,
+      "terminal_acceptance": 0.5414834541905825
+    },
+    "val": {
+      "scenes": 1000,
+      "audit_relevant_pair_rate": 0.42863002173455794,
+      "protected_prio_root_coverage": 0.9936321332353661,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.043437906070168925,
+      "critical_agent_mean": 5.387,
+      "critical_agent_p50": 6.0,
+      "critical_agent_p90": 6.0,
+      "critical_agent_max": 6,
+      "selected_cap_saturation_rate": 0.955,
+      "priority_smooth_yield_acceptance": 0.2064995628096765,
+      "terminal_acceptance": 0.5454565514806479
+    },
+    "heldout": {
+      "scenes": 1200,
+      "audit_relevant_pair_rate": 0.42949210300959645,
+      "protected_prio_root_coverage": 0.994651306315573,
+      "rootless_rate": 0.0,
+      "lt2_low_burden_rate": 0.0,
+      "mechanism_unauditable_rate": 0.04464564470808617,
+      "critical_agent_mean": 5.338333333333333,
+      "critical_agent_p50": 6.0,
+      "critical_agent_p90": 6.0,
+      "critical_agent_max": 6,
+      "selected_cap_saturation_rate": 0.9541666666666667,
+      "priority_smooth_yield_acceptance": 0.21865260129465355,
+      "terminal_acceptance": 0.5509600903614458
+    }
+  },
+  "engineering_root_cause": {
+    "dataset_corruption": false,
+    "sidecar_schema_consumption_bug": true,
+    "detail": "Raw WOMD tf.Example roadgraph vector fields may be stored flat; Waymax dataloader reshapes to [P,3], original V45 sidecar did not."
+  },
+  "provenance_caveat": {
+    "verify_cache_train_pass": false,
+    "inspected": 5000,
+    "valid_scene_rate_inspected": 1.0,
+    "silent_blocker_count": 0,
+    "irrelevant_blocker_count": 58243,
+    "affected_root_mismatch_count": 0,
+    "conflict_root_mismatch_count": 0,
+    "retained_root_mismatch_count": 0,
+    "canonical_root_weight_mismatch_count": 0,
+    "submission_action": "Before publication artifact release, repair cache serialization/verifier accounting or provide a strict cache-to-runtime semantic-equivalence proof. Current V45R1 does not rebuild data based on this caveat."
+  },
+  "watch_items_after_model_convergence": [
+    "critical-agent/conflict-region selected cap=6 is saturated on about 95%+ of scenes across splits",
+    "PRIORITY_SMOOTH_YIELD acceptance is only about 20-22%",
+    "TERMINAL acceptance is about 54-55%",
+    "these are future support-ceiling diagnostics, not evidence that the V45 sidecar crash or current RCRSO bottleneck is data-driven"
+  ]
+}

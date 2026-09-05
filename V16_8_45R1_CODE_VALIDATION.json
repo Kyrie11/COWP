@@ -1,0 +1,39 @@
+{
+  "version": "V16.8.45R1_RCRSO_SCHEMA_SUPPORT_SEMANTIC_FIDELITY_REPAIR",
+  "classification": "engineering_and_semantic_fidelity_repair_not_new_scientific_branch",
+  "input_zip_sha256": "1e6e5eceff2aa031a21e92b89f3e794f794a27741d945daa31efbfa71db5cf5a",
+  "user_reported_crash_reproduced": true,
+  "root_cause": "raw WOMD roadgraph_samples/dir may be flat [P*3]; original sidecar bypassed Waymax reshape and indexed it as [P,3]",
+  "fixes": [
+    "raw roadgraph xyz/dir shape restoration and validation",
+    "critical input_index preferred over Scenario track_index",
+    "blocker heading state slot corrected to yaw index 6",
+    "one-step CV shifted environment aligned with online certificate",
+    "roadgraph sidecar crop preserves lane context/fail-closed behavior",
+    "teacher proposals replay frozen hard verifier before positive labeling",
+    "canonical root mass semantics aligned and complete hypothesis groups preserved",
+    "Transformer query cross-attention padding mask repaired",
+    "Stage-0 uses historical baselines and fixed+hard-verified learned union semantics",
+    "online V45 exact-nests V43 then permits RCRSO to fill empty fixed-profile root domains without relaxing verifier",
+    "online RCRSO may add verified profile diversity to nonempty domains for exact CSP completeness",
+    "dynamic RCRSO compatibility cache identity tied to actual control sequence",
+    "R1 output paths isolated and closed-loop preflight requires Stage0+base equivalence"
+  ],
+  "validation": {
+    "dedicated_tests": "22/22 passed",
+    "focused_launcher_sanity": "136/136 passed",
+    "python_compileall": "PASS",
+    "launcher_bash_n": "PASS",
+    "flat_raw_womd_roadgraph_sidecar_smoke": "PASS; 1 synthetic raw-cache scene -> 2 sidecar examples",
+    "synthetic_stage0_no_lift": "PASS fail-closed; exit code 4",
+    "conventional_check_false_new_bypass": "none",
+    "v45_proposer_sidecar_stage0_logged_future_use": "none",
+    "full_repository_status": "collection blocked by 3 pre-existing pristine-V45 errors: missing external ocrap in two tests and removed historical _recovery_bridge_viability_mask API; identical failures reproduced in original uploaded V45"
+  },
+  "scientific_status": {
+    "original_v45": "UNRESOLVED_NOT_RUN",
+    "v45r1": "FIRST_FIDELITY-CORRECT_IMPLEMENTATION_ALLOWED_TO_GENERATE_RCRSO_EVIDENCE",
+    "dataset": "FREEZE_DO_NOT_REBUILD",
+    "next_branch": "RCRSO_STAGE0_SUPPORT_THEN_FROZEN_LOST7; DO_NOT_DESIGN_V46_YET"
+  }
+}

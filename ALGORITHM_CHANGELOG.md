@@ -5651,180 +5651,58 @@ repaired lost7 newly rescued <  2/7 -> scientific V44 STOP
 
 The old uploaded `lost7_failfast_gate.json` is quarantined as **non-attributable** and must never be reused as V44 evidence. The rerun writes to a new R1 output root and records policy runtime diagnostics.
 
+
 ---
 
-# V16.8.44R1 scientific result — RC-CRRS STOP / analytic completion family closed
+# V16.8.45 — Verified Root-Conditioned Recourse Set Operator (RCRSO)
 
-**Classification: reliable scientific negative result. Algorithm attribution is allowed.**
+**Classification:** new proposal-completeness mechanism probe. Not a promoted paper method until the frozen Stage-0 + lost7 + Stage-1 evidence passes.
 
-## Reliability closure
+## Reliable inherited decision
 
-The repaired V16.8.44R1 lost7 rerun is structurally and behaviorally attributable:
+V16.8.44R1 reliably reproduces `lost7_new_rescues = 0/7`, so the analytic same-root scalar-residual/event-duration/dyadic-bisection completion family is closed. R1 demonstrated that the helper can construct many individual hard-checked profiles but does not materially improve universal retained-root coverage. Do not add acceleration grids, duration/switch grids, more bisection, or relax beta/root/environment/current+shift/CSP predicates.
 
-- exact frozen lost7 manifest: 7 unique scenes, SHA256
-  `d178299e83671bd6b27651c9592f3ccb2d521fe9f42091e505f59abf0250e52f`;
-- shards are 4+3, disjoint, and their union exactly equals the manifest;
-- merged rows reconstruct from shards; CR / Collision / Offroad / Kinematics / EP
-  recompute with zero error;
-- method/checkpoint/logged-replay/online-GT protocol is consistent across shards;
-- R1-only policy runtime profiling is present in both shards;
-- V16.8.44R1 focused semantic/integrity sanity remains 114/114 passed;
-- compared with the quarantined pre-repair V44 run, all closed-loop outcomes and all
-  non-cache scientific diagnostics are identical; only four expected
-  `blocker_query_joint_cache_hits` diagnostic leaves differ after fixing dynamic-profile
-  cache identity.
+## New scientific variable
 
-Therefore the old stale-cache ambiguity is removed: the repaired 0/7 result is a real
-algorithm result rather than an engineering artifact.
+Replace the failed finite analytic responder proposal family with a **set-valued learned proposer**, conditioned on exact blocker + retained natural root + current/shift ego tube + controller/root context + frozen environment. The network emits K same-root longitudinal control-knot sequences. Every proposal must pass the frozen V42–V44 burden/roadgraph/Waymax-kinematics/ego-current+shift/environment verifier and the original exact multi-root/multi-blocker CSP.
 
-## Frozen Stage-A verdict
+Therefore RCRSO may improve **proposal completeness only**; hard certificate soundness is unchanged.
 
-The preregistered necessary condition was:
+## Frozen layers
 
-```text
-lost7_new_rescues >= 2/7
-```
+Compact-5k split/cache contract, base COWP checkpoint, NaturalDecoder, root probabilities/mass, RCOT, BCOT, protected-priority certificate, set-preservation, V39 ego tube/shift closure, 8 s conventional contract, controller limits, exact blocker discovery, bidirectional responder-environment safety, exact CSP and selector/fallback ranking are frozen.
 
-R1 observes:
+## Training / Stage-0
 
-```text
-lost7_new_rescues = 0/7  -> FAIL
-```
+- Independent `recourse_sidecar_v16_8_45`; no base cache rewrite.
+- Train split only trains RCRSO; val/heldout are audit only.
+- exact200/lost7/counterfactual48 IDs are forbidden from sidecar checkpoint selection.
+- positives: stored response labels + V44 analytic positives + richer hard-verified time-varying control proposals.
+- hard negatives: verifier-rejected near-support controls for proposal ordering only.
+- K frozen from validation `FullHypothesisRootCoverage` plateau (95% plateau rule), never tuned on lost7.
+- closed-loop checkpoint loading is fail-closed unless Stage-0 support audit passes.
 
-Because V43 retained only 3/10 historical RVR rescues, 0/7 new rescues makes the immutable
-`>=5/10` historical-rescue condition mathematically impossible. **STOP immediately.** Do
-not run `retained3`, `induced9`, `remaining29`, or stitch a full counterfactual48 for V44.
+## Runtime-only changes
 
-## Mechanism attribution
+V44R1 remains selection dominated (~99.33%). V45 removes online bisection for its method, emits K proposals in one model forward, orders hard checks static→ego→environment, uses semantic-identity caches, and applies root-scarcity fail-fast without changing successful hard-set/CSP semantics. Frozen `2+2+3` lost7 progressive batches are available. Keep 80 steps.
 
-R1 does not fail because RC-CRRS is dead code. Across 560 policy steps:
+## Frozen outcome protocol
 
-- blocker-query active steps: 456 (81.43%);
-- control-reachable root-completion attempts: 83,263;
-- dynamic profiles found: 26,485;
-- roots receiving at least one completed profile: 26,477;
-- profile evaluations: 1,350,867;
-- root-unrecoverable rejects: 56,786;
-- unsupported-blocker rejects: 3,987;
-- replayed blocker-conditioned hypotheses: 75,434.
+`Stage0 support PASS → equivalence16 → lost7>=2/7 → rescue10>=5/10 → induced9 avoided>=7/9 → remaining29 → original CF48 six-item conjunction → fresh37 → development exact200`.
 
-A key exact identity is:
+No threshold may be changed after seeing results. Two consecutive architecture iterations without >=3pp FullHypothesisRootCoverage gain and without +1 lost7 rescue, or three architectures without lost7>=2/7, closes the learned-recourse proposal family.
 
-```text
-completion attempts - roots completed
-= 83,263 - 26,477
-= 56,786
-= root-unrecoverable rejects.
-```
+## Paper status
 
-Thus V44 can construct verified low-burden control-reachable responses for a substantial
-subset of individual retained roots, but every blocker-conditioned hypothesis that still
-fails contains at least one retained root for which the scalar analytic completion cannot
-produce an admissible response. The universal all-retained-root hard certificate therefore
-remains empty.
+Do not add RCRSO to Abstract/Contributions/Method as a proven component before evidence. The CCF-A-level candidate remains the broader **Orthogonal Option-Set Feasibility** formulation: social natural-option preservation + physical-interactive verified recourse-set completeness, both under the principle that safety must not be obtained through critical option-set collapse.
 
-On the six query-active lost scenes, the blocker-query macro statistics are effectively
-unchanged from V43 (same candidate/exact/ready blocker counts and unsupported rejects).
-Mean root-unrecoverable rejects change only from about 126.13/attempt in V43 to
-125.03/attempt in V44R1 (~0.87% reduction). Moreover, V44R1 produces **zero
-blocker-query-exclusive certificate selections**; all seven recovery certificate steps are
-inherited nested-V42 selections.
 
-Hence the V44 hypothesis is falsified:
+---
 
-> finite constant-residual response discretization / minimum-magnitude scalar acceleration
-> completion is not the dominant sufficient explanation for V43 root-unrecoverability.
+# V16.8.45R1 — RCRSO Schema / Support-Semantics Fidelity Repair
 
-## Newly closed scientific family
+V16.8.45R1 is an engineering/semantic-fidelity repair, not a new scientific algorithm. The original V45 `sidecar_smoke` failed before any RCRSO training or Stage-0 evidence because the sidecar indexed raw flattened WOMD roadgraph vector fields as 2-D arrays. A broader audit also found silent fidelity issues in critical-agent row identity, blocker heading, shifted-environment construction, sidecar teacher verification, Stage-0 support-union semantics, and the online RCRSO invocation path.
 
-**Close / archive:** analytic same-root scalar-residual responder-support completion.
+The most important online correction is structural: frozen V43 is still exact-nested first. Only after V43 has no hard certificate may RCRSO populate retained-root proposal holes or augment hard-verified root domains for joint-CSP diversity. An empty frozen response domain is **not** considered feasible; learned profiles enter only after the unchanged burden, roadgraph, Waymax kinematics, ego current/shift, environment and exact CSP verification. Thus R1 restores the intended completeness-only role of RCRSO without weakening soundness.
 
-Do not continue:
-
-- tuning positive/negative acceleration bounds;
-- changing dyadic/bisection resolution;
-- adding response-duration grids or switch-time grids;
-- piecewise hand-designed acceleration grids intended only to rescue V44;
-- relaxing burden, roadgraph, Waymax kinematics, ego current/shift, environment, or exact
-  multi-blocker CSP predicates;
-- using the old 0/7 result or post-hoc gate changes to justify any of the above.
-
-This closure is narrower than `root-conditioned recourse` as a scientific object. The hard
-problem remains open; what is closed is the **hand-designed analytic scalar completion
-family**.
-
-## Retained / promoted mechanism objects
-
-Retain as infrastructure or mechanism evidence, not as promoted policies:
-
-1. **Exact-blocker late binding (V43)** — blocker indexing is useful infrastructure, but no
-   longer P0.
-2. **Root-conditioned hard interaction verifier (V42/V43/V44)** — same-root, burden,
-   controller/road/Waymax, ego current+shift, frozen-environment and exact joint-CSP
-   semantics remain frozen.
-3. **V44 analytic completion** — keep only as an offline teacher / counterexample miner /
-   diagnostic proposal source. It is not an online policy mechanism after STOP.
-4. **V16.8.44R1 semantic cache identity and immutable-work reuse** — engineering promotion.
-   Server wall time improved from 30,368 s to 18,740 s (1.620x, 38.29% reduction) with no
-   scientific behavior drift.
-
-## Dominant bottleneck after V44R1
-
-Do not over-attribute the remaining failures to a single substage because the current logs
-collapse several causes inside the per-root completion helper. The tightest evidence-backed
-P0 is:
-
-> **Universal Retained-Root Recourse Coverage under Exact-Blocker Hard Feasibility.**
-
-Paper-facing formulation:
-
-> **Root-Conditioned Recourse-Set Completeness under Orthogonal Option-Set Feasibility.**
-
-The next experiment must distinguish at least:
-
-- natural-root intrinsic validity / identity support;
-- low-burden control proposal insufficiency;
-- ego-current / ego-shift incompatibility;
-- responder-environment incompatibility;
-- exact multi-agent joint realizability.
-
-Historical V42 evidence makes joint incompatibility an unlikely dominant explanation, but
-it remains a hard invariant and must be measured rather than relaxed.
-
-## V16.8.45 research direction — Verified Root-Conditioned Recourse Set Operator
-
-**Status: open scientific direction, not yet promoted.**
-
-The next architecture should not be another analytic acceleration search or a generic
-collision classifier. It should learn a *set-valued proposal correspondence*:
-
-```text
-(natural root, exact blocker state, ego current+shift tube, controller state,
- frozen environment)
-    -> diverse low-burden control-recourse proposals
-    -> unchanged hard verifier
-    -> exact multi-root / multi-blocker CSP.
-```
-
-The learned module is allowed to improve **completeness only**. It must never replace the
-hard verifier. Any accepted response remains verifier-valid by construction; proposal-model
-error can only cause false-negative support by missing a recourse, not false-positive hard
-feasibility.
-
-Before expensive closed-loop promotion, V45 must add a root-level failure taxonomy and an
-offline verified-recourse support gate on frozen, outcome-blind data. The lost7 / retained3 /
-induced9 / remaining29 promotion protocol remains unchanged.
-
-## New no-repeat rules after V44R1
-
-In addition to all historical archive rules:
-
-- do not iterate further on analytic scalar control completion;
-- do not infer that `profiles_found > 0` means a full hypothesis is recoverable;
-- do not drop or reweight retained roots to improve recall;
-- do not turn a learned recourse head into a hard feasibility classifier;
-- do not use generic neural reachability / safety-filter novelty as the paper claim;
-- do not shorten the 80-step closed-loop horizon to hide late failures;
-- do not rebuild compact-5k because of the V44 STOP result;
-- do not mix certificate→multi-step invariance, accepted-path kinematics, and recourse-set
-  completeness into the same scientific version.
+Scientific status remains **UNRESOLVED** until R1 executes the frozen sequence `Stage-0 support → equivalence16 → lost7 → retained3 → induced9 → remaining29/CF48`. No V46 branch is authorized from the original V45 crash/partial outputs. Full preregistration and convergence rules are recorded in `ALGORITHM_CHANGELOG_V16_8_45R1.md`.

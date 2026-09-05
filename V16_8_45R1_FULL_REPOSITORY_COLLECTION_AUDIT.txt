@@ -1,0 +1,38 @@
+
+==================================== ERRORS ====================================
+___________ ERROR collecting tests/test_cli_overrides_and_metrics.py ___________
+ImportError while importing test module '/mnt/data/v45_fix/tests/test_cli_overrides_and_metrics.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_cli_overrides_and_metrics.py:3: in <module>
+    from ocrap.cli.main import make_parser, build_cfg
+E   ModuleNotFoundError: No module named 'ocrap'
+_____________________ ERROR collecting tests/test_core.py ______________________
+ImportError while importing test module '/mnt/data/v45_fix/tests/test_core.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_core.py:5: in <module>
+    from ocrap.lcv import finite_sample_upper_quantile, weighted_lcvar
+E   ModuleNotFoundError: No module named 'ocrap'
+__________ ERROR collecting tests/test_v16_8_29_recovery_viability.py __________
+ImportError while importing test module '/mnt/data/v45_fix/tests/test_v16_8_29_recovery_viability.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_v16_8_29_recovery_viability.py:11: in <module>
+    from cowp.waymax_eval.policy_wrapper import (
+E   ImportError: cannot import name '_recovery_bridge_viability_mask' from 'cowp.waymax_eval.policy_wrapper' (/mnt/data/v45_fix/cowp/waymax_eval/policy_wrapper.py)
+=========================== short test summary info ============================
+ERROR tests/test_cli_overrides_and_metrics.py
+ERROR tests/test_core.py
+ERROR tests/test_v16_8_29_recovery_viability.py
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 3 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+3 errors in 1.88s

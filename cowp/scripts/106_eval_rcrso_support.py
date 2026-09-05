@@ -39,23 +39,31 @@ def _roadgraph(item: dict) -> dict[str,np.ndarray]:
     return {"xy":np.asarray(item["roadgraph_xy"],np.float32),"heading":np.asarray(item["roadgraph_heading"],np.float32),"types":np.asarray(item["roadgraph_types"],np.int32),"valid":np.asarray(item["roadgraph_valid"],bool)}
 
 
-def _fixed_bank_profiles(item: dict, cfg: dict) -> list[dict]:
+def _fixed_static_bank_profiles(item: dict, cfg: dict) -> list[dict]:
+    """Frozen root-domain profiles before candidate-specific ego/environment checks.
+
+    Online V42--V45 support preparation rejects an actor before any learned
+    extension if a retained root has no low-burden, roadgraph-safe and
+    current/shift Waymax-kinematic-safe fixed response at all.  Stage-0 must use
+    the same callback domain; otherwise RCRSO can appear to improve support for a
+    root that the online policy would reject before RCRSO is ever invoked.
+    """
     root=np.asarray(item["root_trajectory"],np.float32)
     blocker=np.asarray(item["blocker_state_global"],np.float32)
     object_type=int(np.asarray(item["blocker_object_type"]).item())
     beta=float(np.asarray(item["beta"]).item())
-    ego_cur=np.asarray(item["ego_current"],np.float32); ego_shift=np.asarray(item["ego_shifted"],np.float32)
-    env=_environment(item); road=_roadgraph(item); dt=max(float(cfg.get("time",{}).get("dt",0.1)),1.0e-6)
+    road=_roadgraph(item); dt=max(float(cfg.get("time",{}).get("dt",0.1)),1.0e-6)
     try:
         bank=build_root_recovery_trajectory_bank(root,cfg)
         burdens=prepare_root_recovery_burden_bank(root,bank,cfg,object_type=object_type,rho=PriorityRelation.AGENT_PRIORITY)
     except Exception:
         return []
     out=[]
-    state=blocker[None,:]
     for pi,(tr,burden_entry) in enumerate(zip(bank,burdens)):
         tr=np.asarray(tr,np.float32); burden=float(burden_entry[0])
-        if burden>beta+1e-9 or not bool(_roadgraph_drivable_mask(tr,road)):
+        if burden>beta+1e-9 or tr.ndim!=2 or tr.shape[0]<=0 or tr.shape[1]<7:
+            continue
+        if not bool(_roadgraph_drivable_mask(tr,road)):
             continue
         kin_ok,kin=_trajectory_waymax_kinematic_safe_np(blocker,tr,cfg)
         shifted=_shift_append_terminal_reference_np(tr,dt)
@@ -63,6 +71,18 @@ def _fixed_bank_profiles(item: dict, cfg: dict) -> list[dict]:
         shift_ok,shift_kin=_trajectory_waymax_kinematic_safe_np(successor,shifted,cfg)
         if not (kin_ok and shift_ok and bool(_roadgraph_drivable_mask(shifted,road))):
             continue
+        out.append({"profile_index":int(pi),"trajectory":tr,"shifted_trajectory":shifted,"burden":burden})
+    return out
+
+
+def _fixed_bank_profiles(item: dict, cfg: dict) -> list[dict]:
+    """Frozen profiles surviving the candidate-specific ego/environment screen."""
+    object_type=int(np.asarray(item["blocker_object_type"]).item())
+    ego_cur=np.asarray(item["ego_current"],np.float32); ego_shift=np.asarray(item["ego_shifted"],np.float32)
+    env=_environment(item)
+    out=[]
+    for profile in _fixed_static_bank_profiles(item,cfg):
+        tr=np.asarray(profile["trajectory"],np.float32); shifted=np.asarray(profile["shifted_trajectory"],np.float32)
         try:
             if unsafe_between_bool(ego_cur,tr,cfg,agent_type=object_type):
                 continue
@@ -80,9 +100,8 @@ def _fixed_bank_profiles(item: dict, cfg: dict) -> list[dict]:
             except Exception:
                 ok=False; break
         if ok:
-            out.append({"profile_index":int(pi),"trajectory":tr,"shifted_trajectory":shifted,"burden":burden})
+            out.append(profile)
     return out
-
 
 def _analytic_profiles(item: dict, cfg: dict) -> list[dict]:
     blocker=np.asarray(item["blocker_state_global"],np.float32)
@@ -164,41 +183,87 @@ def main():
             profiles,detail=_verified_root_conditioned_recourse_set_profiles_np(agent_state,0,int(np.asarray(item["blocker_object_type"]).item()),np.asarray(item["root_trajectory"],np.float32),float(np.asarray(item["beta"]).item()),np.asarray(item["ego_current"],np.float32),np.asarray(item["ego_shifted"],np.float32),_environment(item),_roadgraph(item),cfg,knots,profile_index_base=20000,root_ordinal=int(np.asarray(item["root_index"]).item()),compatibility_cache={})
             total_verifier_calls+=int(detail.get("profile_evaluations",0))
             by_q={int(p["profile_index"])-20000:p for p in profiles}
+            fixed_static_profiles=_fixed_static_bank_profiles(item,cfg)
             fixed_profiles=_fixed_bank_profiles(item,cfg)
             analytic_profiles=_analytic_profiles(item,cfg)
-            rec={"scenario_hash":int(np.asarray(item["scenario_hash"]).item()),"hypothesis_group_id":int(np.asarray(item["hypothesis_group_id"]).item()),"agent_index":int(np.asarray(item["agent_index"]).item()),"root_index":int(np.asarray(item["root_index"]).item()),"object_type":int(np.asarray(item["blocker_object_type"]).item()),"oracle_positive":bool(np.asarray(item["target_valid"]).any()),"fixed_nonempty":bool(fixed_profiles),"analytic_nonempty":bool(analytic_profiles),"fixed_profiles":fixed_profiles,"analytic_profiles":analytic_profiles,"verified_by_k":{},"burden_by_k":{},"profiles_by_k":{}}
+            rec={"scenario_hash":int(np.asarray(item["scenario_hash"]).item()),"hypothesis_group_id":int(np.asarray(item["hypothesis_group_id"]).item()),"agent_index":int(np.asarray(item["agent_index"]).item()),"root_index":int(np.asarray(item["root_index"]).item()),"object_type":int(np.asarray(item["blocker_object_type"]).item()),"oracle_positive":bool(np.asarray(item["target_valid"]).any()),"online_static_support_nonempty":bool(fixed_static_profiles),"fixed_nonempty":bool(fixed_profiles),"analytic_nonempty":bool(analytic_profiles),"fixed_profiles":fixed_profiles,"analytic_profiles":analytic_profiles,"learned_verified_by_k":{},"learned_burden_by_k":{},"learned_profiles_by_k":{},"online_verified_by_k":{},"online_profiles_by_k":{}}
             for k in ks:
-                ps=[p for q,p in by_q.items() if q<k]; rec["verified_by_k"][k]=bool(ps); rec["burden_by_k"][k]=[float(p["burden"]) for p in ps]; rec["profiles_by_k"][k]=ps
+                learned=[p for q,p in by_q.items() if q<k]
+                # V16.8.45R1 set-operator semantics: after the exact frozen V43
+                # path has failed, verified learned proposals augment the frozen
+                # candidate-specific response domain.  This can fill an empty root
+                # domain *or* add diversity needed by the exact joint CSP.  Every
+                # learned profile was independently replayed through the unchanged
+                # hard verifier above, so the union changes completeness only.
+                online=list(fixed_profiles) + list(learned)
+                rec["learned_verified_by_k"][k]=bool(learned)
+                rec["learned_burden_by_k"][k]=[float(p["burden"]) for p in learned]
+                rec["learned_profiles_by_k"][k]=learned
+                rec["online_verified_by_k"][k]=bool(online)
+                rec["online_profiles_by_k"][k]=online
             records.append(rec)
-    oracle=[r for r in records if r["oracle_positive"]]
-    groups=defaultdict(list)
-    for r in records: groups[(r["scenario_hash"],r["hypothesis_group_id"])].append(r)
+    groups_all=defaultdict(list)
+    for r in records: groups_all[(r["scenario_hash"],r["hypothesis_group_id"])].append(r)
+    # V16.8.45R1 deliberately keeps roots whose frozen static proposal domain is
+    # empty: those are proposal-completeness holes that RCRSO is meant to fill.
+    # Natural-root count/mass validity is already frozen by sidecar construction;
+    # no root/beta/verifier predicate is relaxed here.
+    groups={key:rr for key,rr in groups_all.items() if rr}
+    eligible_records=list(records)
+    oracle=[r for r in eligible_records if r["oracle_positive"]]
+
+    def extension_profiles(r:dict, extension_key:str)->list[dict]:
+        # Historical V44 completion lived downstream of frozen support
+        # preparation.  A root with no statically feasible frozen profile never
+        # reached that callback, so analytic completion must not be credited with
+        # repairing such a root in the Stage-0 baseline.
+        if not bool(r.get("online_static_support_nonempty", False)):
+            return []
+        fixed=list(r["fixed_profiles"])
+        return fixed if fixed else list(r[extension_key])
+
+    # Baselines are evaluated with their historical online semantics.  V45R1 is
+    # intentionally broader only in proposal completeness: its verified learned
+    # set may populate a frozen-static proposal hole after frozen V43 has failed.
     baseline={}
-    for key,profile_key in (("fixed_nonempty","fixed_profiles"),("analytic_nonempty","analytic_profiles")):
-        root_recall=sum(bool(r[key]) for r in oracle)/max(len(oracle),1)
-        full=sum(all(bool(x[key]) for x in rr) for rr in groups.values())/max(len(groups),1)
+    baseline_specs=(
+        ("fixed_bank", lambda r:list(r["fixed_profiles"])),
+        ("v44_analytic_extension", lambda r:extension_profiles(r,"analytic_profiles")),
+    )
+    for key,profile_fn in baseline_specs:
+        root_recall=sum(bool(profile_fn(r)) for r in oracle)/max(len(oracle),1)
+        full=sum(all(bool(profile_fn(x)) for x in rr) for rr in groups.values())/max(len(groups),1)
         csp_ok=0
         for rr in groups.values():
-            nodes=[{"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":r[profile_key]} for r in rr]
+            nodes=[{"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":profile_fn(r)} for r in rr]
             csp_ok+=int(_csp(nodes,cfg))
         baseline[key]={"VerifiedRootRecall":root_recall,"FullHypothesisRootCoverage":full,"ExactCSPCompletionRate":csp_ok/max(len(groups),1)}
     curves=[]
     for k in ks:
-        root_recall=sum(bool(r["verified_by_k"][k]) for r in oracle)/max(len(oracle),1)
-        full=sum(all(bool(x["verified_by_k"][k]) for x in rr) for rr in groups.values())/max(len(groups),1)
+        root_recall=sum(bool(r["online_verified_by_k"][k]) for r in oracle)/max(len(oracle),1)
+        full=sum(all(bool(x["online_verified_by_k"][k]) for x in rr) for rr in groups.values())/max(len(groups),1)
         csp_ok=0
         for rr in groups.values():
             nodes=[]
             for r in rr:
-                nodes.append({"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":r["profiles_by_k"][k]})
+                nodes.append({"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":r["online_profiles_by_k"][k]})
             csp_ok+=int(_csp(nodes,cfg))
-        burdens=[b for r in records for b in r["burden_by_k"][k]]
-        curves.append({"K":k,"VerifiedRootRecall":root_recall,"FullHypothesisRootCoverage":full,"ExactCSPCompletionRate":csp_ok/max(len(groups),1),"verified_response_burden_mean":float(np.mean(burdens)) if burdens else None,"verified_profile_count":sum(len(r["profiles_by_k"][k]) for r in records)})
+        learned_burdens=[b for r in eligible_records for b in r["learned_burden_by_k"][k]]
+        curves.append({
+            "K":k,
+            "VerifiedRootRecall":root_recall,
+            "FullHypothesisRootCoverage":full,
+            "ExactCSPCompletionRate":csp_ok/max(len(groups),1),
+            "learned_verified_response_burden_mean":float(np.mean(learned_burdens)) if learned_burdens else None,
+            "learned_verified_profile_count":sum(len(r["learned_profiles_by_k"][k]) for r in eligible_records),
+            "learned_only_root_nonempty_rate":sum(bool(r["learned_verified_by_k"][k]) for r in eligible_records)/max(len(eligible_records),1),
+            "online_extension_semantics":"fixed_plus_rcrso_verified_union_after_nested_v43_failure",
+        })
     plateau=max(x["FullHypothesisRootCoverage"] for x in curves); target=0.95*plateau
     selected=min((x for x in curves if x["FullHypothesisRootCoverage"]+1e-12>=target),key=lambda x:x["K"])
-    baseline_best=max(baseline["fixed_nonempty"]["FullHypothesisRootCoverage"],baseline["analytic_nonempty"]["FullHypothesisRootCoverage"])
+    baseline_best=max(baseline["fixed_bank"]["FullHypothesisRootCoverage"],baseline["v44_analytic_extension"]["FullHypothesisRootCoverage"])
     lift=selected["FullHypothesisRootCoverage"]-baseline_best; gate=lift+1e-12>=args.minimum_full_hypothesis_coverage_lift_pp/100.0 and selected["VerifiedRootRecall"]>0.0
-    summary={"version":"V16.8.45","split":args.split,"examples":len(records),"hypothesis_groups":len(groups),"oracle_positive_roots":len(oracle),"baseline":baseline,"rcrso_curve":curves,"plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,"selected_k":selected["K"],"selected_metrics":selected,"coverage_lift_over_best_frozen_baseline":lift,"minimum_required_lift_pp":args.minimum_full_hypothesis_coverage_lift_pp,"stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},"verifier_calls":total_verifier_calls,"wall_seconds":time.time()-t0,"contract":{"K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,"hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True}}
+    summary={"version":"V16.8.45R1","split":args.split,"examples":len(records),"eligible_examples":len(eligible_records),"hypothesis_groups_all":len(groups_all),"hypothesis_groups":len(groups),"structural_ineligible_hypothesis_groups":0,"oracle_positive_roots":len(oracle),"teacher_verified_positive_roots":len(oracle),"oracle_positive_definition":"known verifier-positive control in the frozen finite sidecar teacher pool; not proof of exhaustive recourse existence","baseline":baseline,"rcrso_curve":curves,"plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,"selected_k":selected["K"],"selected_metrics":selected,"coverage_lift_over_best_frozen_baseline":lift,"minimum_required_lift_pp":args.minimum_full_hypothesis_coverage_lift_pp,"stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},"verifier_calls":total_verifier_calls,"wall_seconds":time.time()-t0,"contract":{"K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,"hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True,"stage0_matches_online_extension_semantics":True,"rcrso_verified_profiles_augment_frozen_domains_after_nested_v43_failure":True,"empty_frozen_static_root_domains_are_valid_proposal_completeness_targets":True,"stage0_panel_role":"outcome-blind label-root support proxy; closed-loop lost7 remains the causal policy gate"}}
     Path(args.output).parent.mkdir(parents=True,exist_ok=True); Path(args.output).write_text(json.dumps(summary,indent=2,sort_keys=True),encoding="utf-8")
     selected_ckpt=dict(ckpt); selected_ckpt["selected_k"]=int(selected["K"]); selected_ckpt["stage0_support_audit"]=summary; selected_ckpt["contract"]={**dict(selected_ckpt.get("contract",{})),"selected_k_status":"frozen_validation_selected","stage0_support_gate_pass":bool(gate)}; torch.save(selected_ckpt,args.selected_checkpoint)
     print(json.dumps(summary,indent=2,sort_keys=True))

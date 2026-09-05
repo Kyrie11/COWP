@@ -123,7 +123,22 @@ class RootConditionedRecourseSetTransformer(nn.Module):
 
         q = self.query[:k].unsqueeze(0).expand(root_tokens.shape[0], -1, -1)
         memory = torch.cat([root_h, ego_h, env_h, global_ctx.unsqueeze(1)], dim=1)
-        q2, _ = self.query_cross(q, memory, memory)
+        # Padding must remain invisible not only inside the environment encoder
+        # and root->environment cross attention, but also when query slots attend
+        # to the concatenated memory.  The original V45 omitted this second mask,
+        # allowing padded environment tokens in sidecar batches to affect learned
+        # proposals even though online inference has no such padding.
+        def _valid_or_ones(valid: torch.Tensor | None, length: int) -> torch.Tensor:
+            if valid is None:
+                return torch.ones((root_tokens.shape[0], length), device=root_tokens.device, dtype=torch.bool)
+            return valid.bool()
+        memory_valid = torch.cat([
+            _valid_or_ones(root_valid, root_h.shape[1]),
+            _valid_or_ones(ego_valid, ego_h.shape[1]),
+            _valid_or_ones(environment_valid, env_h.shape[1]),
+            torch.ones((root_tokens.shape[0], 1), device=root_tokens.device, dtype=torch.bool),
+        ], dim=1)
+        q2, _ = self.query_cross(q, memory, memory, key_padding_mask=~memory_valid)
         q = self.query_norm(q + q2 + global_ctx.unsqueeze(1))
         knots = torch.tanh(self.control_head(q))
         feasible_logits = self.feasible_head(q).squeeze(-1)
@@ -216,10 +231,11 @@ def build_rcrso_features_np(
     env = np.stack(env_rows, axis=0).astype(np.float32)
 
     # Blocker state: current global state expressed in the root frame plus stable
-    # scalar geometry/type slots.  Agent state in COWP is [x,y,yaw,vx,vy,...].
+    # scalar geometry/type slots.  COWP online state layout is
+    # [x,y,z_or_reserved,vx,vy,speed,yaw,length,width,height,valid].
     bxy = _local_xy(bs[None, :2], origin, yaw0)[0] if bs.size >= 2 else np.zeros(2, np.float32)
     bv = _local_velocity(bs[None, 3:5], yaw0)[0] if bs.size >= 5 else np.zeros(2, np.float32)
-    byaw = float(((float(bs[2]) - yaw0 + np.pi) % (2 * np.pi) - np.pi)) if bs.size >= 3 else 0.0
+    byaw = float(((float(bs[6]) - yaw0 + np.pi) % (2 * np.pi) - np.pi)) if bs.size >= 7 else 0.0
     blocker = np.zeros(c.blocker_feature_dim, dtype=np.float32)
     vals = [bxy[0], bxy[1], np.sin(byaw), np.cos(byaw), bv[0], bv[1]]
     if bs.size > 9:

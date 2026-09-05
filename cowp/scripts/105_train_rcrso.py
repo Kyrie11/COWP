@@ -110,7 +110,7 @@ def main():
             for k,v in st.items(): sums[k]=sums.get(k,0.0)+v*bs
         train_stats={k:v/max(n,1) for k,v in sums.items()}; val_stats=_eval(model,va,device,cfg.max_queries)
         rec={"epoch":epoch,"train":train_stats,"val":val_stats,"seconds":time.time()-t0}; hist.append(rec); print(json.dumps(rec,sort_keys=True))
-        payload={"version":"V16.8.45","model":model.state_dict(),"rcrso_config":cfg.to_dict(),"selected_k":cfg.max_queries,"epoch":epoch,"train_stats":train_stats,"val_stats":val_stats,"contract":{"base_cowp_frozen":True,"hard_verifier_not_learned":True,"selected_k_status":"provisional_until_stage0_validation"}}
+        payload={"version":"V16.8.45R1","model":model.state_dict(),"rcrso_config":cfg.to_dict(),"selected_k":cfg.max_queries,"epoch":epoch,"train_stats":train_stats,"val_stats":val_stats,"contract":{"base_cowp_frozen":True,"hard_verifier_not_learned":True,"selected_k_status":"provisional_until_stage0_validation"}}
         torch.save(payload,outdir/"rcrso_last.pt")
         if val_stats["set"]<best:
             best=val_stats["set"]; torch.save(payload,outdir/"rcrso_best_unselected.pt")

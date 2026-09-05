@@ -125,3 +125,270 @@ def test_v45_method_is_registered_and_sidecar_never_truncates_inside_group():
     assert "group_contexts" in source
     assert "Never truncate a hypothesis midway" in source
     assert "if made>=args.max_examples_per_scene" not in source
+
+
+def test_sidecar_restores_flat_raw_womd_roadgraph_and_aligned_heading():
+    import importlib
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    xyz = np.array([0.,0.,0., 1.,0.,0., 1.,1.,0.], np.float32)
+    direction = np.array([1.,0.,0., 1.,0.,0., 0.,1.,0.], np.float32)
+    data = {
+        "womd/roadgraph_samples/xyz": xyz,
+        "womd/roadgraph_samples/dir": direction,
+        "womd/roadgraph_samples/valid": np.array([1,1,1], np.int64),
+        "womd/roadgraph_samples/type": np.array([1,1,2], np.int64),
+    }
+    rg = sidecar._roadgraph(data)
+    assert rg["xy"].shape == (3,2)
+    assert rg["heading"].shape == (3,)
+    np.testing.assert_allclose(rg["xy"], np.array([[0,0],[1,0],[1,1]], np.float32))
+    np.testing.assert_allclose(rg["heading"], np.array([0,0,np.pi/2], np.float32), atol=1e-6)
+    assert rg["valid"].tolist() == [True, True, True]
+
+
+def test_sidecar_roadgraph_accepts_waymax_shaped_vectors_and_rejects_malformed_flat_dir():
+    import importlib
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    data = {
+        "roadgraph_samples/xyz": np.array([[[0.,0.,0.],[1.,0.,0.]]], np.float32),
+        "roadgraph_samples/dir": np.array([[[1.,0.,0.],[0.,1.,0.]]], np.float32),
+        "roadgraph_samples/valid": np.array([[1,1]], np.int64),
+        "roadgraph_samples/type": np.array([[1,2]], np.int64),
+    }
+    rg = sidecar._roadgraph(data)
+    assert rg["xy"].shape == (2,2)
+    np.testing.assert_allclose(rg["heading"], np.array([0,np.pi/2], np.float32), atol=1e-6)
+    bad = dict(data)
+    bad["roadgraph_samples/dir"] = np.arange(5, dtype=np.float32)
+    import pytest
+    with pytest.raises(ValueError, match="roadgraph_samples/dir"):
+        sidecar._roadgraph(bad)
+
+
+def test_sidecar_uses_model_input_index_not_scenario_track_index():
+    import importlib
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    data = {
+        "cowp/critical/track_index": np.array([9, 7], np.int64),
+        "cowp/critical/input_index": np.array([2, 4], np.int64),
+    }
+    np.testing.assert_array_equal(sidecar._critical_input_indices(data), np.array([2,4], np.int64))
+    np.testing.assert_array_equal(
+        sidecar._critical_input_indices({"cowp/critical/track_index": np.array([3], np.int64)}),
+        np.array([3], np.int64),
+    )
+
+
+def test_sidecar_shifted_environment_matches_online_non_ego_cv_successor():
+    import importlib
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    state = np.zeros((3,11), np.float32)
+    state[:,10] = 1.0
+    state[1,0:2] = [10.,2.]
+    state[1,3:5] = [5.,-1.]
+    cfg = {"time":{"dt":0.1}}
+    nxt = sidecar._one_step_cv_successor_for_environment(state, 0, cfg)
+    np.testing.assert_allclose(nxt[1,0:2], [10.5,1.9], atol=1e-6)
+    # SDC is intentionally not advanced by this helper; only environment actors
+    # are consumed by the sidecar's shifted environment construction.
+    np.testing.assert_allclose(nxt[0,0:2], state[0,0:2])
+
+
+def test_rcrso_blocker_heading_uses_online_state_yaw_slot_six():
+    root = _root(8)
+    root[:,2] = 0.2
+    blocker = np.zeros(11, np.float32)
+    blocker[2] = -1.1  # reserved/z slot: must not be interpreted as yaw
+    blocker[6] = 0.7   # actual online yaw
+    blocker[3:5] = [4.0, 0.0]
+    blocker[7:10] = [4.5, 1.8, 1.6]
+    blocker[10] = 1.0
+    f = build_rcrso_features_np(
+        root=root, root_mass=0.8, root_source=1, blocker_state=blocker,
+        current_ego_trajectory=root.copy(), shifted_ego_trajectory=root.copy(), environment=[],
+        cfg=RCRSOConfig(), verifier_cfg={"time":{"dt":0.1}}, blocker_object_type=1,
+    )
+    dyaw = 0.7 - 0.2
+    assert np.isclose(f["blocker_state"][2], np.sin(dyaw), atol=1e-6)
+    assert np.isclose(f["blocker_state"][3], np.cos(dyaw), atol=1e-6)
+
+
+def test_sidecar_roadgraph_subset_keeps_nearest_lane_when_local_box_has_none():
+    import importlib
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    road = {
+        "xy": np.array([[100.,0.],[150.,0.]], np.float32),
+        "heading": np.zeros(2, np.float32),
+        "types": np.array([1,1], np.int32),
+        "valid": np.array([True,True]),
+    }
+    root = _root(8); root[:,0] = np.linspace(0,5,8); root[:,1] = 0
+    xy,h,t,v = sidecar._sidecar_roadgraph_subset(road, root, root, root)
+    assert xy.shape[0] == 1
+    np.testing.assert_allclose(xy[0], [100.,0.])
+    assert v.tolist() == [True]
+
+
+def test_rcrso_query_cross_ignores_invalid_environment_padding():
+    torch.manual_seed(17)
+    cfg = RCRSOConfig(d_model=32, nhead=4, encoder_layers=1, max_queries=4, control_knots=5)
+    model = RootConditionedRecourseSetTransformer(cfg).eval()
+    root = torch.randn(1, 8, cfg.root_feature_dim)
+    ego = torch.randn(1, 16, cfg.ego_feature_dim)
+    env_a = torch.randn(1, 6, cfg.environment_feature_dim)
+    env_b = env_a.clone()
+    env_b[:, 2:] = torch.randn_like(env_b[:, 2:]) * 1000.0
+    valid = torch.tensor([[True, True, False, False, False, False]])
+    blocker = torch.randn(1, cfg.blocker_feature_dim)
+    conflict = torch.randn(1, cfg.conflict_feature_dim)
+    with torch.no_grad():
+        a = model(root_tokens=root, ego_tokens=ego, environment_tokens=env_a,
+                  environment_valid=valid, blocker_state=blocker,
+                  conflict_features=conflict, query_count=4)["control_knots"]
+        b = model(root_tokens=root, ego_tokens=ego, environment_tokens=env_b,
+                  environment_valid=valid, blocker_state=blocker,
+                  conflict_features=conflict, query_count=4)["control_knots"]
+    assert torch.allclose(a, b, rtol=1e-5, atol=1e-6)
+
+
+def test_sidecar_retained_roots_use_canonical_mass_not_raw_threshold_reimplementation():
+    import importlib
+    from cowp.label.audit_relevance import canonical_root_weights
+    sidecar = importlib.import_module("cowp.scripts.104_build_rcrso_sidecar")
+    raw = np.array([[0.50, 0.30, 0.19, 0.01]], np.float32)
+    valid = np.ones_like(raw, dtype=bool)
+    cfg = {"ncf": {"min_alt_weight": 0.03, "root_probability_floor": 0.02}}
+    canonical = canonical_root_weights({"valid": valid, "weight": raw}, cfg)[0]
+    selected = sidecar._retained_roots_from_canonical(canonical, valid[0], 0.75, 2, 24)
+    # The 0.01 mode is removed by canonical support and floor smoothing is already
+    # represented in `canonical`; sidecar must not construct a second measure.
+    assert 3 not in selected
+    assert len(selected) >= 2
+    assert float(canonical[selected].sum()) >= 0.75 - 1e-9
+
+
+def test_stage0_distinguishes_static_online_callback_readiness_from_candidate_fixed_domain(monkeypatch):
+    import importlib
+    stage0 = importlib.import_module("cowp.scripts.106_eval_rcrso_support")
+    root = _root(6)
+    item = {
+        "root_trajectory": root,
+        "blocker_state_global": np.array([0,0,0,10,0,10,0,4.5,1.8,1.6,1], np.float32),
+        "blocker_object_type": np.array(1, np.int64),
+        "beta": np.array(0.8, np.float32),
+        "ego_current": root.copy(),
+        "ego_shifted": root.copy(),
+        "environment_current": np.zeros((0,6,7), np.float32),
+        "environment_shifted": np.zeros((0,6,7), np.float32),
+        "environment_object_type": np.zeros((0,), np.int64),
+        "environment_agent_index": np.zeros((0,), np.int64),
+        "roadgraph_xy": np.zeros((1,2), np.float32),
+        "roadgraph_heading": np.zeros((1,), np.float32),
+        "roadgraph_types": np.ones((1,), np.int32),
+        "roadgraph_valid": np.ones((1,), bool),
+    }
+    monkeypatch.setattr(stage0, "build_root_recovery_trajectory_bank", lambda root,cfg: [root.copy()])
+    monkeypatch.setattr(stage0, "prepare_root_recovery_burden_bank", lambda *args, **kwargs: [(0.1, np.zeros(4, np.float32))])
+    monkeypatch.setattr(stage0, "_roadgraph_drivable_mask", lambda *args, **kwargs: True)
+    monkeypatch.setattr(stage0, "_trajectory_waymax_kinematic_safe_np", lambda *args, **kwargs: (True, {}))
+    monkeypatch.setattr(stage0, "unsafe_between_bool", lambda *args, **kwargs: True)
+    assert len(stage0._fixed_static_bank_profiles(item, {"time":{"dt":0.1}})) == 1
+    # Candidate-specific collision can empty the fixed domain while the online
+    # actor/root support is still structurally ready; this is exactly the domain
+    # where RCRSO is allowed to extend the certificate.
+    assert stage0._fixed_bank_profiles(item, {"time":{"dt":0.1}}) == []
+
+
+def test_prepare_support_can_preserve_empty_fixed_root_domains_for_verified_rcrso(monkeypatch):
+    state = np.zeros((2, 11), np.float32)
+    state[:, 10] = 1.0
+    state[1, 7:10] = [4.5, 1.8, 1.6]
+    root_a = _root(6)
+    root_b = _root(6); root_b[:, 1] += 2.0
+    roots = np.stack([root_a, root_b], axis=0)[None, ...]
+    logits = np.array([[0.2, 0.1]], np.float32)
+    monkeypatch.setattr(pw, "adaptive_beta", lambda *args, **kwargs: 1.0)
+    monkeypatch.setattr(pw, "build_root_recovery_trajectory_bank", lambda *args, **kwargs: [])
+    monkeypatch.setattr(pw, "prepare_root_recovery_burden_bank", lambda *args, **kwargs: [])
+    cfg = {
+        "time": {"dt": 0.1},
+        "natural": {"certificate_min_low_burden_roots": 2, "root_dedup_mean_distance_m": 0.0},
+        "ncf": {"min_alt_weight": 0.0, "root_probability_floor": 0.0, "cvar_tail_mass": 0.25},
+        "planning": {"set_transport_cvar_tail_mass": 0.25},
+        "response": {"root_conditioned_transport": {"max_roots_per_agent": 2}},
+    }
+    args = (
+        state, 0, np.array([1]), np.array([True]), roots, logits,
+        np.array([1, 1]), {"xy": np.zeros((0,2), np.float32), "heading": np.zeros(0), "types": np.zeros(0), "valid": np.zeros(0,bool)}, cfg,
+    )
+    frozen, _ = pw._prepare_interaction_response_support_np(*args)
+    assert not frozen[1]["ready"]
+    learned, detail = pw._prepare_interaction_response_support_np(*args, allow_empty_profile_roots=True)
+    assert learned[1]["ready"]
+    assert learned[1]["reason"] == "ready_with_verified_proposal_holes"
+    assert all(root["profiles"] == [] for root in learned[1]["roots"])
+    assert detail["agents_ready_with_proposal_holes"] == 1
+
+
+def test_rcrso_wrapper_exactly_nests_v43_before_learned_pass(monkeypatch):
+    sentinel = {"parent_index": 3, "trajectory": _root(4), "target": np.zeros(5, np.float32), "accel": 0.0}
+    monkeypatch.setattr(
+        pw, "_construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np",
+        lambda *args, **kwargs: (sentinel, {"selected_certificate_kind": "blocker_conditioned_interaction_aware_reachable_response_envelope"}),
+    )
+    def forbidden_decoder(_):
+        raise AssertionError("learned full-support pass must not run when V43 already certifies")
+    out, detail = pw._construct_verified_root_conditioned_recourse_set_operator_np(
+        np.zeros((1,11),np.float32), 0, np.zeros((1,4,7),np.float32), np.array([True]), np.array([True]),
+        np.array([0]), np.array([0.]), np.array([0.]), np.zeros((1,5),np.float32), np.zeros(1), {}, {}, 0.0,
+        base_candidate_index=0, critical_track_index=np.zeros(0,np.int64), critical_valid=np.zeros(0,bool),
+        natural_trajectories=np.zeros((0,0,0,7),np.float32), natural_logits=np.zeros((0,0),np.float32),
+        blocker_query_track_index=np.array([1],np.int64), blocker_query_trajectories=None, blocker_query_logits=None,
+        object_types=np.zeros(1,np.int32), blocker_query_decoder=forbidden_decoder,
+        verified_recourse_set_proposal_fn=lambda **kwargs: ([], {}),
+    )
+    assert out is sentinel
+    assert detail["rcrso_nested_v43_selected"] is True
+    assert detail["rcrso_full_support_pass_attempted"] is False
+
+
+
+def test_rcrso_wrapper_full_pass_allows_static_holes_and_augments_verified_sets(monkeypatch):
+    monkeypatch.setattr(
+        pw, "_construct_blocker_conditioned_interaction_aware_reachable_response_envelope_np",
+        lambda *args, **kwargs: (None, {"interaction_failure_reason": "frozen_v43_empty"}),
+    )
+    captured = {}
+    sentinel = {"parent_index": 1, "trajectory": _root(4), "target": np.zeros(5, np.float32), "accel": 0.0}
+    def fake_construct(*args, **kwargs):
+        captured.update(kwargs)
+        return sentinel, {
+            "interaction_rcrso_attempts": 3,
+            "interaction_rcrso_verified_profiles": 2,
+            "interaction_selected_uses_rcrso": True,
+            "interaction_selected_rcrso_assignment_profiles": 1,
+            "interaction_failure_reason": "none",
+        }
+    monkeypatch.setattr(pw, "_construct_interaction_aware_reachable_response_envelope_np", fake_construct)
+    out, detail = pw._construct_verified_root_conditioned_recourse_set_operator_np(
+        np.zeros((2,11),np.float32), 0, np.zeros((1,4,7),np.float32), np.array([True]), np.array([True]),
+        np.array([0]), np.array([0.]), np.array([0.]), np.zeros((1,5),np.float32), np.zeros(1), {}, {}, 0.0,
+        base_candidate_index=0, critical_track_index=np.array([1],np.int64), critical_valid=np.array([True]),
+        natural_trajectories=np.zeros((1,2,4,7),np.float32), natural_logits=np.zeros((1,2),np.float32),
+        blocker_query_track_index=np.zeros(0,np.int64), blocker_query_trajectories=None, blocker_query_logits=None,
+        object_types=np.zeros(2,np.int32), blocker_query_decoder=lambda idx: (np.zeros((0,0,0,7),np.float32),np.zeros((0,0),np.float32)),
+        verified_recourse_set_proposal_fn=lambda **kwargs: ([], {}),
+    )
+    assert out is sentinel
+    assert captured["allow_empty_fixed_root_domains"] is True
+    assert captured["augment_with_verified_recourse_set_proposals"] is True
+    assert captured["known_nested_v39_empty"] is True
+    assert detail["rcrso_full_support_pass_selected"] is True
+    assert detail["blocker_conditioned_query_rcrso_verified_profiles"] == 2
+
+def test_stage0_uses_verified_fixed_plus_learned_set_and_keeps_static_holes():
+    src = Path("cowp/scripts/106_eval_rcrso_support.py").read_text(encoding="utf-8")
+    assert 'online=list(fixed_profiles) + list(learned)' in src
+    assert 'empty_frozen_static_root_domains_are_valid_proposal_completeness_targets' in src
+    assert 'fixed_if_nonempty_else_rcrso' not in src
+    assert 'all(bool(x["online_static_support_nonempty"]) for x in rr)' not in src

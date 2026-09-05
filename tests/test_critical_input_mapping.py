@@ -44,3 +44,15 @@ def test_model_prefers_critical_input_index_over_scenario_track_index():
     out = COWPModel(cfg)(batch, stage="representation")
     assert out["critical_idx"].tolist() == [[1]]
     assert out["critical_mask"].tolist() == [[True]]
+
+
+def test_existing_aligned_input_index_is_preserved_when_ids_are_unavailable():
+    d = {
+        "state/current/x": np.zeros(5, dtype=np.float32),
+        "state/current/valid": np.ones(5, dtype=np.int64),
+        "cowp/critical/track_index": np.array([149, 7], dtype=np.int64),
+        "cowp/critical/input_index": np.array([1, 3], dtype=np.int64),
+        "cowp/critical/valid": np.array([True, True]),
+    }
+    align_critical_agents_to_womd_input(d)
+    assert d["cowp/critical/input_index"].tolist() == [1, 3]

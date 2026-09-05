@@ -10,8 +10,10 @@ class RecourseSidecarDataset:
     """Small independent NPZ sidecar used only by the V16.8.45 recourse operator.
 
     It never modifies the compact-5k base tensor cache.  Every item is one
-    ``(scenario, ego-hypothesis, exact actor, natural root)`` context and contains
-    an outcome-independent verified proposal pool plus causal context features.
+    ``(scenario, ego-hypothesis, audit-relevant actor, natural root)`` context and
+    contains an outcome-independent verified proposal pool plus causal context
+    features.  This offline sidecar is a support proxy; exact collision blockers
+    remain a closed-loop online object and are evaluated by the frozen lost7 gate.
     """
 
     def __init__(self, root: str | Path, split: str):

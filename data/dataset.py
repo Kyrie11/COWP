@@ -200,7 +200,14 @@ def align_critical_agents_to_womd_input(data: dict[str, np.ndarray]) -> dict[str
     if track_index is None:
         return data
     track_index = np.asarray(track_index).astype(np.int64, copy=False).reshape(-1)
-    input_index = np.array(track_index, dtype=np.int64, copy=True)
+    # Preserve an authoritative cache-time WOMD/model-row mapping when present.
+    # Replacing it with Scenario track_index merely because object ids are absent
+    # can silently point legacy/import paths at the wrong actor.
+    existing_input = data.get("cowp/critical/input_index")
+    if existing_input is not None and np.asarray(existing_input).size == track_index.size:
+        input_index = np.asarray(existing_input).astype(np.int64, copy=True).reshape(-1)
+    else:
+        input_index = np.array(track_index, dtype=np.int64, copy=True)
     mapped_by_id = np.zeros_like(track_index, dtype=bool)
 
     track_id = data.get("cowp/critical/track_id")

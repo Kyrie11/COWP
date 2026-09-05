@@ -1,0 +1,44 @@
+{
+  "cache_dir": "/mnt/data/fake_cache",
+  "contract": {
+    "base_compact5k_modified": false,
+    "canonical_root_weight_semantics": "cached audit/transport canonical weights or shared canonical_root_weights fallback",
+    "hard_negative_source": "frozen-verifier-rejected teacher/Sobol controls retained nearest to verified support",
+    "hard_verifier_semantics": "V42-V44 frozen predicates",
+    "lost7_or_counterfactual48_allowed": false,
+    "max_roots_per_agent": 24,
+    "minimum_root_count": 2,
+    "required_root_mass": 0.75,
+    "rich_proposal_source": "deterministic Sobol knots; proposals admitted only after hard verifier"
+  },
+  "counts": {
+    "analytic_nonempty": 0,
+    "examples": 2,
+    "forbidden_skipped": 0,
+    "hard_negative_examples": 8,
+    "hypothesis_groups": 1,
+    "positive_examples": 0,
+    "rich_verified": 0,
+    "scenes": 1,
+    "teacher_proposals": 8,
+    "teacher_verified": 0
+  },
+  "forbidden_id_count": 200,
+  "num_shards": 1,
+  "rcrso_config": {
+    "blocker_feature_dim": 13,
+    "conflict_feature_dim": 10,
+    "control_knots": 8,
+    "d_model": 128,
+    "dropout": 0.0,
+    "ego_feature_dim": 9,
+    "encoder_layers": 2,
+    "environment_feature_dim": 18,
+    "max_queries": 16,
+    "nhead": 4,
+    "root_feature_dim": 9
+  },
+  "shard_index": 0,
+  "split": "val",
+  "version": "V16.8.45R1"
+}
