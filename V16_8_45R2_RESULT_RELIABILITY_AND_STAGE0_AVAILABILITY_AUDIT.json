@@ -1,0 +1,288 @@
+{
+  "audit_version": "V16.8.45R2_result_reliability_and_stage0_availability_independent_R3",
+  "dataset": {
+    "archive_contents_note": "This upload contains manifests/profile/natural-support/cache-verifier audit artifacts, not the server tensor_cache_train/val NPZ payloads. The flat-roadgraph conclusion is additionally grounded in the project raw-WOMD cache/dataloader contract and the user server traceback.",
+    "audit_version": "V16.8.45R1_dataset_reaudit",
+    "decision": "FREEZE_DATASET_DO_NOT_REBUILD_FOR_V45R1",
+    "engineering_root_cause": {
+      "dataset_corruption": false,
+      "detail": "Raw WOMD tf.Example roadgraph vector fields may be stored flat; Waymax dataloader reshapes to [P,3], original V45 sidecar did not.",
+      "sidecar_schema_consumption_bug": true
+    },
+    "provenance_caveat": {
+      "affected_root_mismatch_count": 0,
+      "canonical_root_weight_mismatch_count": 0,
+      "conflict_root_mismatch_count": 0,
+      "inspected": 5000,
+      "irrelevant_blocker_count": 58243,
+      "retained_root_mismatch_count": 0,
+      "silent_blocker_count": 0,
+      "submission_action": "Before publication artifact release, repair cache serialization/verifier accounting or provide a strict cache-to-runtime semantic-equivalence proof. Current V45R1 does not rebuild data based on this caveat.",
+      "valid_scene_rate_inspected": 1.0,
+      "verify_cache_train_pass": false
+    },
+    "source_archive": "formal_v16_8_24_compact_full_5k(1).zip",
+    "splits": {
+      "heldout": {
+        "audit_relevant_pair_rate": 0.42949210300959645,
+        "critical_agent_max": 6,
+        "critical_agent_mean": 5.338333333333333,
+        "critical_agent_p50": 6.0,
+        "critical_agent_p90": 6.0,
+        "lt2_low_burden_rate": 0.0,
+        "mechanism_unauditable_rate": 0.04464564470808617,
+        "priority_smooth_yield_acceptance": 0.21865260129465355,
+        "protected_prio_root_coverage": 0.994651306315573,
+        "rootless_rate": 0.0,
+        "scenes": 1200,
+        "selected_cap_saturation_rate": 0.9541666666666667,
+        "terminal_acceptance": 0.5509600903614458
+      },
+      "train": {
+        "audit_relevant_pair_rate": 0.42969642430550514,
+        "critical_agent_max": 6,
+        "critical_agent_mean": 5.3846,
+        "critical_agent_p50": 6.0,
+        "critical_agent_p90": 6.0,
+        "lt2_low_burden_rate": 0.0,
+        "mechanism_unauditable_rate": 0.040671544775842214,
+        "priority_smooth_yield_acceptance": 0.20354708925199114,
+        "protected_prio_root_coverage": 0.9945328517036025,
+        "rootless_rate": 0.0,
+        "scenes": 5000,
+        "selected_cap_saturation_rate": 0.9578,
+        "terminal_acceptance": 0.5414834541905825
+      },
+      "val": {
+        "audit_relevant_pair_rate": 0.42863002173455794,
+        "critical_agent_max": 6,
+        "critical_agent_mean": 5.387,
+        "critical_agent_p50": 6.0,
+        "critical_agent_p90": 6.0,
+        "lt2_low_burden_rate": 0.0,
+        "mechanism_unauditable_rate": 0.043437906070168925,
+        "priority_smooth_yield_acceptance": 0.2064995628096765,
+        "protected_prio_root_coverage": 0.9936321332353661,
+        "rootless_rate": 0.0,
+        "scenes": 1000,
+        "selected_cap_saturation_rate": 0.955,
+        "terminal_acceptance": 0.5454565514806479
+      }
+    },
+    "watch_items_after_model_convergence": [
+      "critical-agent/conflict-region selected cap=6 is saturated on about 95%+ of scenes across splits",
+      "PRIORITY_SMOOTH_YIELD acceptance is only about 20-22%",
+      "TERMINAL acceptance is about 54-55%",
+      "these are future support-ceiling diagnostics, not evidence that the V45 sidecar crash or current RCRSO bottleneck is data-driven"
+    ]
+  },
+  "decision": {
+    "algorithm_attribution_allowed": false,
+    "engineering_evidence": "PASS_WITH_PROVENANCE_LIMITS",
+    "new_scientific_algorithm_authorized": false,
+    "required_action": "ENGINEERING_REPAIR_ONLY_AND_RERUN_FROZEN_STAGE0",
+    "scientific_stage0_evidence": "MISSING_INCOMPLETE",
+    "v16_8_45_rcrso_go_stop": "NOT_AVAILABLE"
+  },
+  "evidence_boundary": [
+    "No Stage-0 final audit exists in the uploaded result archive, so no scientific GO/STOP can be issued.",
+    "No checkpoint bytes are included in the result archive, so checkpoint content SHA256 cannot be independently reconstructed here.",
+    "Full train/val sidecar NPZ payloads are not included in the result archive, so build logs/training counts can be audited but the full sidecar cannot be replayed from this upload alone.",
+    "counterfactual development panels remain development-selected and are not publication holdouts."
+  ],
+  "frozen_preregistered_stage0": {
+    "GO": "selected FullHypothesisRootCoverage - max(fixed baseline,V44 analytic baseline) >= 0.03 AND selected VerifiedRootRecall > 0",
+    "K_selection": "smallest K reaching 95% of validation FullHypothesisRootCoverage plateau",
+    "K_values": [
+      2,
+      4,
+      8,
+      16
+    ],
+    "after_pass": "equivalence16 -> lost7 -> retained3/rescue10 -> induced9 -> remaining29/CF48 -> fresh37 -> development exact200"
+  },
+  "paper_artifact_check": {
+    "method": "OC-RAP / observation-consistent deployable recoverability",
+    "mismatch_with_current_code_lineage": true,
+    "note": "The only TeX in the uploaded COWP archive is an OC-RAP/recoverability manuscript, while the V25-V45 COWP/RCRSO code/advice lineage is safety-by-coercion / natural-root recourse-set feasibility. Treat this as a provenance/paper-package mismatch until the intended TeX is supplied or reconciled; no paper edits are made in R3.",
+    "tex_files_found": [
+      "paper/post-collision-v48.36-OCAF.tex"
+    ],
+    "title": "Observation-Consistent Recoverability as a Calibrated Planning Primitive for Autonomous Driving"
+  },
+  "r3_repair": {
+    "changes": [
+      "periodic stderr progress with examples/groups/verifier calls/rate/ETA/phase timing",
+      "scenario-disjoint two-shard Stage-0 execution and exact raw-count merge",
+      "lazy partial NPZ member loading and streaming group aggregation",
+      "remove duplicate fixed-static-bank replay within an item",
+      "exact trajectory-identity memoization for repeated CSP pair predicates",
+      "semantic-namespace cache reuse only when root/state/beta/roadgraph/environment static inputs match"
+    ],
+    "focused_tests_failed": 0,
+    "focused_tests_passed": 143,
+    "legacy_vs_r3_cross_hypothesis_24_scientific_fields_exact": true,
+    "legacy_vs_r3_smoke_scientific_fields_exact": true,
+    "parallel_merge_smoke_scientific_fields_exact": true,
+    "scientific_method_changed": false,
+    "focused_test_command": "bash NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh sanity"
+  },
+  "result_package": {
+    "full_sidecar_npz_payload_present_in_uploaded_result_package": false,
+    "note": "Uploaded result archive contains sidecar build logs/profile-smoke artifacts and training_history, but not the completed Stage-0 audit/selected checkpoint or full server sidecar/checkpoint payload.",
+    "rcrso_unselected_checkpoint_bytes_present": false,
+    "stage0_selected_checkpoint_present": false,
+    "stage0_val_support_audit_present": false,
+    "training_history_present": true
+  },
+  "sidecar_build": {
+    "train": {
+      "examples": 111016,
+      "hypothesis_groups": 6748,
+      "launcher_wall_seconds": 11031,
+      "positive_examples": 24445,
+      "shards": [
+        {
+          "analytic_completion_s": 4655.710350566544,
+          "examples": 13769,
+          "features_context_s": 354.41968977754004,
+          "hypothesis_groups": 848,
+          "positive_examples": 3009,
+          "proposal_verify_s": 5222.884533782722,
+          "shard": 0,
+          "wall_seconds": 10690.4704630489,
+          "write_s": 107.14396708155982
+        },
+        {
+          "analytic_completion_s": 4653.1289533965755,
+          "examples": 13825,
+          "features_context_s": 325.50451170583256,
+          "hypothesis_groups": 870,
+          "positive_examples": 3005,
+          "proposal_verify_s": 5464.9307081101,
+          "shard": 1,
+          "wall_seconds": 10925.19317063992,
+          "write_s": 105.82878518407233
+        },
+        {
+          "analytic_completion_s": 4728.198253212497,
+          "examples": 13901,
+          "features_context_s": 337.0593086187728,
+          "hypothesis_groups": 841,
+          "positive_examples": 3135,
+          "proposal_verify_s": 5477.806362967007,
+          "shard": 2,
+          "wall_seconds": 11025.604396522976,
+          "write_s": 106.52737440052442
+        },
+        {
+          "analytic_completion_s": 4529.225611020811,
+          "examples": 13999,
+          "features_context_s": 340.30397922662087,
+          "hypothesis_groups": 840,
+          "positive_examples": 2957,
+          "proposal_verify_s": 5171.105237728683,
+          "shard": 3,
+          "wall_seconds": 10510.280364122009,
+          "write_s": 104.7668721138034
+        },
+        {
+          "analytic_completion_s": 4775.919738877332,
+          "examples": 14030,
+          "features_context_s": 358.23384424252436,
+          "hypothesis_groups": 811,
+          "positive_examples": 3081,
+          "proposal_verify_s": 5338.380186904222,
+          "shard": 4,
+          "wall_seconds": 10908.56364989793,
+          "write_s": 105.1011963095516
+        },
+        {
+          "analytic_completion_s": 4633.61750512477,
+          "examples": 13721,
+          "features_context_s": 347.69260402815416,
+          "hypothesis_groups": 839,
+          "positive_examples": 3365,
+          "proposal_verify_s": 5445.449519739719,
+          "shard": 5,
+          "wall_seconds": 10867.606962729013,
+          "write_s": 106.4231370605994
+        },
+        {
+          "analytic_completion_s": 4680.960824737558,
+          "examples": 14050,
+          "features_context_s": 358.9257111728657,
+          "hypothesis_groups": 865,
+          "positive_examples": 2997,
+          "proposal_verify_s": 5472.757970768027,
+          "shard": 6,
+          "wall_seconds": 11010.703952988843,
+          "write_s": 108.0003200226929
+        },
+        {
+          "analytic_completion_s": 4644.408552679233,
+          "examples": 13721,
+          "features_context_s": 332.63212353363633,
+          "hypothesis_groups": 834,
+          "positive_examples": 2896,
+          "proposal_verify_s": 5286.411003454123,
+          "shard": 7,
+          "wall_seconds": 10727.874750160845,
+          "write_s": 106.38317692372948
+        }
+      ]
+    },
+    "val": {
+      "examples": 25235,
+      "hypothesis_groups": 1612,
+      "launcher_wall_seconds": 12839,
+      "positive_examples": 6044,
+      "shards": [
+        {
+          "analytic_completion_s": 3468.2700591615867,
+          "examples": 12351,
+          "features_context_s": 275.69851754046977,
+          "hypothesis_groups": 785,
+          "positive_examples": 2850,
+          "proposal_verify_s": 6413.415469722124,
+          "shard": 0,
+          "wall_seconds": 10369.973040826852,
+          "write_s": 86.66530040930957
+        },
+        {
+          "analytic_completion_s": 3948.8831160033587,
+          "examples": 12884,
+          "features_context_s": 294.9028484423179,
+          "hypothesis_groups": 827,
+          "positive_examples": 3194,
+          "proposal_verify_s": 8369.97722927318,
+          "shard": 1,
+          "wall_seconds": 12835.84157474502,
+          "write_s": 91.03465293115005
+        }
+      ]
+    }
+  },
+  "stage0_engineering_root_cause": {
+    "classification": "engineering observability/performance defect; no evidence of deadlock from the uploaded artifacts",
+    "dominant_runtime_expected": "CPU/NumPy hard verifier, analytic completion, responder/environment collision compatibility and repeated exact CSP; GPU forward is not sufficient to remove this bottleneck",
+    "hypothesis_groups_expected": 1612,
+    "old_execution": "single process, item-wise batch-1 neural forward + hard verifier + fixed/V44 replay, stores detailed profiles then runs fixed/V44 + K={2,4,8,16} exact CSP passes per group",
+    "old_stage0_progress_output": "none until final JSON; no periodic hint/status",
+    "validation_examples_expected": 25235
+  },
+  "training": {
+    "best_checkpoint_selection_metric": "val.set",
+    "best_epoch": 9,
+    "best_val_set_loss": 0.08545545965118681,
+    "best_val_total_loss": 0.7225020373528349,
+    "epochs_completed": 30,
+    "interpretation": "Optimization ran to completion and the checkpoint-selection trace is coherent, but training loss/val set loss is not the preregistered support-completeness GO metric.",
+    "last_epoch": 30,
+    "last_val_set_loss": 0.08851699892299374,
+    "last_val_total_loss": 0.760225670007767,
+    "validation_examples_each_epoch": [
+      25235
+    ]
+  }
+}

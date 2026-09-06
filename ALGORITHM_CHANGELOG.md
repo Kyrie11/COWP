@@ -5716,3 +5716,67 @@ Engineering-only revision. Scientific RCRSO semantics and every preregistered ga
 Synthetic repeated-work profiling shows ~46× kinematics, ~8.38× shared-cache verifier, and ~4.86× environment-event feature subcomponent speedups; these are **not** server end-to-end claims. The authoritative sidecar hard verifier remains CPU/NumPy in R2 to preserve exact frozen predicate semantics. A30 GPU use remains recommended for RCRSO training/Stage-0 forward, not for authoritative hard-set membership until a separate CUDA equivalence gate exists.
 
 Scientific status remains **UNRESOLVED**; no V46 branch is authorized by this engineering revision.
+
+---
+
+# V16.8.45R3 — Stage-0 Runtime / Observability Fidelity Repair (engineering-only)
+
+**Scientific method remains V16.8.45 RCRSO. Scientific status remains UNRESOLVED until the frozen validation Stage-0 audit completes. No V46 is authorized.**
+
+## Trigger / reliability decision
+
+The uploaded V16.8.45R2 package contains coherent sidecar-build logs and a complete 30-epoch training history, but does **not** contain `stage0_val_support_audit.json` or the finalized `rcrso_stage0_selected.pt`. The user also reports that `stage0_support` was stopped before completion. Therefore there is no legal RCRSO GO/STOP evidence. Training loss or profile-only artifacts must not substitute for the preregistered verified-support gate.
+
+## Engineering root cause
+
+R2 Stage-0 is a single process over 25,235 validation sidecar examples. It performs batch-1 RCRSO forward, learned hard verification, fixed-bank replay and V44 analytic replay item-by-item, retains detailed response trajectories until all items finish, then executes fixed/V44/K2/K4/K8/K16 exact CSP metrics over 1,612 hypothesis groups. It emits no periodic status before the final JSON. This explains the observed long silent run without implying a deadlock.
+
+## R3 repair
+
+R3 changes only execution/runtime mechanics:
+
+1. periodic Stage-0 stderr progress: examples/groups/verifier calls/rate/ETA and phase timing;
+2. scenario-disjoint `parallel2` Stage-0 with exact raw-count merge; all roots of a hypothesis group stay on one shard;
+3. finalizer checks shard completeness, scenario non-overlap, checkpoint SHA256 and sidecar-summary SHA256;
+4. streaming group aggregation instead of retaining all 25k detailed profile records;
+5. exact reuse of the fixed static bank within an item;
+6. exact trajectory-identity memoization for repeated CSP pairwise collision predicates;
+7. cross-hypothesis cache reuse is namespaced by immutable semantic inputs including root/state/beta, candidate-local roadgraph subset and environment current/shift geometry, preventing stale cache reuse when candidate-local roadgraph changes.
+
+No root probability, beta, response parameterization, roadgraph predicate, Waymax kinematics, ego-current/shift safety, environment predicate, exact CSP, K set, K plateau rule, Stage-0 threshold, checkpoint-selection scientific metric, lost7/CF48 gate, base model, dataset, controller, or 8 s safety contract changes.
+
+## Semantic-fidelity validation
+
+- Legacy R2 vs R3 deterministic sidecar-smoke: **17/17 Stage-0 scientific fields exact**.
+- Legacy R2 vs R3 same-scenario cross-hypothesis 24-example regression: **17/17 scientific fields exact**.
+- R3 scenario-disjoint 2-shard merge vs legacy single-process smoke: **17/17 scientific fields exact**.
+- V25→V45R3 focused semantic/integrity suite: **143/143 passed** (before release packaging; final package rerun recorded separately).
+
+## Scientific status / frozen decision tree
+
+Still execute the original preregistration:
+
+```text
+Stage-0 validation support audit
+  FAIL -> current RCRSO architecture STOP
+  PASS -> equivalence16 -> lost7 >=2/7 -> rescue10 >=5/10
+          -> induced9 avoided >=7/9 -> remaining29/CF48 six-item gate
+          -> fresh37 -> development exact200
+```
+
+Stage-0 remains:
+
+```text
+K in {2,4,8,16}
+select smallest K reaching 95% of validation FullHypothesisRootCoverage plateau
+GO iff selected FHR - max(fixed FHR, V44 analytic FHR) >= 3 pp
+       AND selected VerifiedRootRecall > 0
+```
+
+Do not count an unfinished Stage-0 run as an architecture failure. Broader learned-recourse family convergence/closure rules remain unchanged.
+
+## Dataset / paper provenance notes
+
+- compact-5k remains **Freeze**; split statistics remain stable and do not currently explain the missing Stage-0 measurement.
+- publication artifact still has the known `verify_cache_train.json pass=false / irrelevant pair blockers=58243` provenance caveat.
+- the only TeX in the uploaded code package is the OC-RAP observation-consistent recoverability manuscript, which is not the same method lineage as the current COWP/RCRSO changelog. No paper edits are made until this artifact mismatch is reconciled and RCRSO scientific evidence exists.

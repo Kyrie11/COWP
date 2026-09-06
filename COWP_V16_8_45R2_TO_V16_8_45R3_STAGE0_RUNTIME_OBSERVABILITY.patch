@@ -1,0 +1,2134 @@
+--- a/cowp/scripts/106_eval_rcrso_support.py
++++ b/cowp/scripts/106_eval_rcrso_support.py
+@@ -1,8 +1,11 @@
+ from __future__ import annotations
+ 
+ import argparse
++import hashlib
+ import json
++import os
+ import shutil
++import sys
+ import time
+ from collections import defaultdict
+ from pathlib import Path
+@@ -75,13 +78,20 @@
+     return out
+ 
+ 
+-def _fixed_bank_profiles(item: dict, cfg: dict) -> list[dict]:
+-    """Frozen profiles surviving the candidate-specific ego/environment screen."""
++def _fixed_bank_profiles(item: dict, cfg: dict, *, static_profiles: list[dict] | None = None) -> list[dict]:
++    """Frozen profiles surviving the candidate-specific ego/environment screen.
++
++    ``static_profiles`` is an exact work-reuse hook only.  The historical R2
++    implementation recomputed the low-burden/roadgraph/kinematic fixed bank
++    immediately after computing the identical static bank for
++    ``online_static_support_nonempty``.  Reusing that list changes no predicate.
++    """
+     object_type=int(np.asarray(item["blocker_object_type"]).item())
+     ego_cur=np.asarray(item["ego_current"],np.float32); ego_shift=np.asarray(item["ego_shifted"],np.float32)
+     env=_environment(item)
+     out=[]
+-    for profile in _fixed_static_bank_profiles(item,cfg):
++    source = _fixed_static_bank_profiles(item,cfg) if static_profiles is None else static_profiles
++    for profile in source:
+         tr=np.asarray(profile["trajectory"],np.float32); shifted=np.asarray(profile["shifted_trajectory"],np.float32)
+         try:
+             if unsafe_between_bool(ego_cur,tr,cfg,agent_type=object_type):
+@@ -103,7 +113,7 @@
+             out.append(profile)
+     return out
+ 
+-def _analytic_profiles(item: dict, cfg: dict) -> list[dict]:
++def _analytic_profiles(item: dict, cfg: dict, *, compatibility_cache: dict | None = None) -> list[dict]:
+     blocker=np.asarray(item["blocker_state_global"],np.float32)
+     state=blocker[None,:]
+     profiles,_=_root_conditioned_control_reachable_response_profiles_np(
+@@ -111,7 +121,7 @@
+         np.asarray(item["root_trajectory"],np.float32),float(np.asarray(item["beta"]).item()),
+         np.asarray(item["ego_current"],np.float32),np.asarray(item["ego_shifted"],np.float32),
+         _environment(item),_roadgraph(item),cfg,profile_index_base=10000,
+-        root_ordinal=int(np.asarray(item["root_index"]).item()),compatibility_cache={}
++        root_ordinal=int(np.asarray(item["root_index"]).item()),compatibility_cache={} if compatibility_cache is None else compatibility_cache
+     )
+     return profiles
+ 
+@@ -128,18 +138,32 @@
+         return False
+ 
+ 
+-def _csp(nodes:list[dict],cfg:dict)->bool:
++def _profile_pair_identity(profile: dict, object_type: int) -> tuple:
++    cur=np.ascontiguousarray(np.asarray(profile["trajectory"],np.float32))
++    sh=np.ascontiguousarray(np.asarray(profile["shifted_trajectory"],np.float32))
++    return (int(object_type),cur.shape,cur.tobytes(),sh.shape,sh.tobytes())
++
++def _csp(nodes:list[dict],cfg:dict, pair_cache:dict | None=None)->bool:
++    """Exact historical CSP with optional memoization of exact trajectory pairs."""
+     if any(not n["profiles"] for n in nodes): return False
++    if pair_cache is None: pair_cache={}
+     ordered=sorted(nodes,key=lambda n:(len(n["profiles"]),n["agent_index"],n["root_index"]))
+     chosen=[]
++    def compatible(node,p,on,op):
++        if node["agent_index"]==on["agent_index"]:
++            return True
++        a=_profile_pair_identity(p,int(node["object_type"])); b=_profile_pair_identity(op,int(on["object_type"]))
++        key=(a,b) if a<=b else (b,a)
++        if key not in pair_cache:
++            pair_cache[key]=bool(_pair_ok({**p,"object_type":node["object_type"]},{**op,"object_type":on["object_type"]},cfg))
++        return bool(pair_cache[key])
+     def dfs(pos:int)->bool:
+         if pos>=len(ordered): return True
+         node=ordered[pos]
+         for p in node["profiles"]:
+             ok=True
+             for on,op in chosen:
+-                if node["agent_index"]==on["agent_index"]: continue
+-                if not _pair_ok({**p,"object_type":node["object_type"]},{**op,"object_type":on["object_type"]},cfg): ok=False; break
++                if not compatible(node,p,on,op): ok=False; break
+             if ok:
+                 chosen.append((node,p))
+                 if dfs(pos+1): return True
+@@ -155,118 +179,373 @@
+     return load_config(label_config,data_config,eval_config)
+ 
+ 
+-def main():
+-    ap=argparse.ArgumentParser()
+-    ap.add_argument("--sidecar-root",required=True); ap.add_argument("--split",default="val",choices=["val","heldout"])
+-    ap.add_argument("--checkpoint",required=True); ap.add_argument("--output",required=True); ap.add_argument("--selected-checkpoint",required=True)
+-    ap.add_argument("--k-values",default="2,4,8,16"); ap.add_argument("--device",default="auto"); ap.add_argument("--max-examples",type=int,default=None)
+-    ap.add_argument("--minimum-full-hypothesis-coverage-lift-pp",type=float,default=3.0)
+-    ap.add_argument("--label-config",default="configs/label_cowp_v16_8.yaml")
+-    ap.add_argument("--data-config",default="configs/data.yaml")
+-    ap.add_argument("--eval-config",default="configs/eval_cowp_v16_8.yaml")
+-    args=ap.parse_args(); device=torch.device("cuda" if args.device=="auto" and torch.cuda.is_available() else ("cpu" if args.device=="auto" else args.device))
+-    ckpt=torch.load(args.checkpoint,map_location="cpu"); rcfg=RCRSOConfig.from_dict(ckpt.get("rcrso_config",ckpt.get("cfg",{}))); model=RootConditionedRecourseSetTransformer(rcfg); model.load_state_dict(ckpt["model"],strict=True); model.to(device).eval()
+-    ks=sorted(set(int(x) for x in args.k_values.split(",") if x.strip() and 1<=int(x)<=rcfg.max_queries));
+-    if not ks: raise ValueError("No valid K values")
+-    ds=RecourseSidecarDataset(args.sidecar_root,args.split); cfg=_load_cfg(args.label_config,args.data_config,args.eval_config)
+-    records=[]; t0=time.time(); total_verifier_calls=0
+-    limit=len(ds) if args.max_examples is None else min(len(ds),args.max_examples)
++
++_STAGE0_KEYS = (
++    "root_tokens", "ego_tokens", "environment_tokens", "environment_valid",
++    "blocker_state", "conflict_features", "target_valid", "scenario_hash",
++    "hypothesis_group_id", "agent_index", "root_index", "root_trajectory",
++    "blocker_state_global", "blocker_object_type", "beta", "ego_current",
++    "ego_shifted", "environment_current", "environment_shifted",
++    "environment_object_type", "environment_agent_index", "roadgraph_xy",
++    "roadgraph_heading", "roadgraph_types", "roadgraph_valid",
++)
++
++
++def _sha256_file(path: str | Path) -> str:
++    h=hashlib.sha256()
++    with open(path,"rb") as f:
++        for chunk in iter(lambda:f.read(1<<20),b""):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def _load_stage0_item(path: Path) -> dict:
++    # NPZ is lazy per member.  Stage-0 does not need training-only negative/target
++    # tensors other than target_valid, so avoid decompressing them all.
++    with np.load(path,allow_pickle=False) as z:
++        missing=[k for k in _STAGE0_KEYS if k not in z.files]
++        if missing:
++            raise KeyError(f"Stage-0 sidecar item {path} missing keys: {missing}")
++        return {k:z[k] for k in _STAGE0_KEYS}
++
++
++def _path_key(path: Path) -> tuple[int,int]:
++    parts=path.stem.split("_")
++    if len(parts)>=2:
++        try:
++            return int(parts[0],16), int(parts[1])
++        except Exception:
++            pass
++    with np.load(path,allow_pickle=False) as z:
++        return int(np.asarray(z["scenario_hash"]).item()), int(np.asarray(z["hypothesis_group_id"]).item())
++
++
++def _assigned_groups(paths: list[Path], num_shards:int, shard_index:int):
++    groups=[]; cur_key=None; cur=[]
++    for path in paths:
++        sh,gid=_path_key(path)
++        if sh % int(num_shards) != int(shard_index):
++            continue
++        key=(sh,gid)
++        if cur_key is not None and key!=cur_key:
++            groups.append((cur_key,cur)); cur=[]
++        cur_key=key; cur.append(path)
++    if cur_key is not None:
++        groups.append((cur_key,cur))
++    return groups
++
++
++def _zero_stats(ks:list[int]) -> dict:
++    return {
++        "examples":0,
++        "eligible_examples":0,
++        "hypothesis_groups":0,
++        "oracle_positive_roots":0,
++        "verifier_calls":0,
++        "baseline":{
++            "fixed_bank":{"root_num":0,"full_num":0,"csp_num":0},
++            "v44_analytic_extension":{"root_num":0,"full_num":0,"csp_num":0},
++        },
++        "rcrso":{
++            str(k):{
++                "root_num":0,"full_num":0,"csp_num":0,
++                "burden_sum":0.0,"burden_count":0,
++                "learned_verified_profile_count":0,
++                "learned_root_nonempty_num":0,
++            } for k in ks
++        },
++    }
++
++
++def _profile_fn_analytic(rec:dict)->list[dict]:
++    # Historical V44 callback semantics, exactly as V45R2.
++    if not bool(rec.get("online_static_support_nonempty",False)):
++        return []
++    fixed=list(rec["fixed_profiles"])
++    return fixed if fixed else list(rec["analytic_profiles"])
++
++
++
++
++def _array_semantic_digest(*arrays: np.ndarray) -> str:
++    """SHA256 namespace for exact immutable Stage-0 cache inputs.
++
++    Cross-hypothesis work reuse is allowed only when every candidate-independent
++    array that can affect the frozen hard predicates is byte-identical.
++    """
++    h=hashlib.sha256()
++    for raw in arrays:
++        a=np.ascontiguousarray(np.asarray(raw))
++        h.update(str(a.dtype).encode('ascii')); h.update(repr(a.shape).encode('ascii')); h.update(a.tobytes())
++    return h.hexdigest()
++
++def _stage0_static_namespace(item: dict) -> tuple:
++    road_sig=_array_semantic_digest(item["roadgraph_xy"],item["roadgraph_heading"],item["roadgraph_types"],item["roadgraph_valid"])
++    env_sig=_array_semantic_digest(item["environment_current"],item["environment_shifted"],item["environment_object_type"],item["environment_agent_index"])
++    root_sig=_array_semantic_digest(item["root_trajectory"],item["blocker_state_global"])
++    return (
++        int(np.asarray(item["agent_index"]).item()), int(np.asarray(item["root_index"]).item()),
++        int(np.asarray(item["blocker_object_type"]).item()), float(np.asarray(item["beta"]).item()),
++        root_sig, road_sig, env_sig,
++    )
++
++def _process_item(model, item:dict, cfg:dict, ks:list[int], device:torch.device, scene_cache:dict, timings:dict) -> dict:
++    def tt(k): return torch.as_tensor(np.asarray(item[k]),device=device,dtype=torch.float32).unsqueeze(0)
++    t=time.perf_counter()
++    env_valid=torch.as_tensor(np.asarray(item["environment_valid"]),device=device,dtype=torch.bool).unsqueeze(0)
+     with torch.no_grad():
+-        for i in range(limit):
+-            item=ds[i]
+-            def tt(k): return torch.as_tensor(np.asarray(item[k]),device=device,dtype=torch.float32).unsqueeze(0)
+-            env_valid=torch.as_tensor(np.asarray(item["environment_valid"]),device=device,dtype=torch.bool).unsqueeze(0)
+-            out=model(root_tokens=tt("root_tokens"),ego_tokens=tt("ego_tokens"),environment_tokens=tt("environment_tokens"),environment_valid=env_valid,blocker_state=tt("blocker_state"),conflict_features=tt("conflict_features"),query_count=max(ks))
+-            knots=out["control_knots"][0].cpu().numpy().astype(np.float32); logits=out["feasible_logits"][0].cpu().numpy().astype(np.float64); order=np.argsort(-logits,kind="stable"); knots=knots[order]
+-            # Re-run the frozen hard verifier on every proposal once. Prefix-K metrics then only select subsets of the verified set.
+-            agent_state=np.asarray(item["blocker_state_global"],np.float32)[None,:]
+-            profiles,detail=_verified_root_conditioned_recourse_set_profiles_np(agent_state,0,int(np.asarray(item["blocker_object_type"]).item()),np.asarray(item["root_trajectory"],np.float32),float(np.asarray(item["beta"]).item()),np.asarray(item["ego_current"],np.float32),np.asarray(item["ego_shifted"],np.float32),_environment(item),_roadgraph(item),cfg,knots,profile_index_base=20000,root_ordinal=int(np.asarray(item["root_index"]).item()),compatibility_cache={})
+-            total_verifier_calls+=int(detail.get("profile_evaluations",0))
+-            by_q={int(p["profile_index"])-20000:p for p in profiles}
+-            fixed_static_profiles=_fixed_static_bank_profiles(item,cfg)
+-            fixed_profiles=_fixed_bank_profiles(item,cfg)
+-            analytic_profiles=_analytic_profiles(item,cfg)
+-            rec={"scenario_hash":int(np.asarray(item["scenario_hash"]).item()),"hypothesis_group_id":int(np.asarray(item["hypothesis_group_id"]).item()),"agent_index":int(np.asarray(item["agent_index"]).item()),"root_index":int(np.asarray(item["root_index"]).item()),"object_type":int(np.asarray(item["blocker_object_type"]).item()),"oracle_positive":bool(np.asarray(item["target_valid"]).any()),"online_static_support_nonempty":bool(fixed_static_profiles),"fixed_nonempty":bool(fixed_profiles),"analytic_nonempty":bool(analytic_profiles),"fixed_profiles":fixed_profiles,"analytic_profiles":analytic_profiles,"learned_verified_by_k":{},"learned_burden_by_k":{},"learned_profiles_by_k":{},"online_verified_by_k":{},"online_profiles_by_k":{}}
+-            for k in ks:
+-                learned=[p for q,p in by_q.items() if q<k]
+-                # V16.8.45R1 set-operator semantics: after the exact frozen V43
+-                # path has failed, verified learned proposals augment the frozen
+-                # candidate-specific response domain.  This can fill an empty root
+-                # domain *or* add diversity needed by the exact joint CSP.  Every
+-                # learned profile was independently replayed through the unchanged
+-                # hard verifier above, so the union changes completeness only.
+-                online=list(fixed_profiles) + list(learned)
+-                rec["learned_verified_by_k"][k]=bool(learned)
+-                rec["learned_burden_by_k"][k]=[float(p["burden"]) for p in learned]
+-                rec["learned_profiles_by_k"][k]=learned
+-                rec["online_verified_by_k"][k]=bool(online)
+-                rec["online_profiles_by_k"][k]=online
+-            records.append(rec)
+-    groups_all=defaultdict(list)
+-    for r in records: groups_all[(r["scenario_hash"],r["hypothesis_group_id"])].append(r)
+-    # V16.8.45R1 deliberately keeps roots whose frozen static proposal domain is
+-    # empty: those are proposal-completeness holes that RCRSO is meant to fill.
+-    # Natural-root count/mass validity is already frozen by sidecar construction;
+-    # no root/beta/verifier predicate is relaxed here.
+-    groups={key:rr for key,rr in groups_all.items() if rr}
+-    eligible_records=list(records)
+-    oracle=[r for r in eligible_records if r["oracle_positive"]]
+-
+-    def extension_profiles(r:dict, extension_key:str)->list[dict]:
+-        # Historical V44 completion lived downstream of frozen support
+-        # preparation.  A root with no statically feasible frozen profile never
+-        # reached that callback, so analytic completion must not be credited with
+-        # repairing such a root in the Stage-0 baseline.
+-        if not bool(r.get("online_static_support_nonempty", False)):
+-            return []
+-        fixed=list(r["fixed_profiles"])
+-        return fixed if fixed else list(r[extension_key])
+-
+-    # Baselines are evaluated with their historical online semantics.  V45R1 is
+-    # intentionally broader only in proposal completeness: its verified learned
+-    # set may populate a frozen-static proposal hole after frozen V43 has failed.
+-    baseline={}
++        out=model(root_tokens=tt("root_tokens"),ego_tokens=tt("ego_tokens"),environment_tokens=tt("environment_tokens"),environment_valid=env_valid,blocker_state=tt("blocker_state"),conflict_features=tt("conflict_features"),query_count=max(ks))
++    knots=out["control_knots"][0].detach().cpu().numpy().astype(np.float32)
++    logits=out["feasible_logits"][0].detach().cpu().numpy().astype(np.float64)
++    order=np.argsort(-logits,kind="stable"); knots=knots[order]
++    timings["model_forward_s"] += time.perf_counter()-t
++
++    semantic_ns=_stage0_static_namespace(item)
++    compat=scene_cache.setdefault(("compatibility",semantic_ns),{})
++    t=time.perf_counter()
++    agent_state=np.asarray(item["blocker_state_global"],np.float32)[None,:]
++    profiles,detail=_verified_root_conditioned_recourse_set_profiles_np(
++        agent_state,0,int(np.asarray(item["blocker_object_type"]).item()),
++        np.asarray(item["root_trajectory"],np.float32),float(np.asarray(item["beta"]).item()),
++        np.asarray(item["ego_current"],np.float32),np.asarray(item["ego_shifted"],np.float32),
++        _environment(item),_roadgraph(item),cfg,knots,profile_index_base=20000,
++        root_ordinal=int(np.asarray(item["root_index"]).item()),compatibility_cache=compat)
++    timings["learned_verify_s"] += time.perf_counter()-t
++    by_q={int(p["profile_index"])-20000:p for p in profiles}
++
++    static_key=semantic_ns
++    static_cache=scene_cache.setdefault("fixed_static",{})
++    t=time.perf_counter()
++    fixed_static_profiles=static_cache.get(static_key)
++    if fixed_static_profiles is None:
++        fixed_static_profiles=_fixed_static_bank_profiles(item,cfg)
++        static_cache[static_key]=fixed_static_profiles
++    timings["fixed_static_s"] += time.perf_counter()-t
++
++    t=time.perf_counter()
++    fixed_profiles=_fixed_bank_profiles(item,cfg,static_profiles=fixed_static_profiles)
++    timings["fixed_dynamic_s"] += time.perf_counter()-t
++
++    t=time.perf_counter()
++    analytic_profiles=_analytic_profiles(item,cfg,compatibility_cache=compat)
++    timings["analytic_s"] += time.perf_counter()-t
++
++    rec={
++        "scenario_hash":int(np.asarray(item["scenario_hash"]).item()),
++        "hypothesis_group_id":int(np.asarray(item["hypothesis_group_id"]).item()),
++        "agent_index":int(np.asarray(item["agent_index"]).item()),
++        "root_index":int(np.asarray(item["root_index"]).item()),
++        "object_type":int(np.asarray(item["blocker_object_type"]).item()),
++        "oracle_positive":bool(np.asarray(item["target_valid"]).any()),
++        "online_static_support_nonempty":bool(fixed_static_profiles),
++        "fixed_profiles":fixed_profiles,
++        "analytic_profiles":analytic_profiles,
++        "learned_profiles_by_k":{},
++        "online_profiles_by_k":{},
++    }
++    for k in ks:
++        learned=[p for q,p in by_q.items() if q<k]
++        online=list(fixed_profiles) + list(learned)
++        rec["learned_profiles_by_k"][k]=learned
++        rec["online_profiles_by_k"][k]=online
++    rec["verifier_calls"]=int(detail.get("profile_evaluations",0))
++    return rec
++
++
++def _accumulate_group(stats:dict, rr:list[dict], ks:list[int], cfg:dict, timings:dict) -> None:
++    stats["hypothesis_groups"] += 1
++    stats["examples"] += len(rr); stats["eligible_examples"] += len(rr)
++    oracle=[r for r in rr if r["oracle_positive"]]
++    stats["oracle_positive_roots"] += len(oracle)
++    stats["verifier_calls"] += sum(int(r.get("verifier_calls",0)) for r in rr)
++    pair_cache={}
++
+     baseline_specs=(
+-        ("fixed_bank", lambda r:list(r["fixed_profiles"])),
+-        ("v44_analytic_extension", lambda r:extension_profiles(r,"analytic_profiles")),
++        ("fixed_bank",lambda r:list(r["fixed_profiles"])),
++        ("v44_analytic_extension",_profile_fn_analytic),
+     )
+-    for key,profile_fn in baseline_specs:
+-        root_recall=sum(bool(profile_fn(r)) for r in oracle)/max(len(oracle),1)
+-        full=sum(all(bool(profile_fn(x)) for x in rr) for rr in groups.values())/max(len(groups),1)
+-        csp_ok=0
+-        for rr in groups.values():
+-            nodes=[{"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":profile_fn(r)} for r in rr]
+-            csp_ok+=int(_csp(nodes,cfg))
+-        baseline[key]={"VerifiedRootRecall":root_recall,"FullHypothesisRootCoverage":full,"ExactCSPCompletionRate":csp_ok/max(len(groups),1)}
++    t=time.perf_counter()
++    for name,fn in baseline_specs:
++        profiles=[fn(r) for r in rr]
++        stats["baseline"][name]["root_num"] += sum(bool(profiles[i]) for i,r in enumerate(rr) if r["oracle_positive"])
++        stats["baseline"][name]["full_num"] += int(all(bool(x) for x in profiles))
++        nodes=[{"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":profiles[i]} for i,r in enumerate(rr)]
++        stats["baseline"][name]["csp_num"] += int(_csp(nodes,cfg,pair_cache=pair_cache))
++    for k in ks:
++        online=[r["online_profiles_by_k"][k] for r in rr]
++        learned=[r["learned_profiles_by_k"][k] for r in rr]
++        s=stats["rcrso"][str(k)]
++        s["root_num"] += sum(bool(online[i]) for i,r in enumerate(rr) if r["oracle_positive"])
++        s["full_num"] += int(all(bool(x) for x in online))
++        nodes=[{"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":online[i]} for i,r in enumerate(rr)]
++        s["csp_num"] += int(_csp(nodes,cfg,pair_cache=pair_cache))
++        for lst in learned:
++            s["learned_root_nonempty_num"] += int(bool(lst))
++            s["learned_verified_profile_count"] += len(lst)
++            for p in lst:
++                s["burden_sum"] += float(p["burden"]); s["burden_count"] += 1
++    timings["csp_metrics_s"] += time.perf_counter()-t
++
++
++def _partial_to_summary(partials:list[dict], minimum_lift_pp:float) -> dict:
++    if not partials: raise ValueError("no Stage-0 partials")
++    ks=partials[0]["k_values"]
++    for p in partials:
++        if p["k_values"]!=ks: raise ValueError("K mismatch across Stage-0 shards")
++    examples=sum(p["stats"]["examples"] for p in partials)
++    eligible=sum(p["stats"]["eligible_examples"] for p in partials)
++    groups=sum(p["stats"]["hypothesis_groups"] for p in partials)
++    oracle=sum(p["stats"]["oracle_positive_roots"] for p in partials)
++    verifier_calls=sum(p["stats"]["verifier_calls"] for p in partials)
++    baseline={}
++    for name in ("fixed_bank","v44_analytic_extension"):
++        c={k:sum(p["stats"]["baseline"][name][k] for p in partials) for k in ("root_num","full_num","csp_num")}
++        baseline[name]={
++            "VerifiedRootRecall":c["root_num"]/max(oracle,1),
++            "FullHypothesisRootCoverage":c["full_num"]/max(groups,1),
++            "ExactCSPCompletionRate":c["csp_num"]/max(groups,1),
++        }
+     curves=[]
+     for k in ks:
+-        root_recall=sum(bool(r["online_verified_by_k"][k]) for r in oracle)/max(len(oracle),1)
+-        full=sum(all(bool(x["online_verified_by_k"][k]) for x in rr) for rr in groups.values())/max(len(groups),1)
+-        csp_ok=0
+-        for rr in groups.values():
+-            nodes=[]
+-            for r in rr:
+-                nodes.append({"agent_index":r["agent_index"],"root_index":r["root_index"],"object_type":r["object_type"],"profiles":r["online_profiles_by_k"][k]})
+-            csp_ok+=int(_csp(nodes,cfg))
+-        learned_burdens=[b for r in eligible_records for b in r["learned_burden_by_k"][k]]
++        key=str(k)
++        c={name:sum(p["stats"]["rcrso"][key][name] for p in partials) for name in (
++            "root_num","full_num","csp_num","burden_sum","burden_count","learned_verified_profile_count","learned_root_nonempty_num")}
+         curves.append({
+-            "K":k,
+-            "VerifiedRootRecall":root_recall,
+-            "FullHypothesisRootCoverage":full,
+-            "ExactCSPCompletionRate":csp_ok/max(len(groups),1),
+-            "learned_verified_response_burden_mean":float(np.mean(learned_burdens)) if learned_burdens else None,
+-            "learned_verified_profile_count":sum(len(r["learned_profiles_by_k"][k]) for r in eligible_records),
+-            "learned_only_root_nonempty_rate":sum(bool(r["learned_verified_by_k"][k]) for r in eligible_records)/max(len(eligible_records),1),
++            "K":int(k),
++            "VerifiedRootRecall":c["root_num"]/max(oracle,1),
++            "FullHypothesisRootCoverage":c["full_num"]/max(groups,1),
++            "ExactCSPCompletionRate":c["csp_num"]/max(groups,1),
++            "learned_verified_response_burden_mean":c["burden_sum"]/c["burden_count"] if c["burden_count"] else None,
++            "learned_verified_profile_count":int(c["learned_verified_profile_count"]),
++            "learned_only_root_nonempty_rate":c["learned_root_nonempty_num"]/max(eligible,1),
+             "online_extension_semantics":"fixed_plus_rcrso_verified_union_after_nested_v43_failure",
+         })
+     plateau=max(x["FullHypothesisRootCoverage"] for x in curves); target=0.95*plateau
+     selected=min((x for x in curves if x["FullHypothesisRootCoverage"]+1e-12>=target),key=lambda x:x["K"])
+     baseline_best=max(baseline["fixed_bank"]["FullHypothesisRootCoverage"],baseline["v44_analytic_extension"]["FullHypothesisRootCoverage"])
+-    lift=selected["FullHypothesisRootCoverage"]-baseline_best; gate=lift+1e-12>=args.minimum_full_hypothesis_coverage_lift_pp/100.0 and selected["VerifiedRootRecall"]>0.0
+-    summary={"version":"V16.8.45R2-engineering","scientific_method":"V16.8.45 RCRSO unchanged","split":args.split,"examples":len(records),"eligible_examples":len(eligible_records),"hypothesis_groups_all":len(groups_all),"hypothesis_groups":len(groups),"structural_ineligible_hypothesis_groups":0,"oracle_positive_roots":len(oracle),"teacher_verified_positive_roots":len(oracle),"oracle_positive_definition":"known verifier-positive control in the frozen finite sidecar teacher pool; not proof of exhaustive recourse existence","baseline":baseline,"rcrso_curve":curves,"plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,"selected_k":selected["K"],"selected_metrics":selected,"coverage_lift_over_best_frozen_baseline":lift,"minimum_required_lift_pp":args.minimum_full_hypothesis_coverage_lift_pp,"stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},"verifier_calls":total_verifier_calls,"wall_seconds":time.time()-t0,"contract":{"K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,"hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True,"stage0_matches_online_extension_semantics":True,"rcrso_verified_profiles_augment_frozen_domains_after_nested_v43_failure":True,"empty_frozen_static_root_domains_are_valid_proposal_completeness_targets":True,"stage0_panel_role":"outcome-blind label-root support proxy; closed-loop lost7 remains the causal policy gate"}}
+-    Path(args.output).parent.mkdir(parents=True,exist_ok=True); Path(args.output).write_text(json.dumps(summary,indent=2,sort_keys=True),encoding="utf-8")
+-    selected_ckpt=dict(ckpt); selected_ckpt["selected_k"]=int(selected["K"]); selected_ckpt["stage0_support_audit"]=summary; selected_ckpt["contract"]={**dict(selected_ckpt.get("contract",{})),"selected_k_status":"frozen_validation_selected","stage0_support_gate_pass":bool(gate)}; torch.save(selected_ckpt,args.selected_checkpoint)
++    lift=selected["FullHypothesisRootCoverage"]-baseline_best
++    gate=lift+1e-12>=float(minimum_lift_pp)/100.0 and selected["VerifiedRootRecall"]>0.0
++    runtime={
++        "parallel_shards":len(partials),
++        "sum_shard_wall_seconds":sum(float(p["timing_seconds"]["wall_seconds"]) for p in partials),
++        "max_shard_wall_seconds":max(float(p["timing_seconds"]["wall_seconds"]) for p in partials),
++        "phase_seconds_sum":{},
++    }
++    phase_keys=set().union(*(p["timing_seconds"].keys() for p in partials))
++    for phase in sorted(phase_keys):
++        if phase=="wall_seconds": continue
++        runtime["phase_seconds_sum"][phase]=sum(float(p["timing_seconds"].get(phase,0.0)) for p in partials)
++    return {
++        "version":"V16.8.45R3-engineering",
++        "scientific_method":"V16.8.45 RCRSO unchanged",
++        "split":partials[0]["split"],
++        "examples":examples,"eligible_examples":eligible,
++        "hypothesis_groups_all":groups,"hypothesis_groups":groups,
++        "structural_ineligible_hypothesis_groups":0,
++        "oracle_positive_roots":oracle,"teacher_verified_positive_roots":oracle,
++        "oracle_positive_definition":"known verifier-positive control in the frozen finite sidecar teacher pool; not proof of exhaustive recourse existence",
++        "baseline":baseline,"rcrso_curve":curves,
++        "plateau_full_hypothesis_root_coverage":plateau,"plateau_95_target":target,
++        "selected_k":selected["K"],"selected_metrics":selected,
++        "coverage_lift_over_best_frozen_baseline":lift,
++        "minimum_required_lift_pp":float(minimum_lift_pp),
++        "stage0_support_gate":{"pass":bool(gate),"reason":"full_hypothesis_root_coverage_lift" if gate else "insufficient_verified_support_lift"},
++        "verifier_calls":verifier_calls,
++        "wall_seconds":runtime["max_shard_wall_seconds"],
++        "runtime_observability":runtime,
++        "provenance":{
++            "checkpoint_sha256":partials[0]["checkpoint_sha256"],
++            "sidecar_summary_sha256":partials[0].get("sidecar_summary_sha256"),
++            "shard_scenario_hashes":[p["scenario_hashes"] for p in partials],
++        },
++        "contract":{
++            "K_selected_only_on_frozen_validation_sidecar":True,"lost7_used_for_K":False,
++            "hard_verifier_replayed":True,"proposal_score_used_only_for_ordering":True,
++            "stage0_matches_online_extension_semantics":True,
++            "rcrso_verified_profiles_augment_frozen_domains_after_nested_v43_failure":True,
++            "empty_frozen_static_root_domains_are_valid_proposal_completeness_targets":True,
++            "stage0_panel_role":"outcome-blind label-root support proxy; closed-loop lost7 remains the causal policy gate",
++            "parallelization_semantics":"scenario-disjoint exact partition; all roots of each hypothesis group stay on one shard",
++            "performance_repairs_change_hard_boolean":False,
++        },
++    }
++
++
++def _run_partial(args, model, rcfg, device, ks, cfg) -> dict:
++    ds=RecourseSidecarDataset(args.sidecar_root,args.split)
++    paths=list(ds.paths)
++    groups=_assigned_groups(paths,args.num_shards,args.shard_index)
++    total_examples=sum(len(x[1]) for x in groups)
++    scenario_hashes=sorted(set(k[0] for k,_ in groups))
++    stats=_zero_stats(ks)
++    timings={"load_s":0.0,"model_forward_s":0.0,"learned_verify_s":0.0,"fixed_static_s":0.0,"fixed_dynamic_s":0.0,"analytic_s":0.0,"csp_metrics_s":0.0}
++    t0=time.perf_counter(); last=t0; done=0; current_scenario=None; scene_cache={}
++    max_examples=args.max_examples
++    for (group_key,group_paths) in groups:
++        if max_examples is not None and done>=max_examples: break
++        if max_examples is not None and done>0 and done+len(group_paths)>max_examples: break
++        if current_scenario!=group_key[0]:
++            current_scenario=group_key[0]; scene_cache={}
++        rr=[]
++        for path in group_paths:
++            t=time.perf_counter(); item=_load_stage0_item(path); timings["load_s"]+=time.perf_counter()-t
++            rr.append(_process_item(model,item,cfg,ks,device,scene_cache,timings)); done+=1
++        _accumulate_group(stats,rr,ks,cfg,timings)
++        now=time.perf_counter()
++        if args.progress_every_seconds>0 and now-last>=args.progress_every_seconds:
++            elapsed=max(now-t0,1e-9); rate=done/elapsed; remain=max(total_examples-done,0); eta=remain/max(rate,1e-12)
++            phase_total=sum(timings.values()); phase_txt=" ".join(f"{(k[:-2] if k.endswith('_s') else k)}={100*v/phase_total:.0f}%" for k,v in timings.items() if phase_total>0 and v>0)
++            print(f"[RCRSO-Stage0 {args.split} s{args.shard_index}/{args.num_shards}] examples={done}/{total_examples} groups={stats['hypothesis_groups']} verifier={stats['verifier_calls']} elapsed={elapsed/60:.1f}m rate={rate:.3f}ex/s eta={eta/60:.1f}m timing[{phase_txt}]",file=sys.stderr,flush=True)
++            last=now
++    wall=time.perf_counter()-t0
++    timing_seconds={**timings,"wall_seconds":wall}
++    summary_path=Path(args.sidecar_root)/f"summary_{args.split}.json"
++    partial={
++        "version":"V16.8.45R3-stage0-partial","scientific_method":"V16.8.45 RCRSO unchanged",
++        "split":args.split,"num_shards":int(args.num_shards),"shard_index":int(args.shard_index),"k_values":ks,
++        "stats":stats,"timing_seconds":timing_seconds,"scenario_hashes":scenario_hashes,
++        "checkpoint_sha256":_sha256_file(args.checkpoint),
++        "sidecar_summary_sha256":_sha256_file(summary_path) if summary_path.is_file() else None,
++        "assigned_examples":total_examples,"processed_examples":done,
++        "contract":{"scenario_disjoint_partition":True,"complete_hypothesis_groups_only":True,"hard_verifier_semantics_unchanged":True,"shared_cache_semantics":"exact per-scene semantic memoization only"},
++    }
++    print(f"[RCRSO-Stage0 {args.split} s{args.shard_index}/{args.num_shards}] DONE examples={done} groups={stats['hypothesis_groups']} wall={wall/60:.1f}m",file=sys.stderr,flush=True)
++    return partial
++
++
++def main():
++    ap=argparse.ArgumentParser()
++    ap.add_argument("--sidecar-root",required=True); ap.add_argument("--split",default="val",choices=["val","heldout"])
++    ap.add_argument("--checkpoint",required=True); ap.add_argument("--output",required=True); ap.add_argument("--selected-checkpoint",default=None)
++    ap.add_argument("--k-values",default="2,4,8,16"); ap.add_argument("--device",default="auto"); ap.add_argument("--max-examples",type=int,default=None)
++    ap.add_argument("--minimum-full-hypothesis-coverage-lift-pp",type=float,default=3.0)
++    ap.add_argument("--label-config",default="configs/label_cowp_v16_8.yaml"); ap.add_argument("--data-config",default="configs/data.yaml"); ap.add_argument("--eval-config",default="configs/eval_cowp_v16_8.yaml")
++    ap.add_argument("--num-shards",type=int,default=1); ap.add_argument("--shard-index",type=int,default=0)
++    ap.add_argument("--partial-only",action="store_true",help="Write exact raw-count shard summary; final K/gate selection is deferred to the merge step.")
++    ap.add_argument("--progress-every-seconds",type=float,default=30.0)
++    args=ap.parse_args()
++    if args.num_shards<1 or not (0<=args.shard_index<args.num_shards): raise ValueError(f"invalid shard {args.shard_index}/{args.num_shards}")
++    device=torch.device("cuda" if args.device=="auto" and torch.cuda.is_available() else ("cpu" if args.device=="auto" else args.device))
++    ckpt=torch.load(args.checkpoint,map_location="cpu")
++    rcfg=RCRSOConfig.from_dict(ckpt.get("rcrso_config",ckpt.get("cfg",{})))
++    model=RootConditionedRecourseSetTransformer(rcfg); model.load_state_dict(ckpt["model"],strict=True); model.to(device).eval()
++    ks=sorted(set(int(x) for x in args.k_values.split(",") if x.strip() and 1<=int(x)<=rcfg.max_queries))
++    if not ks: raise ValueError("No valid K values")
++    cfg=_load_cfg(args.label_config,args.data_config,args.eval_config)
++    partial=_run_partial(args,model,rcfg,device,ks,cfg)
++    Path(args.output).parent.mkdir(parents=True,exist_ok=True)
++    if args.partial_only or args.num_shards>1:
++        Path(args.output).write_text(json.dumps(partial,indent=2,sort_keys=True),encoding="utf-8")
++        return
++    summary=_partial_to_summary([partial],args.minimum_full_hypothesis_coverage_lift_pp)
++    Path(args.output).write_text(json.dumps(summary,indent=2,sort_keys=True),encoding="utf-8")
++    if not args.selected_checkpoint:
++        raise ValueError("--selected-checkpoint is required when finalizing Stage-0")
++    selected_ckpt=dict(ckpt); selected_ckpt["selected_k"]=int(summary["selected_k"]); selected_ckpt["stage0_support_audit"]=summary
++    selected_ckpt["contract"]={**dict(selected_ckpt.get("contract",{})),"selected_k_status":"frozen_validation_selected","stage0_support_gate_pass":bool(summary["stage0_support_gate"]["pass"])}
++    torch.save(selected_ckpt,args.selected_checkpoint)
+     print(json.dumps(summary,indent=2,sort_keys=True))
+-    if not gate: raise SystemExit(4)
++    if not summary["stage0_support_gate"]["pass"]: raise SystemExit(4)
++
+ 
+ if __name__=="__main__": main()
+--- /dev/null
++++ b/cowp/scripts/110_merge_rcrso_stage0_shards.py
+@@ -0,0 +1,93 @@
++from __future__ import annotations
++
++import argparse
++import hashlib
++import importlib
++import json
++from pathlib import Path
++
++import torch
++
++
++def _sha256_file(path: str | Path) -> str:
++    h=hashlib.sha256()
++    with Path(path).open('rb') as f:
++        for chunk in iter(lambda:f.read(1024*1024),b''):
++            h.update(chunk)
++    return h.hexdigest()
++
++
++def main() -> None:
++    ap=argparse.ArgumentParser(description='Exact merge/finalize for scenario-disjoint V16.8.45R3 Stage-0 shards.')
++    ap.add_argument('--inputs',nargs='+',required=True)
++    ap.add_argument('--checkpoint',required=True,help='The same RCRSO unselected checkpoint used by every shard.')
++    ap.add_argument('--output',required=True)
++    ap.add_argument('--selected-checkpoint',required=True)
++    ap.add_argument('--minimum-full-hypothesis-coverage-lift-pp',type=float,default=3.0)
++    args=ap.parse_args()
++
++    partials=[json.load(open(p,encoding='utf-8')) for p in args.inputs]
++    if not partials:
++        raise SystemExit('ERROR: no Stage-0 shard inputs')
++    expected_n=int(partials[0].get('num_shards',len(partials)))
++    shard_ids=[int(p.get('shard_index',-1)) for p in partials]
++    if len(partials)!=expected_n or sorted(shard_ids)!=list(range(expected_n)):
++        raise SystemExit(f'ERROR: incomplete Stage-0 shard set: expected {expected_n}, got indices={sorted(shard_ids)}')
++    if any(int(p.get('num_shards',-1))!=expected_n for p in partials):
++        raise SystemExit('ERROR: num_shards mismatch')
++    if any(p.get('split')!=partials[0].get('split') for p in partials):
++        raise SystemExit('ERROR: split mismatch')
++    if any(p.get('k_values')!=partials[0].get('k_values') for p in partials):
++        raise SystemExit('ERROR: K mismatch')
++    if any(int(p.get('processed_examples',-1))!=int(p.get('assigned_examples',-2)) for p in partials):
++        raise SystemExit('ERROR: at least one Stage-0 shard did not finish its assigned examples')
++
++    hashes={str(p.get('checkpoint_sha256')) for p in partials}
++    if len(hashes)!=1:
++        raise SystemExit(f'ERROR: checkpoint hash mismatch across shards: {hashes}')
++    ckpt_hash=_sha256_file(args.checkpoint)
++    if hashes!={ckpt_hash}:
++        raise SystemExit(f'ERROR: merge checkpoint hash {ckpt_hash} does not match shard hash {next(iter(hashes))}')
++    sidecar_hashes={p.get('sidecar_summary_sha256') for p in partials}
++    if len(sidecar_hashes)!=1:
++        raise SystemExit(f'ERROR: sidecar summary hash mismatch across shards: {sidecar_hashes}')
++
++    seen=set()
++    for p in partials:
++        hs=set(int(x) for x in p.get('scenario_hashes',[]))
++        overlap=seen & hs
++        if overlap:
++            raise SystemExit(f'ERROR: Stage-0 scenario overlap across shards, sample={sorted(overlap)[:8]}')
++        seen |= hs
++
++    mod=importlib.import_module('cowp.scripts.106_eval_rcrso_support')
++    summary=mod._partial_to_summary(partials,float(args.minimum_full_hypothesis_coverage_lift_pp))
++    summary['runtime_observability']['scenario_count']=len(seen)
++    summary['runtime_observability']['shard_indices']=sorted(shard_ids)
++    summary['provenance']['partial_files']=[str(Path(p).resolve()) for p in args.inputs]
++    summary['provenance']['merge_checkpoint_sha256']=ckpt_hash
++    summary['contract']['merge_validated_disjoint_scenarios']=True
++    summary['contract']['all_assigned_examples_completed']=True
++
++    out=Path(args.output); out.parent.mkdir(parents=True,exist_ok=True)
++    out.write_text(json.dumps(summary,indent=2,sort_keys=True),encoding='utf-8')
++
++    ckpt=torch.load(args.checkpoint,map_location='cpu')
++    selected_ckpt=dict(ckpt)
++    selected_ckpt['selected_k']=int(summary['selected_k'])
++    selected_ckpt['stage0_support_audit']=summary
++    selected_ckpt['contract']={
++        **dict(selected_ckpt.get('contract',{})),
++        'selected_k_status':'frozen_validation_selected',
++        'stage0_support_gate_pass':bool(summary['stage0_support_gate']['pass']),
++        'stage0_parallel_merge_semantics':'scenario-disjoint exact raw-count merge',
++    }
++    sel=Path(args.selected_checkpoint); sel.parent.mkdir(parents=True,exist_ok=True)
++    torch.save(selected_ckpt,sel)
++    print(json.dumps(summary,indent=2,sort_keys=True))
++    if not summary['stage0_support_gate']['pass']:
++        raise SystemExit(4)
++
++
++if __name__=='__main__':
++    main()
+--- /dev/null
++++ b/NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh
+@@ -0,0 +1,468 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++# Frozen base experiment contract.
++COWP_ROOT="${COWP_ROOT:-/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k}"
++BASE_RUN="${BASE_RUN:-/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all}"
++BASE_CKPT="${BASE_CKPT:-$BASE_RUN/cowp_all_best.pt}"
++TFEX_INDEX="${TFEX_INDEX:-$COWP_ROOT/tfexample_id_index_validation.jsonl}"
++BCOT_BUDGET="${BCOT_BUDGET:-0.50}"
++
++# V45R3 is engineering-only.  Reuse the already-built R2 sidecar and trained
++# unselected checkpoint; only Stage-0 execution/observability is repaired.
++SIDECAR_ROOT="${SIDECAR_ROOT:-$COWP_ROOT/recourse_sidecar_v16_8_45r2}"
++RCRSO_SOURCE_RUN="${RCRSO_SOURCE_RUN:-outputs/v16_8_45r2_rcrso_operator}"
++RCRSO_RUN="${RCRSO_RUN:-outputs/v16_8_45r3_stage0_runtime_observability}"
++RCRSO_UNSELECTED="${RCRSO_UNSELECTED:-$RCRSO_SOURCE_RUN/rcrso_best_unselected.pt}"
++RCRSO_CKPT="${RCRSO_CKPT:-$RCRSO_RUN/rcrso_stage0_selected.pt}"
++STAGE0_JSON="${STAGE0_JSON:-$RCRSO_RUN/stage0_val_support_audit.json}"
++STAGE0_PARTIAL_DIR="${STAGE0_PARTIAL_DIR:-$RCRSO_RUN/stage0_partials}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_45r3_rcrso_closed_loop}"
++METHOD="cowp_verified_root_conditioned_recourse_set_operator"
++mkdir -p "$RCRSO_RUN" "$OUT_ROOT"
++
++TRAIN_CACHE="${TRAIN_CACHE:-$COWP_ROOT/tensor_cache_train}"
++VAL_CACHE="${VAL_CACHE:-$COWP_ROOT/tensor_cache_val}"
++HELDOUT_CACHE="${HELDOUT_CACHE:-$COWP_ROOT/tensor_cache_heldout_test}"
++
++# Engineering-only sidecar performance/observability knobs.  They never alter
++# proposal counts, hard predicates, root semantics, or Stage-0 thresholds.
++SIDECAR_PROGRESS_EVERY_SECONDS="${SIDECAR_PROGRESS_EVERY_SECONDS:-30}"
++SIDECAR_SAVE_MODE="${SIDECAR_SAVE_MODE:-compressed}"  # set uncompressed for faster build if disk allows
++CPU_COUNT="$(python - <<'PYCPU'
++import os
++print(os.cpu_count() or 8)
++PYCPU
++)"
++SIDECAR_AUTO_SHARDS="${SIDECAR_AUTO_SHARDS:-$(( CPU_COUNT < 8 ? 4 : (CPU_COUNT < 24 ? 8 : 12) ))}"
++
++# Frozen development manifests.  They are not publication holdouts.
++EXACT200="$SCRIPT_DIR/reference_manifests/waymax_probe_200_ids.txt"
++EQ16="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_equivalence16_ids.txt"
++PROFILE4="$SCRIPT_DIR/reference_manifests/v16_8_43r3_runtime_profile4_ids.txt"
++LOST7="$SCRIPT_DIR/reference_manifests/v16_8_44_lost7_ids.txt"
++LOST7_B1="$SCRIPT_DIR/reference_manifests/v16_8_45_lost7_batch1_2_ids.txt"
++LOST7_B2="$SCRIPT_DIR/reference_manifests/v16_8_45_lost7_batch2_2_ids.txt"
++LOST7_B3="$SCRIPT_DIR/reference_manifests/v16_8_45_lost7_batch3_3_ids.txt"
++RETAINED3="$SCRIPT_DIR/reference_manifests/v16_8_44_retained3_ids.txt"
++INDUCED9="$SCRIPT_DIR/reference_manifests/v16_8_44_induced9_ids.txt"
++REMAIN29="$SCRIPT_DIR/reference_manifests/v16_8_43_counterfactual_remaining29_ids.txt"
++CF48="$SCRIPT_DIR/reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt"
++FRESH37="$SCRIPT_DIR/reference_manifests/waymax_v16_8_32_fresh37_ids.txt"
++
++REF_EQ16="$SCRIPT_DIR/reference_results/v16_8_29_equivalence16_cowp_reference.json"
++REF_CF48_COWP="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_cowp_reference.json"
++REF_CF48_RVR="$SCRIPT_DIR/reference_results/v16_8_29_counterfactual48_rvr_reference.json"
++REF_CF48_V33="$SCRIPT_DIR/reference_results/v16_8_33_counterfactual48_rosh_reference.json"
++REF_CF48_V35="$SCRIPT_DIR/reference_results/v16_8_35_counterfactual48_cposh_reference.json"
++REF_CF48_V36="$SCRIPT_DIR/reference_results/v16_8_36_counterfactual48_recovery_frontier_reference.json"
++REF_CF48_V37="$SCRIPT_DIR/reference_results/v16_8_37_counterfactual48_recourse_returnability_bridge_reference.json"
++REF_CF48_V38="$SCRIPT_DIR/reference_results/v16_8_38_counterfactual48_shift_closed_control_reachable_tube_reference.json"
++REF_CF48_V39="$SCRIPT_DIR/reference_results/v16_8_39_counterfactual48_conflict_window_control_reachable_tube_reference.json"
++REF_CF48_V42="$SCRIPT_DIR/reference_results/v16_8_42_counterfactual48_interaction_aware_reachable_response_envelope_reference.json"
++REF_FRESH37_COWP="$SCRIPT_DIR/reference_results/v16_8_32_fresh37_cowp_reference.json"
++REF_EXACT200_COWP="$SCRIPT_DIR/reference_results/v16_8_29_exact200_cowp_reference.json"
++
++index_arg=()
++[[ -s "$TFEX_INDEX" ]] && index_arg=(--tfexample-index-jsonl "$TFEX_INDEX")
++
++common_waymax=(
++  --data-config configs/data.yaml
++  --label-config configs/label_cowp_v16_8.yaml
++  --eval-config configs/eval_cowp_v16_8.yaml
++  --mode waymax
++  --checkpoint "$BASE_CKPT"
++  --waymax-split validation
++  --rollout-horizon-steps 80
++  --waymax-action-mode absolute_xy_yaw
++  --ncf-gate-mode priority
++  --witness-threshold 0.70
++  --bcot-risk-budget "$BCOT_BUDGET"
++  --outcome-risk-penalty 0
++  --waymax-standard-metrics
++  --waymax-standard-metric-names OverlapMetric,OffroadMetric,ProgressionMetric,KinematicsInfeasibilityMetric
++  --reuse-waymax-env --prefilter-waymax-shards --jit-waymax-env --jit-waymax-metrics
++)
++
++require_file(){ [[ -s "$1" ]] || { echo "ERROR: required file missing: $1" >&2; exit 4; }; }
++require_json_pass(){
++  local file="$1" path="$2"
++  require_file "$file"
++  python - "$file" "$path" <<'PY'
++import json,sys
++x=json.load(open(sys.argv[1],encoding='utf-8')); cur=x
++for k in sys.argv[2].split('.'):
++    cur=cur[k]
++if cur is not True:
++    raise SystemExit(4)
++print(f"PASS: {sys.argv[2]}")
++PY
++}
++require_stage0(){ require_json_pass "$STAGE0_JSON" stage0_support_gate.pass; require_file "$RCRSO_CKPT"; }
++require_base_equivalence(){ require_json_pass "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" passed; }
++require_closed_loop_preflight(){ require_stage0; require_base_equivalence; }
++
++rcrso_extra=(--rcrso-checkpoint "$RCRSO_CKPT")
++run_shard(){
++  local gpu="$1" shard="$2" method="$3" ids="$4" out="$5" profile="${6:-0}"
++  local extra=()
++  if [[ "$method" == "$METHOD" ]]; then
++    require_closed_loop_preflight
++    extra=("${rcrso_extra[@]}")
++  fi
++  local prof=()
++  [[ "$profile" == "1" ]] && prof=(--profile-policy-runtime --profile-policy-sync)
++  CUDA_VISIBLE_DEVICES="$gpu" XLA_PYTHON_CLIENT_PREALLOCATE=false \
++  python -m cowp.scripts.04_eval_closed_loop "${common_waymax[@]}" "${index_arg[@]}" \
++    --method "$method" --scenario-ids-file "$ids" --device cuda:0 --waymax-device gpu \
++    --jax-visible-devices 0 --jax-preallocate false --num-shards 2 --shard-index "$shard" \
++    "${extra[@]}" "${prof[@]}" --no-progress --status-every 1 --output "$out"
++}
++run_subset(){
++  local tag="$1" ids="$2" method="${3:-$METHOD}" profile="${4:-1}"
++  local start end; start=$(date +%s)
++  run_shard 0 0 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s0.json" "$profile" & p0=$!
++  run_shard 1 1 "$method" "$ids" "$OUT_ROOT/${tag}_${method}_s1.json" "$profile" & p1=$!
++  wait "$p0"; wait "$p1"
++  end=$(date +%s); echo $((end-start)) > "$OUT_ROOT/${tag}_${method}_wall_seconds.txt"
++  python -m cowp.scripts.79_merge_waymax_exact_shards \
++    --inputs "$OUT_ROOT/${tag}_${method}_s0.json" "$OUT_ROOT/${tag}_${method}_s1.json" \
++    --output "$OUT_ROOT/${tag}_${method}_merged.json"
++}
++
++build_sidecar_split(){
++  local split="$1" cache="$2" shards="$3" max_examples="$4" sobol="$5" max_scenes_per_shard="${6:-}" output_root="${7:-$SIDECAR_ROOT}"
++  [[ -d "$cache" ]] || { echo "ERROR: cache dir missing: $cache" >&2; exit 4; }
++  rm -rf "$output_root/$split"
++  mkdir -p "$output_root/$split"
++  local pids=() start end
++  start=$(date +%s)
++  echo "[sidecar] split=$split shards=$shards cpu_count=$CPU_COUNT max_examples/scene=$max_examples sobol=$sobol save_mode=$SIDECAR_SAVE_MODE"
++  echo "[sidecar] progress every ${SIDECAR_PROGRESS_EVERY_SECONDS}s; per-shard logs: $RCRSO_RUN/sidecar_${split}_s*of${shards}.log"
++  for ((s=0;s<shards;s++)); do
++    local log="$RCRSO_RUN/sidecar_${split}_s${s}of${shards}.log"
++    local max_scene_args=()
++    [[ -n "$max_scenes_per_shard" ]] && max_scene_args=(--max-scenes "$max_scenes_per_shard")
++    (
++      set -o pipefail
++      PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
++      python -m cowp.scripts.104_build_rcrso_sidecar \
++        --cache-dir "$cache" --output-root "$output_root" --split "$split" \
++        --label-config configs/label_cowp_v16_8.yaml --data-config configs/data.yaml --eval-config configs/eval_cowp_v16_8.yaml \
++        --max-examples-per-scene "$max_examples" --max-positive-controls 32 --rich-sobol-proposals "$sobol" --control-knots 8 --environment-cap 24 \
++        --forbidden-id-file "$EXACT200" --num-shards "$shards" --shard-index "$s" \
++        --progress-every-seconds "$SIDECAR_PROGRESS_EVERY_SECONDS" --profile-timing --save-mode "$SIDECAR_SAVE_MODE" \
++        "${max_scene_args[@]}" 2>&1 | sed -u "s/^/[sidecar $split s${s}\/${shards}] /" | tee "$log"
++    ) &
++    pids+=("$!")
++  done
++  local failed=0
++  for p in "${pids[@]}"; do
++    if ! wait "$p"; then failed=1; fi
++  done
++  [[ "$failed" == "0" ]] || { echo "ERROR: at least one sidecar shard failed" >&2; exit 4; }
++  python scripts/111_merge_rcrso_sidecar_shards.py --root "$output_root" --split "$split" --num-shards "$shards"
++  end=$(date +%s)
++  echo $((end-start)) > "$RCRSO_RUN/sidecar_${split}_${shards}shards_wall_seconds.txt"
++  echo "[sidecar] DONE split=$split wall=$((end-start))s output=$output_root/$split"
++  python - "$output_root" "$split" "$shards" <<'PYSUM'
++import json,sys
++from pathlib import Path
++root=Path(sys.argv[1]); split=sys.argv[2]; n=int(sys.argv[3])
++rows=[]
++for s in range(n):
++    p=root/f"summary_{split}_s{s}of{n}.json"
++    if p.is_file(): rows.append(json.load(open(p)))
++if not rows: raise SystemExit
++keys=set().union(*(r.get("timing_seconds",{}).keys() for r in rows))
++t={k:sum(float(r.get("timing_seconds",{}).get(k,0)) for r in rows) for k in keys}
++work=sum(v for k,v in t.items() if k!="wall")
++print("[sidecar timing aggregate]", " ".join(f"{k}={v:.1f}s({100*v/work:.1f}%)" for k,v in sorted(t.items()) if k!="wall" and work>0))
++print("[sidecar cache aggregate]", " ".join(f"{k}={sum(int(r.get('counts',{}).get(k,0)) for r in rows)}" for k in ["analytic_profile_evaluations","analytic_environment_cache_hits","rcrso_profile_evaluations","rcrso_environment_cache_hits","teacher_proposals","teacher_verified"]))
++PYSUM
++}
++
++
++case "$MODE" in
++  sanity)
++    python -m py_compile \
++      cowp/label/safe_responses.py cowp/models/recourse_set_operator.py cowp/data/recourse_sidecar.py \
++      cowp/waymax_eval/policy_wrapper.py cowp/waymax_eval/metrics_cowp.py cowp/scripts/04_eval_closed_loop.py \
++      cowp/scripts/104_build_rcrso_sidecar.py cowp/scripts/105_train_rcrso.py cowp/scripts/106_eval_rcrso_support.py \
++      cowp/scripts/109_analyze_verified_rcrso.py cowp/scripts/110_merge_rcrso_stage0_shards.py scripts/107_analyze_v45_rcrso_failfast.py scripts/108_stitch_exact_subsets.py \
++      scripts/111_merge_rcrso_sidecar_shards.py
++    python -m pytest -q \
++      tests/test_v16_8_45_rcrso.py \
++      tests/test_v16_8_45r3_stage0_runtime_observability.py \
++      tests/test_critical_input_mapping.py \
++      tests/test_v16_8_44_root_conditioned_control_reachable_responder_support.py \
++      tests/test_v16_8_43r3_runtime_support_reuse.py \
++      tests/test_v16_8_43_blocker_conditioned_reachable_response_envelope.py \
++      tests/test_v16_8_42_interaction_aware_reachable_response_envelope.py \
++      tests/test_v16_8_41_shift_closure_semantic_fidelity_repair.py \
++      tests/test_v16_8_40_shift_closed_first_action_viability_interval.py \
++      tests/test_v16_8_39_conflict_window_control_reachable_tube.py \
++      tests/test_v16_8_38_shift_closed_control_reachable_tube.py \
++      tests/test_v16_8_37_recourse_returnability_bridge.py \
++      tests/test_v16_8_36_control_projected_recovery_frontier.py \
++      tests/test_v16_8_35_control_projected_option_spectrum.py \
++      tests/test_v16_8_34_executable_option_spectrum.py \
++      tests/test_v16_8_33_recovery_option_spectrum.py \
++      tests/test_v16_8_32_temporal_option_persistence.py \
++      tests/test_v16_8_31_bihorizon_option_viability.py \
++      tests/test_v16_8_30_successor_option_viability.py \
++      tests/test_v16_8_29_recursive_viability.py \
++      tests/test_v16_8_28_execution_integrity.py tests/test_v16_8_27_integrity.py tests/test_v16_8_26_fallback_outcome.py tests/test_v16_8_25_ctu_selector.py
++    ! grep -R "conventional_check=False" -n cowp/waymax_eval/policy_wrapper.py
++    ! grep -R "log_trajectory\|mechanism_ground_truth" -n cowp/models/recourse_set_operator.py cowp/scripts/104_build_rcrso_sidecar.py cowp/scripts/105_train_rcrso.py cowp/scripts/106_eval_rcrso_support.py
++    echo "V16.8.45R3 Stage-0 runtime/observability semantic-fidelity sanity PASS" ;;
++
++  make_ids)
++    python - <<'PY'
++from pathlib import Path
++import hashlib
++expected={
++'reference_manifests/waymax_probe_200_ids.txt':'3fb2e3607b4cd8ca977456bfc08f9d41aadf949f338549d4f1e16c92fea1529f',
++'reference_manifests/waymax_v16_8_30_equivalence16_ids.txt':'81d0319da0446d1452b4c3a0361ffa6941dfa226b2f14027cac5576f9571c760',
++'reference_manifests/v16_8_44_lost7_ids.txt':'d178299e83671bd6b27651c9592f3ccb2d521fe9f42091e505f59abf0250e52f',
++'reference_manifests/v16_8_44_retained3_ids.txt':'8ea17b5f12cbc453940d6f2ab7fe44af295838a6daaab0664c83889d27e95afa',
++'reference_manifests/v16_8_44_induced9_ids.txt':'8cef4fcb6fe129e4a6b2ce75fdd87c85be05eabac0c57d9db1f13bed389ee250',
++'reference_manifests/v16_8_43_counterfactual_remaining29_ids.txt':'8e225f7bd125f9448ac17252fe881ff5c49abf733c6e70b3dd061eb9069aa1b0',
++'reference_manifests/waymax_v16_8_30_counterfactual48_ids.txt':'ee3c231c240878d5d20020aec3c98efbb4932cdbf1f1e309b9b7b26bddc40ab0',
++'reference_manifests/waymax_v16_8_32_fresh37_ids.txt':'ecce3321d8f4cd57bbd3189b3673784bec8fde185b882e9c11c38430265a1481',
++'reference_manifests/v16_8_43r3_runtime_profile4_ids.txt':'69f73aedb8d1cfd0e065218d2c579659ddfd07845463cb4cc767987323e9af01',
++}
++for raw,want in expected.items():
++    ids=[x.strip() for x in Path(raw).read_text().splitlines() if x.strip()]
++    got=hashlib.sha256('\n'.join(ids).encode()).hexdigest()
++    if got!=want: raise SystemExit(f'hash mismatch {raw}: {got} != {want}')
++    print(raw,len(ids),got)
++PY
++    cp "$EQ16" "$OUT_ROOT/waymax_equivalence16_ids.txt"
++    cp "$CF48" "$OUT_ROOT/counterfactual48_ids.txt"
++    cp "$FRESH37" "$OUT_ROOT/fresh37_ids.txt"
++    cp "$EXACT200" "$OUT_ROOT/exact200_ids.txt"
++    ;;
++
++  build_tfindex)
++    python -m cowp.scripts.78_build_tfexample_id_index --data-config configs/data.yaml --split validation --output "$TFEX_INDEX" ;;
++
++  sidecar_smoke)
++    rm -rf "$RCRSO_RUN/sidecar_smoke"
++    python -m cowp.scripts.104_build_rcrso_sidecar \
++      --cache-dir "$VAL_CACHE" --output-root "$RCRSO_RUN/sidecar_smoke" --split val \
++      --max-scenes 2 --max-examples-per-scene 12 --rich-sobol-proposals 4 --max-positive-controls 8 \
++      --forbidden-id-file "$EXACT200" --progress-every-seconds 5 --profile-timing --save-mode "$SIDECAR_SAVE_MODE" ;;
++
++  build_sidecar_train_parallel4)
++    build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-4}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
++
++  build_sidecar_train_parallel8)
++    build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-8}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
++
++  build_sidecar_train_auto)
++    build_sidecar_split train "$TRAIN_CACHE" "${SIDECAR_TRAIN_SHARDS:-$SIDECAR_AUTO_SHARDS}" "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" ;;
++
++  profile_sidecar_train8)
++    rm -rf "$RCRSO_RUN/sidecar_profile8"
++    build_sidecar_split train "$TRAIN_CACHE" 4 "${SIDECAR_TRAIN_MAX_EXAMPLES_PER_SCENE:-24}" "${SIDECAR_TRAIN_SOBOL_PROPOSALS:-24}" 2 "$RCRSO_RUN/sidecar_profile8" ;;
++
++  build_sidecar_val_parallel2)
++    build_sidecar_split val "$VAL_CACHE" "${SIDECAR_VAL_SHARDS:-2}" "${SIDECAR_VAL_MAX_EXAMPLES_PER_SCENE:-32}" "${SIDECAR_VAL_SOBOL_PROPOSALS:-48}" ;;
++
++  train_rcrso)
++    require_file "$SIDECAR_ROOT/summary_train.json"; require_file "$SIDECAR_ROOT/summary_val.json"
++    CUDA_VISIBLE_DEVICES="${RCRSO_TRAIN_GPU:-0}" python -m cowp.scripts.105_train_rcrso \
++      --sidecar-root "$SIDECAR_ROOT" --output-dir "$RCRSO_RUN" \
++      --epochs "${RCRSO_EPOCHS:-30}" --batch-size "${RCRSO_BATCH_SIZE:-64}" \
++      --lr "${RCRSO_LR:-3e-4}" --weight-decay "${RCRSO_WEIGHT_DECAY:-1e-4}" \
++      --d-model 128 --nhead 4 --layers 2 --max-queries 16 --control-knots 8 \
++      --num-workers "${RCRSO_NUM_WORKERS:-4}" --device cuda:0 --seed 20260845 ;;
++
++  stage0_support|stage0_support_parallel2)
++    require_file "$RCRSO_UNSELECTED"; require_file "$SIDECAR_ROOT/summary_val.json"
++    mkdir -p "$STAGE0_PARTIAL_DIR"
++    rm -f "$STAGE0_PARTIAL_DIR"/stage0_val_s*.json "$STAGE0_PARTIAL_DIR"/stage0_val_s*.log
++    echo "[Stage-0 R3] scientific semantics unchanged; scenario-disjoint parallel2 + exact raw-count merge"
++    echo "[Stage-0 R3] source checkpoint=$RCRSO_UNSELECTED"
++    echo "[Stage-0 R3] progress every ${RCRSO_STAGE0_PROGRESS_EVERY_SECONDS:-30}s"
++    local_start=$(date +%s)
++    pids=()
++    for s in 0 1; do
++      gpu="$s"; log="$STAGE0_PARTIAL_DIR/stage0_val_s${s}.log"
++      (
++        set -o pipefail
++        CUDA_VISIBLE_DEVICES="$gpu" PYTHONUNBUFFERED=1 \
++        OMP_NUM_THREADS="${RCRSO_STAGE0_OMP_THREADS:-1}" MKL_NUM_THREADS="${RCRSO_STAGE0_OMP_THREADS:-1}" OPENBLAS_NUM_THREADS="${RCRSO_STAGE0_OMP_THREADS:-1}" \
++        python -m cowp.scripts.106_eval_rcrso_support \
++          --sidecar-root "$SIDECAR_ROOT" --split val --checkpoint "$RCRSO_UNSELECTED" \
++          --output "$STAGE0_PARTIAL_DIR/stage0_val_s${s}.json" \
++          --k-values 2,4,8,16 --minimum-full-hypothesis-coverage-lift-pp 3.0 --device cuda:0 \
++          --num-shards 2 --shard-index "$s" --partial-only \
++          --progress-every-seconds "${RCRSO_STAGE0_PROGRESS_EVERY_SECONDS:-30}" \
++          --label-config configs/label_cowp_v16_8.yaml --data-config configs/data.yaml --eval-config configs/eval_cowp_v16_8.yaml \
++          2>&1 | sed -u "s/^/[Stage0 s${s}\/2] /" | tee "$log"
++      ) &
++      pids+=("$!")
++    done
++    failed=0
++    for p in "${pids[@]}"; do if ! wait "$p"; then failed=1; fi; done
++    [[ "$failed" == "0" ]] || { echo "ERROR: Stage-0 shard failed" >&2; exit 4; }
++    merge_code=0
++    python -m cowp.scripts.110_merge_rcrso_stage0_shards \
++      --inputs "$STAGE0_PARTIAL_DIR/stage0_val_s0.json" "$STAGE0_PARTIAL_DIR/stage0_val_s1.json" \
++      --checkpoint "$RCRSO_UNSELECTED" --output "$STAGE0_JSON" --selected-checkpoint "$RCRSO_CKPT" \
++      --minimum-full-hypothesis-coverage-lift-pp 3.0 || merge_code=$?
++    local_end=$(date +%s); echo $((local_end-local_start)) > "$RCRSO_RUN/stage0_parallel2_wall_seconds.txt"
++    echo "[Stage-0 R3] DONE wall=$((local_end-local_start))s audit=$STAGE0_JSON"
++    exit "$merge_code" ;;
++
++  stage0_support_single)
++    require_file "$RCRSO_UNSELECTED"; require_file "$SIDECAR_ROOT/summary_val.json"
++    CUDA_VISIBLE_DEVICES="${RCRSO_STAGE0_GPU:-0}" PYTHONUNBUFFERED=1 python -m cowp.scripts.106_eval_rcrso_support \
++      --sidecar-root "$SIDECAR_ROOT" --split val --checkpoint "$RCRSO_UNSELECTED" \
++      --output "$STAGE0_JSON" --selected-checkpoint "$RCRSO_CKPT" \
++      --k-values 2,4,8,16 --minimum-full-hypothesis-coverage-lift-pp 3.0 --device cuda:0 \
++      --progress-every-seconds "${RCRSO_STAGE0_PROGRESS_EVERY_SECONDS:-30}" \
++      --label-config configs/label_cowp_v16_8.yaml --data-config configs/data.yaml --eval-config configs/eval_cowp_v16_8.yaml ;;
++
++  base_equivalence16_parallel2)
++    run_subset equivalence16 "$EQ16" cowp 0
++    python -m cowp.scripts.82_verify_cowp_equivalence --reference "$REF_EQ16" \
++      --candidate "$OUT_ROOT/equivalence16_cowp_merged.json" --output "$OUT_ROOT/equivalence16_cowp_vs_v16_8_29.json" ;;
++
++  profile4_parallel2)
++    require_closed_loop_preflight; run_subset runtime_profile4_v45r3 "$PROFILE4" "$METHOD" 1 ;;
++
++  lost7_parallel2)
++    require_closed_loop_preflight; run_subset lost7 "$LOST7" "$METHOD" 1 ;;
++  analyze_lost7)
++    python scripts/102_analyze_v44_failfast_counterexamples.py --stage lost7 \
++      --lost7-result "$OUT_ROOT/lost7_${METHOD}_merged.json" --lost7-ids "$LOST7" \
++      --output "$OUT_ROOT/lost7_v45_failfast_gate.json" ;;
++
++  lost7_batch1_parallel2) require_closed_loop_preflight; run_subset lost7_b1 "$LOST7_B1" "$METHOD" 1 ;;
++  lost7_batch2_parallel2) require_closed_loop_preflight; run_subset lost7_b2 "$LOST7_B2" "$METHOD" 1 ;;
++  lost7_batch3_parallel2) require_closed_loop_preflight; run_subset lost7_b3 "$LOST7_B3" "$METHOD" 1 ;;
++  analyze_lost7_progressive)
++    results=(); manifests=()
++    for x in 1 2 3; do
++      case "$x" in 1) tag=lost7_b1; man="$LOST7_B1";; 2) tag=lost7_b2; man="$LOST7_B2";; 3) tag=lost7_b3; man="$LOST7_B3";; esac
++      f="$OUT_ROOT/${tag}_${METHOD}_merged.json"
++      [[ -s "$f" ]] || break
++      results+=("$f"); manifests+=("$man")
++    done
++    [[ ${#results[@]} -gt 0 ]] || { echo "ERROR: no progressive lost7 result found" >&2; exit 4; }
++    python scripts/107_analyze_v45_rcrso_failfast.py --results "${results[@]}" --manifests "${manifests[@]}" \
++      --total-lost7-manifest "$LOST7" --output "$OUT_ROOT/lost7_v45_progressive_gate.json" ;;
++
++  retained3_parallel2)
++    require_json_pass "$OUT_ROOT/lost7_v45_failfast_gate.json" lost7_gate.pass
++    run_subset retained3 "$RETAINED3" "$METHOD" 1 ;;
++  analyze_rescue10)
++    python scripts/102_analyze_v44_failfast_counterexamples.py --stage rescue10 \
++      --lost7-result "$OUT_ROOT/lost7_${METHOD}_merged.json" --lost7-ids "$LOST7" \
++      --retained3-result "$OUT_ROOT/retained3_${METHOD}_merged.json" --retained3-ids "$RETAINED3" \
++      --output "$OUT_ROOT/rescue10_v45_gate.json" ;;
++
++  induced9_parallel2)
++    require_json_pass "$OUT_ROOT/rescue10_v45_gate.json" rescue10_gate.pass
++    run_subset induced9 "$INDUCED9" "$METHOD" 1 ;;
++  analyze_induced9)
++    python scripts/102_analyze_v44_failfast_counterexamples.py --stage induced9 \
++      --induced9-result "$OUT_ROOT/induced9_${METHOD}_merged.json" --induced9-ids "$INDUCED9" \
++      --output "$OUT_ROOT/induced9_v45_gate.json" ;;
++
++  remaining29_parallel2)
++    require_json_pass "$OUT_ROOT/induced9_v45_gate.json" induced9_gate.pass
++    run_subset remaining29 "$REMAIN29" "$METHOD" 1 ;;
++  stitch_counterfactual48)
++    require_json_pass "$OUT_ROOT/rescue10_v45_gate.json" rescue10_gate.pass
++    require_json_pass "$OUT_ROOT/induced9_v45_gate.json" induced9_gate.pass
++    python scripts/108_stitch_exact_subsets.py \
++      --inputs "$OUT_ROOT/lost7_${METHOD}_merged.json" "$OUT_ROOT/retained3_${METHOD}_merged.json" "$OUT_ROOT/induced9_${METHOD}_merged.json" "$OUT_ROOT/remaining29_${METHOD}_merged.json" \
++      --target-ids "$CF48" --output "$OUT_ROOT/counterfactual48_${METHOD}_merged.json" ;;
++  analyze_counterfactual48)
++    python -m cowp.scripts.109_analyze_verified_rcrso \
++      --cowp "$REF_CF48_COWP" --rvr "$REF_CF48_RVR" --v33-rosh "$REF_CF48_V33" \
++      --v35-control-projected-spectrum "$REF_CF48_V35" --v36-recovery-frontier "$REF_CF48_V36" \
++      --v37-recourse-returnability-bridge "$REF_CF48_V37" --v38-shift-closed-tube "$REF_CF48_V38" \
++      --v39-conflict-window-tube "$REF_CF48_V39" --v42-interaction-aware-reachable-response-envelope "$REF_CF48_V42" \
++      --verified-root-conditioned-recourse-set-operator "$OUT_ROOT/counterfactual48_${METHOD}_merged.json" \
++      --stage counterfactual48 --development-selected --output "$OUT_ROOT/counterfactual48_v45_rcrso_analysis.json" ;;
++
++  fresh37_parallel2)
++    require_json_pass "$OUT_ROOT/counterfactual48_v45_rcrso_analysis.json" preregistered_gate.verified_root_conditioned_recourse_set_operator.pass
++    run_subset fresh37 "$FRESH37" "$METHOD" 1 ;;
++  analyze_fresh37)
++    python -m cowp.scripts.109_analyze_verified_rcrso --cowp "$REF_FRESH37_COWP" \
++      --verified-root-conditioned-recourse-set-operator "$OUT_ROOT/fresh37_${METHOD}_merged.json" \
++      --stage fresh37 --development-selected --output "$OUT_ROOT/fresh37_v45_rcrso_analysis.json" ;;
++
++  confirm200_parallel2)
++    require_json_pass "$OUT_ROOT/fresh37_v45_rcrso_analysis.json" preregistered_gate.verified_root_conditioned_recourse_set_operator.pass
++    run_subset exact200 "$EXACT200" "$METHOD" 1 ;;
++  analyze_confirm200)
++    python -m cowp.scripts.109_analyze_verified_rcrso --cowp "$REF_EXACT200_COWP" \
++      --verified-root-conditioned-recourse-set-operator "$OUT_ROOT/exact200_${METHOD}_merged.json" \
++      --stage exact200 --development-selected --output "$OUT_ROOT/exact200_v45_rcrso_analysis.json" ;;
++
++  help|*)
++    cat <<EOF
++V16.8.45R3 Stage-0 runtime/observability fidelity repair — recommended order
++
++IMPORTANT: do not reuse V16.8.45/V16.8.45R1 sidecar/checkpoint/output directories. R2 engineering defaults use new paths.
++
++Offline operator / support gate (no Waymax closed loop):
++  $0 sanity
++  $0 make_ids
++  # R2 sidecar + rcrso_best_unselected.pt are reused; do NOT rebuild/retrain.
++  # Set RCRSO_UNSELECTED if the R2 output is outside this tree.
++  $0 stage0_support_parallel2    # recommended on 2 GPUs; live progress + exact merge
++  # $0 stage0_support_single    # semantics-equivalent debugging fallback
++
++Only if Stage-0 PASS:
++  $0 base_equivalence16_parallel2
++  $0 profile4_parallel2          # engineering runtime only
++  $0 lost7_parallel2
++  $0 analyze_lost7
++
++Only if lost7 >= 2/7:
++  $0 retained3_parallel2
++  $0 analyze_rescue10
++
++Only if historical rescue10 >= 5/10:
++  $0 induced9_parallel2
++  $0 analyze_induced9
++
++Only if induced9 avoided >= 7/9:
++  $0 remaining29_parallel2
++  $0 stitch_counterfactual48
++  $0 analyze_counterfactual48
++
++Only if original six-item counterfactual48 gate PASS:
++  $0 fresh37_parallel2
++  $0 analyze_fresh37
++
++Only if fresh37 no-harm gate PASS:
++  $0 confirm200_parallel2
++  $0 analyze_confirm200
++
++Optional progressive lost7 diagnostics (fixed order 2+2+3; not needed if you run full lost7 directly):
++  $0 lost7_batch1_parallel2 ; $0 analyze_lost7_progressive
++  $0 lost7_batch2_parallel2 ; $0 analyze_lost7_progressive
++  $0 lost7_batch3_parallel2 ; $0 analyze_lost7_progressive
++
++Important:
++- Do NOT tune K on lost7/counterfactual48. K is frozen by Stage-0 validation support coverage and stored in RCRSO_CKPT.
++- Do NOT shorten 80-step Waymax rollout.
++- Do NOT edit p_min/floor/root mass/beta/RCOT/BCOT/hard verifier to rescue Stage-0 or lost7.
++- The exact200 universe is development-selected. A publication claim still needs a new untouched final holdout + >=3 seeds + paired CI.
++EOF
++    ;;
++esac
+--- /dev/null
++++ b/tests/test_v16_8_45r3_stage0_runtime_observability.py
+@@ -0,0 +1,92 @@
++from __future__ import annotations
++
++import importlib
++from pathlib import Path
++
++
++def _mod():
++    return importlib.import_module('cowp.scripts.106_eval_rcrso_support')
++
++
++def _partial(shard:int, scenarios:list[int], *, examples:int, groups:int, oracle:int, base_full:int, ana_full:int, k2_full:int, k4_full:int):
++    def rs(full:int, root:int | None=None, csp:int=0):
++        return {'root_num':(full if root is None else root),'full_num':full,'csp_num':csp,'burden_sum':0.0,'burden_count':0,'learned_verified_profile_count':0,'learned_root_nonempty_num':0}
++    return {
++        'version':'test','scientific_method':'V16.8.45 RCRSO unchanged','split':'val','num_shards':2,'shard_index':shard,
++        'k_values':[2,4], 'scenario_hashes':scenarios, 'checkpoint_sha256':'x','sidecar_summary_sha256':'y',
++        'assigned_examples':examples,'processed_examples':examples,
++        'timing_seconds':{'wall_seconds':1.0+shard,'model_forward_s':0.1},
++        'stats':{
++            'examples':examples,'eligible_examples':examples,'hypothesis_groups':groups,'oracle_positive_roots':oracle,'verifier_calls':10*examples,
++            'baseline':{
++                'fixed_bank':{'root_num':0,'full_num':base_full,'csp_num':0},
++                'v44_analytic_extension':{'root_num':0,'full_num':ana_full,'csp_num':0},
++            },
++            'rcrso':{'2':rs(k2_full),'4':rs(k4_full)},
++        },
++    }
++
++
++def test_scenario_partition_is_disjoint_and_group_complete():
++    m=_mod()
++    paths=[
++        Path('0000000000000001_000_001_00.npz'),
++        Path('0000000000000001_000_001_01.npz'),
++        Path('0000000000000001_001_001_00.npz'),
++        Path('0000000000000002_000_001_00.npz'),
++        Path('0000000000000002_000_001_01.npz'),
++    ]
++    a=m._assigned_groups(paths,2,0); b=m._assigned_groups(paths,2,1)
++    sa={k[0] for k,_ in a}; sb={k[0] for k,_ in b}
++    assert sa.isdisjoint(sb)
++    assert sa|sb=={1,2}
++    got={(k,len(pp)) for bucket in (a,b) for k,pp in bucket}
++    assert got=={((1,0),2),((1,1),1),((2,0),2)}
++
++
++def test_parallel_raw_count_merge_matches_combined_counts_and_k_selection():
++    m=_mod()
++    p0=_partial(0,[2,4],examples=10,groups=4,oracle=5,base_full=1,ana_full=1,k2_full=2,k4_full=3)
++    p1=_partial(1,[1,3],examples=8,groups=4,oracle=3,base_full=1,ana_full=2,k2_full=2,k4_full=3)
++    s=m._partial_to_summary([p0,p1],3.0)
++    assert s['examples']==18
++    assert s['hypothesis_groups']==8
++    assert s['baseline']['fixed_bank']['FullHypothesisRootCoverage']==2/8
++    assert s['baseline']['v44_analytic_extension']['FullHypothesisRootCoverage']==3/8
++    assert s['rcrso_curve'][0]['FullHypothesisRootCoverage']==4/8
++    assert s['rcrso_curve'][1]['FullHypothesisRootCoverage']==6/8
++    # Plateau=0.75, 95% target=0.7125 => K=4, not K=2.
++    assert s['selected_k']==4
++    assert s['coverage_lift_over_best_frozen_baseline']==3/8
++    assert s['stage0_support_gate']['pass'] is True
++
++
++def test_merge_summary_keeps_frozen_gate_threshold_and_scientific_method():
++    m=_mod()
++    p0=_partial(0,[2],examples=2,groups=2,oracle=1,base_full=1,ana_full=1,k2_full=1,k4_full=1)
++    p1=_partial(1,[1],examples=2,groups=2,oracle=1,base_full=1,ana_full=1,k2_full=1,k4_full=1)
++    # No lift over best baseline => fail even though the run is otherwise valid.
++    s=m._partial_to_summary([p0,p1],3.0)
++    assert s['minimum_required_lift_pp']==3.0
++    assert s['stage0_support_gate']['pass'] is False
++    assert s['scientific_method']=='V16.8.45 RCRSO unchanged'
++    assert s['contract']['performance_repairs_change_hard_boolean'] is False
++
++
++def test_static_cache_namespace_changes_when_candidate_local_roadgraph_changes():
++    import numpy as np
++    m=_mod()
++    base={
++        'agent_index':np.asarray([1],np.int64),'root_index':np.asarray([0],np.int64),
++        'blocker_object_type':np.asarray([1],np.int64),'beta':np.asarray([0.5],np.float32),
++        'root_trajectory':np.zeros((4,7),np.float32),'blocker_state_global':np.zeros((11,),np.float32),
++        'roadgraph_xy':np.zeros((3,2),np.float32),'roadgraph_heading':np.zeros((3,),np.float32),
++        'roadgraph_types':np.zeros((3,),np.int32),'roadgraph_valid':np.ones((3,),bool),
++        'environment_current':np.zeros((2,4,7),np.float32),'environment_shifted':np.zeros((2,4,7),np.float32),
++        'environment_object_type':np.zeros((2,),np.int64),'environment_agent_index':np.asarray([2,3],np.int64),
++    }
++    a=m._stage0_static_namespace(base)
++    changed={k:(v.copy() if isinstance(v,np.ndarray) else v) for k,v in base.items()}
++    changed['roadgraph_xy'][0,0]=1.0
++    b=m._stage0_static_namespace(changed)
++    assert a!=b
+--- /dev/null
++++ b/ALGORITHM_CHANGELOG_V16_8_45R3.md
+@@ -0,0 +1,32 @@
++# V16.8.45R3 — Stage-0 Runtime / Observability Fidelity Repair
++
++Classification: **engineering-only**.
++
++Scientific algorithm: **V16.8.45 RCRSO unchanged**.
++
++Scientific verdict from uploaded R2 package: **NOT AVAILABLE** because the mandatory validation `stage0_val_support_audit.json` was never completed. No GO/STOP, no new bottleneck, no promotion/closure, and no V46 algorithm is inferred.
++
++## Repairs
++
++- live Stage-0 progress and phase timing;
++- scenario-disjoint `parallel2` execution;
++- exact raw-count shard merge/finalization with provenance checks;
++- streaming group metrics;
++- duplicate fixed-static replay removal;
++- exact memoization of repeated CSP trajectory-pair predicates;
++- semantic cache namespace includes candidate-local roadgraph/environment/root-state inputs.
++
++## Frozen scientific contracts
++
++- K `{2,4,8,16}` and 95%-plateau validation selection;
++- Stage-0 FullHypothesisRootCoverage lift `>=3 pp` and VerifiedRootRecall `>0`;
++- hard verifier and exact CSP;
++- compact-5k / base checkpoint / NaturalDecoder / RCOT / BCOT / controller / 8 s conventional contract;
++- lost7 / rescue10 / induced9 / CF48 / fresh37 gates.
++
++## Validation
++
++- R2→R3 legacy smoke: 17/17 scientific fields exact;
++- cross-hypothesis 24-example legacy comparison: 17/17 exact;
++- two-shard exact merge smoke: 17/17 exact;
++- focused semantic/integrity sanity: 143/143 passed prior to packaging.
+--- /dev/null
++++ b/CURRENT_ANALYSIS_V16_8_45R3_ENGINEERING_ONLY_CN.md
+@@ -0,0 +1,452 @@
++# V16.8.45R2 结果可靠性审计与 V16.8.45R3 Stage-0 工程修复
++
++## 0. 判决
++
++本轮严格执行用户预先规定的科研纪律：**先判断结果是否足以做算法归因；不满足时只做工程修复，不用不完整结果修改算法。**
++
++当前结论是：
++
++```text
++V16.8.45R2 sidecar/build/train engineering evidence = broadly coherent
++V16.8.45R2 Stage-0 scientific evidence             = MISSING / INCOMPLETE
++RCRSO scientific GO/STOP                            = NOT AVAILABLE
++algorithm attribution                               = NOT ALLOWED
++new scientific algorithm / V46                      = NOT AUTHORIZED
++required action                                     = repair Stage-0 runtime/observability and rerun frozen Stage-0
++```
++
++上传的结果包中没有 `stage0_val_support_audit.json`，也没有 Stage-0 finalize 后的 `rcrso_stage0_selected.pt`。用户明确说明 `stage0_support` 没有跑完，这和包内容一致。因此现在既不能判 GO，也不能判 STOP。
++
++这不是“V45R2 已经失败”的算法结论，而是**决定 V45 scientific fate 的 preregistered measurement 尚未产生**。
++
++---
++
++## 1. 我实际读取到的论文与代码主线存在 provenance mismatch
++
++当前 `COWP.zip` 中实际只有一个 TeX：
++
++```text
++paper/post-collision-v48.36-OCAF.tex
++```
++
++标题为：
++
++> Observation-Consistent Recoverability as a Calibrated Planning Primitive for Autonomous Driving
++
++其主方法是 **OC-RAP**，核心问题是 oracle-to-deployable recoverability gap：不同 latent futures 即使 branch-wise 各自存在 recovery，也可能在执行 prefix 后对 ego observation 不可区分，因此部署系统不能依赖隐藏 future identity 为每个 branch 选择不同 recovery。Method pipeline 是：
++
++```text
++scene/candidate prefix
++→ recovery-sufficient latent roots
++→ post-prefix observation-equivalence kernel
++→ affordance-conditioned signed recovery margins
++→ oracle recoverability vs deployable recoverability
++→ OC-MERO shared-recovery aggregation
++→ CRISP calibrated hard admission / nominal utility preservation
++```
++
++实验主 benchmark 写的是 WOMD + Waymax，另有 MetaDrive stress 和可选 CARLA；主指标包括 FRA、ODG、DRS、NUP、post-contact metrics 与 calibration。正文的主结果表仍是 placeholder `--`。
++
++这与 `大模型建议.md` / `ALGORITHM_CHANGELOG.md` / 当前 V25→V45 代码链的 **COWP / safety-by-coercion / natural roots / RCOT / BCOT / protected-priority / exact blocker / verified recourse-set completeness** 并不是同一篇方法论文。
++
++因此这是当前 artifact provenance 的一个重要问题：**我不能默认为 OC-RAP TeX 就是当前 RCRSO 应继续修改的 paper。** 本轮又处于 repair-only，所以没有修改 TeX。后续在 scientific evidence 恢复后，必须先把“ intended paper TeX 与 current COWP/RCRSO code lineage ”对齐，再做 CCF-A 主线文字更新。
++
++---
++
++## 2. compact-5k 数据性质：当前继续 Freeze
++
++上传的 `formal_v16_8_24_compact_full_5k.zip` 更准确地说是 compact-5k 的 manifest/profile/natural-support/cache-verifier **性质审计包**，不是服务器完整 `tensor_cache_train/val/heldout` NPZ payload。
++
++独立核对得到：
++
++| 性质 | Train | Val | Heldout |
++|---|---:|---:|---:|
++| scenes | 5000 | 1000 | 1200 |
++| audit-relevant pair rate | 0.42970 | 0.42863 | 0.42949 |
++| protected PRIO-root coverage | 99.453% | 99.363% | 99.465% |
++| rootless | 0 | 0 | 0 |
++| `<2 low-burden roots` | 0 | 0 | 0 |
++| mechanism unauditable | 4.07% | 4.34% | 4.46% |
++| critical-agent mean | 5.385 | 5.387 | 5.338 |
++| selected-cap saturation | 95.78% | 95.50% | 95.42% |
++
++三个 split 的关键统计高度稳定。当前没有证据把 RCRSO Stage-0 的问题归因于 split drift、rootless、low-burden-root sparsity 或整体数据质量，因此：
++
++> **本轮继续 Freeze compact-5k，不重建数据。**
++
++长期 watch items 保留：
++
++1. critical-agent cap=6 的 selected-cap saturation 已经约 95%+；
++2. `PRIORITY_SMOOTH_YIELD` proposal acceptance 约 20–22%，明显偏低；
++3. `TERMINAL` acceptance 约 54–55%；
++4. `verify_cache_train.json` 仍写有 `pass=false`，原因是 `irrelevant pair blockers=58243`，虽然 runtime supervision 会按 `audit_target` 重 mask，投稿 artifact 前仍应修 serialization/verifier accounting 或给 cache→runtime semantic-equivalence proof。
++
++这些是**模型收敛后判断 support ceiling 的 watch items**，不是本轮 Stage-0 未完成的解释。
++
++---
++
++## 3. 已有 R2 sidecar/build/train 结果能信到什么程度
++
++### 3.1 Sidecar build 日志完整
++
++Train 8 shards 均扫描 625/625 scenes：
++
++```text
++5000 train scenes
++111,016 sidecar examples
++6,748 hypothesis groups
++24,445 positive examples
++launcher wall = 11,031 s ≈ 3.06 h
++```
++
++Validation 2 shards 均扫描 500/500 scenes：
++
++```text
++1000 val scenes
++25,235 sidecar examples
++1,612 hypothesis groups
++6,044 positive examples
++launcher wall = 12,839 s ≈ 3.57 h
++```
++
++Val shard timing也直接说明 authoritative hard verification 是主要成本：
++
++```text
++shard0 wall             10,369.97 s
++  analytic completion    3,468.27 s
++  proposal verify        6,413.42 s
++
++shard1 wall             12,835.84 s
++  analytic completion    3,948.88 s
++  proposal verify        8,369.98 s
++```
++
++所以 Stage-0 很慢并不奇怪：它又会重新运行 hard verifier / V44 analytic / exact CSP。
++
++### 3.2 RCRSO training 完整跑了 30 epochs
++
++`training_history.json` 含 30 个完整 epoch，每个 epoch 的 validation examples 都是 **25,235**，与 sidecar val 总量一致。
++
++训练脚本以 `val_stats["set"]` 选择 `rcrso_best_unselected.pt`。最优 epoch 是：
++
++```text
++epoch 9
++val set loss   = 0.08545546
++val total loss = 0.72250204
++```
++
++最后 epoch 30：
++
++```text
++val set loss   = 0.08851700
++val total loss = 0.76022567
++```
++
++这说明优化过程完成且 checkpoint-selection trace 自洽；后期存在轻微 validation degradation，但**不能据此判 RCRSO 成败**。预注册成功条件是 verified support completeness，不是 set-loss 是否更低。
++
++### 3.3 当前结果包的 provenance 边界
++
++结果包没有：
++
++- full train/val sidecar NPZ payload；
++- `rcrso_best_unselected.pt` bytes；
++- Stage-0 audit；
++- Stage-0 selected checkpoint。
++
++因此我能审计 build/train logs 与 training history 的自洽性，但不能只靠这个结果 zip 重新 hash/replay server checkpoint 与完整 sidecar。
++
++---
++
++## 4. `stage0_support` 为什么“没有任何 hint”
++
++这不是 Waymax hang，也不是 GPU deadlock。V16.8.45R2 的 `cowp/scripts/106_eval_rcrso_support.py` 在结构上就是**直到全部结束才输出最终 JSON**。
++
++旧实现的主要执行路径：
++
++```text
++25,235 val examples
++for each example, sequentially:
++    batch-1 RCRSO neural forward
++    hard verify max K=16 learned proposals
++    frozen fixed-static support
++    frozen fixed candidate-specific support
++    V44 analytic completion
++    save detailed trajectories/profiles in Python records[]
++
++all examples finish
++→ group by 1,612 hypothesis groups
++→ fixed baseline exact CSP
++→ V44 analytic baseline exact CSP
++→ K=2 exact CSP
++→ K=4 exact CSP
++→ K=8 exact CSP
++→ K=16 exact CSP
++→ choose 95%-plateau K
++→ calculate frozen Stage-0 gate
++→ only now print/write final JSON
++```
++
++### 4.1 旧实现有四个工程问题
++
++#### A. 完全无进度可观测性
++
++没有 `status_every` / progress callback。即使正常运行数小时，terminal 也会像“卡死”。
++
++#### B. Stage-0 是单进程
++
++用户有两张 GPU，但旧 `stage0_support` 只启动一个 process。GPU 只负责小型 RCRSO forward；hard verifier 与 CSP 主要是 CPU/NumPy/Python，因此第二张 GPU 和额外 CPU process 没被利用。
++
++#### C. 每个 item 重复构造 fixed static bank
++
++旧代码先：
++
++```python
++fixed_static_profiles = _fixed_static_bank_profiles(item, cfg)
++```
++
++紧接着 `_fixed_bank_profiles(item,cfg)` 内部又重新调用一次 `_fixed_static_bank_profiles`。这是完全相同的 authoritative frozen computation，可安全 work-reuse。
++
++#### D. CSP 的 pairwise trajectory compatibility 被重复计算
++
++每个 hypothesis group 上会分别运行 fixed/V44/K2/K4/K8/K16 六套 exact CSP。很多 responder-trajectory pairs 在这些 nested domains 中相同，旧代码每次都重新计算 4-direction current/shift collision predicate。
++
++此外旧实现把所有详细 trajectory/profile records 留到最后才聚合，造成不必要的内存驻留。
++
++---
++
++## 5. V16.8.45R3 工程修复：不改变任何 scientific boolean
++
++我没有设计 V46。新版本命名为：
++
++> **V16.8.45R3 — Stage-0 Runtime / Observability Fidelity Repair**
++
++scientific method 仍然是：
++
++```text
++V16.8.45 RCRSO unchanged
++```
++
++### 5.1 实时进度
++
++每个 Stage-0 shard 默认每 30 s 输出：
++
++```text
++examples=done/total
++groups=...
++verifier=...
++elapsed=...
++rate=... examples/s
++eta=...
++timing[load/model_forward/learned_verify/fixed/analytic/csp percentages]
++```
++
++所以服务器上不再出现“几个小时没有任何 hint”。
++
++### 5.2 scenario-disjoint parallel2
++
++Stage-0 validation 按 `scenario_hash % 2` 拆成两个 process。一个 scenario 的所有 hypothesis groups/roots 永远在同一个 shard，避免跨 shard 拆 CSP。
++
++两个 shard 完成后只合并**整数 raw counts 与 burden sums**，再统一执行完全相同的：
++
++- baseline coverage；
++- K curves；
++- 95% plateau K selection；
++- 3 pp lift Gate。
++
++Merge 脚本强制检查：
++
++- shard index 完整；
++- scenario hashes 无 overlap；
++- assigned examples 全部完成；
++- checkpoint SHA256 相同；
++- sidecar summary SHA256 相同。
++
++### 5.3 streaming group aggregation
++
++每个 hypothesis group 的 exact metrics 算完即丢弃 trajectory profiles，不再持有完整 25k examples 的 detailed profile records 到结束。
++
++### 5.4 fixed static exact work reuse
++
++同 item 的 fixed static bank只算一次，再提供给 candidate-specific fixed screen。
++
++跨 hypothesis 的任何静态 cache 复用都要求下面输入的 semantic namespace 完全一致：
++
++```text
++agent/root/object_type/beta
++root trajectory + blocker state
++candidate-local roadgraph subset
++environment current/shift trajectories
++```
++
++这点很重要：profile8 审计发现**同 scene 同 agent/root 在不同 ego hypotheses 下 candidate-local roadgraph subset 可能不同**，所以简单使用 `(agent,root)` 作为 Stage-0 static-cache key 是不安全的。R3 最终版已经将 roadgraph/environment/root-state 都绑定到 cache namespace，避免 stale hard predicate。
++
++### 5.5 exact CSP pair memoization
++
++只对**字节级相同**的 current/shift responder trajectory pair 复用 `_pair_ok` 结果。它不近似几何，不改变 threshold，也不跳过新的 trajectory pair。
++
++---
++
++## 6. R3 semantic fidelity 验证
++
++### 6.1 Legacy vs R3 smoke
++
++使用同一个 deterministic synthetic RCRSO checkpoint 和 R2 sidecar smoke，比较以下 17 个 Stage-0 科学字段：
++
++```text
++examples / eligible_examples
++hypothesis_groups
++oracle positives
++fixed baseline
++V44 baseline
++K curves
++plateau / selected K
++selected metrics
++coverage lift
++frozen minimum lift
++stage0 gate
++verifier calls
++```
++
++结果：
++
++> **17/17 scientific fields exact match.**
++
++### 6.2 Cross-hypothesis semantic reuse regression
++
++另外抽取同一 scenario 的 3 个 hypothesis groups、24 sidecar examples，legacy R2 与最终 R3：
++
++> **17/17 scientific fields exact match.**
++
++这专门验证 candidate-local roadgraph 不同情况下的新 semantic namespace 没有改变 hard admission。
++
++### 6.3 Parallel merge regression
++
++把 smoke 按 scenario-disjoint 2 shards 执行并 merge，和 legacy single-process：
++
++> **17/17 scientific fields exact match.**
++
++### 6.4 Focused repository sanity
++
++最终重新运行 V25→V45R3 focused semantic/integrity suite：
++
++```text
++143 / 143 passed
++```
++
++Python compile 和 launcher `bash -n` 均通过。
++
++---
++
++## 7. 本轮为什么绝对不能做 V45 GO/STOP
++
++RCRSO 在前一轮已经预注册：
++
++```text
++K ∈ {2,4,8,16}
++K: validation only, smallest K reaching 95% of FullHypothesisRootCoverage plateau
++
++Stage-0 GO iff:
++selected FullHypothesisRootCoverage
++  - max(fixed baseline FHR, V44 analytic baseline FHR)
++>= 3 percentage points
++AND selected VerifiedRootRecall > 0
++```
++
++而当前上传包根本没有 Stage-0 final metrics。
++
++因此以下全部没有证据基础，本轮不做：
++
++- RCRSO = GO/STOP；
++- 解释哪个新机制生效；
++- promotion RCRSO；
++- 关闭 learned-recourse family；
++- 更新 dominant scientific bottleneck；
++- 设计 V46；
++- 修改论文 Method/Abstract/Contributions；
++- 用训练 loss 猜 Stage-0 support coverage。
++
++当前 scientific question 仍保持冻结：
++
++> **learned set-valued RCRSO proposal 是否在完全不放宽 hard verifier 的前提下，真正提高 universal retained-root verified support completeness？**
++
++---
++
++## 8. 内部迭代收敛条件：保持原预注册，不在本轮触发
++
++当前 broader learned-recourse family 的关闭协议保持不变：
++
++1. 连续 **2 个** preregistered architectures 都既没有 `FullHypothesisRootCoverage ≥ +3 pp`，也没有增加至少 `+1 lost7 rescue` → 关闭 learned-recourse family；
++2. 最多 **3 个** preregistered architectures 仍没有一个达到 lost7 `≥2/7` → 关闭 learned-recourse proposal，转 `natural-root validity / interaction-model uncertainty`；
++3. 任何 gain 只有通过放宽 beta/root/CSP/horizon/hard verifier 才能得到 → 立即 STOP。
++
++当前 RCRSO 连**第一个合法 Stage-0 verdict 都还没有**，所以不应把 R2 的“没跑完”算成一次 architecture failure。
++
++离“内部迭代结束、可以和外部 baseline 做正式比较”最大的差距也暂时不是 headline Waymax collision，而是：
++
++> **尚未得到第一个可审计的 RCRSO support-completeness gate。**
++
++在这之前讨论 final baseline comparison 会前置证据顺序。
++
++---
++
++## 9. 下一步命令：不重建 sidecar、不重新训练
++
++R2 的 train/val sidecar build 和 30-epoch training 已完成。现在只应该复用：
++
++```text
++recourse_sidecar_v16_8_45r2
++rcrso_best_unselected.pt
++```
++
++然后跑 repaired Stage-0。
++
++```bash
++cd COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY
++
++export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k
++
++# 指到你服务器上 R2 真正训练出来的 checkpoint；不要用结果 zip，因为上传包没包含 pt bytes。
++export RCRSO_UNSELECTED=/你的V16.8.45R2运行目录/outputs/v16_8_45r2_rcrso_operator/rcrso_best_unselected.pt
++
++# R2 sidecar 默认已经是：
++export SIDECAR_ROOT="$COWP_ROOT/recourse_sidecar_v16_8_45r2"
++
++bash NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh sanity
++
++# 推荐：两张 A30 对应两个 scenario-disjoint Stage-0 process；terminal 每 30s 会有 hint。
++bash NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh stage0_support
++```
++
++`stage0_support` 在 R3 中就是 recommended `parallel2`。如果只想诊断单进程：
++
++```bash
++bash NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh stage0_support_single
++```
++
++Stage-0 如果 FAIL，merge/finalizer 按原协议会写出审计 JSON 后以 **exit code 4** 退出；这表示 preregistered scientific STOP signal，而不是脚本 crash。
++
++第一轮只把下面文件给我即可：
++
++```text
++outputs/v16_8_45r3_stage0_runtime_observability/stage0_val_support_audit.json
++outputs/v16_8_45r3_stage0_runtime_observability/stage0_parallel2_wall_seconds.txt
++outputs/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s0.log
++outputs/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s1.log
++```
++
++只有 `stage0_support_gate.pass=true` 才进入 `base_equivalence16_parallel2`。在这之前不要跑 lost7。
++
++---
++
++## 10. 本轮 Changelog 决策
++
++本轮**不关闭新的 scientific algorithm family**。
++
++新增记录：
++
++- `V16.8.45R2 Stage-0 incomplete → scientific status unresolved`；
++- 旧 Stage-0 single-process/no-progress 路径归档为 engineering runtime/observability defect；
++- V16.8.45R3 仅做 exact semantic work reuse / scenario-disjoint parallel / streaming/progress；
++- RCRSO scientific method、Stage-0 threshold、K selection、lost7/CF48 protocol全部冻结；
++- 不授权 V46。
++
+--- /dev/null
++++ b/V16_8_45R2_RESULT_RELIABILITY_AND_STAGE0_AVAILABILITY_AUDIT.json
+@@ -0,0 +1,288 @@
++{
++  "audit_version": "V16.8.45R2_result_reliability_and_stage0_availability_independent_R3",
++  "dataset": {
++    "archive_contents_note": "This upload contains manifests/profile/natural-support/cache-verifier audit artifacts, not the server tensor_cache_train/val NPZ payloads. The flat-roadgraph conclusion is additionally grounded in the project raw-WOMD cache/dataloader contract and the user server traceback.",
++    "audit_version": "V16.8.45R1_dataset_reaudit",
++    "decision": "FREEZE_DATASET_DO_NOT_REBUILD_FOR_V45R1",
++    "engineering_root_cause": {
++      "dataset_corruption": false,
++      "detail": "Raw WOMD tf.Example roadgraph vector fields may be stored flat; Waymax dataloader reshapes to [P,3], original V45 sidecar did not.",
++      "sidecar_schema_consumption_bug": true
++    },
++    "provenance_caveat": {
++      "affected_root_mismatch_count": 0,
++      "canonical_root_weight_mismatch_count": 0,
++      "conflict_root_mismatch_count": 0,
++      "inspected": 5000,
++      "irrelevant_blocker_count": 58243,
++      "retained_root_mismatch_count": 0,
++      "silent_blocker_count": 0,
++      "submission_action": "Before publication artifact release, repair cache serialization/verifier accounting or provide a strict cache-to-runtime semantic-equivalence proof. Current V45R1 does not rebuild data based on this caveat.",
++      "valid_scene_rate_inspected": 1.0,
++      "verify_cache_train_pass": false
++    },
++    "source_archive": "formal_v16_8_24_compact_full_5k(1).zip",
++    "splits": {
++      "heldout": {
++        "audit_relevant_pair_rate": 0.42949210300959645,
++        "critical_agent_max": 6,
++        "critical_agent_mean": 5.338333333333333,
++        "critical_agent_p50": 6.0,
++        "critical_agent_p90": 6.0,
++        "lt2_low_burden_rate": 0.0,
++        "mechanism_unauditable_rate": 0.04464564470808617,
++        "priority_smooth_yield_acceptance": 0.21865260129465355,
++        "protected_prio_root_coverage": 0.994651306315573,
++        "rootless_rate": 0.0,
++        "scenes": 1200,
++        "selected_cap_saturation_rate": 0.9541666666666667,
++        "terminal_acceptance": 0.5509600903614458
++      },
++      "train": {
++        "audit_relevant_pair_rate": 0.42969642430550514,
++        "critical_agent_max": 6,
++        "critical_agent_mean": 5.3846,
++        "critical_agent_p50": 6.0,
++        "critical_agent_p90": 6.0,
++        "lt2_low_burden_rate": 0.0,
++        "mechanism_unauditable_rate": 0.040671544775842214,
++        "priority_smooth_yield_acceptance": 0.20354708925199114,
++        "protected_prio_root_coverage": 0.9945328517036025,
++        "rootless_rate": 0.0,
++        "scenes": 5000,
++        "selected_cap_saturation_rate": 0.9578,
++        "terminal_acceptance": 0.5414834541905825
++      },
++      "val": {
++        "audit_relevant_pair_rate": 0.42863002173455794,
++        "critical_agent_max": 6,
++        "critical_agent_mean": 5.387,
++        "critical_agent_p50": 6.0,
++        "critical_agent_p90": 6.0,
++        "lt2_low_burden_rate": 0.0,
++        "mechanism_unauditable_rate": 0.043437906070168925,
++        "priority_smooth_yield_acceptance": 0.2064995628096765,
++        "protected_prio_root_coverage": 0.9936321332353661,
++        "rootless_rate": 0.0,
++        "scenes": 1000,
++        "selected_cap_saturation_rate": 0.955,
++        "terminal_acceptance": 0.5454565514806479
++      }
++    },
++    "watch_items_after_model_convergence": [
++      "critical-agent/conflict-region selected cap=6 is saturated on about 95%+ of scenes across splits",
++      "PRIORITY_SMOOTH_YIELD acceptance is only about 20-22%",
++      "TERMINAL acceptance is about 54-55%",
++      "these are future support-ceiling diagnostics, not evidence that the V45 sidecar crash or current RCRSO bottleneck is data-driven"
++    ]
++  },
++  "decision": {
++    "algorithm_attribution_allowed": false,
++    "engineering_evidence": "PASS_WITH_PROVENANCE_LIMITS",
++    "new_scientific_algorithm_authorized": false,
++    "required_action": "ENGINEERING_REPAIR_ONLY_AND_RERUN_FROZEN_STAGE0",
++    "scientific_stage0_evidence": "MISSING_INCOMPLETE",
++    "v16_8_45_rcrso_go_stop": "NOT_AVAILABLE"
++  },
++  "evidence_boundary": [
++    "No Stage-0 final audit exists in the uploaded result archive, so no scientific GO/STOP can be issued.",
++    "No checkpoint bytes are included in the result archive, so checkpoint content SHA256 cannot be independently reconstructed here.",
++    "Full train/val sidecar NPZ payloads are not included in the result archive, so build logs/training counts can be audited but the full sidecar cannot be replayed from this upload alone.",
++    "counterfactual development panels remain development-selected and are not publication holdouts."
++  ],
++  "frozen_preregistered_stage0": {
++    "GO": "selected FullHypothesisRootCoverage - max(fixed baseline,V44 analytic baseline) >= 0.03 AND selected VerifiedRootRecall > 0",
++    "K_selection": "smallest K reaching 95% of validation FullHypothesisRootCoverage plateau",
++    "K_values": [
++      2,
++      4,
++      8,
++      16
++    ],
++    "after_pass": "equivalence16 -> lost7 -> retained3/rescue10 -> induced9 -> remaining29/CF48 -> fresh37 -> development exact200"
++  },
++  "paper_artifact_check": {
++    "method": "OC-RAP / observation-consistent deployable recoverability",
++    "mismatch_with_current_code_lineage": true,
++    "note": "The only TeX in the uploaded COWP archive is an OC-RAP/recoverability manuscript, while the V25-V45 COWP/RCRSO code/advice lineage is safety-by-coercion / natural-root recourse-set feasibility. Treat this as a provenance/paper-package mismatch until the intended TeX is supplied or reconciled; no paper edits are made in R3.",
++    "tex_files_found": [
++      "paper/post-collision-v48.36-OCAF.tex"
++    ],
++    "title": "Observation-Consistent Recoverability as a Calibrated Planning Primitive for Autonomous Driving"
++  },
++  "r3_repair": {
++    "changes": [
++      "periodic stderr progress with examples/groups/verifier calls/rate/ETA/phase timing",
++      "scenario-disjoint two-shard Stage-0 execution and exact raw-count merge",
++      "lazy partial NPZ member loading and streaming group aggregation",
++      "remove duplicate fixed-static-bank replay within an item",
++      "exact trajectory-identity memoization for repeated CSP pair predicates",
++      "semantic-namespace cache reuse only when root/state/beta/roadgraph/environment static inputs match"
++    ],
++    "focused_tests_failed": 0,
++    "focused_tests_passed": 143,
++    "legacy_vs_r3_cross_hypothesis_24_scientific_fields_exact": true,
++    "legacy_vs_r3_smoke_scientific_fields_exact": true,
++    "parallel_merge_smoke_scientific_fields_exact": true,
++    "scientific_method_changed": false,
++    "focused_test_command": "bash NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh sanity"
++  },
++  "result_package": {
++    "full_sidecar_npz_payload_present_in_uploaded_result_package": false,
++    "note": "Uploaded result archive contains sidecar build logs/profile-smoke artifacts and training_history, but not the completed Stage-0 audit/selected checkpoint or full server sidecar/checkpoint payload.",
++    "rcrso_unselected_checkpoint_bytes_present": false,
++    "stage0_selected_checkpoint_present": false,
++    "stage0_val_support_audit_present": false,
++    "training_history_present": true
++  },
++  "sidecar_build": {
++    "train": {
++      "examples": 111016,
++      "hypothesis_groups": 6748,
++      "launcher_wall_seconds": 11031,
++      "positive_examples": 24445,
++      "shards": [
++        {
++          "analytic_completion_s": 4655.710350566544,
++          "examples": 13769,
++          "features_context_s": 354.41968977754004,
++          "hypothesis_groups": 848,
++          "positive_examples": 3009,
++          "proposal_verify_s": 5222.884533782722,
++          "shard": 0,
++          "wall_seconds": 10690.4704630489,
++          "write_s": 107.14396708155982
++        },
++        {
++          "analytic_completion_s": 4653.1289533965755,
++          "examples": 13825,
++          "features_context_s": 325.50451170583256,
++          "hypothesis_groups": 870,
++          "positive_examples": 3005,
++          "proposal_verify_s": 5464.9307081101,
++          "shard": 1,
++          "wall_seconds": 10925.19317063992,
++          "write_s": 105.82878518407233
++        },
++        {
++          "analytic_completion_s": 4728.198253212497,
++          "examples": 13901,
++          "features_context_s": 337.0593086187728,
++          "hypothesis_groups": 841,
++          "positive_examples": 3135,
++          "proposal_verify_s": 5477.806362967007,
++          "shard": 2,
++          "wall_seconds": 11025.604396522976,
++          "write_s": 106.52737440052442
++        },
++        {
++          "analytic_completion_s": 4529.225611020811,
++          "examples": 13999,
++          "features_context_s": 340.30397922662087,
++          "hypothesis_groups": 840,
++          "positive_examples": 2957,
++          "proposal_verify_s": 5171.105237728683,
++          "shard": 3,
++          "wall_seconds": 10510.280364122009,
++          "write_s": 104.7668721138034
++        },
++        {
++          "analytic_completion_s": 4775.919738877332,
++          "examples": 14030,
++          "features_context_s": 358.23384424252436,
++          "hypothesis_groups": 811,
++          "positive_examples": 3081,
++          "proposal_verify_s": 5338.380186904222,
++          "shard": 4,
++          "wall_seconds": 10908.56364989793,
++          "write_s": 105.1011963095516
++        },
++        {
++          "analytic_completion_s": 4633.61750512477,
++          "examples": 13721,
++          "features_context_s": 347.69260402815416,
++          "hypothesis_groups": 839,
++          "positive_examples": 3365,
++          "proposal_verify_s": 5445.449519739719,
++          "shard": 5,
++          "wall_seconds": 10867.606962729013,
++          "write_s": 106.4231370605994
++        },
++        {
++          "analytic_completion_s": 4680.960824737558,
++          "examples": 14050,
++          "features_context_s": 358.9257111728657,
++          "hypothesis_groups": 865,
++          "positive_examples": 2997,
++          "proposal_verify_s": 5472.757970768027,
++          "shard": 6,
++          "wall_seconds": 11010.703952988843,
++          "write_s": 108.0003200226929
++        },
++        {
++          "analytic_completion_s": 4644.408552679233,
++          "examples": 13721,
++          "features_context_s": 332.63212353363633,
++          "hypothesis_groups": 834,
++          "positive_examples": 2896,
++          "proposal_verify_s": 5286.411003454123,
++          "shard": 7,
++          "wall_seconds": 10727.874750160845,
++          "write_s": 106.38317692372948
++        }
++      ]
++    },
++    "val": {
++      "examples": 25235,
++      "hypothesis_groups": 1612,
++      "launcher_wall_seconds": 12839,
++      "positive_examples": 6044,
++      "shards": [
++        {
++          "analytic_completion_s": 3468.2700591615867,
++          "examples": 12351,
++          "features_context_s": 275.69851754046977,
++          "hypothesis_groups": 785,
++          "positive_examples": 2850,
++          "proposal_verify_s": 6413.415469722124,
++          "shard": 0,
++          "wall_seconds": 10369.973040826852,
++          "write_s": 86.66530040930957
++        },
++        {
++          "analytic_completion_s": 3948.8831160033587,
++          "examples": 12884,
++          "features_context_s": 294.9028484423179,
++          "hypothesis_groups": 827,
++          "positive_examples": 3194,
++          "proposal_verify_s": 8369.97722927318,
++          "shard": 1,
++          "wall_seconds": 12835.84157474502,
++          "write_s": 91.03465293115005
++        }
++      ]
++    }
++  },
++  "stage0_engineering_root_cause": {
++    "classification": "engineering observability/performance defect; no evidence of deadlock from the uploaded artifacts",
++    "dominant_runtime_expected": "CPU/NumPy hard verifier, analytic completion, responder/environment collision compatibility and repeated exact CSP; GPU forward is not sufficient to remove this bottleneck",
++    "hypothesis_groups_expected": 1612,
++    "old_execution": "single process, item-wise batch-1 neural forward + hard verifier + fixed/V44 replay, stores detailed profiles then runs fixed/V44 + K={2,4,8,16} exact CSP passes per group",
++    "old_stage0_progress_output": "none until final JSON; no periodic hint/status",
++    "validation_examples_expected": 25235
++  },
++  "training": {
++    "best_checkpoint_selection_metric": "val.set",
++    "best_epoch": 9,
++    "best_val_set_loss": 0.08545545965118681,
++    "best_val_total_loss": 0.7225020373528349,
++    "epochs_completed": 30,
++    "interpretation": "Optimization ran to completion and the checkpoint-selection trace is coherent, but training loss/val set loss is not the preregistered support-completeness GO metric.",
++    "last_epoch": 30,
++    "last_val_set_loss": 0.08851699892299374,
++    "last_val_total_loss": 0.760225670007767,
++    "validation_examples_each_epoch": [
++      25235
++    ]
++  }
++}
+--- /dev/null
++++ b/V16_8_45R3_CODE_VALIDATION.json
+@@ -0,0 +1,51 @@
++{
++  "version": "V16.8.45R3",
++  "scope": "engineering-only Stage-0 runtime/observability and semantic-fidelity repair",
++  "scientific_method_changed": false,
++  "focused_sanity": {
++    "passed": 143,
++    "failed": 0
++  },
++  "scientific_equivalence": {
++    "legacy_r2_vs_r3_single": {
++      "scientific_fields_compared": 17,
++      "mismatches": 0
++    },
++    "legacy_r2_vs_r3_parallel2_merged": {
++      "scientific_fields_compared": 17,
++      "mismatches": 0
++    },
++    "cross_hypothesis_profile8_scene_legacy_vs_r3": {
++      "scientific_fields_compared": 17,
++      "mismatches": 0
++    }
++  },
++  "semantic_cache_fidelity": {
++    "candidate_local_roadgraph_in_cache_namespace": true,
++    "environment_current_shift_in_cache_namespace": true,
++    "root_and_blocker_state_in_cache_namespace": true,
++    "adaptive_beta_in_cache_namespace": true
++  },
++  "protocol": {
++    "k_grid_unchanged": [
++      2,
++      4,
++      8,
++      16
++    ],
++    "stage0_gate_unchanged": true,
++    "hard_verifier_unchanged": true,
++    "root_burden_csp_8s_contract_unchanged": true,
++    "parallel_partition": "scenario-disjoint; all examples of a scenario remain in one shard",
++    "merge_fail_closed": true
++  },
++  "observability": {
++    "live_progress_stderr": true,
++    "progress_interval_seconds_default": 30,
++    "reports_examples_groups_verifier_calls_elapsed_rate_eta_phase_timing": true
++  },
++  "manifest_hash_checks_passed": true,
++  "python_compileall_passed": true,
++  "launcher_bash_syntax_passed": true,
++  "result_reliability_verdict": "V16.8.45R2 scientific attribution unavailable because Stage-0 audit is absent/incomplete; R3 is a repair-only rerun vehicle"
++}
+--- a/ALGORITHM_CHANGELOG.md
++++ b/ALGORITHM_CHANGELOG.md
+@@ -5716,3 +5716,67 @@
+ Synthetic repeated-work profiling shows ~46× kinematics, ~8.38× shared-cache verifier, and ~4.86× environment-event feature subcomponent speedups; these are **not** server end-to-end claims. The authoritative sidecar hard verifier remains CPU/NumPy in R2 to preserve exact frozen predicate semantics. A30 GPU use remains recommended for RCRSO training/Stage-0 forward, not for authoritative hard-set membership until a separate CUDA equivalence gate exists.
+ 
+ Scientific status remains **UNRESOLVED**; no V46 branch is authorized by this engineering revision.
++
++---
++
++# V16.8.45R3 — Stage-0 Runtime / Observability Fidelity Repair (engineering-only)
++
++**Scientific method remains V16.8.45 RCRSO. Scientific status remains UNRESOLVED until the frozen validation Stage-0 audit completes. No V46 is authorized.**
++
++## Trigger / reliability decision
++
++The uploaded V16.8.45R2 package contains coherent sidecar-build logs and a complete 30-epoch training history, but does **not** contain `stage0_val_support_audit.json` or the finalized `rcrso_stage0_selected.pt`. The user also reports that `stage0_support` was stopped before completion. Therefore there is no legal RCRSO GO/STOP evidence. Training loss or profile-only artifacts must not substitute for the preregistered verified-support gate.
++
++## Engineering root cause
++
++R2 Stage-0 is a single process over 25,235 validation sidecar examples. It performs batch-1 RCRSO forward, learned hard verification, fixed-bank replay and V44 analytic replay item-by-item, retains detailed response trajectories until all items finish, then executes fixed/V44/K2/K4/K8/K16 exact CSP metrics over 1,612 hypothesis groups. It emits no periodic status before the final JSON. This explains the observed long silent run without implying a deadlock.
++
++## R3 repair
++
++R3 changes only execution/runtime mechanics:
++
++1. periodic Stage-0 stderr progress: examples/groups/verifier calls/rate/ETA and phase timing;
++2. scenario-disjoint `parallel2` Stage-0 with exact raw-count merge; all roots of a hypothesis group stay on one shard;
++3. finalizer checks shard completeness, scenario non-overlap, checkpoint SHA256 and sidecar-summary SHA256;
++4. streaming group aggregation instead of retaining all 25k detailed profile records;
++5. exact reuse of the fixed static bank within an item;
++6. exact trajectory-identity memoization for repeated CSP pairwise collision predicates;
++7. cross-hypothesis cache reuse is namespaced by immutable semantic inputs including root/state/beta, candidate-local roadgraph subset and environment current/shift geometry, preventing stale cache reuse when candidate-local roadgraph changes.
++
++No root probability, beta, response parameterization, roadgraph predicate, Waymax kinematics, ego-current/shift safety, environment predicate, exact CSP, K set, K plateau rule, Stage-0 threshold, checkpoint-selection scientific metric, lost7/CF48 gate, base model, dataset, controller, or 8 s safety contract changes.
++
++## Semantic-fidelity validation
++
++- Legacy R2 vs R3 deterministic sidecar-smoke: **17/17 Stage-0 scientific fields exact**.
++- Legacy R2 vs R3 same-scenario cross-hypothesis 24-example regression: **17/17 scientific fields exact**.
++- R3 scenario-disjoint 2-shard merge vs legacy single-process smoke: **17/17 scientific fields exact**.
++- V25→V45R3 focused semantic/integrity suite: **143/143 passed** (before release packaging; final package rerun recorded separately).
++
++## Scientific status / frozen decision tree
++
++Still execute the original preregistration:
++
++```text
++Stage-0 validation support audit
++  FAIL -> current RCRSO architecture STOP
++  PASS -> equivalence16 -> lost7 >=2/7 -> rescue10 >=5/10
++          -> induced9 avoided >=7/9 -> remaining29/CF48 six-item gate
++          -> fresh37 -> development exact200
++```
++
++Stage-0 remains:
++
++```text
++K in {2,4,8,16}
++select smallest K reaching 95% of validation FullHypothesisRootCoverage plateau
++GO iff selected FHR - max(fixed FHR, V44 analytic FHR) >= 3 pp
++       AND selected VerifiedRootRecall > 0
++```
++
++Do not count an unfinished Stage-0 run as an architecture failure. Broader learned-recourse family convergence/closure rules remain unchanged.
++
++## Dataset / paper provenance notes
++
++- compact-5k remains **Freeze**; split statistics remain stable and do not currently explain the missing Stage-0 measurement.
++- publication artifact still has the known `verify_cache_train.json pass=false / irrelevant pair blockers=58243` provenance caveat.
++- the only TeX in the uploaded code package is the OC-RAP observation-consistent recoverability manuscript, which is not the same method lineage as the current COWP/RCRSO changelog. No paper edits are made until this artifact mismatch is reconciled and RCRSO scientific evidence exists.

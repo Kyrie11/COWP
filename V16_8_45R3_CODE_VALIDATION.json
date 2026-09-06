@@ -1,0 +1,51 @@
+{
+  "version": "V16.8.45R3",
+  "scope": "engineering-only Stage-0 runtime/observability and semantic-fidelity repair",
+  "scientific_method_changed": false,
+  "focused_sanity": {
+    "passed": 143,
+    "failed": 0
+  },
+  "scientific_equivalence": {
+    "legacy_r2_vs_r3_single": {
+      "scientific_fields_compared": 17,
+      "mismatches": 0
+    },
+    "legacy_r2_vs_r3_parallel2_merged": {
+      "scientific_fields_compared": 17,
+      "mismatches": 0
+    },
+    "cross_hypothesis_profile8_scene_legacy_vs_r3": {
+      "scientific_fields_compared": 17,
+      "mismatches": 0
+    }
+  },
+  "semantic_cache_fidelity": {
+    "candidate_local_roadgraph_in_cache_namespace": true,
+    "environment_current_shift_in_cache_namespace": true,
+    "root_and_blocker_state_in_cache_namespace": true,
+    "adaptive_beta_in_cache_namespace": true
+  },
+  "protocol": {
+    "k_grid_unchanged": [
+      2,
+      4,
+      8,
+      16
+    ],
+    "stage0_gate_unchanged": true,
+    "hard_verifier_unchanged": true,
+    "root_burden_csp_8s_contract_unchanged": true,
+    "parallel_partition": "scenario-disjoint; all examples of a scenario remain in one shard",
+    "merge_fail_closed": true
+  },
+  "observability": {
+    "live_progress_stderr": true,
+    "progress_interval_seconds_default": 30,
+    "reports_examples_groups_verifier_calls_elapsed_rate_eta_phase_timing": true
+  },
+  "manifest_hash_checks_passed": true,
+  "python_compileall_passed": true,
+  "launcher_bash_syntax_passed": true,
+  "result_reliability_verdict": "V16.8.45R2 scientific attribution unavailable because Stage-0 audit is absent/incomplete; R3 is a repair-only rerun vehicle"
+}
