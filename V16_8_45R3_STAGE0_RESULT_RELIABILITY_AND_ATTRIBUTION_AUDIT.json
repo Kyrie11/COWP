@@ -1,0 +1,496 @@
+{
+  "algorithm_attribution": "ALLOWED",
+  "checkpoint_boundary": {
+    "provided": false
+  },
+  "checks": [
+    {
+      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_val_support_audit.json",
+      "name": "audit_exists",
+      "pass": true
+    },
+    {
+      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s0.json",
+      "name": "partial_0_exists",
+      "pass": true
+    },
+    {
+      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s1.json",
+      "name": "partial_1_exists",
+      "pass": true
+    },
+    {
+      "detail": [
+        0,
+        1
+      ],
+      "name": "shard_indices",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "num_shards",
+      "pass": true
+    },
+    {
+      "detail": [
+        [
+          12846,
+          12846
+        ],
+        [
+          12389,
+          12389
+        ]
+      ],
+      "name": "all_examples_completed",
+      "pass": true
+    },
+    {
+      "detail": {
+        "overlap": 0,
+        "s0": 495,
+        "s1": 475,
+        "union": 970
+      },
+      "name": "scenario_disjoint",
+      "pass": true
+    },
+    {
+      "detail": [
+        "9bf347331981f147c6c6fed1484ff7a727c6e0867286074472ec4131a2ea5c81"
+      ],
+      "name": "checkpoint_hash_agreement",
+      "pass": true
+    },
+    {
+      "detail": [
+        "0eac90aeb0666c656f69bdd3310589063b33f52df8fab6569552e2abaf198240"
+      ],
+      "name": "sidecar_hash_agreement",
+      "pass": true
+    },
+    {
+      "detail": "9bf347331981f147c6c6fed1484ff7a727c6e0867286074472ec4131a2ea5c81",
+      "name": "audit_checkpoint_hash_matches",
+      "pass": true
+    },
+    {
+      "detail": "0eac90aeb0666c656f69bdd3310589063b33f52df8fab6569552e2abaf198240",
+      "name": "audit_sidecar_hash_matches",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 25235,
+        "recomputed": 25235
+      },
+      "name": "examples_recompute",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "eligible_recompute",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 1612,
+        "recomputed": 1612
+      },
+      "name": "groups_recompute",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 6044,
+        "recomputed": 6044
+      },
+      "name": "oracle_recompute",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "verifier_calls_recompute",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.5627068166776968,
+        "recomputed": 0.5627068166776968
+      },
+      "name": "baseline_fixed_bank_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.006823821339950372,
+        "recomputed": 0.006823821339950372
+      },
+      "name": "baseline_fixed_bank_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.006823821339950372,
+        "recomputed": 0.006823821339950372
+      },
+      "name": "baseline_fixed_bank_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.7969887491727333,
+        "recomputed": 0.7969887491727333
+      },
+      "name": "baseline_v44_analytic_extension_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.007444168734491315,
+        "recomputed": 0.007444168734491315
+      },
+      "name": "baseline_v44_analytic_extension_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.007444168734491315,
+        "recomputed": 0.007444168734491315
+      },
+      "name": "baseline_v44_analytic_extension_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.8297485109199206,
+        "recomputed": 0.8297485109199206
+      },
+      "name": "K2_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.06017369727047146,
+        "recomputed": 0.06017369727047146
+      },
+      "name": "K2_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.05955334987593052,
+        "recomputed": 0.05955334987593052
+      },
+      "name": "K2_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.18224687933425798,
+        "recomputed": 0.18224687933425798
+      },
+      "name": "K2_learned_only_root_nonempty_rate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.33316889309998643,
+        "recomputed": 0.33316889309998643
+      },
+      "name": "K2_learned_verified_response_burden_mean",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "K2_profile_count",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.8568828590337525,
+        "recomputed": 0.8568828590337525
+      },
+      "name": "K4_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.06389578163771713,
+        "recomputed": 0.06389578163771713
+      },
+      "name": "K4_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.06327543424317618,
+        "recomputed": 0.06327543424317618
+      },
+      "name": "K4_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.19690905488408955,
+        "recomputed": 0.19690905488408955
+      },
+      "name": "K4_learned_only_root_nonempty_rate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.33231040411373036,
+        "recomputed": 0.33231040411373036
+      },
+      "name": "K4_learned_verified_response_burden_mean",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "K4_profile_count",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.8899735274652548,
+        "recomputed": 0.8899735274652548
+      },
+      "name": "K8_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.08312655086848635,
+        "recomputed": 0.08312655086848635
+      },
+      "name": "K8_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.08188585607940446,
+        "recomputed": 0.08188585607940446
+      },
+      "name": "K8_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.21711908064196553,
+        "recomputed": 0.21711908064196553
+      },
+      "name": "K8_learned_only_root_nonempty_rate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.33639156729291464,
+        "recomputed": 0.33639156729291464
+      },
+      "name": "K8_learned_verified_response_burden_mean",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "K8_profile_count",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.9185969556585043,
+        "recomputed": 0.9185969556585043
+      },
+      "name": "K16_VerifiedRootRecall",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.0967741935483871,
+        "recomputed": 0.0967741935483871
+      },
+      "name": "K16_FullHypothesisRootCoverage",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.09553349875930521,
+        "recomputed": 0.09553349875930521
+      },
+      "name": "K16_ExactCSPCompletionRate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.23209827620368537,
+        "recomputed": 0.23209827620368537
+      },
+      "name": "K16_learned_only_root_nonempty_rate",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.339828476731778,
+        "recomputed": 0.339828476731778
+      },
+      "name": "K16_learned_verified_response_burden_mean",
+      "pass": true
+    },
+    {
+      "detail": null,
+      "name": "K16_profile_count",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 16,
+        "recomputed": 16,
+        "target": 0.09193548387096774
+      },
+      "name": "selected_k_rule",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": 0.08933002481389578,
+        "recomputed": 0.08933002481389578
+      },
+      "name": "coverage_lift",
+      "pass": true
+    },
+    {
+      "detail": {
+        "audit": true,
+        "recomputed": true
+      },
+      "name": "stage0_gate_recompute",
+      "pass": true
+    }
+  ],
+  "decision": {
+    "do_not_design_v46_yet": true,
+    "full_policy_go": false,
+    "next_required_gate": "equivalence16 then progressive lost7 2+2+3",
+    "stage0_go": true
+  },
+  "metrics": {
+    "absolute_uncovered_group_rate": 0.9032258064516129,
+    "baseline": {
+      "fixed_bank": {
+        "ExactCSPCompletionRate": 0.006823821339950372,
+        "FullHypothesisRootCoverage": 0.006823821339950372,
+        "VerifiedRootRecall": 0.5627068166776968
+      },
+      "v44_analytic_extension": {
+        "ExactCSPCompletionRate": 0.007444168734491315,
+        "FullHypothesisRootCoverage": 0.007444168734491315,
+        "VerifiedRootRecall": 0.7969887491727333
+      }
+    },
+    "coverage_lift_pp": 8.933002481389577,
+    "full_to_csp_drop_groups": 2,
+    "query_budget_at_max_tested": true,
+    "rcrso_curve": [
+      {
+        "ExactCSPCompletionRate": 0.05955334987593052,
+        "FullHypothesisRootCoverage": 0.06017369727047146,
+        "K": 2,
+        "VerifiedRootRecall": 0.8297485109199206,
+        "learned_only_root_nonempty_rate": 0.18224687933425798,
+        "learned_verified_profile_count": 8337,
+        "learned_verified_response_burden_mean": 0.33316889309998643
+      },
+      {
+        "ExactCSPCompletionRate": 0.06327543424317618,
+        "FullHypothesisRootCoverage": 0.06389578163771713,
+        "K": 4,
+        "VerifiedRootRecall": 0.8568828590337525,
+        "learned_only_root_nonempty_rate": 0.19690905488408955,
+        "learned_verified_profile_count": 16677,
+        "learned_verified_response_burden_mean": 0.33231040411373036
+      },
+      {
+        "ExactCSPCompletionRate": 0.08188585607940446,
+        "FullHypothesisRootCoverage": 0.08312655086848635,
+        "K": 8,
+        "VerifiedRootRecall": 0.8899735274652548,
+        "learned_only_root_nonempty_rate": 0.21711908064196553,
+        "learned_verified_profile_count": 33017,
+        "learned_verified_response_burden_mean": 0.33639156729291464
+      },
+      {
+        "ExactCSPCompletionRate": 0.09553349875930521,
+        "FullHypothesisRootCoverage": 0.0967741935483871,
+        "K": 16,
+        "VerifiedRootRecall": 0.9185969556585043,
+        "learned_only_root_nonempty_rate": 0.23209827620368537,
+        "learned_verified_profile_count": 62882,
+        "learned_verified_response_burden_mean": 0.339828476731778
+      }
+    ],
+    "selected_csp_groups": 154,
+    "selected_full_groups": 156,
+    "selected_k": 16
+  },
+  "overall_reliability": "PASS",
+  "raw_counts": {
+    "baseline": {
+      "fixed_bank": {
+        "csp_num": 11,
+        "full_num": 11,
+        "root_num": 3401
+      },
+      "v44_analytic_extension": {
+        "csp_num": 12,
+        "full_num": 12,
+        "root_num": 4817
+      }
+    },
+    "examples": 25235,
+    "hypothesis_groups": 1612,
+    "oracle_positive_roots": 6044,
+    "rcrso": {
+      "2": {
+        "burden_count": 8337,
+        "burden_sum": 2777.6290617745867,
+        "csp_num": 96,
+        "full_num": 97,
+        "learned_root_nonempty_num": 4599,
+        "learned_verified_profile_count": 8337,
+        "root_num": 5015
+      },
+      "4": {
+        "burden_count": 16677,
+        "burden_sum": 5541.940609404682,
+        "csp_num": 102,
+        "full_num": 103,
+        "learned_root_nonempty_num": 4969,
+        "learned_verified_profile_count": 16677,
+        "root_num": 5179
+      },
+      "8": {
+        "burden_count": 33017,
+        "burden_sum": 11106.640377310163,
+        "csp_num": 132,
+        "full_num": 134,
+        "learned_root_nonempty_num": 5479,
+        "learned_verified_profile_count": 33017,
+        "root_num": 5379
+      },
+      "16": {
+        "burden_count": 62882,
+        "burden_sum": 21369.094273847666,
+        "csp_num": 154,
+        "full_num": 156,
+        "learned_root_nonempty_num": 5857,
+        "learned_verified_profile_count": 62882,
+        "root_num": 5552
+      }
+    },
+    "scenario_overlap": 0,
+    "scenario_union": 970
+  },
+  "scientific_verdict": "STAGE0_GO_FULL_POLICY_PENDING",
+  "version": "V16.8.45R4 Stage-0 independent result audit"
+}

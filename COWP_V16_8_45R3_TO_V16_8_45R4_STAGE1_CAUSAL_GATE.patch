@@ -1,0 +1,1401 @@
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG.md /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG.md
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG.md	2026-09-06 10:54:07.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG.md	2026-09-06 16:45:59.431660211 +0000
+@@ -5780,3 +5780,22 @@
+ - compact-5k remains **Freeze**; split statistics remain stable and do not currently explain the missing Stage-0 measurement.
+ - publication artifact still has the known `verify_cache_train.json pass=false / irrelevant pair blockers=58243` provenance caveat.
+ - the only TeX in the uploaded code package is the OC-RAP observation-consistent recoverability manuscript, which is not the same method lineage as the current COWP/RCRSO changelog. No paper edits are made until this artifact mismatch is reconciled and RCRSO scientific evidence exists.
++
++---
++
++# V16.8.45R4 — Stage-1 Causal Gate / Reliable Stage-0 Result
++
++**No scientific algorithm change.** The V16.8.45 RCRSO Stage-0 result is now reliable and passes the frozen offline support gate. Raw-count audit reproduces all Stage-0 metrics from the two scenario-disjoint shards.
++
++- best frozen baseline FHR (V44 analytic): `12/1612 = 0.7444%`
++- RCRSO selected K=16 FHR: `156/1612 = 9.6774%`
++- absolute lift: `+8.9330 pp` vs frozen `+3 pp` minimum — **PASS**
++- VerifiedRootRecall: `79.6989% -> 91.8597%`
++- ExactCSPCompletionRate: `12/1612 -> 154/1612 = 9.5533%`
++- selected K is 16, the maximum preregistered query budget; do not tune K on closed-loop panels.
++
++Scientific status: **STAGE-0 GO / FULL POLICY PENDING**. RCRSO is not yet promoted into the final Main Stack or paper Method claim. Next mandatory sequence remains `equivalence16 -> progressive lost7 2+2+3 -> retained3 -> induced9 -> remaining29/CF48 -> fresh37 -> development exact200`.
++
++Mechanism signal retained: learned RCRSO materially improves **hard-verified proposal completeness** while certificate soundness remains controlled exclusively by the frozen verifier. Once universal root support exists, exact CSP is rarely the additional blocker (`156 full -> 154 CSP`); the residual offline bottleneck is universal retained-root verified proposal coverage, not joint-CSP relaxation.
++
++R4 adds only `scripts/113_audit_v45r3_stage0_result.py` and a Stage-1 fail-closed launcher. No V46 is authorized before the lost7 causal gate.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG_V16_8_45R4.md /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG_V16_8_45R4.md
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG_V16_8_45R4.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG_V16_8_45R4.md	2026-09-06 16:45:59.391661877 +0000
+@@ -0,0 +1,56 @@
++# V16.8.45R4 — Stage-1 Causal Gate / Stage-0 Result Audit
++
++**Classification:** attribution/experiment-protocol revision only. **No scientific-method change.** The scientific method remains V16.8.45 RCRSO (`cowp_verified_root_conditioned_recourse_set_operator`).
++
++## Reliable Stage-0 verdict
++
++The repaired R3 Stage-0 validation result passes independent raw-count auditing. Two scenario-disjoint shards process all assigned sidecar examples (12,846 + 12,389 = 25,235), share checkpoint/sidecar hashes, and have zero scenario overlap. The merged scientific metrics are reproduced exactly from integer counts.
++
++Frozen Stage-0 preregistration:
++
++- K in {2,4,8,16}; choose the smallest K reaching 95% of the validation maximum FullHypothesisRootCoverage.
++- GO iff selected FullHypothesisRootCoverage exceeds the best frozen baseline by at least 3 percentage points and VerifiedRootRecall > 0.
++
++Observed:
++
++- best frozen FHR (V44 analytic): 12/1612 = 0.7444%
++- RCRSO K16 FHR: 156/1612 = 9.6774%
++- absolute FHR lift: +8.9330 pp — PASS
++- VerifiedRootRecall: 79.6989% -> 91.8597%
++- ExactCSPCompletionRate: 12/1612 -> 154/1612 = 9.5533%
++- selected K = 16 by the frozen 95%-plateau rule
++
++Therefore **V16.8.45 = Stage-0 GO / continue**, but **not full-policy GO** and not paper promotion. The next mandatory evidence is common-path equivalence followed by the frozen progressive lost7 causal gate.
++
++## Mechanism conclusion
++
++Promote as a mechanism signal, not yet as a final policy: **verifier-wrapped learned recourse proposal completeness**. Neural outputs still have zero certificate authority; every response is admitted only by the frozen burden/roadgraph/Waymax/ego-current+shift/environment/exact-CSP verifier.
++
++At K16, 156 groups have all retained roots individually supported and 154 survive exact CSP. Thus joint CSP is not the Stage-0 dominant bottleneck. The main offline residual is **universal retained-root verified proposal coverage**: 90.32% of hypothesis groups remain not fully covered.
++
++Selected K is the maximum tested K, so query-budget/architecture saturation is not demonstrated. Do not tune K on lost7/CF48.
++
++## Frozen Main Stack
++
++1. compact-5k data/label contract — Freeze.
++2. Natural alternatives / stable canonical roots — Freeze.
++3. same-root RCOT + BCOT — Freeze.
++4. protected-priority hard non-coercive certificate — Freeze.
++5. certificate-compatible set preservation + hard-first selection + explicit uncertified fallback — Freeze.
++6. V39 control-realized conflict-window backup tube, full physical certificate, one-step shift closure — retain as high-precision physical backbone.
++7. exact-blocker -> natural-root -> low-burden response hard verifier, bidirectional environment safety and exact CSP — retain/freeze.
++8. RCRSO K16 verified proposal augmentation — **Stage-0 GO candidate only; not promoted until lost7/common-path gates pass.**
++
++Unified paper principle remains **Orthogonal Option-Set Feasibility: safety must not be obtained through critical option-set collapse.**
++
++## Immediate bottleneck and convergence status
++
++Offline bottleneck is provisionally tightened to **Universal Retained-Root Verified Proposal Coverage**, especially teacher-sparse/root-hole contexts. This does not replace the closed-loop dominant bottleneck until lost7 is observed.
++
++Internal convergence is not reached. Missing evidence: equivalence16, lost7 >=2/7, rescue10 >=5/10, induced9 avoided >=7/9, remaining29/full CF48 gate, fresh37 no-harm, exact200 development confirmation, then a new untouched final holdout with >=3 seeds and paired CI plus reactive-agent/human-audited causal evaluation.
++
++## No V46 yet
++
++The preregistered decision tree explicitly routes Stage-0 PASS to equivalence16 and progressive lost7. Designing/tuning V46 before this causal gate would violate the frozen experimental protocol. R4 therefore adds only an independent Stage-0 result auditor and a fail-closed Stage-1 launcher.
++
++If current RCRSO later fails lost7, the predeclared next *scientific* family should target teacher-sparse recourse holes with verifier-guided adaptive/counterexample-guided proposal discovery, while retaining hard-verifier soundness. Do not simply increase K, add knots, loosen beta/root/CSP/horizon, or tune on lost7.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/COWP_V16_8_45R3_TO_V16_8_45R4_STAGE1_CAUSAL_GATE.patch /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/COWP_V16_8_45R3_TO_V16_8_45R4_STAGE1_CAUSAL_GATE.patch
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/COWP_V16_8_45R3_TO_V16_8_45R4_STAGE1_CAUSAL_GATE.patch	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/COWP_V16_8_45R3_TO_V16_8_45R4_STAGE1_CAUSAL_GATE.patch	2026-09-06 16:46:58.615807797 +0000
+@@ -0,0 +1,86 @@
++diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG.md /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG.md
++--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG.md	2026-09-06 10:54:07.000000000 +0000
+++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG.md	2026-09-06 16:45:59.431660211 +0000
++@@ -5780,3 +5780,22 @@
++ - compact-5k remains **Freeze**; split statistics remain stable and do not currently explain the missing Stage-0 measurement.
++ - publication artifact still has the known `verify_cache_train.json pass=false / irrelevant pair blockers=58243` provenance caveat.
++ - the only TeX in the uploaded code package is the OC-RAP observation-consistent recoverability manuscript, which is not the same method lineage as the current COWP/RCRSO changelog. No paper edits are made until this artifact mismatch is reconciled and RCRSO scientific evidence exists.
+++
+++---
+++
+++# V16.8.45R4 — Stage-1 Causal Gate / Reliable Stage-0 Result
+++
+++**No scientific algorithm change.** The V16.8.45 RCRSO Stage-0 result is now reliable and passes the frozen offline support gate. Raw-count audit reproduces all Stage-0 metrics from the two scenario-disjoint shards.
+++
+++- best frozen baseline FHR (V44 analytic): `12/1612 = 0.7444%`
+++- RCRSO selected K=16 FHR: `156/1612 = 9.6774%`
+++- absolute lift: `+8.9330 pp` vs frozen `+3 pp` minimum — **PASS**
+++- VerifiedRootRecall: `79.6989% -> 91.8597%`
+++- ExactCSPCompletionRate: `12/1612 -> 154/1612 = 9.5533%`
+++- selected K is 16, the maximum preregistered query budget; do not tune K on closed-loop panels.
+++
+++Scientific status: **STAGE-0 GO / FULL POLICY PENDING**. RCRSO is not yet promoted into the final Main Stack or paper Method claim. Next mandatory sequence remains `equivalence16 -> progressive lost7 2+2+3 -> retained3 -> induced9 -> remaining29/CF48 -> fresh37 -> development exact200`.
+++
+++Mechanism signal retained: learned RCRSO materially improves **hard-verified proposal completeness** while certificate soundness remains controlled exclusively by the frozen verifier. Once universal root support exists, exact CSP is rarely the additional blocker (`156 full -> 154 CSP`); the residual offline bottleneck is universal retained-root verified proposal coverage, not joint-CSP relaxation.
+++
+++R4 adds only `scripts/113_audit_v45r3_stage0_result.py` and a Stage-1 fail-closed launcher. No V46 is authorized before the lost7 causal gate.
++diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG_V16_8_45R4.md /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG_V16_8_45R4.md
++--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/ALGORITHM_CHANGELOG_V16_8_45R4.md	1970-01-01 00:00:00.000000000 +0000
+++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/ALGORITHM_CHANGELOG_V16_8_45R4.md	2026-09-06 16:45:59.391661877 +0000
++@@ -0,0 +1,56 @@
+++# V16.8.45R4 — Stage-1 Causal Gate / Stage-0 Result Audit
+++
+++**Classification:** attribution/experiment-protocol revision only. **No scientific-method change.** The scientific method remains V16.8.45 RCRSO (`cowp_verified_root_conditioned_recourse_set_operator`).
+++
+++## Reliable Stage-0 verdict
+++
+++The repaired R3 Stage-0 validation result passes independent raw-count auditing. Two scenario-disjoint shards process all assigned sidecar examples (12,846 + 12,389 = 25,235), share checkpoint/sidecar hashes, and have zero scenario overlap. The merged scientific metrics are reproduced exactly from integer counts.
+++
+++Frozen Stage-0 preregistration:
+++
+++- K in {2,4,8,16}; choose the smallest K reaching 95% of the validation maximum FullHypothesisRootCoverage.
+++- GO iff selected FullHypothesisRootCoverage exceeds the best frozen baseline by at least 3 percentage points and VerifiedRootRecall > 0.
+++
+++Observed:
+++
+++- best frozen FHR (V44 analytic): 12/1612 = 0.7444%
+++- RCRSO K16 FHR: 156/1612 = 9.6774%
+++- absolute FHR lift: +8.9330 pp — PASS
+++- VerifiedRootRecall: 79.6989% -> 91.8597%
+++- ExactCSPCompletionRate: 12/1612 -> 154/1612 = 9.5533%
+++- selected K = 16 by the frozen 95%-plateau rule
+++
+++Therefore **V16.8.45 = Stage-0 GO / continue**, but **not full-policy GO** and not paper promotion. The next mandatory evidence is common-path equivalence followed by the frozen progressive lost7 causal gate.
+++
+++## Mechanism conclusion
+++
+++Promote as a mechanism signal, not yet as a final policy: **verifier-wrapped learned recourse proposal completeness**. Neural outputs still have zero certificate authority; every response is admitted only by the frozen burden/roadgraph/Waymax/ego-current+shift/environment/exact-CSP verifier.
+++
+++At K16, 156 groups have all retained roots individually supported and 154 survive exact CSP. Thus joint CSP is not the Stage-0 dominant bottleneck. The main offline residual is **universal retained-root verified proposal coverage**: 90.32% of hypothesis groups remain not fully covered.
+++
+++Selected K is the maximum tested K, so query-budget/architecture saturation is not demonstrated. Do not tune K on lost7/CF48.
+++
+++## Frozen Main Stack
+++
+++1. compact-5k data/label contract — Freeze.
+++2. Natural alternatives / stable canonical roots — Freeze.
+++3. same-root RCOT + BCOT — Freeze.
+++4. protected-priority hard non-coercive certificate — Freeze.
+++5. certificate-compatible set preservation + hard-first selection + explicit uncertified fallback — Freeze.
+++6. V39 control-realized conflict-window backup tube, full physical certificate, one-step shift closure — retain as high-precision physical backbone.
+++7. exact-blocker -> natural-root -> low-burden response hard verifier, bidirectional environment safety and exact CSP — retain/freeze.
+++8. RCRSO K16 verified proposal augmentation — **Stage-0 GO candidate only; not promoted until lost7/common-path gates pass.**
+++
+++Unified paper principle remains **Orthogonal Option-Set Feasibility: safety must not be obtained through critical option-set collapse.**
+++
+++## Immediate bottleneck and convergence status
+++
+++Offline bottleneck is provisionally tightened to **Universal Retained-Root Verified Proposal Coverage**, especially teacher-sparse/root-hole contexts. This does not replace the closed-loop dominant bottleneck until lost7 is observed.
+++
+++Internal convergence is not reached. Missing evidence: equivalence16, lost7 >=2/7, rescue10 >=5/10, induced9 avoided >=7/9, remaining29/full CF48 gate, fresh37 no-harm, exact200 development confirmation, then a new untouched final holdout with >=3 seeds and paired CI plus reactive-agent/human-audited causal evaluation.
+++
+++## No V46 yet
+++
+++The preregistered decision tree explicitly routes Stage-0 PASS to equivalence16 and progressive lost7. Designing/tuning V46 before this causal gate would violate the frozen experimental protocol. R4 therefore adds only an independent Stage-0 result auditor and a fail-closed Stage-1 launcher.
+++
+++If current RCRSO later fails lost7, the predeclared next *scientific* family should target teacher-sparse recourse holes with verifier-guided adaptive/counterexample-guided proposal discovery, while retaining hard-verifier soundness. Do not simply increase K, add knots, loosen beta/root/CSP/horizon, or tune on lost7.
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md	2026-09-06 16:46:09.775229227 +0000
+@@ -0,0 +1,443 @@
++# V16.8.45 RCRSO Stage-0 结果分析与下一证据门
++
++## 0. 判决摘要
++
++本轮 V16.8.45R3 Stage-0 结果通过独立可靠性审计，允许进行算法归因。
++
++但预注册是分阶段的，因此科学状态必须精确写成：
++
++> **V16.8.45 RCRSO = Stage-0 GO / continue; full-policy verdict pending.**
++
++它不是 STOP，也还不是可以写入论文主方法的 full GO。当前唯一合法的下一科学动作是：
++
++`equivalence16 -> progressive lost7 (2+2+3)`。
++
++在 lost7 之前设计或调优 V46，会违反上一轮冻结的决策树。
++
++---
++
++# 1. 可靠性审计
++
++## 1.1 代码完整性
++
++上传的 R3 ZIP SHA256：
++
++`08d0bf4bf4610e4734ca1b591e07e9c81e879e445b3aedafa88e870f845e51fa`
++
++内部 release 清单共检查 1133 个文件，0 missing / 0 mismatch。原包 focused sanity 为 143/143 passed。
++
++R3 自身已经做过三组 science-field fidelity regression：legacy R2 vs R3 single、legacy R2 vs R3 parallel2 merge、cross-hypothesis roadgraph/environment namespace regression，均为 17/17 scientific fields exact。
++
++## 1.2 Stage-0 两 shard 完整性
++
++- shard 0: 12,846/12,846 examples, 841 groups, 495 scenarios
++- shard 1: 12,389/12,389 examples, 771 groups, 475 scenarios
++- scenario overlap: 0
++- union: 970 scenarios
++- total examples: 25,235
++- total hypothesis groups: 1,612
++- oracle-positive roots: 6,044
++- hard verifier calls: 403,760
++
++两个 shard 的 checkpoint SHA 一致：
++
++`9bf347331981f147c6c6fed1484ff7a727c6e0867286074472ec4131a2ea5c81`
++
++两个 shard 的 sidecar summary SHA 一致：
++
++`0eac90aeb0666c656f69bdd3310589063b33f52df8fab6569552e2abaf198240`
++
++Stage-0 并行 wall time 约 11,195 s（约 3.11 h），两个日志均正常 DONE。
++
++970 而不是 1000 raw validation scenes 不是丢 shard：Stage-0 的对象是 val sidecar 中实际产生的 eligible hypothesis groups；全部 25,235 assigned examples 均完成，且 `structural_ineligible_hypothesis_groups=0`。
++
++## 1.3 独立 raw-count 重算
++
++Frozen baselines：
++
++| Method | root hits / 6044 | full groups / 1612 | CSP groups / 1612 |
++|---|---:|---:|---:|
++| fixed bank | 3401 | 11 | 11 |
++| V44 analytic | 4817 | 12 | 12 |
++
++RCRSO：
++
++| K | root hits | full groups | CSP groups | FHR | CSP rate |
++|---:|---:|---:|---:|---:|---:|
++| 2 | 5015 | 97 | 96 | 6.0174% | 5.9553% |
++| 4 | 5179 | 103 | 102 | 6.3896% | 6.3275% |
++| 8 | 5379 | 134 | 132 | 8.3127% | 8.1886% |
++| 16 | 5552 | 156 | 154 | **9.6774%** | **9.5533%** |
++
++以上均由两个 partial JSON 的整数计数独立重算，与 merged audit 逐项一致。
++
++## 1.4 provenance 边界
++
++当前结果包没有包含服务器端 `rcrso_stage0_selected.pt` bytes，所以本地不能重新计算 selected checkpoint 文件本身的 SHA，也不能重新执行完整 Stage-0 forward。
++
++但两个 partial 中记录的 unselected checkpoint SHA 完全一致，merged audit 的 checkpoint provenance 与之相同；所有 raw counts、K curve 和 Gate 都能独立重建。因此这个边界记为 **publication provenance caveat，不阻断本轮 Stage-0 attribution**。
++
++最终 publication artifact 应让闭环结果 JSON 同时携带 source tree hash、base checkpoint hash、RCRSO checkpoint hash、manifest hash。
++
++---
++
++# 2. 严格按预注册条件：Stage-0 GO
++
++冻结条件：
++
++1. `K in {2,4,8,16}`；
++2. 在 validation FHR curve 上选择达到最大 observed FHR 的 95% plateau 的最小 K；
++3. selected FHR 相对 best frozen baseline 的绝对提升 >= 3 pp；
++4. selected VerifiedRootRecall > 0；
++5. K 不允许用 lost7/CF48 调。
++
++当前最大 FHR 为 K16 的 9.6774%，95% target 为 9.1935%。K8 只有 8.3127%，因此 frozen rule 选择：
++
++> **K = 16**
++
++best frozen baseline 是 V44 analytic extension：
++
++`FHR = 12/1612 = 0.7444%`
++
++RCRSO K16：
++
++`FHR = 156/1612 = 9.6774%`
++
++绝对提升：
++
++> **+8.9330 pp > +3 pp → PASS**
++
++VerifiedRootRecall：
++
++- V44 analytic: 79.6989%
++- RCRSO K16: **91.8597%**
++
++因此：
++
++> **Stage-0 support gate = GO**
++
++但这只授权进入 closed-loop causal gate；它不等价于 full algorithm promotion。
++
++---
++
++# 3. 本轮最关键机制解释
++
++## 3.1 真正成功的是 proposal completeness，不是 neural safety score
++
++RCRSO 的核心正信号不是 loss、AUC 或可行性 logit，而是：
++
++> neural set proposer 产生了大量以前不存在的候选；这些候选经过完全冻结的 hard verifier 后，确实把 universal retained-root support 从 12 个 hypothesis groups 提升到 156 个。
++
++网络没有 certificate 权力。hard soundness 仍由：
++
++`burden beta -> roadgraph -> Waymax kinematics -> ego current/shift -> responder/environment -> exact multi-root/multi-blocker CSP`
++
++决定。
++
++因此 V45 首次对 V44 的负结论给出直接正回应：
++
++`finite hand bank + scalar analytic completion` 的 completeness floor 可以被一个 context-conditioned set-valued proposer显著抬高，而不需要放宽 hard semantics。
++
++这支持 **soundness–completeness separation**：
++
++- learned operator = completeness engine；
++- frozen verifier = soundness authority。
++
++## 3.2 Stage-0 上 joint CSP 不是 dominant rejection
++
++K16：
++
++- full root coverage groups = 156
++- exact CSP completion groups = 154
++
++即：
++
++`154 / 156 = 98.72%`
++
++一旦所有 retained roots 都至少有一个 hard-verified response，exact CSP 只额外淘汰 2 个 group。
++
++因此当前 validation proxy 下，不能把下一步重心放到“放宽 multi-agent CSP / compatibility”。这会直接违反证据。
++
++## 3.3 但绝对 completeness 仍非常低
++
++K16 仍有：
++
++`1456 / 1612 = 90.32%`
++
++的 hypothesis groups 没有做到 universal retained-root support。
++
++所以本轮不是“recourse completeness solved”，而是：
++
++> **learned completeness direction被验证为有效，但 residual root holes 仍非常大。**
++
++另外 `learned_only_root_nonempty_rate≈23.21%`，说明新 proposer 对全部 sidecar root contexts 的 verified hit 仍很稀疏。
++
++## 3.4 K=16 是当前 tested maximum
++
++K selection 合法 PASS，但 K16 正好是 preregistered 最大 query budget。当前 curve 没有在 K<16 明确进入 plateau。
++
++这意味着：
++
++- 不能声称 architecture/query set 已饱和；
++- 也不能在 lost7 后事后把 K 改成 32/64 来救 outcome；
++- 如果未来 current architecture closed-loop STOP，是否增加 proposal budget必须作为一个新的 preregistered architecture，而不是 V45 内调参。
++
++---
++
++# 4. Main Stack 当前应该是什么
++
++需要区分 **promoted backbone** 与 **Stage-0-GO candidate extension**。
++
++## A. Social hard-feasibility backbone — Freeze
++
++1. compact-5k data/label contract；
++2. Natural alternatives / stable canonical roots；
++3. same-root RCOT；
++4. BCOT；
++5. protected-priority hard non-coercive certificate；
++6. certificate-compatible set preservation；
++7. hard-first selection；
++8. explicit uncertified fallback。
++
++这些层已有长期正证据和负消融保护，不因 V45 修改。
++
++## B. Physical-interactive high-precision backbone — Retain / Freeze
++
++1. V39 actual-controller-realized conflict-window recovery tube；
++2. full-horizon physical hard certificate；
++3. one-step shift closure；
++4. exact blocker discovery；
++5. exact blocker -> natural root support；
++6. same-root low-burden responder hard verification；
++7. responder-environment 双向 safety；
++8. exact multi-root/multi-blocker CSP。
++
++## C. Proposal-completeness extension — Stage-0 GO, 尚未 promotion
++
++9. RCRSO K16 verified proposal augmentation。
++
++RCRSO 现在只能标：
++
++> **candidate Main-Stack layer / Stage-0 GO**
++
++只有 equivalence16 + lost7 + 后续 frozen gates 通过后，才可以正式从 candidate 升到 Main Stack。
++
++统一论文抽象仍然是：
++
++> **Orthogonal Option-Set Feasibility**
++>
++> Social: safety 不能建立在他人的 natural low-burden option-set collapse 上。
++>
++> Physical-interactive: recovery 不能建立在 ego backup support 或 exact-blocker reasonable recourse-set collapse 上。
++
++---
++
++# 5. dominant bottleneck 是否应该收紧
++
++## 可以做的“offline provisional tightening”
++
++Stage-0 现在支持把 offline P0 从宽泛的：
++
++`Root-Conditioned Recourse-Set Completeness`
++
++临时收紧为：
++
++> **Universal Retained-Root Verified Proposal Coverage**
++
++尤其是 **teacher-sparse / hard-root holes**。
++
++理由：
++
++- proposer lift 很大；
++- full→CSP 几乎不掉；
++- 绝对 FHR 仍低；
++- query budget 到上限。
++
++## 不能做的收紧
++
++不能把 closed-loop dominant bottleneck 直接改成“teacher sparsity”或“query K 不够”。Stage-0 是 outcome-blind support proxy，而实际 online blocker distribution、selector使用率、replanning 和 late failure 必须由 lost7 检验。
++
++因此 closed-loop P0 仍保持 **unresolved pending lost7**。
++
++---
++
++# 6. 模型距离内部收敛最大的差距
++
++按重要性排序：
++
++1. **还没有 closed-loop causal conversion evidence。** Stage-0 的 +8.93 pp 是否能救 lost7 是最大缺口。
++2. **绝对 FHR 仍只有 9.68%。** 说明 universal coverage far from solved。
++3. **K=16 处在 tested maximum。** 当前 architecture 的 query-budget saturation 未证明。
++4. **teacher positive support 稀疏。** 6,044 oracle-positive roots / 25,235 eligible examples；训练 set-matching 只在 `target_valid.any()` 的 context 上得到正 set supervision。teacher 没找到 positive 不代表真实 infeasible。
++5. equivalence16 未执行：必须确保 RCRSO fail-closed extension不改变成熟 common path。
++6. lost7 后仍有 rescue10、induced9、remaining29/CF48、fresh37、development exact200。
++7. publication 尚缺真正 untouched final holdout、>=3 seeds、paired CI、reactive-agent evaluation、human-audited false-safe stress set。
++8. compact-5k publication provenance caveat (`verify_cache_train.json pass=false / irrelevant pair blockers`) 仍需闭环。
++
++所以当前状态应描述为：
++
++> **mechanism validated offline, policy not internally converged.**
++
++---
++
++# 7. 下一步最该回答的算法问题
++
++不是“RCRSO 的 FHR 能不能再高一点”，而是：
++
++> **这 8.93 pp 的 hard-verified support lift，是否会在真正 closed-loop exact-blocker states 上转化成 RCRSO-exclusive certificate/action，并可靠救回 historical lost rescues，而不破坏 high-precision backbone？**
++
++lost7 应专门回答四层归因：
++
++1. online 是否真的出现 RCRSO verified profiles？
++2. profiles 是否填补了某个 retained-root 空 domain？
++3. exact CSP 是否实际使用这些 learned profiles并产生 RCRSO-exclusive certificate/action？
++4. action change 是否最终形成 collision rescue，还是出现 late closed-loop/certificate-model mismatch？
++
++最关键硬条件仍是：
++
++> **lost7 new rescue >= 2/7**
++
++未达到则当前 RCRSO architecture STOP。
++
++---
++
++# 8. 模型真正应该学会什么
++
++当前网络最应该学习的不是一个“feasible probability”。
++
++目标应该继续是一个 set-valued conditional correspondence：
++
++`(natural root, exact blocker, ego current/shift tube, controller state, environment)`
++
++`-> diverse recourse proposal set`
++
++且这个 set 的价值由：
++
++> **是否覆盖 hard-feasible recourse regions**
++
++而不是 likelihood/AUC 决定。
++
++尤其需要学到：
++
++- multimodal controls，而非同一 mode 的小扰动；
++- rare but hard-feasible root-specific responses；
++- teacher-sparse contexts 中的 transferable geometry；
++- 与 ego current/shift conflict geometry 对齐的 temporally structured residual sequence；
++- diversity 应服务 verified support coverage，而不是单纯欧氏距离多样性。
++
++---
++
++# 9. 相关文献与理论边界
++
++截至 2026-09-06 的检索给出几个清晰边界：
++
++1. Hsu, Hu, Fisac, *The Safety Filter: A Unified View of Safety-Critical Control in Autonomous Systems*, Annual Review 2024：learning + model-based verifier/filter 的模块化分离已是成熟安全控制范式。所以“神经网络外面包 hard verifier”本身不是 novelty。
++2. Kim et al., *Generalized Backup Plan-Constrained MPC*, JGCD 2026：backup-plan feasibility / multi-horizon backup 已有直接工作。所以“备用轨迹可行性”本身不是 novelty。
++3. Zheng et al., *Contingency Planning for Safety-Critical Autonomous Vehicles: A Review and Perspectives*, 2026：external interaction uncertainty increasingly uses proactive recourse/branching。因此 contingency/recourse 也不能单独包装。
++4. Yang et al., *Safe and Nonconservative Contingency Planning ... Reachable Set Barriers*, 2025/2026：learned human control-intent sets + reachable sets + hard barriers已用于 AV contingency safety。
++5. Ichter et al., *Learning Sampling Distributions for Robot Motion Planning*: learned biased sampling can improve finite-sample efficiency while retaining planner guarantees when combined with a base sampler/support-complete process。
++6. Sacks & Boots, *Learning Sampling Distributions for MPC*, CoRL 2023：learned control sampling distributions improving sample efficiency is established territory。
++7. CoverNet / MultiPath / DPP diverse forecasting：finite set coverage、mode diversity也是成熟思想。
++8. 2025 counterexample-guided robust CBF synthesis：learner↔verifier 的 counterexample-guided loop已有理论/实践先例。
++
++因此 CCF-A novelty 不能写成：
++
++- Transformer outputs K controls；
++- hard verifier；
++- backup feasibility；
++- diverse proposals；
++- learned sampler；
++- CEGIS 本身。
++
++更强的贡献仍应是组合后的问题结构：
++
++> **false-safe as hard feasibility defect + natural-root semantics + low-burden option preservation + control/shift-closed ego support + exact-blocker recourse correspondence + verifier-wrapped completeness learning**。
++
++---
++
++# 10. “下一算法分支”现在为什么不应该落地 V46
++
++上一轮预注册明确规定：
++
++`Stage-0 PASS -> equivalence16 -> progressive lost7`
++
++因此现在直接设计并运行 V46 会把 outcome-blind Stage-0 机制信号误当成 closed-loop conclusion。
++
++本轮落地的是 **V16.8.45R4 Stage-1 Causal Gate harness**，不是新 scientific method：
++
++- 独立从两个 partial raw counts 复算 Stage-0；
++- fail-closed 绑定 Stage-0 selected checkpoint；
++- 复用完全相同 V45 RCRSO online method；
++- 只允许按 frozen order 进入 equivalence16 和 progressive lost7。
++
++这比提前造 V46 更符合科研纪律。
++
++---
++
++# 11. 如果 V45 lost7 STOP，下一 scientific branch 应是什么（预设计，不启用）
++
++如果当前 RCRSO Stage-0 GO、但 lost7 <2/7，且日志显示主要失败是“online retained roots 仍无 verified learned proposal”，下一预注册 architecture 应考虑：
++
++## Verifier-Guided Adaptive Recourse Cover (VG-ARC)
++
++核心不是把 K 从16改成32，而是把一次性 amortized set prediction 改成 **proposal–verification–counterexample refinement**：
++
++1. RCRSO 先产生 amortized initial set；
++2. frozen hard verifier 对每个失败 proposal返回结构化 failure witness（burden / roadgraph / kinematics / ego-current / ego-shift / environment / CSP conflict）；
++3. refinement proposer 条件化于 `(z, previous proposals, failure witnesses)`，专门生成与失败边界互补的新 controls；
++4. 每轮输出仍必须重新过完整 frozen verifier；
++5. 根 domain 一旦 nonempty 即停止该 root refinement，优先把预算给 unresolved roots；
++6. exact CSP 仍只在 hard-verified domains上工作。
++
++理论上可以写成：
++
++- **soundness**：所有最终返回 profiles 均属于 frozen hard set，因此 learning 永远不能制造 false-positive certificate；
++- **finite-budget completeness objective**：优化 unresolved-root cover，而不是平均 reconstruction loss；
++- 如果将来引入一个对 bounded same-root control domain 具有 full support 的 base sampler，并与 learned sampler 混合，则在 feasible recourse set 具有正测度的假设下，可以获得 sampling-style asymptotic completeness；learned sampler只提高 finite-sample效率。
++
++这与 sampling-based planning / CEGIS 有理论联系，但论文 novelty仍必须落在 **root-conditioned low-burden recourse correspondence + option-set feasibility**，而非“用了 CEGIS”。
++
++**VG-ARC 当前不进入代码、不参与结果选择。** 是否激活由 V45 lost7 结果决定。
++
++---
++
++# 12. 下一步命令
++
++服务器必须保留 R3 Stage-0 生成的 selected checkpoint：
++
++```bash
++cd COWP_V16_8_45R4_STAGE1_CAUSAL_GATE
++
++export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k
++export BASE_RUN=/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all
++
++# 指向你服务器真正的 R3 Stage-0 输出目录；必须包含：
++# stage0_val_support_audit.json
++# rcrso_stage0_selected.pt
++# stage0_partials/
++export RCRSO_STAGE0_RUN=/home/senzeyu2/code/COWP/outputs/v16_8_45r3_stage0_runtime_observability
++
++bash NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh audit_stage0_result
++bash NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh sanity
++
++# E1: common path fidelity
++bash NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh base_equivalence16_parallel2
++```
++
++只有 equivalence16 `passed=true`，再执行：
++
++```bash
++bash NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh lost7_batch1_parallel2
++bash NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh analyze_lost7_progressive
++```
++
++查看：
++
++`outputs/v16_8_45r4_stage1_causal_gate/lost7_v45_progressive_gate.json`
++
++- `continue_progressive=true` 才跑 batch2；
++- 再分析；仍为 true 才跑 batch3；
++- 一旦 `mathematically_impossible=true`，当前 RCRSO architecture STOP；
++- 一旦 `lost7_gate.pass=true`，才进入 retained3 / rescue10 / induced9。
++
++不要缩短 80-step rollout，不要根据 batch1/2 结果重排 IDs，不要改 K。
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh	2026-09-06 16:42:39.719154760 +0000
+@@ -0,0 +1,77 @@
++#!/usr/bin/env bash
++set -euo pipefail
++MODE="${1:-help}"
++SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++cd "$SCRIPT_DIR"
++export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
++
++# R4 is not a scientific-method revision. It binds the Stage-0-GO V45 RCRSO
++# checkpoint to the already preregistered closed-loop causal gates.
++RCRSO_STAGE0_RUN="${RCRSO_STAGE0_RUN:-outputs/v16_8_45r3_stage0_runtime_observability}"
++RCRSO_CKPT="${RCRSO_CKPT:-$RCRSO_STAGE0_RUN/rcrso_stage0_selected.pt}"
++STAGE0_JSON="${STAGE0_JSON:-$RCRSO_STAGE0_RUN/stage0_val_support_audit.json}"
++STAGE0_PARTIAL_DIR="${STAGE0_PARTIAL_DIR:-$RCRSO_STAGE0_RUN/stage0_partials}"
++OUT_ROOT="${OUT_ROOT:-outputs/v16_8_45r4_stage1_causal_gate}"
++R3="$SCRIPT_DIR/NEXT_RUN_COMMANDS_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY_CN.sh"
++mkdir -p "$OUT_ROOT"
++
++pass_stage0(){
++  python - "$STAGE0_JSON" <<'PY'
++import json,sys
++x=json.load(open(sys.argv[1]))
++if x.get('stage0_support_gate',{}).get('pass') is not True: raise SystemExit(4)
++if int(x.get('selected_k',-1)) != 16: print('NOTE: selected K is',x.get('selected_k'))
++print('PASS: frozen Stage-0 support gate; selected_k=',x.get('selected_k'))
++PY
++  [[ -s "$RCRSO_CKPT" ]] || { echo "ERROR: selected checkpoint missing: $RCRSO_CKPT" >&2; exit 4; }
++}
++
++run_r3(){
++  RCRSO_RUN="$RCRSO_STAGE0_RUN" RCRSO_CKPT="$RCRSO_CKPT" STAGE0_JSON="$STAGE0_JSON" STAGE0_PARTIAL_DIR="$STAGE0_PARTIAL_DIR" OUT_ROOT="$OUT_ROOT" bash "$R3" "$1"
++}
++
++case "$MODE" in
++  audit_stage0_result)
++    args=(--result-dir "$RCRSO_STAGE0_RUN" --output "$OUT_ROOT/V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json")
++    [[ -s "$RCRSO_CKPT" ]] && args+=(--selected-checkpoint "$RCRSO_CKPT")
++    python scripts/113_audit_v45r3_stage0_result.py "${args[@]}" ;;
++  sanity)
++    run_r3 sanity
++    python -m py_compile scripts/113_audit_v45r3_stage0_result.py
++    bash -n "$0"
++    echo "V16.8.45R4 Stage-1 causal-gate harness sanity PASS" ;;
++  base_equivalence16_parallel2)
++    pass_stage0; run_r3 base_equivalence16_parallel2 ;;
++  profile4_parallel2)
++    pass_stage0; run_r3 profile4_parallel2 ;;
++  lost7_batch1_parallel2|lost7_batch2_parallel2|lost7_batch3_parallel2|analyze_lost7_progressive)
++    pass_stage0; run_r3 "$MODE" ;;
++  lost7_parallel2|analyze_lost7|retained3_parallel2|analyze_rescue10|induced9_parallel2|analyze_induced9|remaining29_parallel2|stitch_counterfactual48|analyze_counterfactual48|fresh37_parallel2|analyze_fresh37|confirm200_parallel2|analyze_confirm200)
++    pass_stage0; run_r3 "$MODE" ;;
++  help|*)
++    cat <<EOF
++V16.8.45R4: Stage-1 causal gate only; scientific RCRSO is unchanged.
++
++Required server provenance:
++  export RCRSO_STAGE0_RUN=/path/to/outputs/v16_8_45r3_stage0_runtime_observability
++  # directory must contain stage0_val_support_audit.json and rcrso_stage0_selected.pt
++
++Run:
++  $0 audit_stage0_result
++  $0 sanity
++  $0 base_equivalence16_parallel2
++
++Only after equivalence16 passes:
++  $0 lost7_batch1_parallel2
++  $0 analyze_lost7_progressive
++  # run batch2 only if JSON continue_progressive=true
++  $0 lost7_batch2_parallel2
++  $0 analyze_lost7_progressive
++  # run batch3 only if still continue_progressive=true
++  $0 lost7_batch3_parallel2
++  $0 analyze_lost7_progressive
++
++Do not create/tune V46 from Stage-0 alone. lost7 >=2/7 is the next causal policy gate.
++EOF
++    ;;
++esac
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json	2026-09-06 16:42:54.057493423 +0000
+@@ -0,0 +1,496 @@
++{
++  "algorithm_attribution": "ALLOWED",
++  "checkpoint_boundary": {
++    "provided": false
++  },
++  "checks": [
++    {
++      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_val_support_audit.json",
++      "name": "audit_exists",
++      "pass": true
++    },
++    {
++      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s0.json",
++      "name": "partial_0_exists",
++      "pass": true
++    },
++    {
++      "detail": "/mnt/data/_r3_res/v16_8_45r3_stage0_runtime_observability/stage0_partials/stage0_val_s1.json",
++      "name": "partial_1_exists",
++      "pass": true
++    },
++    {
++      "detail": [
++        0,
++        1
++      ],
++      "name": "shard_indices",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "num_shards",
++      "pass": true
++    },
++    {
++      "detail": [
++        [
++          12846,
++          12846
++        ],
++        [
++          12389,
++          12389
++        ]
++      ],
++      "name": "all_examples_completed",
++      "pass": true
++    },
++    {
++      "detail": {
++        "overlap": 0,
++        "s0": 495,
++        "s1": 475,
++        "union": 970
++      },
++      "name": "scenario_disjoint",
++      "pass": true
++    },
++    {
++      "detail": [
++        "9bf347331981f147c6c6fed1484ff7a727c6e0867286074472ec4131a2ea5c81"
++      ],
++      "name": "checkpoint_hash_agreement",
++      "pass": true
++    },
++    {
++      "detail": [
++        "0eac90aeb0666c656f69bdd3310589063b33f52df8fab6569552e2abaf198240"
++      ],
++      "name": "sidecar_hash_agreement",
++      "pass": true
++    },
++    {
++      "detail": "9bf347331981f147c6c6fed1484ff7a727c6e0867286074472ec4131a2ea5c81",
++      "name": "audit_checkpoint_hash_matches",
++      "pass": true
++    },
++    {
++      "detail": "0eac90aeb0666c656f69bdd3310589063b33f52df8fab6569552e2abaf198240",
++      "name": "audit_sidecar_hash_matches",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 25235,
++        "recomputed": 25235
++      },
++      "name": "examples_recompute",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "eligible_recompute",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 1612,
++        "recomputed": 1612
++      },
++      "name": "groups_recompute",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 6044,
++        "recomputed": 6044
++      },
++      "name": "oracle_recompute",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "verifier_calls_recompute",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.5627068166776968,
++        "recomputed": 0.5627068166776968
++      },
++      "name": "baseline_fixed_bank_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.006823821339950372,
++        "recomputed": 0.006823821339950372
++      },
++      "name": "baseline_fixed_bank_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.006823821339950372,
++        "recomputed": 0.006823821339950372
++      },
++      "name": "baseline_fixed_bank_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.7969887491727333,
++        "recomputed": 0.7969887491727333
++      },
++      "name": "baseline_v44_analytic_extension_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.007444168734491315,
++        "recomputed": 0.007444168734491315
++      },
++      "name": "baseline_v44_analytic_extension_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.007444168734491315,
++        "recomputed": 0.007444168734491315
++      },
++      "name": "baseline_v44_analytic_extension_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.8297485109199206,
++        "recomputed": 0.8297485109199206
++      },
++      "name": "K2_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.06017369727047146,
++        "recomputed": 0.06017369727047146
++      },
++      "name": "K2_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.05955334987593052,
++        "recomputed": 0.05955334987593052
++      },
++      "name": "K2_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.18224687933425798,
++        "recomputed": 0.18224687933425798
++      },
++      "name": "K2_learned_only_root_nonempty_rate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.33316889309998643,
++        "recomputed": 0.33316889309998643
++      },
++      "name": "K2_learned_verified_response_burden_mean",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "K2_profile_count",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.8568828590337525,
++        "recomputed": 0.8568828590337525
++      },
++      "name": "K4_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.06389578163771713,
++        "recomputed": 0.06389578163771713
++      },
++      "name": "K4_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.06327543424317618,
++        "recomputed": 0.06327543424317618
++      },
++      "name": "K4_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.19690905488408955,
++        "recomputed": 0.19690905488408955
++      },
++      "name": "K4_learned_only_root_nonempty_rate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.33231040411373036,
++        "recomputed": 0.33231040411373036
++      },
++      "name": "K4_learned_verified_response_burden_mean",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "K4_profile_count",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.8899735274652548,
++        "recomputed": 0.8899735274652548
++      },
++      "name": "K8_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.08312655086848635,
++        "recomputed": 0.08312655086848635
++      },
++      "name": "K8_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.08188585607940446,
++        "recomputed": 0.08188585607940446
++      },
++      "name": "K8_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.21711908064196553,
++        "recomputed": 0.21711908064196553
++      },
++      "name": "K8_learned_only_root_nonempty_rate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.33639156729291464,
++        "recomputed": 0.33639156729291464
++      },
++      "name": "K8_learned_verified_response_burden_mean",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "K8_profile_count",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.9185969556585043,
++        "recomputed": 0.9185969556585043
++      },
++      "name": "K16_VerifiedRootRecall",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.0967741935483871,
++        "recomputed": 0.0967741935483871
++      },
++      "name": "K16_FullHypothesisRootCoverage",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.09553349875930521,
++        "recomputed": 0.09553349875930521
++      },
++      "name": "K16_ExactCSPCompletionRate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.23209827620368537,
++        "recomputed": 0.23209827620368537
++      },
++      "name": "K16_learned_only_root_nonempty_rate",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.339828476731778,
++        "recomputed": 0.339828476731778
++      },
++      "name": "K16_learned_verified_response_burden_mean",
++      "pass": true
++    },
++    {
++      "detail": null,
++      "name": "K16_profile_count",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 16,
++        "recomputed": 16,
++        "target": 0.09193548387096774
++      },
++      "name": "selected_k_rule",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": 0.08933002481389578,
++        "recomputed": 0.08933002481389578
++      },
++      "name": "coverage_lift",
++      "pass": true
++    },
++    {
++      "detail": {
++        "audit": true,
++        "recomputed": true
++      },
++      "name": "stage0_gate_recompute",
++      "pass": true
++    }
++  ],
++  "decision": {
++    "do_not_design_v46_yet": true,
++    "full_policy_go": false,
++    "next_required_gate": "equivalence16 then progressive lost7 2+2+3",
++    "stage0_go": true
++  },
++  "metrics": {
++    "absolute_uncovered_group_rate": 0.9032258064516129,
++    "baseline": {
++      "fixed_bank": {
++        "ExactCSPCompletionRate": 0.006823821339950372,
++        "FullHypothesisRootCoverage": 0.006823821339950372,
++        "VerifiedRootRecall": 0.5627068166776968
++      },
++      "v44_analytic_extension": {
++        "ExactCSPCompletionRate": 0.007444168734491315,
++        "FullHypothesisRootCoverage": 0.007444168734491315,
++        "VerifiedRootRecall": 0.7969887491727333
++      }
++    },
++    "coverage_lift_pp": 8.933002481389577,
++    "full_to_csp_drop_groups": 2,
++    "query_budget_at_max_tested": true,
++    "rcrso_curve": [
++      {
++        "ExactCSPCompletionRate": 0.05955334987593052,
++        "FullHypothesisRootCoverage": 0.06017369727047146,
++        "K": 2,
++        "VerifiedRootRecall": 0.8297485109199206,
++        "learned_only_root_nonempty_rate": 0.18224687933425798,
++        "learned_verified_profile_count": 8337,
++        "learned_verified_response_burden_mean": 0.33316889309998643
++      },
++      {
++        "ExactCSPCompletionRate": 0.06327543424317618,
++        "FullHypothesisRootCoverage": 0.06389578163771713,
++        "K": 4,
++        "VerifiedRootRecall": 0.8568828590337525,
++        "learned_only_root_nonempty_rate": 0.19690905488408955,
++        "learned_verified_profile_count": 16677,
++        "learned_verified_response_burden_mean": 0.33231040411373036
++      },
++      {
++        "ExactCSPCompletionRate": 0.08188585607940446,
++        "FullHypothesisRootCoverage": 0.08312655086848635,
++        "K": 8,
++        "VerifiedRootRecall": 0.8899735274652548,
++        "learned_only_root_nonempty_rate": 0.21711908064196553,
++        "learned_verified_profile_count": 33017,
++        "learned_verified_response_burden_mean": 0.33639156729291464
++      },
++      {
++        "ExactCSPCompletionRate": 0.09553349875930521,
++        "FullHypothesisRootCoverage": 0.0967741935483871,
++        "K": 16,
++        "VerifiedRootRecall": 0.9185969556585043,
++        "learned_only_root_nonempty_rate": 0.23209827620368537,
++        "learned_verified_profile_count": 62882,
++        "learned_verified_response_burden_mean": 0.339828476731778
++      }
++    ],
++    "selected_csp_groups": 154,
++    "selected_full_groups": 156,
++    "selected_k": 16
++  },
++  "overall_reliability": "PASS",
++  "raw_counts": {
++    "baseline": {
++      "fixed_bank": {
++        "csp_num": 11,
++        "full_num": 11,
++        "root_num": 3401
++      },
++      "v44_analytic_extension": {
++        "csp_num": 12,
++        "full_num": 12,
++        "root_num": 4817
++      }
++    },
++    "examples": 25235,
++    "hypothesis_groups": 1612,
++    "oracle_positive_roots": 6044,
++    "rcrso": {
++      "2": {
++        "burden_count": 8337,
++        "burden_sum": 2777.6290617745867,
++        "csp_num": 96,
++        "full_num": 97,
++        "learned_root_nonempty_num": 4599,
++        "learned_verified_profile_count": 8337,
++        "root_num": 5015
++      },
++      "4": {
++        "burden_count": 16677,
++        "burden_sum": 5541.940609404682,
++        "csp_num": 102,
++        "full_num": 103,
++        "learned_root_nonempty_num": 4969,
++        "learned_verified_profile_count": 16677,
++        "root_num": 5179
++      },
++      "8": {
++        "burden_count": 33017,
++        "burden_sum": 11106.640377310163,
++        "csp_num": 132,
++        "full_num": 134,
++        "learned_root_nonempty_num": 5479,
++        "learned_verified_profile_count": 33017,
++        "root_num": 5379
++      },
++      "16": {
++        "burden_count": 62882,
++        "burden_sum": 21369.094273847666,
++        "csp_num": 154,
++        "full_num": 156,
++        "learned_root_nonempty_num": 5857,
++        "learned_verified_profile_count": 62882,
++        "root_num": 5552
++      }
++    },
++    "scenario_overlap": 0,
++    "scenario_union": 970
++  },
++  "scientific_verdict": "STAGE0_GO_FULL_POLICY_PENDING",
++  "version": "V16.8.45R4 Stage-0 independent result audit"
++}
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45R4_CODE_VALIDATION.json /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45R4_CODE_VALIDATION.json
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45R4_CODE_VALIDATION.json	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45R4_CODE_VALIDATION.json	2026-09-06 16:46:58.612071369 +0000
+@@ -0,0 +1,41 @@
++{
++  "version": "V16.8.45R4 Stage-1 Causal Gate",
++  "classification": "attribution_and_experiment_protocol_only",
++  "scientific_method_changed": false,
++  "scientific_method": "cowp_verified_root_conditioned_recourse_set_operator",
++  "source_code_zip_sha256": "08d0bf4bf4610e4734ca1b591e07e9c81e879e445b3aedafa88e870f845e51fa",
++  "source_result_zip_sha256": "bd86f6fce532e54ac87e8ae3aaebe25b6bc8be3d4eaad854a1c301ea6c8d7a97",
++  "source_r3_focused_sanity": {"passed": 143, "failed": 0, "warnings": 2},
++  "r4_validation": {
++    "launcher_bash_syntax": "PASS",
++    "new_audit_script_py_compile": "PASS",
++    "r4_sanity": "PASS",
++    "r4_sanity_passed_tests": 143,
++    "stage0_independent_raw_count_audit_checks": 49,
++    "stage0_independent_raw_count_audit_passed": 49,
++    "stage0_reliability": "PASS",
++    "stage0_scientific_verdict": "STAGE0_GO_FULL_POLICY_PENDING"
++  },
++  "frozen_semantics": [
++    "Natural roots / root probability and mass",
++    "RCOT / BCOT / protected-priority certificate",
++    "burden beta and hard response admission",
++    "roadgraph and Waymax kinematics",
++    "ego current/shift and environment safety",
++    "exact multi-root/multi-blocker CSP",
++    "V39 physical tube and shift closure",
++    "K grid {2,4,8,16} and 95% plateau rule",
++    "Stage-0 +3pp gate",
++    "lost7 / CF48 / fresh37 outcome gates",
++    "80-step closed-loop horizon"
++  ],
++  "new_files": [
++    "scripts/113_audit_v45r3_stage0_result.py",
++    "NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh",
++    "CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md",
++    "V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json",
++    "V16_8_45_STAGE0_MECHANISM_SUMMARY.json",
++    "ALGORITHM_CHANGELOG_V16_8_45R4.md"
++  ],
++  "not_implemented": "No V16.8.46 scientific algorithm is implemented before the preregistered lost7 causal gate."
++}
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45_STAGE0_MECHANISM_SUMMARY.json /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45_STAGE0_MECHANISM_SUMMARY.json
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/V16_8_45_STAGE0_MECHANISM_SUMMARY.json	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/V16_8_45_STAGE0_MECHANISM_SUMMARY.json	2026-09-06 16:44:24.015638255 +0000
+@@ -0,0 +1,35 @@
++{
++  "version": "V16.8.45 RCRSO Stage-0 mechanism summary",
++  "reliability": "PASS",
++  "scientific_status": "STAGE0_GO_FULL_POLICY_PENDING",
++  "selected_k": 16,
++  "best_frozen_baseline": {
++    "name": "v44_analytic_extension",
++    "VerifiedRootRecall": 0.7969887491727333,
++    "FullHypothesisRootCoverage": 0.007444168734491315,
++    "ExactCSPCompletionRate": 0.007444168734491315,
++    "full_groups": 12,
++    "csp_groups": 12
++  },
++  "rcrso_k16": {
++    "VerifiedRootRecall": 0.9185969556585043,
++    "FullHypothesisRootCoverage": 0.0967741935483871,
++    "ExactCSPCompletionRate": 0.09553349875930521,
++    "coverage_lift_pp": 8.933002481389577,
++    "full_groups": 156,
++    "csp_groups": 154,
++    "oracle_positive_roots": 6044,
++    "hypothesis_groups": 1612,
++    "learned_only_root_nonempty_rate": 0.23209827620368537,
++    "learned_verified_profile_count": 62882
++  },
++  "mechanism_conclusions": [
++    "Learned proposal completeness is a strong positive offline mechanism: full-hypothesis root coverage increases from 12/1612 to 156/1612 without weakening the hard verifier.",
++    "Exact CSP is not the dominant Stage-0 bottleneck once all retained roots are individually supported: only 2 of 156 fully covered groups are lost at CSP.",
++    "Absolute universal retained-root coverage remains low: 1456/1612 groups are still not fully covered at K=16.",
++    "Selected K equals the maximum preregistered query budget, so empirical query-budget saturation has not been demonstrated.",
++    "Stage-0 is outcome-blind; closed-loop causal utility remains unproven until equivalence16 and progressive lost7."
++  ],
++  "next_gate": "equivalence16 -> progressive lost7 2+2+3",
++  "v46_authorized": false
++}
+diff -ruN '--exclude=.pytest_cache' '--exclude=__pycache__' '--exclude=outputs' /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/scripts/113_audit_v45r3_stage0_result.py /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/scripts/113_audit_v45r3_stage0_result.py
+--- /mnt/data/_r3_code/COWP_V16_8_45R3_STAGE0_RUNTIME_OBSERVABILITY/scripts/113_audit_v45r3_stage0_result.py	1970-01-01 00:00:00.000000000 +0000
++++ /mnt/data/COWP_V16_8_45R4_STAGE1_CAUSAL_GATE/scripts/113_audit_v45r3_stage0_result.py	2026-09-06 16:42:39.715626280 +0000
+@@ -0,0 +1,109 @@
++from __future__ import annotations
++import argparse, hashlib, json, math
++from pathlib import Path
++
++TOL=1e-12
++
++def sha256(p: Path) -> str:
++    h=hashlib.sha256()
++    with p.open('rb') as f:
++        for b in iter(lambda:f.read(1<<20), b''): h.update(b)
++    return h.hexdigest()
++
++def close(a,b,tol=TOL):
++    return math.isclose(float(a),float(b),rel_tol=0.0,abs_tol=tol)
++
++def main():
++    ap=argparse.ArgumentParser(description='Independent V45R3 Stage-0 raw-count reliability audit')
++    ap.add_argument('--result-dir',required=True)
++    ap.add_argument('--output',required=True)
++    ap.add_argument('--selected-checkpoint',default='')
++    a=ap.parse_args()
++    root=Path(a.result_dir)
++    audit_p=root/'stage0_val_support_audit.json'
++    partials=[root/'stage0_partials'/f'stage0_val_s{i}.json' for i in range(2)]
++    checks=[]
++    def chk(name,ok,detail=None):
++        checks.append({'name':name,'pass':bool(ok),'detail':detail})
++        return bool(ok)
++    chk('audit_exists',audit_p.is_file(),str(audit_p))
++    for i,p in enumerate(partials): chk(f'partial_{i}_exists',p.is_file(),str(p))
++    if not all(c['pass'] for c in checks):
++        out={'overall_reliability':'FAIL','algorithm_attribution':'NOT_ALLOWED','checks':checks}
++        Path(a.output).write_text(json.dumps(out,indent=2,sort_keys=True)+'\n'); raise SystemExit(4)
++    audit=json.loads(audit_p.read_text())
++    ps=[json.loads(p.read_text()) for p in partials]
++    chk('shard_indices',[x['shard_index'] for x in ps]==[0,1],[x['shard_index'] for x in ps])
++    chk('num_shards',[x['num_shards'] for x in ps]==[2,2])
++    chk('all_examples_completed',all(int(x['processed_examples'])==int(x['assigned_examples']) for x in ps),[(x['processed_examples'],x['assigned_examples']) for x in ps])
++    s0=set(map(int,ps[0]['scenario_hashes'])); s1=set(map(int,ps[1]['scenario_hashes']))
++    chk('scenario_disjoint',not (s0&s1),{'s0':len(s0),'s1':len(s1),'overlap':len(s0&s1),'union':len(s0|s1)})
++    ck={x['checkpoint_sha256'] for x in ps}; sh={x['sidecar_summary_sha256'] for x in ps}
++    chk('checkpoint_hash_agreement',len(ck)==1,list(ck)); chk('sidecar_hash_agreement',len(sh)==1,list(sh))
++    prov=audit.get('provenance',{})
++    chk('audit_checkpoint_hash_matches',len(ck)==1 and prov.get('checkpoint_sha256') in ck,prov.get('checkpoint_sha256'))
++    chk('audit_sidecar_hash_matches',len(sh)==1 and prov.get('sidecar_summary_sha256') in sh,prov.get('sidecar_summary_sha256'))
++    # Merge raw integer counts independently.
++    examples=sum(int(x['stats']['examples']) for x in ps); eligible=sum(int(x['stats']['eligible_examples']) for x in ps)
++    groups=sum(int(x['stats']['hypothesis_groups']) for x in ps); oracle=sum(int(x['stats']['oracle_positive_roots']) for x in ps)
++    verifier=sum(int(x['stats']['verifier_calls']) for x in ps)
++    chk('examples_recompute',examples==int(audit['examples']),{'recomputed':examples,'audit':audit['examples']})
++    chk('eligible_recompute',eligible==int(audit['eligible_examples']))
++    chk('groups_recompute',groups==int(audit['hypothesis_groups']),{'recomputed':groups,'audit':audit['hypothesis_groups']})
++    chk('oracle_recompute',oracle==int(audit['oracle_positive_roots']),{'recomputed':oracle,'audit':audit['oracle_positive_roots']})
++    chk('verifier_calls_recompute',verifier==int(audit['verifier_calls']))
++    merged={'baseline':{},'rcrso':{}}
++    for b in ['fixed_bank','v44_analytic_extension']:
++        merged['baseline'][b]={k:sum(int(x['stats']['baseline'][b][k]) for x in ps) for k in ['root_num','full_num','csp_num']}
++    kvals=[2,4,8,16]
++    for K in kvals:
++        key=str(K)
++        merged['rcrso'][K]={k:sum(int(x['stats']['rcrso'][key][k]) for x in ps) for k in ['root_num','full_num','csp_num','learned_root_nonempty_num','learned_verified_profile_count','burden_count']}
++        merged['rcrso'][K]['burden_sum']=sum(float(x['stats']['rcrso'][key]['burden_sum']) for x in ps)
++    metrics={}
++    for b,c in merged['baseline'].items():
++        metrics[b]={'VerifiedRootRecall':c['root_num']/oracle,'FullHypothesisRootCoverage':c['full_num']/groups,'ExactCSPCompletionRate':c['csp_num']/groups}
++        for m,v in metrics[b].items(): chk(f'baseline_{b}_{m}',close(v,audit['baseline'][b][m]),{'recomputed':v,'audit':audit['baseline'][b][m]})
++    curve=[]
++    for K in kvals:
++        c=merged['rcrso'][K]
++        row={'K':K,'VerifiedRootRecall':c['root_num']/oracle,'FullHypothesisRootCoverage':c['full_num']/groups,'ExactCSPCompletionRate':c['csp_num']/groups,'learned_only_root_nonempty_rate':c['learned_root_nonempty_num']/examples,'learned_verified_profile_count':c['learned_verified_profile_count'],'learned_verified_response_burden_mean':c['burden_sum']/max(1,c['burden_count'])}
++        curve.append(row)
++        ref=next(r for r in audit['rcrso_curve'] if int(r['K'])==K)
++        for m in ['VerifiedRootRecall','FullHypothesisRootCoverage','ExactCSPCompletionRate','learned_only_root_nonempty_rate','learned_verified_response_burden_mean']:
++            chk(f'K{K}_{m}',close(row[m],ref[m]),{'recomputed':row[m],'audit':ref[m]})
++        chk(f'K{K}_profile_count',row['learned_verified_profile_count']==int(ref['learned_verified_profile_count']))
++    plateau=max(r['FullHypothesisRootCoverage'] for r in curve); target=0.95*plateau
++    selected=next(r for r in curve if r['FullHypothesisRootCoverage']+TOL>=target)
++    chk('selected_k_rule',int(audit['selected_k'])==int(selected['K']),{'recomputed':selected['K'],'audit':audit['selected_k'],'target':target})
++    best=max(metrics['fixed_bank']['FullHypothesisRootCoverage'],metrics['v44_analytic_extension']['FullHypothesisRootCoverage'])
++    lift=selected['FullHypothesisRootCoverage']-best
++    min_lift=float(audit['minimum_required_lift_pp'])/100.0
++    gate=(lift+TOL>=min_lift and selected['VerifiedRootRecall']>0.0)
++    chk('coverage_lift',close(lift,audit['coverage_lift_over_best_frozen_baseline']),{'recomputed':lift,'audit':audit['coverage_lift_over_best_frozen_baseline']})
++    chk('stage0_gate_recompute',gate is bool(audit['stage0_support_gate']['pass']),{'recomputed':gate,'audit':audit['stage0_support_gate']['pass']})
++    ckpt_check={'provided':False}
++    if a.selected_checkpoint:
++        p=Path(a.selected_checkpoint); ckpt_check={'provided':True,'path':str(p),'exists':p.is_file()}
++        if p.is_file():
++            ckpt_check['sha256']=sha256(p); ckpt_check['matches']=ckpt_check['sha256'] in ck
++            chk('selected_checkpoint_hash_matches',ckpt_check['matches'],ckpt_check)
++        else: chk('selected_checkpoint_exists',False,ckpt_check)
++    allpass=all(c['pass'] for c in checks)
++    full=selected['FullHypothesisRootCoverage']; csp=selected['ExactCSPCompletionRate']
++    out={
++      'version':'V16.8.45R4 Stage-0 independent result audit',
++      'overall_reliability':'PASS' if allpass else 'FAIL',
++      'algorithm_attribution':'ALLOWED' if allpass else 'NOT_ALLOWED',
++      'scientific_verdict': 'STAGE0_GO_FULL_POLICY_PENDING' if allpass and gate else ('STAGE0_STOP' if allpass else 'UNRESOLVED'),
++      'raw_counts':{'examples':examples,'hypothesis_groups':groups,'oracle_positive_roots':oracle,'scenario_union':len(s0|s1),'scenario_overlap':len(s0&s1),'baseline':merged['baseline'],'rcrso':merged['rcrso']},
++      'metrics':{'baseline':metrics,'rcrso_curve':curve,'selected_k':selected['K'],'coverage_lift_pp':100*lift,'full_to_csp_drop_groups':merged['rcrso'][selected['K']]['full_num']-merged['rcrso'][selected['K']]['csp_num'],'selected_full_groups':merged['rcrso'][selected['K']]['full_num'],'selected_csp_groups':merged['rcrso'][selected['K']]['csp_num'],'absolute_uncovered_group_rate':1-full,'query_budget_at_max_tested':selected['K']==max(kvals)},
++      'checkpoint_boundary':ckpt_check,
++      'checks':checks,
++      'decision':{'stage0_go':bool(allpass and gate),'full_policy_go':False,'next_required_gate':'equivalence16 then progressive lost7 2+2+3','do_not_design_v46_yet':True}
++    }
++    Path(a.output).parent.mkdir(parents=True,exist_ok=True); Path(a.output).write_text(json.dumps(out,indent=2,sort_keys=True)+'\n')
++    print(json.dumps(out,indent=2,sort_keys=True))
++    if not allpass: raise SystemExit(4)
++
++if __name__=='__main__': main()

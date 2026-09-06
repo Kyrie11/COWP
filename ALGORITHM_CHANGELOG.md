@@ -5780,3 +5780,22 @@ Do not count an unfinished Stage-0 run as an architecture failure. Broader learn
 - compact-5k remains **Freeze**; split statistics remain stable and do not currently explain the missing Stage-0 measurement.
 - publication artifact still has the known `verify_cache_train.json pass=false / irrelevant pair blockers=58243` provenance caveat.
 - the only TeX in the uploaded code package is the OC-RAP observation-consistent recoverability manuscript, which is not the same method lineage as the current COWP/RCRSO changelog. No paper edits are made until this artifact mismatch is reconciled and RCRSO scientific evidence exists.
+
+---
+
+# V16.8.45R4 — Stage-1 Causal Gate / Reliable Stage-0 Result
+
+**No scientific algorithm change.** The V16.8.45 RCRSO Stage-0 result is now reliable and passes the frozen offline support gate. Raw-count audit reproduces all Stage-0 metrics from the two scenario-disjoint shards.
+
+- best frozen baseline FHR (V44 analytic): `12/1612 = 0.7444%`
+- RCRSO selected K=16 FHR: `156/1612 = 9.6774%`
+- absolute lift: `+8.9330 pp` vs frozen `+3 pp` minimum — **PASS**
+- VerifiedRootRecall: `79.6989% -> 91.8597%`
+- ExactCSPCompletionRate: `12/1612 -> 154/1612 = 9.5533%`
+- selected K is 16, the maximum preregistered query budget; do not tune K on closed-loop panels.
+
+Scientific status: **STAGE-0 GO / FULL POLICY PENDING**. RCRSO is not yet promoted into the final Main Stack or paper Method claim. Next mandatory sequence remains `equivalence16 -> progressive lost7 2+2+3 -> retained3 -> induced9 -> remaining29/CF48 -> fresh37 -> development exact200`.
+
+Mechanism signal retained: learned RCRSO materially improves **hard-verified proposal completeness** while certificate soundness remains controlled exclusively by the frozen verifier. Once universal root support exists, exact CSP is rarely the additional blocker (`156 full -> 154 CSP`); the residual offline bottleneck is universal retained-root verified proposal coverage, not joint-CSP relaxation.
+
+R4 adds only `scripts/113_audit_v45r3_stage0_result.py` and a Stage-1 fail-closed launcher. No V46 is authorized before the lost7 causal gate.

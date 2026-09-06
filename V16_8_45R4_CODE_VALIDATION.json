@@ -1,0 +1,41 @@
+{
+  "version": "V16.8.45R4 Stage-1 Causal Gate",
+  "classification": "attribution_and_experiment_protocol_only",
+  "scientific_method_changed": false,
+  "scientific_method": "cowp_verified_root_conditioned_recourse_set_operator",
+  "source_code_zip_sha256": "08d0bf4bf4610e4734ca1b591e07e9c81e879e445b3aedafa88e870f845e51fa",
+  "source_result_zip_sha256": "bd86f6fce532e54ac87e8ae3aaebe25b6bc8be3d4eaad854a1c301ea6c8d7a97",
+  "source_r3_focused_sanity": {"passed": 143, "failed": 0, "warnings": 2},
+  "r4_validation": {
+    "launcher_bash_syntax": "PASS",
+    "new_audit_script_py_compile": "PASS",
+    "r4_sanity": "PASS",
+    "r4_sanity_passed_tests": 143,
+    "stage0_independent_raw_count_audit_checks": 49,
+    "stage0_independent_raw_count_audit_passed": 49,
+    "stage0_reliability": "PASS",
+    "stage0_scientific_verdict": "STAGE0_GO_FULL_POLICY_PENDING"
+  },
+  "frozen_semantics": [
+    "Natural roots / root probability and mass",
+    "RCOT / BCOT / protected-priority certificate",
+    "burden beta and hard response admission",
+    "roadgraph and Waymax kinematics",
+    "ego current/shift and environment safety",
+    "exact multi-root/multi-blocker CSP",
+    "V39 physical tube and shift closure",
+    "K grid {2,4,8,16} and 95% plateau rule",
+    "Stage-0 +3pp gate",
+    "lost7 / CF48 / fresh37 outcome gates",
+    "80-step closed-loop horizon"
+  ],
+  "new_files": [
+    "scripts/113_audit_v45r3_stage0_result.py",
+    "NEXT_RUN_COMMANDS_V16_8_45R4_STAGE1_CAUSAL_GATE_CN.sh",
+    "CURRENT_ANALYSIS_V16_8_45_STAGE0_RESULT_AND_NEXT_GATE_CN.md",
+    "V16_8_45R3_STAGE0_RESULT_RELIABILITY_AND_ATTRIBUTION_AUDIT.json",
+    "V16_8_45_STAGE0_MECHANISM_SUMMARY.json",
+    "ALGORITHM_CHANGELOG_V16_8_45R4.md"
+  ],
+  "not_implemented": "No V16.8.46 scientific algorithm is implemented before the preregistered lost7 causal gate."
+}

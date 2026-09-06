@@ -1,0 +1,35 @@
+{
+  "version": "V16.8.45 RCRSO Stage-0 mechanism summary",
+  "reliability": "PASS",
+  "scientific_status": "STAGE0_GO_FULL_POLICY_PENDING",
+  "selected_k": 16,
+  "best_frozen_baseline": {
+    "name": "v44_analytic_extension",
+    "VerifiedRootRecall": 0.7969887491727333,
+    "FullHypothesisRootCoverage": 0.007444168734491315,
+    "ExactCSPCompletionRate": 0.007444168734491315,
+    "full_groups": 12,
+    "csp_groups": 12
+  },
+  "rcrso_k16": {
+    "VerifiedRootRecall": 0.9185969556585043,
+    "FullHypothesisRootCoverage": 0.0967741935483871,
+    "ExactCSPCompletionRate": 0.09553349875930521,
+    "coverage_lift_pp": 8.933002481389577,
+    "full_groups": 156,
+    "csp_groups": 154,
+    "oracle_positive_roots": 6044,
+    "hypothesis_groups": 1612,
+    "learned_only_root_nonempty_rate": 0.23209827620368537,
+    "learned_verified_profile_count": 62882
+  },
+  "mechanism_conclusions": [
+    "Learned proposal completeness is a strong positive offline mechanism: full-hypothesis root coverage increases from 12/1612 to 156/1612 without weakening the hard verifier.",
+    "Exact CSP is not the dominant Stage-0 bottleneck once all retained roots are individually supported: only 2 of 156 fully covered groups are lost at CSP.",
+    "Absolute universal retained-root coverage remains low: 1456/1612 groups are still not fully covered at K=16.",
+    "Selected K equals the maximum preregistered query budget, so empirical query-budget saturation has not been demonstrated.",
+    "Stage-0 is outcome-blind; closed-loop causal utility remains unproven until equivalence16 and progressive lost7."
+  ],
+  "next_gate": "equivalence16 -> progressive lost7 2+2+3",
+  "v46_authorized": false
+}
