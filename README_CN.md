@@ -1,0 +1,52 @@
+# COWP 精简科学验证包
+
+此为上传 `COWP(1).zip` 的 **新的独立副本**，不会触碰服务器 `/home/senzeyu2/code/COWP`。重要：**不要直接覆盖旧仓库**；旧仓库含大量历史实验与另一个 `src/ocrap` 工作流，本包不包含它们。对旧仓库执行任何删除前，先自行完整备份并比对训练/评测脚本。
+
+## 保留
+
+- COWP 正在使用的 core/data/label/models/planning/geometry/waymax_eval/external_baselines/utils 代码。
+- 原 COWP/RCRSO 的主要数据缓存构建、训练、Waymax 评测、sidecar 构建/合并、RCRSO 训练及 Stage-0 测试入口。
+- 稳定且无版本号的 `configs/{label,data,eval,train,model}.yaml` 与当前 RCRSO runtime 绑定。
+- 部分核心测试、RCRSO 语义测试、新研究探针测试，及用于过滤历史开发集的 `reference_manifests/development_exact200_ids.txt`。
+- `run.sh` 为稳定唯一入口，新增科学假设不引入新的 `V...` 脚本名。
+
+## 不包含（**非零风险的工程剪枝**）
+
+- 所有历史 `NEXT_RUN_COMMANDS_V*.sh`、历史版本专用测试/分析、patch、changelog、reference_results 等，不应误认为这些文件永不有用；它们仍保留在你上传的原始 ZIP 供追溯。
+- 原仓库 `src/ocrap` **另一套独立算法/实验代码**和专属版本执行脚本；这部分不是当前 COWP/RCRSO 或新探针运行链的依赖。如果你仍运行 OCRA 系列任务，应继续使用旧仓库，而不是本包。
+- 服务器 checkpoint、WOMD 和 Compact-5k tensor caches，它们不在上传包里，也不会自动删除或搬迁。
+
+这个清理是**有选择的运行发行包**，不是将 1,232 个历史文件全部重新命名并保证全部工作流可用。该项目的 `outputs/` 是空目录，所有新实验输出都写到此处。启动前检查 `BASE_CKPT` 是否指向可读取 checkpoint，必要时与旧 outputs 做只读链接。
+
+## 首轮最有价值命令
+
+```bash
+export COWP_ROOT=/data0/senzeyu2/dataset/COWP/formal_v16_8_24_compact_full_5k
+export BASE_RUN=/home/senzeyu2/code/COWP/outputs/v16_8_24_compact5k_all
+export BASE_CKPT="$BASE_RUN/cowp_all_best.pt"
+bash run.sh sanity
+bash run.sh probe_synthetic
+PROBE_SCENES=80 bash run.sh probe_cache
+python -m research_probe.probe --cache-dir "$COWP_ROOT/tensor_cache_heldout_test" \
+  --exclude-ids reference_manifests/development_exact200_ids.txt \
+  --max-scenes 80 --max-candidates 10 --max-neighbors 3 \
+  --response-accels=-5,-3,0,2 \
+  --output outputs/research_probe/alternative_response_bank.json
+bash run.sh analyze_probe
+```
+
+也可以 `bash NEXT_RUN_COMMANDS_CN.sh quick` 顺序运行以上全部，但建议首次逐条运行并检查数据路径、错误数。输出回传：
+
+```
+outputs/research_probe/development_diagnostics.json
+outputs/research_probe/alternative_response_bank.json
+outputs/research_probe/sensitivity_analysis.json
+```
+
+如果所有诊断为零，并不证明真实场景不存在；但不支持当前简化响应家族下的 gap。如果多个响应家族均有稳定正例，**下一步仍应先接高保真 action execution + independent reactive simulator + strong decentralized MPC baseline**，不要据此直接重写论文 Abstract 成“已证明”。
+
+当前 `logged_conventional / logged_planner_only / logged_cowp` 只作为 Waymax logged-replay 对照。不对同一场景的未来他车轨迹施加 ego 改变的真实因果响应。
+
+## 运行质量状态
+
+本地环境完成 `python -m compileall`、合成几何/载入 schema demo、29 项 RCRSO/critical-input/新探针测试；**没有**服务器 WOMD 数据、完整 Waymax rollout 和 Stage-0 复跑。完整运行前仍需在你的环境独立运行 sanity 并检查依赖版本。

@@ -161,9 +161,9 @@ def main():
     ap.add_argument("--checkpoint",required=True); ap.add_argument("--output",required=True); ap.add_argument("--selected-checkpoint",required=True)
     ap.add_argument("--k-values",default="2,4,8,16"); ap.add_argument("--device",default="auto"); ap.add_argument("--max-examples",type=int,default=None)
     ap.add_argument("--minimum-full-hypothesis-coverage-lift-pp",type=float,default=3.0)
-    ap.add_argument("--label-config",default="configs/label_cowp_v16_8.yaml")
+    ap.add_argument("--label-config",default="configs/label.yaml")
     ap.add_argument("--data-config",default="configs/data.yaml")
-    ap.add_argument("--eval-config",default="configs/eval_cowp_v16_8.yaml")
+    ap.add_argument("--eval-config",default="configs/eval.yaml")
     args=ap.parse_args(); device=torch.device("cuda" if args.device=="auto" and torch.cuda.is_available() else ("cpu" if args.device=="auto" else args.device))
     ckpt=torch.load(args.checkpoint,map_location="cpu"); rcfg=RCRSOConfig.from_dict(ckpt.get("rcrso_config",ckpt.get("cfg",{}))); model=RootConditionedRecourseSetTransformer(rcfg); model.load_state_dict(ckpt["model"],strict=True); model.to(device).eval()
     ks=sorted(set(int(x) for x in args.k_values.split(",") if x.strip() and 1<=int(x)<=rcfg.max_queries));
