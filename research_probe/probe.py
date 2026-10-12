@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse, hashlib, itertools, json, math
 from pathlib import Path
 import numpy as np
+from .footprints import circle_clear, oriented_clear
 
 DT = 0.2
 HORIZON = 16             # 3.2 seconds; diagnostic only
 SHIFT = 4               # 0.8 seconds; not a guarantee
 ACCELS = (-4., -2., 0., 1.5)
 EGO_BACKUP_ACCELS = (-4., -2., 0., 1.5)
+FOOTPRINT_MODE = "circle"
 
 
 def _get(d, key, default=None):
@@ -58,7 +60,7 @@ def _states(d):
     if not valid[ego]: raise ValueError('ego current invalid')
     # Simple circular overlap approximation; NOT oriented-box safety.
     radius=np.maximum(np.hypot(length,width)*.5,1.0)
-    return np.column_stack([x,y,vx,vy,yaw,radius,valid.astype(float)]),ego
+    return np.column_stack([x,y,vx,vy,yaw,radius,valid.astype(float),length,width]),ego
 
 
 def rollout(initial, accel, steps=HORIZON, dt=DT):
@@ -75,7 +77,9 @@ def rollout(initial, accel, steps=HORIZON, dt=DT):
 
 def path_ok(a,b,ra,rb,margin=0.0):
     if len(a)!=len(b): raise ValueError('path horizon mismatch')
-    return bool(np.all(np.linalg.norm(a-b,axis=-1) >= ra+rb+margin))
+    if isinstance(ra,tuple) and isinstance(rb,tuple):
+        return oriented_clear(a,b,ra,rb,margin)
+    return circle_clear(a,b,ra,rb,margin)
 
 
 def ego_paths(d,states,ego,max_candidates):
@@ -158,7 +162,11 @@ def successor_has_joint_option(ego_state, agent_states, radii, max_backup=4):
 
 def _evaluate_candidate(ego_path,states,ego,others):
     agent_states=[states[i] for i in others]
-    radii=[float(states[ego,5])]+[float(states[i,5]) for i in others]
+    if FOOTPRINT_MODE == 'oriented-box':
+        radii=[(float(states[ego,7]),float(states[ego,8]),float(states[ego,4]),True)]+[
+            (float(states[i,7]),float(states[i,8]),float(states[i,4]),False) for i in others]
+    else:
+        radii=[float(states[ego,5])]+[float(states[i,5]) for i in others]
     options=[options_for_agent(s,ego_path,radii[0],radii[i+1]) for i,s in enumerate(agent_states)]
     pairwise=all(bool(o) for o in options)
     joint,checked=joint_response(options,radii[1:]) if pairwise else (None,0)
@@ -170,9 +178,17 @@ def _evaluate_candidate(ego_path,states,ego,others):
         es=next_state(states[ego],ego_path,SHIFT)
         ns=[next_state(s,local[i][1],SHIFT) for i,s in enumerate(agent_states)]
         successor=successor_has_joint_option(es,ns,radii)
+    hard_pairs=[]
+    if pairwise and joint is None:
+        for i in range(len(options)):
+            for j in range(i+1,len(options)):
+                if not any(path_ok(a[1],b[1],radii[i+1],radii[j+1],0.05)
+                           for a in options[i] for b in options[j]):
+                    hard_pairs.append([int(others[i]),int(others[j])])
     return {'pairwise':pairwise,'joint':joint is not None,'local_compatible':local_joint,
             'successor_viable':successor,'search_nodes':checked,
-            'individual_option_counts':[len(o) for o in options]}
+            'individual_option_counts':[len(o) for o in options],
+            'unconditionally_incompatible_response_pairs':hard_pairs}
 
 
 def examine_scene(data,max_candidates=10,max_neighbors=3,radius_m=32.):
@@ -182,6 +198,17 @@ def examine_scene(data,max_candidates=10,max_neighbors=3,radius_m=32.):
             np.all(np.isfinite(st[i,:6])) and np.linalg.norm(st[i,:2]-st[ego,:2])<radius_m]
     nearby=sorted(nearby,key=lambda i:(np.linalg.norm(st[i,:2]-st[ego,:2]),i))[:max_neighbors]
     if len(nearby)<2: return {'eligible':False,'reason':'less_than_two_neighbors','n_candidates':len(candidates)}
+    initial_circle=[];initial_box=[]
+    for i in range(len(nearby)):
+        for j in range(i+1,len(nearby)):
+            aa=nearby[i];bb=nearby[j]
+            pa=st[aa,:2][None,:];pb=st[bb,:2][None,:]
+            if not circle_clear(pa,pb,float(st[aa,5]),float(st[bb,5]),0.05):
+                initial_circle.append([int(aa),int(bb)])
+            fa=(float(st[aa,7]),float(st[aa,8]),float(st[aa,4]),False)
+            fb=(float(st[bb,7]),float(st[bb,8]),float(st[bb,4]),False)
+            if not oriented_clear(pa,pb,fa,fb,0.05):
+                initial_box.append([int(aa),int(bb)])
     results=[]
     for k,xy in candidates:
         r=_evaluate_candidate(xy,st,ego,nearby)
@@ -211,7 +238,12 @@ def examine_scene(data,max_candidates=10,max_neighbors=3,radius_m=32.):
         'candidate_index':r['candidate_index'],'progress_proxy_m':r['ego_displacement_m'],
         'joint':r['joint'],'local_compatible':r['local_compatible'],
         'successor_viable':r['successor_viable']} for name,r in selections.items()}
+    all_discordant=bool(results) and all(r['pairwise'] and not r['joint'] for r in results)
     return {'eligible':True,'n_candidates':len(results),'n_neighbors':len(nearby),
+            'initial_overlap_circle_pairs':initial_circle,
+            'initial_overlap_oriented_box_pairs':initial_box,
+            'all_candidates_joint_incompatible':all_discordant,
+            'selected_agent_indices':[int(i) for i in nearby],
             'baseline_selection':summary_select,
             'pairwise_joint_discordance':len(pairwise_discordance),
             'joint_but_local_conflict':sum(r['joint'] and not r['local_compatible'] for r in results),
@@ -234,7 +266,15 @@ def aggregate(rows):
                         'selected_local_conflict':sum((v.get('baseline_selection',{}).get(name) or {}).get('local_compatible') is False for v in valid),
                         'selected_temporal_collapse':sum((v.get('baseline_selection',{}).get(name) or {}).get('successor_viable') is False for v in valid)}
                      for name in ('pairwise_utility','joint_existence_utility','discrete_successor_backup')}
+    pos=[r for r in valid if r['pairwise_joint_discordance']>0]
+    geometric={'positive_scenes_with_t0_circle_overlap':sum(bool(r.get('initial_overlap_circle_pairs')) for r in pos),
+               'positive_scenes_with_t0_oriented_overlap':sum(bool(r.get('initial_overlap_oriented_box_pairs')) for r in pos),
+               'positive_scenes_all_candidates_incompatible':sum(bool(r.get('all_candidates_joint_incompatible')) for r in pos),
+               'positive_scenes_without_t0_circle_overlap':sum(not r.get('initial_overlap_circle_pairs') for r in pos),
+               'positive_scenes_without_t0_oriented_overlap':sum(not r.get('initial_overlap_oriented_box_pairs') for r in pos),
+               'positive_scenes_with_hard_pair_witness':sum(any(c.get('unconditionally_incompatible_response_pairs') for c in r['candidates']) for r in pos)}
     return {'scenes_scanned':len(rows),'scenes_eligible':len(valid),
+            'geometry_causal_diagnostics':geometric,
             'comparator_selection_diagnostics':selection_stats,
             'scenes_pairwise_joint_discordance':sum(r['pairwise_joint_discordance']>0 for r in valid),
             'scenes_joint_but_local_conflict':sum(r['joint_but_local_conflict']>0 for r in valid),
@@ -264,13 +304,16 @@ def main():
     p.add_argument('--max-candidates',type=int,default=10)
     p.add_argument('--max-neighbors',type=int,default=3)
     p.add_argument('--salt',default='research-probe-fixed-20261011')
+    p.add_argument('--geometry',choices=['circle','oriented-box'],default='circle',
+                   help='Same response bank; compare circle conservatism to oriented rectangles')
     p.add_argument('--exclude-ids',type=Path,default=None)
     p.add_argument('--selftest',action='store_true')
     p.add_argument('--response-accels',default='-4,-2,0,1.5',
                    help='Comma-separated acceleration samples; vary in preregistered sensitivity checks.')
     p.add_argument('--backup-accels',default='-4,-2,0,1.5')
     args=p.parse_args()
-    global ACCELS,EGO_BACKUP_ACCELS
+    global ACCELS,EGO_BACKUP_ACCELS,FOOTPRINT_MODE
+    FOOTPRINT_MODE=args.geometry
     ACCELS=tuple(float(x) for x in args.response_accels.split(','))
     EGO_BACKUP_ACCELS=tuple(float(x) for x in args.backup_accels.split(','))
     if not ACCELS or not EGO_BACKUP_ACCELS: p.error('empty acceleration bank')
@@ -296,10 +339,10 @@ def main():
     summary=aggregate(results)
     if len(results)<args.max_scenes:
         summary['sampling_warning']='Fewer usable scenes than requested after filtering/exclusions.'
-    summary.update({'response_accels':ACCELS,'backup_accels':EGO_BACKUP_ACCELS,'errors':len(errors),'selection':'deterministic salted filename ordering; not label/outcome based',
+    summary.update({'collision_geometry':FOOTPRINT_MODE,'response_accels':ACCELS,'backup_accels':EGO_BACKUP_ACCELS,'errors':len(errors),'selection':'deterministic salted filename ordering; not label/outcome based',
         'action_semantics':'frozen candidate path + independent constant-acceleration non-ego response; backup is longitudinal-only',
         'limitations':['no Waymax execution','no reaction-model calibration','no roadgraph/rule verification',
-                       'circle collision approximations','candidate-bank selection bias','existence does not imply execution',
+                       'simplified collision geometry: circle or static-vehicle-yaw boxes with path-tangent ego','candidate-bank selection bias','existence does not imply execution',
                        'successor is deterministic local-response diagnostic','data may be historically selected']})
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps({'summary':summary,'scenarios':results,'errors':errors[:50]},indent=2,allow_nan=False))

@@ -50,3 +50,17 @@ outputs/research_probe/sensitivity_analysis.json
 ## 运行质量状态
 
 本地环境完成 `python -m compileall`、合成几何/载入 schema demo、29 项 RCRSO/critical-input/新探针测试；**没有**服务器 WOMD 数据、完整 Waymax rollout 和 Stage-0 复跑。完整运行前仍需在你的环境独立运行 sanity 并检查依赖版本。
+
+## 当前 75 场景结果审计后的最高优先级（更新）
+
+请先读 `SCIENTIFIC_DECISION_REPORT_CN.md`：当前 14 个 individual-safe / joint-incompatible 场景的 138 条候选 **全部 joint=false**，没有 in-bank 可行反事实；206 条可以检查后继的候选全部未触发 temporal collapse。因此初步故事目前是 **NO SCIENTIFIC GO**，不应立即进行大规模 RCRSO 或 temporal network 迭代。
+
+新增更保守的诊断实验：
+
+```bash
+bash NEXT_EXPERIMENT_COMMANDS_CN.sh sanity
+bash NEXT_EXPERIMENT_COMMANDS_CN.sh historical_audit
+bash NEXT_EXPERIMENT_COMMANDS_CN.sh full_geometry
+```
+
+其中 `full_geometry` 在同一组 ID 上跑 circle vs oriented-box 以及 2 个 response banks，自动输出 `primary_geometry_audit.json`、`alternate_geometry_audit.json` 和 `oriented_response_sensitivity.json`。所有输出在本目录 `outputs/research_probe/`，**不会覆盖旧论文数据或 checkpoint**。`oriented-box` 仍非真实 Waymax 动力学/连续碰撞认证。新加脚本不要混淆为 Studt/R3R 的开源实现；R3R 的真实官方 Julia 仓库 https://github.com/MarshallVielmetti/r3r_decentralized_gatekeeper 已公开。

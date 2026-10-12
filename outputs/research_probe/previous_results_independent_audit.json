@@ -1,0 +1,62 @@
+{
+  "status": "NO_SCIENTIFIC_GO",
+  "shared_scenarios": 75,
+  "scenario_ids_sha256": "bb7ac4a02110490fe92c8e684468e60b06c43fe743fa6c77148d89c318893347",
+  "base": {
+    "eligible": 75,
+    "candidates_total": 748,
+    "pairwise_safe": 360,
+    "joint_feasible": 222,
+    "joint_feasible_independent_conflict": 16,
+    "successor_tested": 206,
+    "successor_failed": 0,
+    "discordance_positive_scenes": 14,
+    "discordance_positive_candidates": 138,
+    "discordance_with_joint_candidate_alternative_scenes": 0,
+    "discordance_all_candidates_positive_scenes": 14,
+    "independent_conflict_scenes": 3,
+    "temporal_collapse_scenes": 0,
+    "avoidable_collapse_scenes": 0
+  },
+  "alternate": {
+    "eligible": 75,
+    "candidates_total": 748,
+    "pairwise_safe": 363,
+    "joint_feasible": 225,
+    "joint_feasible_independent_conflict": 16,
+    "successor_tested": 209,
+    "successor_failed": 0,
+    "discordance_positive_scenes": 14,
+    "discordance_positive_candidates": 138,
+    "discordance_with_joint_candidate_alternative_scenes": 0,
+    "discordance_all_candidates_positive_scenes": 14,
+    "independent_conflict_scenes": 3,
+    "temporal_collapse_scenes": 0,
+    "avoidable_collapse_scenes": 0
+  },
+  "stable_discordance_ids": [
+    "43a130e908c1396c",
+    "47ed26ccc81fe4bb",
+    "5562738cbf1cff58",
+    "55afae34f735254",
+    "75996093e068d915",
+    "841f8ec506893472",
+    "8d351202486b1997",
+    "9af23b568343858d",
+    "a88cb7f1303330d",
+    "aa92a097a221b09d",
+    "ca269460a5077bec",
+    "d672ddacb0944af9",
+    "e8f2847b30d5cb26",
+    "eedae33eb64572c0"
+  ],
+  "discordance_count_changes": [],
+  "critical_caveats": [
+    "All 14 positive scenes lack an in-bank joint-feasible alternative",
+    "Need initial-time overlap and oriented-rectangle audit; circle footprint may create candidate-invariant artifacts",
+    "Successor test only runs on joint-feasible+locally-compatible candidates and uses permissive short longitudinal backups",
+    "No Waymax actual execution, independent reactive validation, or Studt/R3R baselines",
+    "The two response banks are both small constant longitudinal acceleration families"
+  ],
+  "conditional_status": "Geometry audit P0; independent behavior validation P1; temporal research P2 only if new evidence."
+}

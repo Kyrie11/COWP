@@ -76,6 +76,29 @@ case "$MODE" in
       --max-scenes "${PROBE_SCENES:-80}" --max-candidates "${PROBE_CANDIDATES:-10}" \
       --max-neighbors "${PROBE_NEIGHBORS:-3}" \
       --output "$ROOT/outputs/research_probe/development_diagnostics.json" ;;
+  probe_geometry_circle|probe_geometry_oriented)
+    GEOMETRY="circle"
+    [[ "$MODE" == "probe_geometry_oriented" ]] && GEOMETRY="oriented-box"
+    SUFFIX="circle"
+    [[ "$GEOMETRY" == "oriented-box" ]] && SUFFIX="oriented"
+    python -m research_probe.probe \
+      --cache-dir "${PROBE_CACHE:-$COWP_ROOT/tensor_cache_heldout_test}" \
+      --exclude-ids "$DEV_IDS" \
+      --max-scenes "${PROBE_SCENES:-80}" --max-candidates "${PROBE_CANDIDATES:-10}" \
+      --max-neighbors "${PROBE_NEIGHBORS:-3}" \
+      --geometry "$GEOMETRY" --response-accels="${RESPONSE_ACCELS:--4,-2,0,1.5}" \
+      --backup-accels="${BACKUP_ACCELS:--4,-2,0,1.5}" \
+      --output "$ROOT/outputs/research_probe/${PROBE_TAG:-primary}_${SUFFIX}.json" ;;
+  analyze_geometry)
+    python -m research_probe.compare_geometry \
+      --circle "$ROOT/outputs/research_probe/${PROBE_TAG:-primary}_circle.json" \
+      --oriented "$ROOT/outputs/research_probe/${PROBE_TAG:-primary}_oriented.json" \
+      --output "$ROOT/outputs/research_probe/${PROBE_TAG:-primary}_geometry_audit.json" ;;
+  audit_previous)
+    python -m research_probe.audit_previous \
+      --base "${PREVIOUS_BASE_JSON:-$ROOT/outputs/research_probe/development_diagnostics.json}" \
+      --alternative "${PREVIOUS_ALTERNATE_JSON:-$ROOT/outputs/research_probe/alternative_response_bank.json}" \
+      --output "$ROOT/outputs/research_probe/previous_results_independent_audit.json" ;;
   analyze_probe)
     python -m research_probe.analyze \
       --inputs "$ROOT/outputs/research_probe/development_diagnostics.json" \
