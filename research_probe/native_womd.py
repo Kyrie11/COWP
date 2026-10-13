@@ -201,7 +201,7 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
                 if f is None:continue
                 counts['usable']+=1
                 if f['past_only_interactive']:counts['past_only_interactive']+=1
-                item=(s,f,str(shard.name))
+                item=(s,f,str(shard.name),j)
                 for cohort_name,k in [('blind',keep_random),('interaction',keep_interactive if f['past_only_interactive'] else 0)]:
                     if k<=0:continue
                     h=_stable_hash(salt+'|'+cohort_name+'|'+s['scenario_id'])
@@ -222,7 +222,7 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
             merged[sid]['cohorts'].append(mode)
     entries=[]
     for sid,rec in sorted(merged.items()):
-        s,f,source=rec['item']; ix=[s['ego_index']]+f['neighbor_indices']
+        s,f,source,record_index=rec['item']; ix=[s['ego_index']]+f['neighbor_indices']
         arrays={f'{period}_{field}':s[f'{period}_{field}'][ix].astype(np.float32)
               for period in ('past','current','future') for field in STATE_ATTRS}
         arrays.update({'agent_ids':np.asarray(s['agent_ids'][ix],dtype=np.int64),
@@ -230,7 +230,7 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
                        'ego_index':np.asarray(0,dtype=np.int16)})
         np.savez_compressed(output/f'{sid}.npz',**arrays)
         entries.append({'scenario_id':sid,'file':f'{sid}.npz','source_shard':source,
-            'cohorts':rec['cohorts'],'features_from_current':f,
+            'cohorts':rec['cohorts'],'source_record_index':int(record_index),'features_from_current':f,
             'observed_future_diagnostic':observational_metrics(s,f['neighbor_indices'])})
     result={'status':'OBSERVATIONAL_SELECTION_BLIND_NOT_COUNTERFACTUAL',
         'split':split,'source_format':record_format,'raw_womd_root':str(root),'data_root':str(output),'salt':salt,

@@ -1,3 +1,10 @@
+## 2026-10-13 EIC-DRR 科学核验更新（请先阅读）
+
+优先阅读 `SCIENTIFIC_DECISION_EICDRR_CN.md`，按 `bash NEXT_EICDRR_COMMANDS_CN.sh help` 查看新实验。
+**新证据仍不足**：原生 WOMD 80 检查/76 有效，三套 IDM 参数共享同一结构；固定 non-ego 碰撞对随 ego 动作变化仅 heterogeneous 一例，安全替代动作进展至少相差 12 m，因此 3 m 双侧进展匹配下为 **0/76**。已添加配对原 JSON 审计、ghost-response 参照、Waymax IDM 试验性闭环适配、将所有 Compact-5k 7,200 个 ID 排除的列表。不要将本包称为已跑通 Waymax 或 GameFormer/RA-CBF/JFP 全部基线。
+
+本地已执行 `python -m pytest -q tests --ignore=tests/test_core.py`，结果 **56 passed, 2 warnings**；所排除的 `test_core.py` 依赖此精简包没有包含的独立 `src/ocrap` 包。无 ignore 的全目录测试还会误收集第三方 GameFormer/RA-CBF demo，缺少它们的单独依赖。请不要把这种 collection error 混同为新增 probe 测试失败，也不要将选择性 56 项冒称为全仓库所有测试通过。Waymax 试验性入口尚未在服务器的版本和数据上运行。
+
 > **2026-10-12 hotfix notice**: `HOTFIX_README_CN.md` and `SCIENTIFIC_DEBUG_AND_BASELINES_CN.md` supersede previous native WOMD sample commands where they differ.
 
 # COWP 精简科学验证包

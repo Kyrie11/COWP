@@ -1,0 +1,74 @@
+{
+  "kind": "descriptive_audit_not_real_world_incidence",
+  "n_checked": 80,
+  "n_eligible": 76,
+  "n_errors": 0,
+  "original_stable_proxy_scenes": 0,
+  "eligibility_exclusions": {
+    "initial_oriented_overlap": 4
+  },
+  "cohorts": {
+    "blind": 46,
+    "interaction": 31
+  },
+  "model_regimes_share_structure": true,
+  "regimes": {
+    "assertive": {
+      "n_scenes": 76,
+      "scenes_with_any_collision": 18,
+      "scenes_with_non_ego_collision": 10,
+      "scenes_any_collision_action_variant": 8,
+      "scenes_ego_collision_action_variant": 9,
+      "scenes_non_ego_collision_action_variant": 0,
+      "scenes_non_ego_pair_set_action_variant": 0,
+      "scenes_with_specific_pair_variation": 0,
+      "scenes_with_task_matched_pair_sensitive_preventability": 0,
+      "pair_variant_scene_ids": [],
+      "strict_matched_scene_ids": []
+    },
+    "cautious": {
+      "n_scenes": 76,
+      "scenes_with_any_collision": 14,
+      "scenes_with_non_ego_collision": 1,
+      "scenes_any_collision_action_variant": 13,
+      "scenes_ego_collision_action_variant": 13,
+      "scenes_non_ego_collision_action_variant": 0,
+      "scenes_non_ego_pair_set_action_variant": 0,
+      "scenes_with_specific_pair_variation": 0,
+      "scenes_with_task_matched_pair_sensitive_preventability": 0,
+      "pair_variant_scene_ids": [],
+      "strict_matched_scene_ids": []
+    },
+    "heterogeneous": {
+      "n_scenes": 76,
+      "scenes_with_any_collision": 15,
+      "scenes_with_non_ego_collision": 4,
+      "scenes_any_collision_action_variant": 12,
+      "scenes_ego_collision_action_variant": 11,
+      "scenes_non_ego_collision_action_variant": 1,
+      "scenes_non_ego_pair_set_action_variant": 1,
+      "scenes_with_specific_pair_variation": 1,
+      "scenes_with_task_matched_pair_sensitive_preventability": 1,
+      "pair_variant_scene_ids": [
+        "4689a7fb2d20970b"
+      ],
+      "strict_matched_scene_ids": [
+        "4689a7fb2d20970b"
+      ]
+    }
+  },
+  "joint_evidence": {
+    "task_matched_pair_sensitive_all_regimes_scene_ids": [],
+    "n_task_matched_pair_sensitive_all_regimes": 0,
+    "independent_model_validation_passed": false,
+    "Waymax_closed_loop_tested": false
+  },
+  "flags": [
+    "Observed logged-future ADE is NOT validation of do(ego_action) responses",
+    "Three regimes share a single longitudinal IDM-like model family",
+    "Non-ego collision cannot be attributed to ego without a same-root no-ego/control counterfactual",
+    "Progress is net displacement in simplified simulation, not longitudinal route progress",
+    "First 80 rows are scenario-ID ordered from a four-shard cohort; no population frequency inference",
+    "This audit cannot test pairwise/joint existence H1 or closed-loop recovery H3"
+  ]
+}
