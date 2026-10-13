@@ -161,48 +161,58 @@ def locate_shards(root,split,max_shards,data_format="auto"):
     return (files[:max_shards] if max_shards else files),mode
 
 
-def build_cohort(root,output,split='validation',max_shards=4,max_records_per_shard=350,keep_random=120,keep_interactive=120,salt='womd-blind-20261012',data_format='auto'):
+def build_cohort(root,output,split='validation',max_shards=4,max_records_per_shard=350,keep_random=120,keep_interactive=120,salt='womd-blind-20261012',data_format='auto',exclude_ids=None):
     try:
         import tensorflow as tf
     except ImportError as e:
         raise RuntimeError('Install tensorflow-cpu in a separate data extraction environment: pip install tensorflow-cpu') from e
     output=Path(output); output.mkdir(parents=True,exist_ok=True)
-    shards,mode=locate_shards(root,split,max_shards,data_format)
-    if mode=='scenario':
+    shards,record_format=locate_shards(root,split,max_shards,data_format)
+    if record_format=='scenario':
         try:
             from waymo_open_dataset.protos import scenario_pb2
         except ImportError as e:
             raise RuntimeError('Scenario proto shards selected, but waymo_open_dataset.protos.scenario_pb2 unavailable. Install an officially compatible Waymo Open Dataset package, or use tf_example shards.') from e
+    excluded=set(exclude_ids or ())
     selected={'blind':[],'interaction':[]}
-    counts={'examined':0,'usable':0,'bad_records':0,'past_only_interactive':0}
+    counts={'examined':0,'usable':0,'bad_records':0,'past_only_interactive':0,'excluded_overlap':0}
     errors=[]
+    # Use eager TFRecordDataset: the v1 iterator is deprecated and can be brittle
+    # across TensorFlow versions. Do not load every record into memory.
+    if not tf.executing_eagerly():
+        raise RuntimeError('Native WOMD extraction requires TensorFlow eager execution; run in a fresh Python process.')
     for shard in shards:
-        for j,record in enumerate(tf.compat.v1.io.tf_record_iterator(str(shard))):
+        records = tf.data.TFRecordDataset(str(shard), num_parallel_reads=1)
+        for j,raw_record in enumerate(records.as_numpy_iterator()):
             if max_records_per_shard and j>=max_records_per_shard:break
+            record=bytes(raw_record)
             counts['examined']+=1
             try:
-                if mode=='tfexample':
+                if record_format=='tfexample':
                     ex=tf.train.Example.FromString(record)
                     s=decode_example(ex)
                 else:
                     ex=scenario_pb2.Scenario.FromString(record)
                     s=decode_scenario_proto(ex)
+                if s['scenario_id'] in excluded:
+                    counts['excluded_overlap']+=1
+                    continue
                 f=scene_features(s)
                 if f is None:continue
                 counts['usable']+=1
                 if f['past_only_interactive']:counts['past_only_interactive']+=1
                 item=(s,f,str(shard.name))
-                for mode,k in [('blind',keep_random),('interaction',keep_interactive if f['past_only_interactive'] else 0)]:
+                for cohort_name,k in [('blind',keep_random),('interaction',keep_interactive if f['past_only_interactive'] else 0)]:
                     if k<=0:continue
-                    h=_stable_hash(salt+'|'+mode+'|'+s['scenario_id'])
-                    arr=selected[mode];tup=(-h,s['scenario_id'],item)
+                    h=_stable_hash(salt+'|'+cohort_name+'|'+s['scenario_id'])
+                    arr=selected[cohort_name];tup=(-h,s['scenario_id'],item)
                     if len(arr)<k:heapq.heappush(arr,tup)
                     elif h < -arr[0][0]:heapq.heapreplace(arr,tup)
             except Exception as e:
                 counts['bad_records']+=1
                 if len(errors)<10: errors.append({'shard':shard.name,'index':j,'error':str(e)})
     if counts['examined'] and counts['bad_records'] > 0.05*counts['examined']:
-        raise ValueError(f'TFExample decoding failures {counts["bad_records"]}/{counts["examined"]}; inspect schema: {errors[:3]}')
+        raise ValueError(f'{record_format} decoding failures {counts["bad_records"]}/{counts["examined"]}; inspect schema: {errors[:3]}')
     if not counts['usable']:
         raise ValueError('No usable scenes from raw TFExample records. Check WOMD version and feature schema.')
     merged={}
@@ -223,12 +233,29 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
             'cohorts':rec['cohorts'],'features_from_current':f,
             'observed_future_diagnostic':observational_metrics(s,f['neighbor_indices'])})
     result={'status':'OBSERVATIONAL_SELECTION_BLIND_NOT_COUNTERFACTUAL',
-        'split':split,'source_format':mode,'raw_womd_root':str(root),'data_root':str(output),'salt':salt,
+        'split':split,'source_format':record_format,'raw_womd_root':str(root),'data_root':str(output),'salt':salt,
         'shards_scanned':[str(s) for s in shards],'max_records_per_shard':max_records_per_shard,
+        'excluded_scenario_id_count':len(excluded),
         'counts':counts,'selection':'SHA256 minimum-hash reservoir within visited records; interaction stratum uses CURRENT only; cohort is not representative of entire WOMD unless full shards scanned',
         'entries':entries,'errors':errors}
     (output/'cohort_manifest.json').write_text(json.dumps(result,indent=2,ensure_ascii=False))
     return result
+
+
+def load_exclusion_file(path):
+    """Load source IDs without ever inspecting future trajectories or recourse labels."""
+    if path is None:return set()
+    path=Path(path)
+    if not path.is_file():raise FileNotFoundError(path)
+    if path.suffix.lower()=='.json':
+        data=json.loads(path.read_text())
+        if isinstance(data,list):return set(str(s) for s in data)
+        if 'entries' in data:return {str(r['scenario_id']) for r in data['entries']}
+        for key in ('scenario_ids','ids','heldout_ids','development_ids'):
+            if key in data:return {str(s) for s in data[key]}
+        raise ValueError(f'Unknown JSON exclusion format: {path}')
+    return {x.strip().split()[0] for x in path.read_text().splitlines()
+            if x.strip() and not x.lstrip().startswith('#')}
 
 
 def main():
@@ -241,8 +268,9 @@ def main():
     p.add_argument('--max-records-per-shard',type=int,default=350)
     p.add_argument('--keep-random',type=int,default=120)
     p.add_argument('--keep-interactive',type=int,default=120)
+    p.add_argument('--exclude-ids',type=Path,help='Optional previous dev/Compact IDs, for anti-leakage selection')
     args=p.parse_args()
-    r=build_cohort(args.raw_root,args.output,args.split,args.max_shards,args.max_records_per_shard,args.keep_random,args.keep_interactive,data_format=args.format)
+    r=build_cohort(args.raw_root,args.output,args.split,args.max_shards,args.max_records_per_shard,args.keep_random,args.keep_interactive,data_format=args.format,exclude_ids=load_exclusion_file(args.exclude_ids))
     print(json.dumps({'counts':r['counts'],'selected':len(r['entries']),'manifest':str(args.output/'cohort_manifest.json')},indent=2))
 
 if __name__=='__main__':main()

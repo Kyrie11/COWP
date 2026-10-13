@@ -1,3 +1,5 @@
+> **2026-10-12 hotfix notice**: `HOTFIX_README_CN.md` and `SCIENTIFIC_DEBUG_AND_BASELINES_CN.md` supersede previous native WOMD sample commands where they differ.
+
 # COWP 精简科学验证包
 
 此为上传 `COWP(1).zip` 的 **新的独立副本**，不会触碰服务器 `/home/senzeyu2/code/COWP`。重要：**不要直接覆盖旧仓库**；旧仓库含大量历史实验与另一个 `src/ocrap` 工作流，本包不包含它们。对旧仓库执行任何删除前，先自行完整备份并比对训练/评测脚本。
