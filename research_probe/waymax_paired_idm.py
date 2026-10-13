@@ -43,27 +43,59 @@ def _read_target_npz(cohort,entry):
                 np.array([float(f['current_x'][0,0]),float(f['current_y'][0,0])]))
 
 
-def _load_waymax_state(shard, npz_ids, sdc_xy, *, max_num_objects=128, record_index=None):
-    # Imports are intentionally lazy so analysis/audit CLI does not require Waymax.
+def _load_waymax_state(shard, npz_ids, sdc_xy, *, max_num_objects=128,
+                       record_index=None, expected_scenario_id=None):
+    """Load ONE verified WOMD 1.3.1 record, avoiding whole-shard parse failures.
+
+    The prior WOD_1_1_0 config hardcoded 20,000 roadgraph points, but WOMD
+    1.3.1 contains 30,000. This mismatch produced the ParseExample error in
+    all 12 pilot scenes. Read the indexed raw record and verify its scenario/id
+    before passing it to the 1.3.1 Waymax parser. Never silently pad map data.
+    """
+    import tempfile
+    import tensorflow as tf
     from waymax import config, dataloader
-    cfg=dataclasses.replace(config.WOD_1_1_0_VALIDATION,
-        path=str(shard), repeat=1, shuffle_seed=None, num_shards=1,
-        max_num_objects=max_num_objects, include_sdc_paths=False,
-        deterministic=True)
-    candidates=[]
-    for idx,state in enumerate(dataloader.simulator_state_generator(cfg)):
-        if record_index is not None and idx!=record_index:continue
-        ids=np.asarray(state.object_metadata.ids).reshape(-1)
-        is_sdc=np.asarray(state.object_metadata.is_sdc).reshape(-1).astype(bool)
-        if is_sdc.sum()!=1:continue
-        if int(ids[np.flatnonzero(is_sdc)[0]])!=int(npz_ids[0]):continue
-        pos,_,_,_,_,_,_= _extract(state,[npz_ids[0]])
-        if float(np.linalg.norm(pos[0]-sdc_xy))>0.25:continue
-        candidates.append(state)
-        if len(candidates)>1:raise RuntimeError('Ambiguous scenario match by SDC ID+initial xy')
-    if len(candidates)!=1:
-        raise RuntimeError(f'No exact Waymax scene match in {shard.name}; check DatasetConfig/version/record_index')
-    return candidates[0]
+    if not hasattr(config, 'WOD_1_3_1_VALIDATION'):
+        raise RuntimeError('Installed Waymax lacks WOD_1_3_1_VALIDATION; upgrade Waymax.')
+    if record_index is None:
+        raise ValueError('Need source_record_index from native WOMD manifest')
+    raw = list(tf.data.TFRecordDataset(str(shard)).skip(int(record_index)).take(1).as_numpy_iterator())
+    if len(raw) != 1:
+        raise RuntimeError(f'Record index {record_index} unavailable: {shard}')
+    ex = tf.train.Example.FromString(bytes(raw[0]))
+    sid_field = ex.features.feature.get('scenario/id')
+    if sid_field is None or not sid_field.bytes_list.value:
+        raise RuntimeError('Selected record missing scenario/id')
+    sid = sid_field.bytes_list.value[0].decode('utf8')
+    if expected_scenario_id is not None and sid != expected_scenario_id:
+        raise RuntimeError(f'Manifest record mismatch {sid} != {expected_scenario_id}')
+    road_field = ex.features.feature.get('roadgraph_samples/dir')
+    rg_len = len(road_field.float_list.value) if road_field is not None else 0
+    if rg_len != 30000 * 3:
+        raise RuntimeError(f'Expected WOMD 1.3.1 roadgraph dir 90000 floats; got {rg_len}; check raw data format')
+    with tempfile.TemporaryDirectory(prefix='cowp_waymax_') as tmp:
+        target = Path(tmp) / 'one_record.tfrecord'
+        with tf.io.TFRecordWriter(str(target)) as writer:
+            writer.write(bytes(raw[0]))
+        cfg = dataclasses.replace(config.WOD_1_3_1_VALIDATION,
+            path=str(target), repeat=1, shuffle_seed=None, num_shards=1,
+            max_num_objects=max_num_objects, max_num_rg_points=30000,
+            include_sdc_paths=False, deterministic=True, drop_remainder=False)
+        gen = dataloader.simulator_state_generator(cfg)
+        try:
+            state = next(gen)
+        except StopIteration as exc:
+            raise RuntimeError('Waymax returned zero states from verified record') from exc
+    ids = np.asarray(state.object_metadata.ids).reshape(-1)
+    is_sdc = np.asarray(state.object_metadata.is_sdc).reshape(-1).astype(bool)
+    if is_sdc.sum() != 1:
+        raise RuntimeError('No unique SDC after Waymax parsing')
+    # SDC ID could be represented in int32 by Waymax; use ID from raw
+    # record for exact identity and xy location for geometry cross-check.
+    xy, _, _, _, _, _, _ = _extract(state, [int(ids[np.flatnonzero(is_sdc)[0]])])
+    if np.linalg.norm(xy[0] - sdc_xy) > 0.25:
+        raise RuntimeError('Waymax SDC position disagrees with native cohort')
+    return state
 
 
 def _rollout(scenario, targets, *, ego_desired_vel, regime, steps):
@@ -136,18 +168,28 @@ def _shard_path(root,entry):
 
 
 def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
-        progress_tolerance=3.,regimes=('cautious','assertive')):
+        progress_tolerance=3.,regimes=('cautious','assertive'),scenario_ids=None):
     cohort=Path(cohort);raw_root=Path(raw_root)
     manifest=json.loads((cohort/'cohort_manifest.json').read_text())
     if manifest.get('source_format')!='tfexample':
         raise ValueError('This adapter requires original WOMD TFExample, not Scenario proto')
     entries=sorted(manifest['entries'],key=lambda e:hashlib.sha256(('waymax-pilot-v1|'+e['scenario_id']).encode()).hexdigest())
+    if scenario_ids is not None:
+        wanted=set(scenario_ids)
+        entries=[e for e in entries if e['scenario_id'] in wanted]
+        if len(entries)!=len(wanted):
+            absent=sorted(wanted-{e['scenario_id'] for e in entries})
+            print(f'NOTE: {len(absent)} targeted scenes not in supplied cohort: {absent[:10]}',flush=True)
     rows=[];errors=[]
     for e in entries[:max_scenes or None]:
         sid=e['scenario_id']
         try:
             target,xy=_read_target_npz(cohort,e)
-            scenario=_load_waymax_state(_shard_path(raw_root,e),target,xy,record_index=e.get('source_record_index'))
+            scenario=_load_waymax_state(_shard_path(raw_root,e),target,xy,record_index=e.get('source_record_index'), expected_scenario_id=sid)
+            # Waymax stores object IDs as int32; never silently assume original npz IDs match.
+            # Reconstruct target indices by ID after explicit int32 range checking.
+            if any((i > 2**31-1 or i < -(2**31)) for i in target):
+                raise RuntimeError('Object IDs exceed Waymax int32; explicit ID reconciliation required')
             d={'scenario_id':sid,'status':'WAYMAX_IDM_POLICY_PILOT_NOT_HUMAN_CAUSALITY','regimes':{}}
             for regime in regimes:
                 a=[]
@@ -176,7 +218,7 @@ def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
               'scientific_claim_allowed':False,
               'limitations':['IDMRoutePolicy follows logged spatial routes','Not independently validated learned-human reaction',
                 'Non-vehicle actors are log experts','Descriptive Euclidean ego displacement only',
-                'Only same-shard pilot; no reproduced GameFormer or RA-CBF']},'rows':rows,'errors':errors}
+                'Single verified 1.3.1 TFExample record; no reproduced GameFormer or RA-CBF']},'rows':rows,'errors':errors}
     output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
     output.write_text(json.dumps(result,indent=2,ensure_ascii=False))
     return result['summary']
@@ -191,7 +233,10 @@ def main():
     p.add_argument('--steps',type=int,default=40)
     p.add_argument('--ego-speeds',type=float,nargs='+',default=[6.,12.,18.])
     p.add_argument('--progress-tolerance',type=float,default=3.)
+    p.add_argument('--scenario-ids-file',type=Path,default=None,
+                   help='Optional pre-screened IDs for DISCOVERY rollout only; never claim population incidence')
     a=p.parse_args()
     print(json.dumps(run(a.cohort,a.raw_root,a.output,max_scenes=a.max_scenes,steps=a.steps,
-        velocities=tuple(a.ego_speeds),progress_tolerance=a.progress_tolerance),indent=2))
+        velocities=tuple(a.ego_speeds),progress_tolerance=a.progress_tolerance,
+        scenario_ids=[x.strip() for x in a.scenario_ids_file.read_text().splitlines() if x.strip()] if a.scenario_ids_file else None),indent=2))
 if __name__=='__main__':main()

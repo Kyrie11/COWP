@@ -71,18 +71,28 @@ def _params(regime,agent_key):
     raise ValueError(regime)
 
 
-def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,ghost_ego_to_others=False):
+def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,ghost_ego_to_others=False,responder_delay_steps=0):
+    ego_controls=np.asarray(ego_accel,dtype=float)
+    if ego_controls.ndim==0:
+        ego_controls=np.full(steps,float(ego_controls))
+    elif ego_controls.shape!=(steps,):
+        raise ValueError('ego_accel must be scalar or a length-steps sequence')
     pos=state[:,:2].astype(float).copy()
     yaw=state[:,4].copy()
     # velocity norm is used under vehicle heading; large mismatch => exclude before science claims
     vel=np.linalg.norm(state[:,2:4],axis=1).astype(float)
     n=len(pos);initial=_pair_conflicts(pos,yaw,length,width,valid)
+    if not isinstance(responder_delay_steps,int) or responder_delay_steps<0:
+        raise ValueError('responder_delay_steps must be non-negative integer')
+    obs_history=[]
     paths=np.zeros((steps+1,n,2),float);paths[0]=pos
     acc=np.zeros((steps,n));collision_steps=[];other_other=[];ego_other=[];ego_steps=[];non_ego_steps=[]
     for t in range(steps):
+        obs_history.append((pos.copy(),vel.copy()))
+        obs_pos,obs_vel=obs_history[max(0,t-responder_delay_steps)]
         for i in range(n):
             if not valid[i]:continue
-            acc[t,i]=float(ego_accel) if i==ego else _idm_accel(i,pos,vel,yaw,length,width,valid,_params(regime,ids[i]),
+            acc[t,i]=float(ego_controls[t]) if i==ego else _idm_accel(i,obs_pos,obs_vel,yaw,length,width,valid,_params(regime,ids[i]),
                             excluded_leader=ego if ghost_ego_to_others else None)
         next_v=np.clip(vel+acc[t]*DT,0.,37.)
         unit=np.column_stack([np.cos(yaw),np.sin(yaw)])
