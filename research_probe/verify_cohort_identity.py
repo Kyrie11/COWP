@@ -1,72 +1,127 @@
-"""Native cohort provenance checks; refuse claims when ego identity is ambiguous.
+"""Verify saved NPZ ego identity against raw WOMD, without self-consistency shortcuts.
 
-Offline checks require NPZ files. --raw-root additionally verifies that each
-source record's actual SDC ID and pose match the local ego (index zero).
-Raw verification requires TensorFlow and original TFExample files.
+All raw records in one shard are read ONCE, in index order. The exact SAME
+TFExample decoder is used during writing and raw verification. The report
+preserves failure reasons and refuses a PASS when any provenance check fails.
 """
 from __future__ import annotations
-import argparse,json,hashlib
+import argparse, json
 from pathlib import Path
-from collections import Counter
+from collections import defaultdict
 import numpy as np
+from .native_womd import decode_example
+
+
+def check_raw_state(e, expected_ids, expected_xy, raw):
+    """Compare decoded source *by index*; safe to unit test without TensorFlow."""
+    sid=e['scenario_id']
+    if raw['scenario_id']!=sid:
+        raise ValueError(f'source scenario ID mismatch: {raw["scenario_id"]} != {sid}')
+    idx=int(raw['ego_index'])
+    src_idx=[int(x) for x in e['selected_source_indices']]
+    if idx!=src_idx[0]:
+        raise ValueError(f'raw SDC index {idx} != selected index {src_idx[0]}')
+    if idx!=int(e['source_ego_index']):
+        raise ValueError(f'raw SDC index {idx} != manifest index {e["source_ego_index"]}')
+    source_ids=np.asarray(raw['agent_ids'],dtype=np.int64)
+    if source_ids[src_idx].tolist()!=list(expected_ids):
+        raise ValueError('NPZ agent IDs disagree with raw TFExample')
+    source_xy=np.array([raw['current_x'][idx,0],raw['current_y'][idx,0]],dtype=float)
+    delta=float(np.linalg.norm(np.asarray(expected_xy,dtype=float)-source_xy))
+    if delta>0.05:
+        raise ValueError(f'SDC source pose error {delta:.3f}m > 5cm')
+    return {'source_sdc_index':idx,'source_sdc_id':int(source_ids[idx]),'ego_pose_delta_m':delta}
 
 
 def verify(cohort,*,raw_root=None,exclusion_ids=None,limit=0):
-    cohort=Path(cohort);m=json.loads((cohort/'cohort_manifest.json').read_text())
-    rows=[];errors=[];seen=set();shards={}
-    entries=m['entries'][:limit or None]
+    cohort=Path(cohort)
+    manifest=json.loads((cohort/'cohort_manifest.json').read_text())
+    entries=manifest['entries'][:limit or None]
+    failures=[];valid={};seen=set()
     for e in entries:
         sid=e['scenario_id']
         try:
             if sid in seen:raise ValueError('duplicate scenario id')
             seen.add(sid)
-            if exclusion_ids is not None and sid in exclusion_ids:raise ValueError('historical train/validation/test overlap')
-            if 'source_record_index' not in e:raise ValueError('MISSING source_record_index; re-extract native WOMD with patched writer')
-            if 'selected_source_indices' not in e:raise ValueError('MISSING selected_source_indices; re-extract with patched writer')
+            if exclusion_ids is not None and sid in exclusion_ids:
+                raise ValueError('historical overlap')
+            for field in ('source_record_index','selected_source_indices'):
+                if field not in e:raise ValueError(f'MISSING {field}; re-extract raw WOMD')
+            # Older provenance manifests may omit redundant source_ego_index.
+            # The first selected source index is the stored SDC by contract.
+            if 'source_ego_index' not in e: e['source_ego_index']=int(e['selected_source_indices'][0])
             with np.load(cohort/e['file'],allow_pickle=False) as d:
-                ids=np.asarray(d['agent_ids']).reshape(-1);ego=int(d['ego_index'])
-                if ego!=0:raise ValueError('local ego index must be 0')
-                if not len(ids) or len(set(map(int,ids)))!=len(ids):raise ValueError('bad/non-unique agent IDs')
-                if len(ids)!=len(e['selected_source_indices']):raise ValueError('NPZ/selected source indices length mismatch')
+                ids=np.asarray(d['agent_ids']).reshape(-1).astype(np.int64).tolist()
+                idx=int(d['ego_index'])
+                if idx!=0:raise ValueError('local ego must be zero')
+                if len(ids)!=len(set(ids)):raise ValueError('duplicate IDs')
+                if len(ids)!=len(e['selected_source_indices']):raise ValueError('NPZ/source index length differs')
                 if len(ids)!=len(e['features_from_current']['neighbor_indices'])+1:
-                    raise ValueError('NPZ should have only ego plus selected neighbors')
-                xy=np.array([float(d['current_x'][ego,0]),float(d['current_y'][ego,0])])
-                if not np.isfinite(xy).all():raise ValueError('nonfinite SDC XY')
-                target_ids=ids.astype(np.int64).tolist()
-            if raw_root is not None:
-                if m.get('source_format')!='tfexample':raise ValueError('raw source verifier requires tfexample')
-                import tensorflow as tf
-                shname=e['source_shard']
-                if shname not in shards:
-                    found=list(Path(raw_root).rglob(shname))
-                    if len(found)!=1:raise ValueError(f'expect one raw shard {shname}; got {len(found)}')
-                    shards[shname]=found[0]
-                idx=int(e['source_record_index'])
-                raws=list(tf.data.TFRecordDataset(str(shards[shname])).skip(idx).take(1).as_numpy_iterator())
-                if len(raws)!=1:raise ValueError('missing raw record')
-                ex=tf.train.Example.FromString(bytes(raws[0]))
-                features=ex.features.feature
-                orig_id=features['scenario/id'].bytes_list.value[0].decode()
-                if orig_id!=sid:raise ValueError('source scenario ID mismatch')
-                raw_ids=np.asarray(features['state/id'].float_list.value if features['state/id'].float_list.value else features['state/id'].int64_list.value,dtype=np.int64)
-                sdc_mask=np.asarray(features['state/is_sdc'].int64_list.value,dtype=int)
-                if not len(sdc_mask):sdc_mask=np.asarray(features['state/is_sdc'].float_list.value,dtype=int)
-                if sdc_mask.sum()!=1:raise ValueError('no unique source SDC')
-                true_idx=int(np.flatnonzero(sdc_mask)[0])
-                src_idx=e['selected_source_indices']
-                if true_idx!=src_idx[0]:raise ValueError('wrong SDC source index')
-                if raw_ids[src_idx].tolist()!=target_ids:raise ValueError('NPZ agent IDs disagree with source')
-                n=len(raw_ids)
-                x=np.asarray(features['state/current/x'].float_list.value,dtype=float).reshape(n,1)[true_idx,0]
-                y=np.asarray(features['state/current/y'].float_list.value,dtype=float).reshape(n,1)[true_idx,0]
-                if np.linalg.norm(xy-np.array([x,y]))>0.05:raise ValueError('SDC source pose error > 5cm')
-            rows.append({'scenario_id':sid,'agent_count':len(target_ids),'ego_agent_id':int(target_ids[0]),
-                         'source_record_index':int(e['source_record_index']),'identity_verified':True})
-        except Exception as exc:errors.append({'scenario_id':sid,'error':str(exc)})
-    return {'pass':len(errors)==0 and len(rows)==len(entries),'attempted':len(entries),
-            'verified':len(rows),'errors':errors,
+                    raise ValueError('Unexpected NPZ agent count')
+                xy=[float(d['current_x'][idx,0]),float(d['current_y'][idx,0])]
+                if not np.isfinite(xy).all():raise ValueError('nonfinite ego XY')
+            valid[sid]={'scenario_id':sid,'agent_count':len(ids),'ego_agent_id':ids[0],
+                        'source_record_index':int(e['source_record_index']),
+                        'identity_verified':raw_root is None,'_ids':ids,'_xy':xy}
+        except Exception as exc:failures.append({'scenario_id':sid,'phase':'npz','error':str(exc)})
+
+    if raw_root is not None:
+        if manifest.get('source_format')!='tfexample':
+            raise ValueError('Raw verifier requires TFExample source')
+        try:import tensorflow as tf
+        except ImportError as exc:raise RuntimeError('Raw identity verification needs tensorflow-cpu') from exc
+        # The same raw record may be requested several times: index once, not O(n)
+        # TFRecordDataset.skip(idx) per scene, which is slow at full 150 shards.
+        pending=defaultdict(dict)
+        for e in entries:
+            if e['scenario_id'] in valid:
+                pending[e['source_shard']][int(e['source_record_index'])]=e
+        raw_root=Path(raw_root)
+        for shard_name,requests in sorted(pending.items()):
+            candidates=list(raw_root.rglob(shard_name))
+            if len(candidates)!=1:
+                for e in requests.values():
+                    failures.append({'scenario_id':e['scenario_id'],'phase':'raw',
+                                     'error':f'expected one shard {shard_name}; found {len(candidates)}'})
+                    valid.pop(e['scenario_id'],None)
+                continue
+            remaining=set(requests)
+            try:
+                # Streaming sequential scan; no future label used for cohort selection.
+                for j,record in enumerate(tf.data.TFRecordDataset(str(candidates[0])).as_numpy_iterator()):
+                    if j not in remaining:continue
+                    e=requests[j];sid=e['scenario_id'];remaining.remove(j)
+                    try:
+                        raw=decode_example(tf.train.Example.FromString(bytes(record)))
+                        extra=check_raw_state(e,valid[sid]['_ids'],valid[sid]['_xy'],raw)
+                        valid[sid].update(extra);valid[sid]['identity_verified']=True
+                    except Exception as exc:
+                        # Include source index. 'no unique SDC' must be traced
+                        # rather than reinterpreted as a behavioral result.
+                        failures.append({'scenario_id':sid,'phase':'raw','shard':shard_name,
+                                         'record_index':j,'error':str(exc)})
+                        valid.pop(sid,None)
+                    if not remaining:break
+                for j in remaining:
+                    e=requests[j];sid=e['scenario_id']
+                    failures.append({'scenario_id':sid,'phase':'raw','shard':shard_name,
+                                     'record_index':j,'error':'record index unavailable'})
+                    valid.pop(sid,None)
+            except Exception as exc:
+                for j in remaining:
+                    e=requests[j];sid=e['scenario_id']
+                    failures.append({'scenario_id':sid,'phase':'raw','shard':shard_name,
+                                     'record_index':j,'error':f'shard read failure: {exc}'})
+                    valid.pop(sid,None)
+    rows=[]
+    for v in valid.values():
+        rows.append({k:val for k,val in v.items() if not k.startswith('_')})
+    return {'pass':len(failures)==0 and len(rows)==len(entries),
+            'attempted':len(entries),'verified':len(rows),'errors':failures,
             'raw_records_verified':raw_root is not None,
-            'claim':'Cohort identity/provenance only; no causal behavioral verification'}
+            'source_decode_parity':raw_root is not None,
+            'claim':'Ego/source identity only; does NOT validate response causality',
+            'rows':rows}
 
 
 def main():
@@ -79,10 +134,12 @@ def main():
     a=p.parse_args()
     excluded=None
     if a.historical_ids:
-        excluded={ln.strip().split()[0] for ln in a.historical_ids.read_text().splitlines() if ln.strip() and not ln.startswith('#')}
+        excluded={line.split()[0] for line in a.historical_ids.read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith('#')}
     out=verify(a.cohort,raw_root=a.raw_root,exclusion_ids=excluded,limit=a.limit)
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.output.write_text(json.dumps(out,indent=2))
-    print(json.dumps({k:v for k,v in out.items() if k!='errors'},indent=2))
-    if out['errors']:print('FIRST ERRORS',out['errors'][:5]);raise SystemExit(2)
+    print(json.dumps({k:v for k,v in out.items() if k not in ('errors','rows')},indent=2))
+    if out['errors']:
+        print('FIRST RAW/NPZ ERRORS',out['errors'][:5]);raise SystemExit(2)
 if __name__=='__main__':main()

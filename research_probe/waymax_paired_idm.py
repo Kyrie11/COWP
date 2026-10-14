@@ -174,12 +174,13 @@ def _shard_path(root,entry):
 
 
 def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
-        progress_tolerance=3.,regimes=('cautious','assertive'),scenario_ids=None):
+        progress_tolerance=3.,regimes=('cautious','assertive'),scenario_ids=None,partition='all'):
     cohort=Path(cohort);raw_root=Path(raw_root)
     manifest=json.loads((cohort/'cohort_manifest.json').read_text())
     if manifest.get('source_format')!='tfexample':
         raise ValueError('This adapter requires original WOMD TFExample, not Scenario proto')
-    entries=sorted(manifest['entries'],key=lambda e:hashlib.sha256(('waymax-pilot-v1|'+e['scenario_id']).encode()).hexdigest())
+    pool=[e for e in manifest['entries'] if partition=='all' or e.get('evaluation_partition','development')==partition]
+    entries=sorted(pool,key=lambda e:hashlib.sha256(('waymax-pilot-v1|'+e['scenario_id']).encode()).hexdigest())
     if scenario_ids is not None:
         wanted=set(scenario_ids)
         entries=[e for e in entries if e['scenario_id'] in wanted]
@@ -236,6 +237,7 @@ def main():
     p.add_argument('--raw-root',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--max-scenes',type=int,default=12)
+    p.add_argument('--partition',choices=('all','development','sealed_holdout'),default='all')
     p.add_argument('--steps',type=int,default=40)
     p.add_argument('--ego-speeds',type=float,nargs='+',default=[6.,12.,18.])
     p.add_argument('--progress-tolerance',type=float,default=3.)
@@ -244,5 +246,5 @@ def main():
     a=p.parse_args()
     print(json.dumps(run(a.cohort,a.raw_root,a.output,max_scenes=a.max_scenes,steps=a.steps,
         velocities=tuple(a.ego_speeds),progress_tolerance=a.progress_tolerance,
-        scenario_ids=[x.strip() for x in a.scenario_ids_file.read_text().splitlines() if x.strip()] if a.scenario_ids_file else None),indent=2))
+        scenario_ids=[x.strip() for x in a.scenario_ids_file.read_text().splitlines() if x.strip()] if a.scenario_ids_file else None,partition=a.partition),indent=2))
 if __name__=='__main__':main()

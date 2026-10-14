@@ -135,7 +135,21 @@ def scene_features(s, radius=50.0, max_neigh=10):
     angle=np.abs(np.arctan2(np.sin(headings-ego_yaw),np.cos(headings-ego_yaw)))
     crossing=bool(np.any((angle>0.55)&(angle<2.6)&(dist[neigh]<32)))
     chain=bool(np.any(front)&np.any(closing_rear))
-    return {'scenario_strata':{'braking_chain':chain,'crossing':crossing},
+    # Current-state ONLY deterministic four-second linear closest approach.
+    # A screening STRATUM (not a safety label, future outcome or intervention).
+    best=float('inf');tbest=None
+    for a, ia in enumerate(neigh):
+        for ib in neigh[a+1:]:
+            r=p[ia]-p[ib]; u=vel[ia]-vel[ib]
+            u2=float(u@u)
+            t=float(np.clip(-float(r@u)/u2,0.,4.)) if u2>1e-6 else 0.
+            miss=float(np.linalg.norm(r+t*u))
+            if miss<best: best=miss;tbest=t
+    near_conflict=bool(best<6.5 and tbest is not None and .15<tbest<=4.)
+    return {'scenario_strata':{'braking_chain':chain,'crossing':crossing,
+        'non_ego_linear_cpa':near_conflict},
+        'non_ego_linear_cpa_min_m':best if np.isfinite(best) else None,
+        'non_ego_linear_cpa_time_s':tbest,
         'neighbor_indices':neigh.tolist(),'nearby_count':len(neigh),
         'nearest_m':float(np.min(dist[neigh])),
         'radial_ttc_s':float(np.min(ttc)) if np.isfinite(ttc).any() else None,
@@ -220,27 +234,37 @@ def verify_shard_inventory(shards, split='validation', expected=150):
 
 
 
-def build_cohort(root,output,split='validation',max_shards=4,max_records_per_shard=350,keep_random=120,keep_interactive=120,salt='womd-blind-20261012',data_format='auto',exclude_ids=None,require_complete_split=False,keep_chain=0,keep_crossing=0):
+def build_cohort(root,output,split='validation',max_shards=4,max_records_per_shard=350,keep_random=120,keep_interactive=120,salt='womd-blind-20261012',data_format='auto',exclude_ids=None,require_complete_split=False,keep_chain=0,keep_crossing=0,keep_cpa=0,max_neighbors=10,neighbor_radius=50.0,holdout_fraction=0.0,expected_shards=None):
     try:
         import tensorflow as tf
     except ImportError as e:
         raise RuntimeError('Install tensorflow-cpu in a separate data extraction environment: pip install tensorflow-cpu') from e
+    if split=='testing':
+        raise ValueError('WOMD testing hides the 8-second observed future; use validation/training for response calibration. Do not fabricate future labels.')
+    if not 0.0<=holdout_fraction<1.0:raise ValueError('holdout_fraction must be in [0,1)')
+    if max_neighbors<2 or neighbor_radius<=0:raise ValueError('Invalid neighbor selection')
     output=Path(output); output.mkdir(parents=True,exist_ok=True)
+    if any(output.glob('*.npz')):
+        raise FileExistsError('Found stale NPZ output; use a new EICDRR_FULL_ROOT for a clean scan')
+    if (output/'cohort_manifest.json').exists():
+        raise FileExistsError('Refuse to overwrite existing cohort_manifest.json: '+str(output))
     shards,record_format=locate_shards(root,split,max_shards,data_format)
-    coverage={'complete':False,'expected_shards':150 if split=='validation' else 1000,
+    expected=(expected_shards if expected_shards is not None else (150 if split=='validation' else 1000))
+    coverage={'complete':False,'expected_shards':expected,
               'actual_shards':len(shards),'reason':'partial_or_not_audited'}
     if require_complete_split:
         if max_records_per_shard:raise ValueError('Complete scan requires max_records_per_shard=0')
         if max_shards:raise ValueError('Complete scan requires max_shards=0')
         if record_format!='tfexample':raise ValueError('Complete scan requested for tfexample only')
-        coverage=verify_shard_inventory(shards,split,150 if split=='validation' else 1000)
+        coverage=verify_shard_inventory(shards,split,expected)
     if record_format=='scenario':
         try:
             from waymo_open_dataset.protos import scenario_pb2
         except ImportError as e:
             raise RuntimeError('Scenario proto shards selected, but waymo_open_dataset.protos.scenario_pb2 unavailable. Install an officially compatible Waymo Open Dataset package, or use tf_example shards.') from e
     excluded=set(exclude_ids or ())
-    selected={'blind':[],'interaction':[],'braking_chain':[],'crossing':[]}
+    selected={'blind':[],'interaction':[],'braking_chain':[],'crossing':[],'non_ego_linear_cpa':[]}
+    if holdout_fraction: selected['blind_holdout']=[]
     counts={'examined':0,'usable':0,'bad_records':0,'past_only_interactive':0,'excluded_overlap':0}
     errors=[]
     per_shard_counts=[]
@@ -265,19 +289,34 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
                 if s['scenario_id'] in excluded:
                     counts['excluded_overlap']+=1
                     continue
-                f=scene_features(s)
+                f=scene_features(s,radius=neighbor_radius,max_neigh=max_neighbors)
                 if f is None:continue
                 counts['usable']+=1
                 if f['past_only_interactive']:counts['past_only_interactive']+=1
-                item=(s,f,str(shard.name),j)
-                for cohort_name,k in [('blind',keep_random),('interaction',keep_interactive if f['past_only_interactive'] else 0),
-                         ('braking_chain',keep_chain if f['scenario_strata']['braking_chain'] else 0),
-                         ('crossing',keep_crossing if f['scenario_strata']['crossing'] else 0)]:
+                # Freeze an ID-level holdout BEFORE seeing future outcomes.  Holdout
+                # IDs cannot enter interaction/crossing/chain development strata.
+                in_holdout=(holdout_fraction>0.0 and
+                    (_stable_hash('split-v2|'+salt+'|'+s['scenario_id'])%10**12)/10**12<holdout_fraction)
+                choices=[('blind_holdout',keep_random if in_holdout else 0)] if in_holdout else [
+                    ('blind',keep_random),
+                    ('interaction',keep_interactive if f['past_only_interactive'] else 0),
+                    ('braking_chain',keep_chain if f['scenario_strata']['braking_chain'] else 0),
+                    ('crossing',keep_crossing if f['scenario_strata']['crossing'] else 0),
+                    ('non_ego_linear_cpa',keep_cpa if f['scenario_strata']['non_ego_linear_cpa'] else 0)]
+                compact_item=None
+                for cohort_name,k in choices:
                     if k<=0:continue
                     h=_stable_hash(salt+'|'+cohort_name+'|'+s['scenario_id'])
-                    arr=selected[cohort_name];tup=(-h,s['scenario_id'],item)
+                    arr=selected[cohort_name]
+                    if len(arr)>=k and h>=-arr[0][0]:continue
+                    if compact_item is None:
+                        # Crucial for 150 shards: never retain the 128-actor
+                        # state tensor in a reservoir of thousands of entries.
+                        compact_item=(compact_selected_state(s,f),f,str(shard.name),j,
+                                      int(s['ego_index']),observational_metrics(s,f['neighbor_indices']))
+                    tup=(-h,s['scenario_id'],compact_item)
                     if len(arr)<k:heapq.heappush(arr,tup)
-                    elif h < -arr[0][0]:heapq.heapreplace(arr,tup)
+                    else:heapq.heapreplace(arr,tup)
             except Exception as e:
                 counts['bad_records']+=1
                 if len(errors)<10: errors.append({'shard':shard.name,'index':j,'error':str(e)})
@@ -285,6 +324,9 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
         print(f'[native_womd] {len(per_shard_counts)}/{len(shards)} {shard.name}: {counts["examined"]} total records',flush=True)
     if counts['examined'] and counts['bad_records'] > 0.05*counts['examined']:
         raise ValueError(f'{record_format} decoding failures {counts["bad_records"]}/{counts["examined"]}; inspect schema: {errors[:3]}')
+    coverage['record_iteration_uncapped']=max_records_per_shard==0
+    coverage['bad_decoded_records']=counts['bad_records']
+    coverage['decode_integrity_pass']=counts['bad_records']==0
     if not counts['usable']:
         raise ValueError('No usable scenes from raw TFExample records. Check WOMD version and feature schema.')
     merged={}
@@ -294,24 +336,29 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
             merged[sid]['cohorts'].append(mode)
     entries=[]
     for sid,rec in sorted(merged.items()):
-        s,f,source,record_index=rec['item']
+        arrays,f,source,record_index,source_ego_idx,observed=rec['item']
         # CRITICAL: raw WOMD orders the SDC arbitrarily.  Preserve the
         # explicit selection: ego at local index zero, then past/current-only
         # selected vehicle neighbors.  Never set ego_index=0 on unpermuted
         # full-scene arrays; that silently simulates the wrong actor.
-        arrays=compact_selected_state(s,f)
         np.savez_compressed(output/f'{sid}.npz',**{
             k:v for k,v in arrays.items() if k!='scenario_id'})
         entries.append({'scenario_id':sid,'file':f'{sid}.npz','source_shard':source,
-            'cohorts':rec['cohorts'],'source_record_index':int(record_index),
-            'source_ego_index':int(s['ego_index']),
-            'selected_source_indices':[int(s['ego_index'])]+[int(i) for i in f['neighbor_indices']],
+            'cohorts':rec['cohorts'],
+            'evaluation_partition':'sealed_holdout' if 'blind_holdout' in rec['cohorts'] else 'development',
+            'source_record_index':int(record_index),
+            'source_ego_index':int(source_ego_idx),
+            'selected_source_indices':[int(source_ego_idx)]+[int(i) for i in f['neighbor_indices']],
             'features_from_current':f,
-            'observed_future_diagnostic':observational_metrics(s,f['neighbor_indices'])})
+            'observed_future_diagnostic':observed})
     result={'status':'OBSERVATIONAL_SELECTION_BLIND_NOT_COUNTERFACTUAL',
         'split':split,'source_format':record_format,'raw_womd_root':str(root),'data_root':str(output),'salt':salt,
         'shards_scanned':[str(s) for s in shards],'max_records_per_shard':max_records_per_shard,
         'coverage':coverage,'per_shard_counts':per_shard_counts,
+        'sampling_parameters':{'max_neighbors':max_neighbors,'neighbor_radius_m':neighbor_radius,
+            'holdout_fraction':holdout_fraction,'keep_random_per_partition':keep_random,
+            'keep_interactive':keep_interactive,'keep_chain':keep_chain,'keep_crossing':keep_crossing,
+            'keep_cpa':keep_cpa},
         'excluded_scenario_id_count':len(excluded),
         'counts':counts,'selection':'SHA256 minimum-hash reservoir within visited records; interaction stratum uses CURRENT only; cohort is not representative of entire WOMD unless full shards scanned',
         'entries':entries,'errors':errors}
@@ -342,15 +389,20 @@ def main():
     p.add_argument('--split',choices=['training','validation'],default='validation')
     p.add_argument('--format',choices=['auto','tfexample','scenario'],default='auto')
     p.add_argument('--max-shards',type=int,default=4)
+    p.add_argument('--expected-shards',type=int,help='Override only for tiny synthetic tests; normal validation=150, training=1000')
     p.add_argument('--require-complete-split',action='store_true')
     p.add_argument('--max-records-per-shard',type=int,default=350)
     p.add_argument('--keep-random',type=int,default=120)
     p.add_argument('--keep-interactive',type=int,default=120)
     p.add_argument('--keep-chain',type=int,default=0)
     p.add_argument('--keep-crossing',type=int,default=0)
+    p.add_argument('--keep-cpa',type=int,default=0,help='Current-only non-ego near-CPA stratum, not an outcome label')
+    p.add_argument('--max-neighbors',type=int,default=10)
+    p.add_argument('--neighbor-radius',type=float,default=50.)
+    p.add_argument('--holdout-fraction',type=float,default=0.)
     p.add_argument('--exclude-ids',type=Path,help='Optional previous dev/Compact IDs, for anti-leakage selection')
     args=p.parse_args()
-    r=build_cohort(args.raw_root,args.output,args.split,args.max_shards,args.max_records_per_shard,args.keep_random,args.keep_interactive,data_format=args.format,exclude_ids=load_exclusion_file(args.exclude_ids),require_complete_split=args.require_complete_split,keep_chain=args.keep_chain,keep_crossing=args.keep_crossing)
+    r=build_cohort(args.raw_root,args.output,args.split,args.max_shards,args.max_records_per_shard,args.keep_random,args.keep_interactive,data_format=args.format,exclude_ids=load_exclusion_file(args.exclude_ids),require_complete_split=args.require_complete_split,keep_chain=args.keep_chain,keep_crossing=args.keep_crossing,keep_cpa=args.keep_cpa,max_neighbors=args.max_neighbors,neighbor_radius=args.neighbor_radius,holdout_fraction=args.holdout_fraction,expected_shards=args.expected_shards)
     print(json.dumps({'counts':r['counts'],'selected':len(r['entries']),'manifest':str(args.output/'cohort_manifest.json'),'coverage':r['coverage']},indent=2))
 
 if __name__=='__main__':main()

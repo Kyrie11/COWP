@@ -111,9 +111,10 @@ def analyze_scene(path, *, steps=20, max_agents=6, controls=CONTROLS,
     return out
 
 
-def run(cohort,output,*,max_scenes=0,max_agents=6,steps=20):
+def run(cohort,output,*,max_scenes=0,max_agents=6,steps=20,partition="all"):
     cohort=Path(cohort);manifest=json.loads((cohort/'cohort_manifest.json').read_text())
-    entries=sorted(manifest['entries'],key=lambda e:hashlib.sha256(('h1-v2|'+e['scenario_id']).encode()).hexdigest())
+    pool=[e for e in manifest['entries'] if partition=='all' or e.get('evaluation_partition','development')==partition]
+    entries=sorted(pool,key=lambda e:hashlib.sha256(('h1-v2|'+e['scenario_id']).encode()).hexdigest())
     if max_scenes:entries=entries[:max_scenes]
     rows=[];errors=[]
     for k,e in enumerate(entries,1):
@@ -133,6 +134,7 @@ def run(cohort,output,*,max_scenes=0,max_agents=6,steps=20):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--cohort',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--max-scenes',type=int,default=0)
+    p.add_argument('--partition',choices=('all','development','sealed_holdout'),default='all')
     p.add_argument('--max-agents',type=int,default=6);p.add_argument('--steps',type=int,default=20)
-    a=p.parse_args();print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,max_agents=a.max_agents,steps=a.steps),indent=2))
+    a=p.parse_args();print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,max_agents=a.max_agents,steps=a.steps,partition=a.partition),indent=2))
 if __name__=='__main__':main()

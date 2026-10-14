@@ -33,6 +33,18 @@ def make_profiles(steps=20,base_accels=(-1.0,0.0,1.0), amplitudes=(1.0,2.0)):
     return out
 
 
+def _near_pair_min_center(paths,valid,ego,range_m=15.0):
+    """Minimum center distances: an exploratory sensitivity proxy, NOT collision probability."""
+    out={}
+    indices=[i for i,v in enumerate(valid) if v and i!=ego]
+    for j,i in enumerate(indices):
+        for k in indices[j+1:]:
+            dist=np.linalg.norm(paths[1:,i]-paths[1:,k],axis=1)
+            mind=float(np.min(dist))
+            if mind<=range_m:out[f'{i}-{k}']=mind
+    return out
+
+
 def _pairs(raw):
     return {tuple(sorted(map(int,p))) for p in raw['non_ego_collision_pairs']}
 
@@ -67,6 +79,8 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
             ghost=simulate(state,L,W,valid,ego,ids,p['controls'],regime,steps=steps,
                            ghost_ego_to_others=True,responder_delay_steps=delay)
             actual_pairs=_pairs(raw);ghost_pairs=_pairs(ghost)
+            near_dist=_near_pair_min_center(raw['paths_xy'],valid,ego)
+            ghost_near_dist=_near_pair_min_center(ghost['paths_xy'],valid,ego)
             ego_heading=state[ego,4]
             ego_dir=np.array([math.cos(ego_heading),math.sin(ego_heading)])
             progress=float((raw['paths_xy'][-1,ego]-raw['paths_xy'][0,ego])@ego_dir)
@@ -79,6 +93,9 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
                 'ego_any_collision':bool(raw['ego_collision']),
                 'any_collision':bool(raw['collision']),
                 'near_term_ego_clear':bool(raw['near_term_ego_clear']),
+                'full_horizon_ego_clear':not bool(raw['ego_collision']),
+                'near_pair_min_center_m':near_dist,
+                'ghost_near_pair_min_center_m':ghost_near_dist,
                 'non_ego_pairs':[list(pair) for pair in sorted(actual_pairs)],
                 'ghost_non_ego_pairs':[list(pair) for pair in sorted(ghost_pairs)],
                 'ego_response_mediated_pairs':[list(pair) for pair in sorted(actual_pairs-ghost_pairs)],
@@ -88,7 +105,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
             }
         # Pre-declared counterfactual pairs within SAME base acceleration:
         # opposite pulse signs and equal amplitude. Compare both directions.
-        matches=[];nonmatched=[];burden_matches=[]
+        matches=[];nonmatched=[];burden_matches=[];near_pair_matches=[]
         for base in base_accels:
             for amp in amplitudes:
                 pminus=f'b{base:+g}_cos{amp:g}_-1'
@@ -100,7 +117,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
                     # unrelated collision elsewhere in the scene.
                     new_pairs={tuple(p) for p in bad['ego_response_mediated_pairs']}
                     delta=good['ego_route_tangent_progress_proxy_m']-bad['ego_route_tangent_progress_proxy_m']
-                    if new_pairs and bad['near_term_ego_clear'] and not good['any_collision']:
+                    if new_pairs and bad['full_horizon_ego_clear'] and not good['any_collision']:
                         item={'bad_profile':b_id,'alternative_profile':g_id,
                               'pair_ids':[list(p) for p in sorted(new_pairs)],
                               'progress_delta_m':float(delta),
@@ -109,8 +126,26 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
                         else:nonmatched.append(item)
                     # Continuous RESPONSE-BURDEN proxy, separately from H2;
                     # test BOTH directions of every frozen action pair.
-                    if abs(delta)>tolerance or not bad['near_term_ego_clear'] or good['any_collision']:
+                    if abs(delta)>tolerance or not bad['full_horizon_ego_clear'] or good['any_collision']:
                         continue
+                    # Exploratory H2 sensitivity: the same non-ego pair becomes
+                    # closer under one matched ego action; a ghost-ego contrast
+                    # must also show that leader-response coupling mattered.
+                    # This is NOT a validated physical collision or human effect.
+                    for key,d_bad in bad['near_pair_min_center_m'].items():
+                        d_good=good['near_pair_min_center_m'].get(key,float('inf'))
+                        d_ghost=bad['ghost_near_pair_min_center_m'].get(key,float('inf'))
+                        if d_bad<=8.0 and d_good-d_bad>=1.5 and d_ghost-d_bad>=1.0:
+                            a,b=map(int,key.split('-'))
+                            near_pair_matches.append({
+                                'bad_profile':b_id,'alternative_profile':g_id,
+                                'pair_local_indices':[a,b],
+                                'pair_object_ids':[int(ids[a]),int(ids[b])],
+                                'bad_pair_min_center_m':round(d_bad,4),
+                                'alternative_pair_min_center_m':round(d_good,4),
+                                'ghost_pair_min_center_m':round(d_ghost,4),
+                                'progress_delta_m':float(delta),
+                                'status':'EXPLORATORY_DISTANCE_PROXY_NOT_H2'})
                     for i,bval in bad['per_agent_extra_braking_vs_ghost_mps2'].items():
                         gval=good['per_agent_extra_braking_vs_ghost_mps2'][i]
                         burden_delta=bval-gval
@@ -122,6 +157,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
         row['regimes'][regime]={'actions':scored,'strict_matches':matches,
                                 'unmatched_pairs':nonmatched,
                                 'matched_burden_proxy_cases':burden_matches,
+                                'near_pair_proxy_cases':near_pair_matches,
                                 'n_strict_matches':len(matches)}
     keys=lambda k:{(x['bad_profile'],x['alternative_profile'],tuple(map(tuple,x['pair_ids'])))
                     for x in row['regimes'][k]['strict_matches']}
@@ -129,6 +165,12 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
     burden_keys=lambda k:{(x['bad_profile'],x['alternative_profile'],x['agent_id_local'])
                             for x in row['regimes'][k]['matched_burden_proxy_cases']}
     burden_shared=set.intersection(*(burden_keys(r) for r in REGIMES))
+    near_keys=lambda k:{(x['bad_profile'],x['alternative_profile'],tuple(x['pair_object_ids']))
+                       for x in row['regimes'][k]['near_pair_proxy_cases']}
+    common_near=set.intersection(*(near_keys(r) for r in REGIMES))
+    row['all_three_regimes_shared_near_pair_keys']=[
+        {'bad_profile':b,'alternative_profile':g,'pair_object_ids':list(ids)}
+        for b,g,ids in sorted(common_near)]
     row['all_three_regimes_shared_burden_proxy_keys']=[
         {'bad_profile':b,'alternative_profile':g,'agent_id_local':i}
         for b,g,i in sorted(burden_shared)]
@@ -139,9 +181,11 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
 
 
 def run(cohort,output,*,max_scenes=0,steps=20,tolerance=3.,delay=0,
-        base_accels=(-1.,0.,1.),amplitudes=(1.,2.),selection_order='hash',scenario_ids=None):
+        base_accels=(-1.,0.,1.),amplitudes=(1.,2.),selection_order='hash',scenario_ids=None,partition='all'):
     cohort=Path(cohort);manifest=json.loads((cohort/'cohort_manifest.json').read_text())
     entries=manifest['entries']
+    if partition!='all':
+        entries=[e for e in entries if e.get('evaluation_partition','development')==partition]
     if selection_order=='hash':
         entries=sorted(entries,key=lambda e:hashlib.sha256(('matched-proxy-v1|'+e['scenario_id']).encode()).hexdigest())
     elif selection_order!='manifest':raise ValueError('selection_order must be hash or manifest')
@@ -162,10 +206,13 @@ def run(cohort,output,*,max_scenes=0,steps=20,tolerance=3.,delay=0,
     valid=[x for x in rows if x.get('eligible')]
     summary={'scientific_claim_allowed':False,'attempted':len(entries),'completed':len(rows),
              'eligible':len(valid),'errors':len(errors),'selection_order':selection_order,
+             'evaluation_partition':partition,
              'n_regime_matched':{r:sum(bool(x['regimes'][r]['strict_matches']) for x in valid) for r in REGIMES},
              'n_shared_three_regime':sum(bool(x['all_three_regimes_shared_matched_pair_keys']) for x in valid),
              'n_matched_burden_proxy':{r:sum(bool(x['regimes'][r]['matched_burden_proxy_cases']) for x in valid) for r in REGIMES},
              'n_shared_three_regime_burden_proxy':sum(bool(x['all_three_regimes_shared_burden_proxy_keys']) for x in valid),
+             'n_near_pair_proxy':{r:sum(bool(x['regimes'][r]['near_pair_proxy_cases']) for x in valid) for r in REGIMES},
+             'n_shared_near_pair_proxy':sum(bool(x.get('all_three_regimes_shared_near_pair_keys')) for x in valid),
              'interpretation':'finite IDM-family counterfactual only; not real-human do-effect or Waymax; route-tangent approximate',
              'protocol':{'steps':steps,'dt':DT,'tolerance_m':tolerance,'base_accels':list(base_accels),
                          'amplitudes':list(amplitudes),'responder_delay_steps':delay,'burden_contrast_threshold_mps2':1.0}}
@@ -184,10 +231,11 @@ def main():
     p.add_argument('--progress-tolerance',type=float,default=3.)
     p.add_argument('--responder-delay-steps',type=int,default=0)
     p.add_argument('--selection-order',choices=('hash','manifest'),default='hash')
+    p.add_argument('--partition',choices=('all','development','sealed_holdout'),default='all')
     p.add_argument('--scenario-ids-file',type=Path)
     a=p.parse_args(); ids=None
     if a.scenario_ids_file:ids=[x.strip().split()[0] for x in a.scenario_ids_file.read_text().splitlines() if x.strip()]
     print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,steps=a.steps,
           tolerance=a.progress_tolerance,delay=a.responder_delay_steps,selection_order=a.selection_order,
-          scenario_ids=ids),indent=2))
+          scenario_ids=ids,partition=a.partition),indent=2))
 if __name__=='__main__':main()

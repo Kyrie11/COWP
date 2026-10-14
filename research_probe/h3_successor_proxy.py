@@ -61,9 +61,10 @@ def analyze_scene(path,*,prefix_steps=5,total_steps=20,progress_tolerance=3.):
     return row
 
 
-def run(cohort,output,*,max_scenes=0,prefix_steps=5,total_steps=20,tolerance=3.):
+def run(cohort,output,*,max_scenes=0,prefix_steps=5,total_steps=20,tolerance=3.,partition="all"):
     cohort=Path(cohort);m=json.loads((cohort/'cohort_manifest.json').read_text())
-    entries=sorted(m['entries'],key=lambda e:hashlib.sha256(('h3-v1|'+e['scenario_id']).encode()).hexdigest())
+    pool=[e for e in m['entries'] if partition=='all' or e.get('evaluation_partition','development')==partition]
+    entries=sorted(pool,key=lambda e:hashlib.sha256(('h3-v1|'+e['scenario_id']).encode()).hexdigest())
     if max_scenes:entries=entries[:max_scenes]
     rows=[];errors=[]
     for k,e in enumerate(entries,1):
@@ -82,6 +83,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--cohort',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--max-scenes',type=int,default=0)
     p.add_argument('--prefix-steps',type=int,default=5);p.add_argument('--total-steps',type=int,default=20)
+    p.add_argument('--partition',choices=('all','development','sealed_holdout'),default='all')
     p.add_argument('--progress-tolerance',type=float,default=3.)
-    a=p.parse_args();print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,prefix_steps=a.prefix_steps,total_steps=a.total_steps,tolerance=a.progress_tolerance),indent=2))
+    a=p.parse_args();print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,prefix_steps=a.prefix_steps,total_steps=a.total_steps,tolerance=a.progress_tolerance,partition=a.partition),indent=2))
 if __name__=='__main__':main()
