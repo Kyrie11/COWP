@@ -90,6 +90,12 @@ def _load_waymax_state(shard, npz_ids, sdc_xy, *, max_num_objects=128,
     is_sdc = np.asarray(state.object_metadata.is_sdc).reshape(-1).astype(bool)
     if is_sdc.sum() != 1:
         raise RuntimeError('No unique SDC after Waymax parsing')
+    # The stored local cohort must contain the original SDC at local index 0.
+    # Checking just XY can fail to catch an ego-index permutation when two cars
+    # are near each other or when a prior writer incorrectly assumed SDC=0.
+    source_sdc_id=int(ids[np.flatnonzero(is_sdc)[0]])
+    if source_sdc_id!=int(npz_ids[0]):
+        raise RuntimeError(f'COHORT IDENTITY FAILURE: NPZ ego ID {npz_ids[0]} != raw/Waymax SDC ID {source_sdc_id}')
     # SDC ID could be represented in int32 by Waymax; use ID from raw
     # record for exact identity and xy location for geometry cross-check.
     xy, _, _, _, _, _, _ = _extract(state, [int(ids[np.flatnonzero(is_sdc)[0]])])

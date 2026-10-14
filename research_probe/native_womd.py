@@ -294,16 +294,20 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
             merged[sid]['cohorts'].append(mode)
     entries=[]
     for sid,rec in sorted(merged.items()):
-        s,f,source,record_index=rec['item']; ix=list(range(len(s['agent_ids'])))
-        arrays={f'{period}_{field}':s[f'{period}_{field}'][ix].astype(np.float32)
-              for period in ('past','current','future') for field in STATE_ATTRS}
-        arrays.update({'agent_ids':np.asarray(s['agent_ids'][ix],dtype=np.int64),
-                       'types':np.asarray(s['types'][ix],dtype=np.int16),
-                       'ego_index':np.asarray(0,dtype=np.int16)})
-        np.savez_compressed(output/f'{sid}.npz',**arrays)
+        s,f,source,record_index=rec['item']
+        # CRITICAL: raw WOMD orders the SDC arbitrarily.  Preserve the
+        # explicit selection: ego at local index zero, then past/current-only
+        # selected vehicle neighbors.  Never set ego_index=0 on unpermuted
+        # full-scene arrays; that silently simulates the wrong actor.
+        arrays=compact_selected_state(s,f)
+        np.savez_compressed(output/f'{sid}.npz',**{
+            k:v for k,v in arrays.items() if k!='scenario_id'})
         entries.append({'scenario_id':sid,'file':f'{sid}.npz','source_shard':source,
-            'cohorts':rec['cohorts'],'source_record_index':int(record_index),'features_from_current':f,
-            'observed_future_diagnostic':observational_metrics(s,ix[1:])})
+            'cohorts':rec['cohorts'],'source_record_index':int(record_index),
+            'source_ego_index':int(s['ego_index']),
+            'selected_source_indices':[int(s['ego_index'])]+[int(i) for i in f['neighbor_indices']],
+            'features_from_current':f,
+            'observed_future_diagnostic':observational_metrics(s,f['neighbor_indices'])})
     result={'status':'OBSERVATIONAL_SELECTION_BLIND_NOT_COUNTERFACTUAL',
         'split':split,'source_format':record_format,'raw_womd_root':str(root),'data_root':str(output),'salt':salt,
         'shards_scanned':[str(s) for s in shards],'max_records_per_shard':max_records_per_shard,
