@@ -120,6 +120,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
                     if new_pairs and bad['full_horizon_ego_clear'] and not good['any_collision']:
                         item={'bad_profile':b_id,'alternative_profile':g_id,
                               'pair_ids':[list(p) for p in sorted(new_pairs)],
+                              'pair_object_ids':[list(sorted((int(ids[a]),int(ids[b])))) for a,b in sorted(new_pairs)],
                               'progress_delta_m':float(delta),
                               'ego_response_mediated_within_proxy':True}
                         if abs(delta)<=tolerance:matches.append(item)
@@ -159,7 +160,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
                                 'matched_burden_proxy_cases':burden_matches,
                                 'near_pair_proxy_cases':near_pair_matches,
                                 'n_strict_matches':len(matches)}
-    keys=lambda k:{(x['bad_profile'],x['alternative_profile'],tuple(map(tuple,x['pair_ids'])))
+    keys=lambda k:{(x['bad_profile'],x['alternative_profile'],tuple(map(tuple,x.get('pair_object_ids',x['pair_ids']))))
                     for x in row['regimes'][k]['strict_matches']}
     common=set.intersection(*(keys(r) for r in REGIMES))
     burden_keys=lambda k:{(x['bad_profile'],x['alternative_profile'],x['agent_id_local'])

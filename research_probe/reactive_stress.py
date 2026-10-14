@@ -71,7 +71,7 @@ def _params(regime,agent_key):
     raise ValueError(regime)
 
 
-def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,ghost_ego_to_others=False,responder_delay_steps=0):
+def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,ghost_ego_to_others=False,responder_delay_steps=0,logged_ego_path=None):
     ego_controls=np.asarray(ego_accel,dtype=float)
     if ego_controls.ndim==0:
         ego_controls=np.full(steps,float(ego_controls))
@@ -82,6 +82,12 @@ def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,gho
     # velocity norm is used under vehicle heading; large mismatch => exclude before science claims
     vel=np.linalg.norm(state[:,2:4],axis=1).astype(float)
     n=len(pos);initial=_pair_conflicts(pos,yaw,length,width,valid)
+    if logged_ego_path is not None:
+        logged_ego_path=np.asarray(logged_ego_path,dtype=float)
+        if logged_ego_path.shape!=(steps+1,2) or not np.isfinite(logged_ego_path).all():
+            raise ValueError('logged_ego_path must be finite [(steps+1),2]')
+        if np.linalg.norm(logged_ego_path[0]-pos[ego])>0.2:
+            raise ValueError('logged ego path initial pose mismatch')
     if not isinstance(responder_delay_steps,int) or responder_delay_steps<0:
         raise ValueError('responder_delay_steps must be non-negative integer')
     obs_history=[]
@@ -98,6 +104,14 @@ def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,gho
         unit=np.column_stack([np.cos(yaw),np.sin(yaw)])
         pos=pos+(vel+next_v)[:,None]*unit*DT*.5
         vel=next_v
+        if logged_ego_path is not None:
+            # Observational response-model fit ONLY: replay the logged ego;
+            # this is not a counterfactual ego planner action.
+            displacement=logged_ego_path[t+1]-logged_ego_path[t]
+            pos[ego]=logged_ego_path[t+1]
+            vel[ego]=float(np.linalg.norm(displacement)/DT)
+            if vel[ego]>0.2:
+                yaw[ego]=float(math.atan2(displacement[1],displacement[0]))
         paths[t+1]=pos
         for a,b in _pair_conflicts(pos,yaw,length,width,valid):
             collision_steps.append(t+1)

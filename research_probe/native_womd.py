@@ -201,7 +201,8 @@ def locate_shards(root,split,max_shards,data_format="auto"):
     # WOMD can be stored as .../tf_example/validation/*.tfrecord-*.
     files=sorted(p for p in root.rglob('*') if p.is_file() and
         ('tfrecord' in p.name.lower() or p.suffix.lower() in ('.tfrecord','.record')) and
-        any(part.lower()==split.lower() or part.lower().startswith((split.lower()+'_',split.lower()+'.',split.lower()+'-')) for part in p.parts))
+        (any(part.lower()==split.lower() for part in p.parts[:-1]) or
+         p.name.lower().startswith(split.lower()+'_tfexample.tfrecord-')))
     if not files:raise FileNotFoundError(f'No {split} TFRecord shards in {root}; ensure tf_example (not scenario proto).')
     examples=[p for p in files if any('tf_example' in part.lower() or 'tfexample' in part.lower() for part in p.parts)]
     proto=[p for p in files if any(part.lower() in ('scenario','scenarios','scenario_proto') for part in p.parts)]
@@ -249,7 +250,7 @@ def build_cohort(root,output,split='validation',max_shards=4,max_records_per_sha
     if (output/'cohort_manifest.json').exists():
         raise FileExistsError('Refuse to overwrite existing cohort_manifest.json: '+str(output))
     shards,record_format=locate_shards(root,split,max_shards,data_format)
-    expected=(expected_shards if expected_shards is not None else (150 if split=='validation' else 1000))
+    expected=(expected_shards if expected_shards is not None else (150 if split in ('validation','validation_interactive') else 1000))
     coverage={'complete':False,'expected_shards':expected,
               'actual_shards':len(shards),'reason':'partial_or_not_audited'}
     if require_complete_split:
@@ -386,7 +387,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--raw-root',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--split',choices=['training','validation'],default='validation')
+    p.add_argument('--split',choices=['training','validation','validation_interactive'],default='validation')
     p.add_argument('--format',choices=['auto','tfexample','scenario'],default='auto')
     p.add_argument('--max-shards',type=int,default=4)
     p.add_argument('--expected-shards',type=int,help='Override only for tiny synthetic tests; normal validation=150, training=1000')

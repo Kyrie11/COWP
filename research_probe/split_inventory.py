@@ -8,7 +8,7 @@ import argparse, json, re
 from pathlib import Path
 from .native_womd import locate_shards
 
-COUNTS={'validation':150,'training':1000,'testing':150}
+COUNTS={'validation':150,'validation_interactive':150,'training':1000,'testing':150}
 
 
 def inventory(root,split='validation',expected=None):
