@@ -104,7 +104,7 @@ def _load_waymax_state(shard, npz_ids, sdc_xy, *, max_num_objects=128,
     return state
 
 
-def _rollout(scenario, targets, *, ego_desired_vel, regime, steps):
+def _rollout(scenario, targets, *, ego_desired_vel, regime, steps, validate_map=False):
     from waymax import env,config,dynamics,agents
     # StateDynamics exactly matches IDMRoutePolicy actor action semantics.
     dynamics_model=dynamics.StateDynamics()
@@ -136,13 +136,29 @@ def _rollout(scenario, targets, *, ego_desired_vel, regime, steps):
     xy0=p[0].copy();pairs=set();ego_pairs=set();initial_speed=speed.copy()
     min_accel=np.full(len(targets),np.inf)
     collisions_early=False;sim_steps=0
-    trace=[]
+    trace=[];road_checked=0;road_failed=0;road_error=None
+    if validate_map:
+        from waymax import metrics as waymax_metrics
+        offroad_metric=waymax_metrics.OffroadMetric()
     for k in range(steps):
         if bool(np.asarray(st.is_done).reshape(-1)[0]):break
         outputs=[actor.select_action({},st,None,None) for actor in actors]
         action=agents.merge_actions(outputs)
         st=environment.step(st,action)
-        p,y,L,W,valid,new_speed,_=_extract(st,targets)
+        p,y,L,W,valid,new_speed,raw_targets=_extract(st,targets)
+        if validate_map:
+            try:
+                metric=offroad_metric.compute(st)
+                value=np.asarray(metric.value).reshape(-1)
+                valid_metric=np.asarray(metric.valid).reshape(-1).astype(bool)
+                ix=raw_targets[0]
+                if valid_metric[ix]:
+                    road_checked+=1
+                    road_failed+=int(float(value[ix])>0.5)
+            except Exception as exc:
+                road_error=type(exc).__name__+': '+str(exc)
+                # Fail closed: do not call a trial map-valid after an exception.
+                break
         min_accel=np.minimum(min_accel,(new_speed-speed)/0.1)
         speed=new_speed
         conflicting=_pair_conflicts(p,y,L,W,valid)
@@ -155,7 +171,11 @@ def _rollout(scenario, targets, *, ego_desired_vel, regime, steps):
                       'non_ego_pairs':[list(x) for x in conflicting if 0 not in x],
                       'ego_pairs':[list(x) for x in conflicting if 0 in x]})
         sim_steps+=1
+    ego_road_valid=(bool(road_checked==sim_steps and road_failed==0 and road_error is None)
+                    if validate_map else None)
     return {'eligible':True,'steps_executed':sim_steps,
+        'ego_road_valid':ego_road_valid,'offroad_checked_steps':road_checked,
+        'offroad_failed_steps':road_failed,'offroad_metric_error':road_error,
         'non_ego_collision_pairs':[list(x) for x in sorted(pairs)],
         'ego_collision_pairs':[list(x) for x in sorted(ego_pairs)],
         'any_collision':bool(pairs or ego_pairs),'ego_collision':bool(ego_pairs),
@@ -174,7 +194,7 @@ def _shard_path(root,entry):
 
 
 def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
-        progress_tolerance=3.,regimes=('cautious','assertive'),scenario_ids=None,partition='all'):
+        progress_tolerance=3.,regimes=('cautious','assertive'),scenario_ids=None,partition='all',validate_map=False):
     cohort=Path(cohort);raw_root=Path(raw_root)
     manifest=json.loads((cohort/'cohort_manifest.json').read_text())
     if manifest.get('source_format')!='tfexample':
@@ -201,13 +221,14 @@ def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
             for regime in regimes:
                 a=[]
                 for vel in velocities:
-                    x=_rollout(scenario,target,ego_desired_vel=vel,regime=regime,steps=steps)
+                    x=_rollout(scenario,target,ego_desired_vel=vel,regime=regime,steps=steps,validate_map=validate_map)
                     x['ego_desired_vel_mps']=vel;a.append(x)
                 cases=[];noninferior=[]
                 for x in a:
                     if not x.get('eligible') or not x['non_ego_collision'] or not x['near_term_ego_clear']:continue
                     for y in a:
                         if y is x or not y.get('eligible') or y['any_collision']:continue
+                        if validate_map and (x['ego_road_valid'] is not True or y['ego_road_valid'] is not True):continue
                         if y['ego_displacement_m']+progress_tolerance<x['ego_displacement_m']:continue
                         contrast=[x['ego_desired_vel_mps'],y['ego_desired_vel_mps']]
                         noninferior.append(contrast)
@@ -222,7 +243,7 @@ def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
             errors.append({'scenario_id':sid,'error':type(ex).__name__+': '+str(ex)})
     result={'summary':{'attempted':len(entries[:max_scenes or None]),'complete':len(rows),
               'errors':len(errors),'any_all_regime_matched':sum(bool(r['all_regimes_matched_pairs']) for r in rows),
-              'scientific_claim_allowed':False,
+              'scientific_claim_allowed':False,'validate_map':validate_map,
               'limitations':['IDMRoutePolicy follows logged spatial routes','Not independently validated learned-human reaction',
                 'Non-vehicle actors are log experts','Descriptive Euclidean ego displacement only',
                 'Single verified 1.3.1 TFExample record; no reproduced GameFormer or RA-CBF']},'rows':rows,'errors':errors}
@@ -238,13 +259,14 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--max-scenes',type=int,default=12)
     p.add_argument('--partition',choices=('all','development','sealed_holdout'),default='all')
-    p.add_argument('--steps',type=int,default=40)
     p.add_argument('--ego-speeds',type=float,nargs='+',default=[6.,12.,18.])
+    p.add_argument('--steps',type=int,default=40,help='Waymax uses 0.1s/step: 40=4s, 80=8s')
     p.add_argument('--progress-tolerance',type=float,default=3.)
+    p.add_argument('--validate-map',action='store_true',help='Run Waymax OffroadMetric each step and fail closed')
     p.add_argument('--scenario-ids-file',type=Path,default=None,
                    help='Optional pre-screened IDs for DISCOVERY rollout only; never claim population incidence')
     a=p.parse_args()
     print(json.dumps(run(a.cohort,a.raw_root,a.output,max_scenes=a.max_scenes,steps=a.steps,
         velocities=tuple(a.ego_speeds),progress_tolerance=a.progress_tolerance,
-        scenario_ids=[x.strip() for x in a.scenario_ids_file.read_text().splitlines() if x.strip()] if a.scenario_ids_file else None,partition=a.partition),indent=2))
+        scenario_ids=[x.strip() for x in a.scenario_ids_file.read_text().splitlines() if x.strip()] if a.scenario_ids_file else None,partition=a.partition,validate_map=a.validate_map),indent=2))
 if __name__=='__main__':main()

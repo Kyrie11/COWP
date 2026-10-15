@@ -62,6 +62,31 @@ def _idm_accel(i,pos,vel,yaw,length,width,valid,params,excluded_leader=None):
     return float(np.clip(free-a*(desired/max(gap,.2))**2,-6.,2.5))
 
 
+def _ttc_gap_rule_accel(i,pos,vel,yaw,length,width,valid,excluded_leader=None):
+    """An independent geometric gap/TTC braking RULE, not a learned human driver.
+
+    This has no IDM free-speed term or desired headway. It retains the same
+    fixed-heading simulator, collision checker, and observation limitations.
+    """
+    h=np.array([math.cos(yaw[i]), math.sin(yaw[i])]);side=np.array([-h[1],h[0]])
+    best=0.0
+    for j in range(len(pos)):
+        if j==i or j==excluded_leader or not valid[j]:continue
+        d=pos[j]-pos[i];along=float(d@h)
+        if along<=0 or abs(float(d@side))>0.5*(width[i]+width[j])+0.85:continue
+        gap=along-0.5*(length[i]+length[j])
+        leader_projected_speed=float(vel[j]*math.cos(yaw[j]-yaw[i]))
+        closing=max(0.,float(vel[i]-leader_projected_speed))
+        ttc=gap/max(closing,1e-6)
+        if gap<=2.0:
+            candidate=-6.0
+        elif closing>0.25 and ttc<3.5:
+            candidate=-(closing*closing)/(2*max(gap-2.0,0.5))
+        else: candidate=0.0
+        best=min(best,candidate)
+    return float(np.clip(best,-6.,0.))
+
+
 def _params(regime,agent_key):
     if regime=='cautious':return (1.1,2.2,1.8,15.)
     if regime=='assertive':return (1.8,3.2,.8,24.)
@@ -98,8 +123,14 @@ def simulate(state,length,width,valid,ego,ids,ego_accel,regime,steps=STEPS,*,gho
         obs_pos,obs_vel=obs_history[max(0,t-responder_delay_steps)]
         for i in range(n):
             if not valid[i]:continue
-            acc[t,i]=float(ego_controls[t]) if i==ego else _idm_accel(i,obs_pos,obs_vel,yaw,length,width,valid,_params(regime,ids[i]),
-                            excluded_leader=ego if ghost_ego_to_others else None)
+            if i==ego:
+                acc[t,i]=float(ego_controls[t])
+            elif regime=='ttc_gap_rule':
+                acc[t,i]=_ttc_gap_rule_accel(i,obs_pos,obs_vel,yaw,length,width,valid,
+                             excluded_leader=ego if ghost_ego_to_others else None)
+            else:
+                acc[t,i]=_idm_accel(i,obs_pos,obs_vel,yaw,length,width,valid,_params(regime,ids[i]),
+                             excluded_leader=ego if ghost_ego_to_others else None)
         next_v=np.clip(vel+acc[t]*DT,0.,37.)
         unit=np.column_stack([np.cos(yaw),np.sin(yaw)])
         pos=pos+(vel+next_v)[:,None]*unit*DT*.5

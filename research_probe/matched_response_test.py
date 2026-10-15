@@ -17,10 +17,16 @@ import numpy as np
 from .reactive_stress import _load_scene,_pair_conflicts,simulate,REGIMES,DT
 
 
-def make_profiles(steps=20,base_accels=(-1.0,0.0,1.0), amplitudes=(1.0,2.0)):
+def make_profiles(steps=20,base_accels=(-1.0,0.0,1.0), amplitudes=(1.0,2.0), pulse_steps=None):
     if steps<8 or steps%2: raise ValueError('even steps>=8 required')
+    pulse_steps = steps if pulse_steps is None else int(pulse_steps)
+    if pulse_steps<8 or pulse_steps>steps or pulse_steps%2: 
+        raise ValueError('pulse_steps must be even, at least 8, and no larger than steps')
     if any(a<=0 for a in amplitudes):raise ValueError('amplitudes must be positive')
-    wave=np.cos(2*np.pi*(np.arange(steps)+0.5)/steps)
+    # FIXED-PREFIX extension: append base acceleration after the same 4s pulse.
+    # Old steps=40 recomputed a slower 8s pulse, so it was NOT the same intervention.
+    wave=np.zeros(steps,dtype=float)
+    wave[:pulse_steps]=np.cos(2*np.pi*(np.arange(pulse_steps)+0.5)/pulse_steps)
     out=[]
     for base in base_accels:
         out.append({'id':f'b{base:+g}_flat','base':float(base),'amplitude':0.0,
@@ -60,16 +66,16 @@ def _eligible(data,state,L,W,valid,ego):
     return None
 
 
-def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0.,1.),amplitudes=(1.,2.)):
+def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0.,1.),amplitudes=(1.,2.),pulse_steps=None):
     path=Path(scene_path)
     data,state,L,W,valid,ego=_load_scene(path)
     ids=data['agent_ids'].tolist()
     why=_eligible(data,state,L,W,valid,ego)
     row={'scenario_id':path.stem,'eligible':why is None,'protocol':'matched_cosine_longitudinal_proxy',
          'independent_model_validation':False,'causal_human_outcome':False,
-         'exclusion_reason':why,'steps':steps,'responder_delay_steps':delay}
+         'exclusion_reason':why,'steps':steps,'pulse_horizon_steps':(steps if pulse_steps is None else pulse_steps),'responder_delay_steps':delay}
     if why:return row
-    profiles=make_profiles(steps,base_accels,amplitudes)
+    profiles=make_profiles(steps,base_accels,amplitudes,pulse_steps=pulse_steps)
     row['profile_controls']={p['id']:[float(x) for x in p['controls']] for p in profiles}
     row['regimes']={}
     for regime in REGIMES:
@@ -182,7 +188,7 @@ def evaluate_scene(scene_path,*,steps=20,tolerance=3.,delay=0,base_accels=(-1.,0
 
 
 def run(cohort,output,*,max_scenes=0,steps=20,tolerance=3.,delay=0,
-        base_accels=(-1.,0.,1.),amplitudes=(1.,2.),selection_order='hash',scenario_ids=None,partition='all'):
+        base_accels=(-1.,0.,1.),amplitudes=(1.,2.),pulse_steps=None,selection_order='hash',scenario_ids=None,partition='all'):
     cohort=Path(cohort);manifest=json.loads((cohort/'cohort_manifest.json').read_text())
     entries=manifest['entries']
     if partition!='all':
@@ -198,7 +204,7 @@ def run(cohort,output,*,max_scenes=0,steps=20,tolerance=3.,delay=0,
     for i,e in enumerate(entries):
         try:
             r=evaluate_scene(cohort/e['file'],steps=steps,tolerance=tolerance,delay=delay,
-                             base_accels=base_accels,amplitudes=amplitudes)
+                             base_accels=base_accels,amplitudes=amplitudes,pulse_steps=pulse_steps)
             # NPZ local actor identity MUST match cohort provenance.
             if r['scenario_id']!=e['scenario_id']:raise RuntimeError('scenario-ID/file mismatch')
             rows.append(r)
@@ -215,7 +221,7 @@ def run(cohort,output,*,max_scenes=0,steps=20,tolerance=3.,delay=0,
              'n_near_pair_proxy':{r:sum(bool(x['regimes'][r]['near_pair_proxy_cases']) for x in valid) for r in REGIMES},
              'n_shared_near_pair_proxy':sum(bool(x.get('all_three_regimes_shared_near_pair_keys')) for x in valid),
              'interpretation':'finite IDM-family counterfactual only; not real-human do-effect or Waymax; route-tangent approximate',
-             'protocol':{'steps':steps,'dt':DT,'tolerance_m':tolerance,'base_accels':list(base_accels),
+             'protocol':{'steps':steps,'pulse_horizon_steps':(steps if pulse_steps is None else pulse_steps),'dt':DT,'tolerance_m':tolerance,'base_accels':list(base_accels),
                          'amplitudes':list(amplitudes),'responder_delay_steps':delay,'burden_contrast_threshold_mps2':1.0}}
     result={'summary':summary,'rows':rows,'errors':errors}
     output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
@@ -229,6 +235,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--max-scenes',type=int,default=0)
     p.add_argument('--steps',type=int,default=20)
+    p.add_argument('--pulse-steps',type=int,default=None,help='Keep first N steps identical when extending horizon; suffix returns to base acceleration')
     p.add_argument('--progress-tolerance',type=float,default=3.)
     p.add_argument('--responder-delay-steps',type=int,default=0)
     p.add_argument('--selection-order',choices=('hash','manifest'),default='hash')
@@ -237,6 +244,6 @@ def main():
     a=p.parse_args(); ids=None
     if a.scenario_ids_file:ids=[x.strip().split()[0] for x in a.scenario_ids_file.read_text().splitlines() if x.strip()]
     print(json.dumps(run(a.cohort,a.output,max_scenes=a.max_scenes,steps=a.steps,
-          tolerance=a.progress_tolerance,delay=a.responder_delay_steps,selection_order=a.selection_order,
+          tolerance=a.progress_tolerance,delay=a.responder_delay_steps,pulse_steps=a.pulse_steps,selection_order=a.selection_order,
           scenario_ids=ids,partition=a.partition),indent=2))
 if __name__=='__main__':main()
