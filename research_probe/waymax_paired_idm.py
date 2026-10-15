@@ -96,19 +96,30 @@ def _load_waymax_state(shard, npz_ids, sdc_xy, *, max_num_objects=128,
     source_sdc_id=int(ids[np.flatnonzero(is_sdc)[0]])
     if source_sdc_id!=int(npz_ids[0]):
         raise RuntimeError(f'COHORT IDENTITY FAILURE: NPZ ego ID {npz_ids[0]} != raw/Waymax SDC ID {source_sdc_id}')
-    # SDC ID could be represented in int32 by Waymax; use ID from raw
-    # record for exact identity and xy location for geometry cross-check.
-    xy, _, _, _, _, _, _ = _extract(state, [int(ids[np.flatnonzero(is_sdc)[0]])])
-    if np.linalg.norm(xy[0] - sdc_xy) > 0.25:
-        raise RuntimeError('Waymax SDC position disagrees with native cohort')
+    # Critical: dataloader state precedes env.reset warmup (init_steps=11).
+    # Never compare its current_sim_trajectory against WOMD current (t=10).
+    # Instead compare the EXACT RAW TFExample current SDC location here, and
+    # the reset simulator location separately inside _rollout below.
+    raw_sdc=np.asarray(ex.features.feature['state/is_sdc'].int64_list.value)
+    raw_xy=np.asarray([
+        ex.features.feature['state/current/x'].float_list.value[int(np.flatnonzero(raw_sdc)[0])],
+        ex.features.feature['state/current/y'].float_list.value[int(np.flatnonzero(raw_sdc)[0])]
+    ],dtype=float)
+    if np.linalg.norm(raw_xy-sdc_xy)>0.25:
+        raise RuntimeError('RAW TFExample SDC current position disagrees with NPZ')
     return state
 
 
-def _rollout(scenario, targets, *, ego_desired_vel, regime, steps, validate_map=False):
+def _rollout(scenario, targets, *, ego_desired_vel, regime, steps, validate_map=False,
+             expected_current_xy=None):
     from waymax import env,config,dynamics,agents
     # StateDynamics exactly matches IDMRoutePolicy actor action semantics.
     dynamics_model=dynamics.StateDynamics()
-    environment=env.MultiAgentEnvironment(
+    # Waymax releases differ: newer public API uses BaseEnvironment.
+    env_cls=getattr(env,'MultiAgentEnvironment',None) or getattr(env,'BaseEnvironment',None)
+    if env_cls is None:
+        raise RuntimeError('Waymax requires env.BaseEnvironment or env.MultiAgentEnvironment')
+    environment=env_cls(
         dynamics_model=dynamics_model,
         config=dataclasses.replace(config.EnvironmentConfig(),
             max_num_objects=len(np.asarray(scenario.object_metadata.ids).reshape(-1)),
@@ -131,6 +142,13 @@ def _rollout(scenario, targets, *, ego_desired_vel, regime, steps, validate_map=
     st=environment.reset(scenario)
     initial=_extract(st,targets)
     p,y,L,W,valid,speed,_=initial
+    # At reset, Waymax should have applied its WOMD 10 past + 1 current
+    # warmup. Do NOT auto-shift states to make this comparison pass.
+    if expected_current_xy is not None:
+        dist=float(np.linalg.norm(p[0]-np.asarray(expected_current_xy,dtype=float)))
+        if dist>0.25:
+            raise RuntimeError('Waymax RESET SDC position differs from WOMD current by '
+                               f'{dist:.3f}m; inspect init_steps/time indexing')
     if _pair_conflicts(p,y,L,W,valid):
         return {'eligible':False,'reason':'initial_oriented_overlap'}
     xy0=p[0].copy();pairs=set();ego_pairs=set();initial_speed=speed.copy()
@@ -221,7 +239,8 @@ def run(cohort,raw_root,output,*,max_scenes=12,steps=40,velocities=(6.,12.,18.),
             for regime in regimes:
                 a=[]
                 for vel in velocities:
-                    x=_rollout(scenario,target,ego_desired_vel=vel,regime=regime,steps=steps,validate_map=validate_map)
+                    x=_rollout(scenario,target,ego_desired_vel=vel,regime=regime,steps=steps,
+                               validate_map=validate_map,expected_current_xy=xy)
                     x['ego_desired_vel_mps']=vel;a.append(x)
                 cases=[];noninferior=[]
                 for x in a:
