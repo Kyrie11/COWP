@@ -2,13 +2,14 @@
 set -euo pipefail
 source "$(dirname "$0")/00_env.sh"
 CASE="${1:?Usage: bash scripts/03_precommit_scenes.sh convoy|cut_in|intersection|support_gap}"
-case "$CASE" in convoy|cut_in|intersection|support_gap) ;; *) exit 2;; esac
+case "$CASE" in convoy|cut_in|intersection|support_gap) ;; *) echo "Unknown case: $CASE" >&2; exit 2;; esac
 mkdir -p "$RIDE_OUTPUT_ROOT/frozen"
-cd "$RIDE_HOME"
 OUT="$RIDE_OUTPUT_ROOT/frozen/${CASE}_anchors.jsonl"
-if [[ -e "$OUT" ]]; then echo "Frozen anchor manifest already exists: $OUT" >&2; exit 3; fi
-python -m research_probe.carla_h2.run_carla \
+if [[ -e "$OUT" ]]; then echo "REFUSING TO OVERWRITE frozen anchors: $OUT" >&2; exit 3; fi
+cd "$RIDE_HOME"
+python -m ride.carla.run \
   --archetype "$CASE" --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --seed "${RIDE_SEED:-17}" \
+  --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
   --manifest-only --no-rendering --output "$OUT"
-echo "Now run external planners on these frozen, OUTCOME-BLIND scene identities."
+echo "Frozen scene locations BEFORE outcome rollouts: $OUT"

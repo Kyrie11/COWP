@@ -67,6 +67,10 @@ def test_support_empty_is_unknown_and_expansion_can_find_one():
               'cruise_mps':9.,'dt':.05}
     base['initial_states']={role:{'xyz':[pos,0.,0.],'speed_mps':9.} for role,pos in
                             (('ego',30),('follower_a',10),('follower_b',-10))}
+    base['trace']=[{'t':0.05,'xy_by_role':{'ego':[30.,0.],'follower_a':[10.,0.],
+        'follower_b':[-10.,0.]}}]
+    base['metrics'].update({'ego_progress_m':1.0,'follower_a_progress_m':1.0,
+                             'follower_b_progress_m':1.0})
     narrow=[manifest,base]
     better=deepcopy(base)
     better['joint_targets']=[4.,6.]
@@ -118,7 +122,11 @@ def test_finite_bank_inconsistent_shared_outcome_cannot_be_claimed_as_positive()
     bad={'type':'trial','family':'joint_witness','archetype':'support_gap','anchor':0,
          'seed':17,'profile':'early_slow','joint_targets':[6.,9.],
          'metrics':{'valid':True,'ego_collision':False,'non_ego_collision':True,'hard_brake':False},
-         'initial_states':initial}
+         'initial_states':initial,
+         'trace':[{'t':0.05,'xy_by_role':{'ego':[30.,0.],'follower_a':[10.,0.],
+         'follower_b':[-10.,0.]}}]}
+    bad['metrics'].update({'ego_progress_m':1.,'follower_a_progress_m':1.,
+                          'follower_b_progress_m':1.})
     good=deepcopy(bad);good['metrics']['non_ego_collision']=False
     new=deepcopy(good);new['joint_targets']=[4.,6.]
     result=compare([manifest,bad],[manifest,good,new])

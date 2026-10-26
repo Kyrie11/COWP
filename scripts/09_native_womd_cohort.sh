@@ -22,7 +22,7 @@ if [[ -e "$OUT/cohort_manifest.json" ]]; then
   exit 3
 fi
 cd "$RIDE_HOME"
-python -m research_probe.native_womd --raw-root "$RAW_WOMD_ROOT" \
+python -m ride.womd.native --raw-root "$RAW_WOMD_ROOT" \
  --output "$OUT" --split validation --format tfexample \
- --exclude-ids "$RIDE_HOME/COWP/reference_manifests/compact_all_7200_ids.txt" \
+ --exclude-ids "$RIDE_HOME/references/prior_development_exclusion_ids.txt" \
  "${EXTRA[@]}"

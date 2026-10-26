@@ -27,7 +27,12 @@ def choose(records,policy,*,ego_threshold=.1,third_party_threshold=.1,
            burden_threshold=.25,soft_weight=1.0):
     if policy not in POLICIES:raise ValueError('Unknown policy '+policy)
     candidates=[]
+    seen=set()
     for row in records:
+        action=str(row.get('action',''))
+        if not action or action in seen:
+            raise ValueError('Duplicate or empty candidate action in one frozen scene: '+action)
+        seen.add(action)
         if not all(k in row and str(row[k]).strip()!='' for k in REQUIRED):
             raise ValueError('Predictor score is incomplete; cannot select actions')
         if not truth(row['pred_dynamic_valid']) or not truth(row['pred_rule_valid']):continue
@@ -52,7 +57,9 @@ def choose(records,policy,*,ego_threshold=.1,third_party_threshold=.1,
 def make_choices(rows,policy,*,reference_families=('tm','behavior'),**kwargs):
     groups=collections.defaultdict(list)
     for r in rows:
-        k=(str(r.get('archetype')),str(r.get('anchor')),str(r.get('seed')))
+        if any(str(r.get(k,'')).strip() in ('','None') for k in ('archetype','anchor','seed')):
+            raise ValueError('Prediction row has missing scenario identity')
+        k=(str(r['archetype']),str(r['anchor']),str(r['seed']))
         groups[k].append(r)
     choices=[];failures=[]
     for (archetype,anchor,seed),records in sorted(groups.items()):

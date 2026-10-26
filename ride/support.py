@@ -4,7 +4,7 @@ Requires a nested search bank, identical initial states, simulator versions and
 shared candidate outcomes. If a shared candidate changes, flag inconclusive.
 """
 from __future__ import annotations
-import argparse, collections, json
+import argparse, collections, json, math
 from pathlib import Path
 from .evidence import read_jsonl
 from .science import same_initial, Protocol
@@ -30,11 +30,40 @@ def is_witness(row):
                 not m.get('non_ego_collision') and not m.get('hard_brake'))
 
 
+
+def _shared_candidate_consistent(x, y, progress_tolerance=.5, xy_tolerance=.5):
+    """Treat the rerun as inconclusive if shared controls do not repeat.
+
+    Binary witness status alone is insufficient: two trajectories can have
+    materially different physical outcomes while both avoiding collisions.
+    """
+    ta, tb = x.get('trace') or [], y.get('trace') or []
+    if not ta or len(ta) != len(tb):
+        return 'missing_or_mismatched_trial_trace'
+    for a, b in zip(ta, tb):
+        if abs(float(a['t'])-float(b['t'])) > 1e-3:
+            return 'mismatched_shared_trial_timestamps'
+        for role in ('ego','follower_a','follower_b'):
+            if math.dist(a['xy_by_role'][role],b['xy_by_role'][role]) > xy_tolerance:
+                return 'shared_candidate_trajectory_drift'
+    mx, my = x.get('metrics') or {}, y.get('metrics') or {}
+    for name in ('valid','ego_collision','non_ego_collision','hard_brake'):
+        if bool(mx.get(name)) != bool(my.get(name)):
+            return 'shared_candidate_'+name+'_changed'
+    for name in ('ego_progress_m','follower_a_progress_m','follower_b_progress_m'):
+        if name not in mx or name not in my:
+            return 'missing_shared_candidate_'+name
+        if not all(math.isfinite(float(q[name])) for q in (mx,my)):
+            return 'nonfinite_shared_candidate_'+name
+        if abs(float(mx[name])-float(my[name])) > progress_tolerance:
+            return 'shared_candidate_'+name+'_drift'
+    return None
+
 def compare(narrow,wide):
     mn,an=parse_bank(narrow);mw,aw=parse_bank(wide)
     if not an or not aw:raise ValueError('No joint-search trials in one bank')
     if an.keys()!=aw.keys():raise ValueError('Different scenario/profile identities across banks')
-    for attr in ('carla_server_version','carla_client_version','map','cruise_mps','dt','archetype'):
+    for attr in ('carla_server_version','carla_client_version','map','cruise_mps','dt','archetype','duration_s','seed','repetitions'):
         if mn.get(attr)!=mw.get(attr):
             raise ValueError('Different simulator setup for '+attr)
     rows=[];proto=Protocol()
@@ -47,18 +76,32 @@ def compare(narrow,wide):
             x,y=small[a],large[a]
             ok,why=same_initial(x,y,proto)
             if not ok:inconsistent.append({'joint_targets':a,'reason':why})
-            elif is_witness(x)!=is_witness(y):
-                inconsistent.append({'joint_targets':a,'reason':'shared_candidate_witness_outcome_changed'})
+            else:
+                reason=_shared_candidate_consistent(x,y)
+                if reason:
+                    inconsistent.append({'joint_targets':a,'reason':reason})
         small_witness={a for a,r in small.items() if is_witness(r)}
         large_witness={a for a,r in large.items() if is_witness(r)}
-        conclusive=not inconsistent
+        # A failed/invalid candidate execution is UNKNOWN, not a verified
+        # negative witness. In particular an exception can include a nonempty
+        # prefix trace; it must not create an artificial finite-bank miss.
+        duration=mw.get('duration_s')
+        dt=mw.get('dt')
+        expected_steps=(round(float(duration)/float(dt)) if duration is not None
+                        and dt is not None and float(dt)>0 else None)
+        def completed_candidate(r):
+            trace=r.get('trace') or []
+            return bool(r.get('metrics',{}).get('valid') is True and trace and
+                        (expected_steps is None or len(trace)==expected_steps))
+        complete=all(completed_candidate(r) for r in list(small.values())+list(large.values()))
+        conclusive=not inconsistent and complete
         rows.append({'archetype':k[0],'anchor':k[1],'seed':k[2],'profile':k[3],
                      'small_bank_attempts':len(small),'large_bank_attempts':len(large),
                      'small_bank_positive_witnesses':len(small_witness),
                      'large_bank_positive_witnesses':len(large_witness),
                      'new_verified_positive_witnesses':len(large_witness-small_witness),
                      'shared_candidate_inconsistencies':inconsistent,
-                     'comparison_valid':conclusive,
+                     'comparison_valid':conclusive,'all_candidate_executions_recorded':complete,
                      'finite_bank_miss_observed':conclusive and not bool(small_witness) and bool(large_witness),
                      'small_bank_no_witness_status':'UNKNOWN' if not small_witness else 'POSITIVE_WITNESS',
                      'large_bank_no_witness_status':'UNKNOWN' if not large_witness else 'POSITIVE_WITNESS'})

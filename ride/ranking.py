@@ -7,17 +7,16 @@ trajectory, and is not a calibrated causal effect in human driving.
 from __future__ import annotations
 import argparse
 import collections
-import itertools
 import json
 import math
 from pathlib import Path
 from .evidence import read_jsonl
-from .science import Protocol, same_initial
+from .science import Protocol, same_initial, validate_pair
 
 
 def risk_key(row, ttc_s=1.5):
     m = row.get('metrics') or {}
-    try: ttc=float(m.get('min_rear_pair_ttc_s') or 9999.)
+    try: ttc=float(m['min_rear_pair_ttc_s']) if m.get('min_rear_pair_ttc_s') is not None else 9999.
     except (ValueError,TypeError):ttc=9999.
     return (int(bool(m.get('non_ego_pair_collision'))),
             int(bool(m.get('hard_brake'))),
@@ -48,24 +47,15 @@ def audit_rankings(rows, protocol=None):
     for context, fam in sorted(by_context.items()):
         if not all(f in fam for f in p.families):continue
         common=set.intersection(*(set(fam[f]) for f in p.families))
-        for a,b in itertools.combinations(sorted(common),2):
+        for a,b in p.contrast_actions:
+            if a not in common or b not in common:continue
             reasons=[];metrics={}
             # Ensure BOTH arms in EACH family are valid and same initial states
             # and task matched. Verify cross-family parity, not just within model.
             for f in p.families:
                 x,y=fam[f][a],fam[f][b]
-                xm,ym=x.get('metrics') or {},y.get('metrics') or {}
-                if not xm.get('valid') or not ym.get('valid'):
-                    reasons.append(f+':invalid')
-                if xm.get('ego_collision') or ym.get('ego_collision'):
-                    reasons.append(f+':ego_collision')
-                ok,why=same_initial(x,y,p)
+                ok, why, _ = validate_pair(x, y, p)
                 if not ok:reasons.append(f+':'+why)
-                try:
-                    delta=abs(float(xm['ego_progress_m'])-float(ym['ego_progress_m']))
-                    if not math.isfinite(delta) or delta>p.progress_m:
-                        reasons.append(f+':unmatched_progress')
-                except (KeyError,ValueError,TypeError):reasons.append(f+':missing_progress')
                 metrics[f]={'a':risk_key(x,p.ttc_s),'b':risk_key(y,p.ttc_s)}
             left,right=p.families[0],p.families[1]
             for action in (a,b):
@@ -84,6 +74,7 @@ def audit_rankings(rows, protocol=None):
     ties=[r for r in valid if r['preference_tie_mismatch']]
     return {'summary':{'candidate_pairs_checked':len(outcomes),
                        'task_matched_cross_model_pairs':len(valid),
+                       'primary_pairs_preregistered':[list(a) for a in p.contrast_actions],
                        'strict_risk_order_reversals':len(reverse),
                        'tie_preference_mismatches':len(ties),
                        'posthoc_outcome_ranking_not_actual_planner_choice':True,

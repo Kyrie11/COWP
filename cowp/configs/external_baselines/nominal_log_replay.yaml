@@ -1,7 +1,0 @@
-external_baselines:
-  baseline: nominal_replay
-  methods: [nominal_replay, log_replay]
-  max_candidates: 24
-  policy:
-    gamma_H: 0.0
-    gamma_D: 5.0

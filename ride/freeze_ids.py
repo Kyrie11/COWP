@@ -1,7 +1,7 @@
 """Freeze outcome-blind WOMD IDs for a native Waymax pilot.
 
 Uses manifest scenario_id+partition only. Never inspect observed_future_diagnostic
-or COWP pseudo-labels when selecting or freezing IDs.
+or labels from previous pipelines when freezing IDs.
 """
 from __future__ import annotations
 import argparse,hashlib,json
@@ -27,5 +27,12 @@ def main(argv=None):
     path=Path(a.output);path.parent.mkdir(parents=True,exist_ok=True)
     if path.exists():raise FileExistsError('Frozen scene IDs already exist: '+str(path))
     path.write_text('\n'.join(selected)+'\n',encoding='utf8')
+    # Bind the frozen ID panel to the exact cohort manifest to prevent a later
+    # silent re-use of IDs from a different WOMD scan.
+    cohort_manifest=Path(a.cohort)/'cohort_manifest.json'
+    metadata={'cohort_manifest_sha256':hashlib.sha256(cohort_manifest.read_bytes()).hexdigest(),
+              'partition':a.partition,'n':len(selected),'salt':'ride-native-waymax-20261026',
+              'ids_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+    (path.with_suffix(path.suffix+'.freeze.json')).write_text(json.dumps(metadata,indent=2))
     print(json.dumps({'frozen_ids':len(selected),'output':str(path),'partition':a.partition},indent=2))
 if __name__=='__main__':main()

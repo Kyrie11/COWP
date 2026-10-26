@@ -18,6 +18,17 @@ IDS="$RIDE_OUTPUT_ROOT/waymax/native_panel22_ids.txt"
 if [[ ! -f "$IDS" ]]; then
   python -m ride.freeze_ids --cohort "$COHORT" --count 22 --output "$IDS"
 fi
+# Existing panels must be from the same cohort manifest, not an earlier scan.
+python - "$COHORT/cohort_manifest.json" "$IDS" <<'PY'
+import hashlib,json,pathlib,sys
+man,ids=map(pathlib.Path,sys.argv[1:])
+meta=ids.with_suffix(ids.suffix+'.freeze.json')
+if not meta.exists():raise SystemExit('Missing immutable ID-panel provenance '+str(meta))
+info=json.loads(meta.read_text())
+if hashlib.sha256(man.read_bytes()).hexdigest()!=info['cohort_manifest_sha256'] or \
+   hashlib.sha256(ids.read_bytes()).hexdigest()!=info['ids_sha256']:
+    raise SystemExit('Frozen panel does not match its original cohort or ID file')
+PY
 # For smoke, a separate first ID is reused without altering frozen full panel.
 if [[ "$MODE" == "smoke" ]]; then
   IDLIST="$RIDE_OUTPUT_ROOT/waymax/native_smoke_id.txt"
@@ -25,9 +36,14 @@ if [[ "$MODE" == "smoke" ]]; then
 else
   IDLIST="$IDS"
 fi
-python -m research_probe.waymax_paired_idm \
+OUT="$RIDE_OUTPUT_ROOT/waymax/native_${MODE}.json"
+if [[ -e "$OUT" ]]; then
+  echo "Refusing to overwrite preexisting Waymax outcome $OUT; use new RIDE_OUTPUT_ROOT" >&2
+  exit 3
+fi
+python -m ride.waymax.paired_idm \
   --cohort "$COHORT" --raw-root "$RAW_WOMD_ROOT" \
   --scenario-ids-file "$IDLIST" --partition development \
   --max-scenes "$n" --steps "$steps" --validate-map \
-  --output "$RIDE_OUTPUT_ROOT/waymax/native_${MODE}.json" \
+  --output "$OUT" \
   2>&1 | tee "$RIDE_OUTPUT_ROOT/waymax/native_${MODE}.log"

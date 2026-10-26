@@ -10,9 +10,14 @@ def rows():
             bad=profile in ('early_slow','mild_early')
             init={role:{'xyz':[x,0,0],'speed_mps':9.}
                   for role,x in (('ego',20),('follower_a',0),('follower_b',-18))}
+            trace=[{'t':0.05,'ego_speed_mps':9.,'xy_by_role':{'ego':[20.,0.],
+                 'follower_a':[0.,0.],'follower_b':[-18.,0.]}},
+                {'t':0.1,'ego_speed_mps':8. if bad else 10.,
+                 'xy_by_role':{'ego':[22. if bad else 23.,0.],
+                 'follower_a':[0.,0.],'follower_b':[-18.,0.]}}]
             out.append({'type':'trial','archetype':'convoy','anchor':0,'seed':7,
-                        'family':family,'profile':profile,'initial_states':init,
-                        'metrics':{'valid':True,'ego_progress_m':50.,
+                        'family':family,'profile':profile,'initial_states':init,'trace':trace,
+                        'metrics':{'valid':True,'ego_progress_m':50.,'mechanism_executed':True,
                                    'ego_collision':False,'non_ego_pair_collision':bad,
                                    'hard_brake':bad,'min_rear_pair_ttc_s':0.7 if bad else 5.0}})
     return out

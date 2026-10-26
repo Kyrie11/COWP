@@ -1,75 +1,133 @@
-"""Scientific protocol, named outcomes, and fixed preregistered comparisons.
+"""Preregistered, simulated intervention comparisons for RIDE.
 
-This is an audit protocol: it never trains a planner or asserts human causation.
-It deliberately separates simulated physical collision from comfort/risk proxies.
+Do not infer human causal effects from simulator trajectories. Trials are
+eligible only when initial state, route progress, and physically executed ego
+interventions are comparable. Missing measurements fail closed.
 """
 from __future__ import annotations
+
 import math
 from dataclasses import dataclass
 from typing import Any
+
 
 @dataclass(frozen=True)
 class Protocol:
     progress_m: float = 3.0
     init_position_m: float = 1.0
     init_speed_mps: float = 1.0
+    min_action_xy_difference_m: float = 0.5
+    min_action_speed_difference_mps: float = 0.35
     braking_mps2: float = -4.0
     ttc_s: float = 1.5
-    # This pair is set BEFORE looking at outcomes, and the sign is preserved.
     contrast_actions: tuple[tuple[str, str], ...] = (
-        ('early_slow', 'late_slow'), ('mild_early', 'mild_late'))
+        ('early_slow', 'late_slow'), ('mild_early', 'mild_late')
+    )
     families: tuple[str, ...] = ('tm', 'behavior')
 
 
 def same_initial(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
-    x, y = a.get('initial_states') or {}, b.get('initial_states') or {}
+    left, right = a.get('initial_states') or {}, b.get('initial_states') or {}
     for role in ('ego', 'follower_a', 'follower_b'):
-        s, t = x.get(role), y.get(role)
-        if s is None or t is None: return False, 'missing_initial_state:' + role
+        s, t = left.get(role), right.get(role)
+        if s is None or t is None:
+            return False, 'missing_initial_state:' + role
         try:
-            if math.dist(s['xyz'], t['xyz']) > p.init_position_m: return False, 'initial_position_mismatch:' + role
-            if abs(s['speed_mps']-t['speed_mps']) > p.init_speed_mps: return False, 'initial_speed_mismatch:' + role
+            xyz1 = [float(v) for v in s['xyz']]
+            xyz2 = [float(v) for v in t['xyz']]
+            v1, v2 = float(s['speed_mps']), float(t['speed_mps'])
+            if len(xyz1) != 3 or len(xyz2) != 3 or not all(
+                math.isfinite(v) for v in xyz1 + xyz2 + [v1, v2]
+            ):
+                return False, 'malformed_initial_state:' + role
+            if math.dist(xyz1, xyz2) > p.init_position_m:
+                return False, 'initial_position_mismatch:' + role
+            if abs(v1-v2) > p.init_speed_mps:
+                return False, 'initial_speed_mismatch:' + role
         except (TypeError, KeyError, ValueError):
             return False, 'malformed_initial_state:' + role
     return True, ''
 
 
-def assess_pair(a: dict, b: dict, p: Protocol) -> dict[str, Any]:
-    """a and b are two interventions, in *preregistered* order.
+def distinct_executed_ego_actions(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
+    """Verify physical action contrast, not merely different profile names.
 
-    Output is a signed contrast; no selection of a 'bad' action after seeing data.
-    Neither an invalid trial nor an unexecuted trial counts as a negative event.
+    In particular, a CARLA lane-change command that does not actually move the
+    ego vehicle must NOT be counted as a successful intervention.
     """
-    out = {'eligible': False}
+    ta, tb = a.get('trace'), b.get('trace')
+    if not ta or not tb or len(ta) != len(tb):
+        return False, 'missing_or_unpaired_action_trace'
+    speed_diff = pos_diff = 0.0
+    for x, y in zip(ta, tb):
+        try:
+            if abs(float(x['t'])-float(y['t'])) > 1e-3:
+                return False, 'mismatched_action_trace_time'
+            speed_diff = max(speed_diff, abs(float(x['ego_speed_mps'])-float(y['ego_speed_mps'])))
+            pos_diff = max(pos_diff, math.dist(x['xy_by_role']['ego'], y['xy_by_role']['ego']))
+        except (ValueError, TypeError, KeyError):
+            return False, 'malformed_action_trace'
+    if not math.isfinite(speed_diff) or not math.isfinite(pos_diff):
+        return False, 'nonfinite_action_trace'
+    if speed_diff < p.min_action_speed_difference_mps and pos_diff < p.min_action_xy_difference_m:
+        return False, 'ego_actions_not_physically_distinct'
+    return True, ''
+
+
+def validate_pair(a: dict, b: dict, p: Protocol) -> tuple[bool, str, float | None]:
     am, bm = a.get('metrics') or {}, b.get('metrics') or {}
     if not am.get('valid') or not bm.get('valid'):
-        return {**out, 'reason': 'invalid_trial', 'a_reasons': am.get('reasons'), 'b_reasons': bm.get('reasons')}
-    ok, reason = same_initial(a, b, p)
-    if not ok: return {**out, 'reason': reason}
+        return False, 'invalid_trial', None
+    if not am.get('mechanism_executed', True) or not bm.get('mechanism_executed', True):
+        return False, 'scenario_maneuver_not_executed', None
+    ok, why = same_initial(a, b, p)
+    if not ok:
+        return False, why, None
     if am.get('ego_collision') or bm.get('ego_collision'):
-        return {**out, 'reason': 'ego_collision_in_either_arm'}
+        return False, 'ego_collision_in_either_arm', None
     try:
-        progress_a = float(am['ego_progress_m']); progress_b=float(bm['ego_progress_m'])
-        if not all(map(math.isfinite, (progress_a,progress_b))):
-            return {**out,'reason':'nonfinite_progress'}
-        d = abs(progress_a-progress_b)
-    except (KeyError,TypeError,ValueError):
-        return {**out,'reason':'missing_progress'}
-    if d>p.progress_m: return {**out,'reason':'progress_unmatched','delta_progress_m':d}
-    # STRICT: same explicitly identified third-party pair in the baseline convoy.
-    collision_a = bool(am.get('non_ego_pair_collision'))
-    collision_b = bool(bm.get('non_ego_pair_collision'))
-    hard_a = bool(am.get('hard_brake'))
-    hard_b = bool(bm.get('hard_brake'))
-    try: ttc_a=float(am.get('min_rear_pair_ttc_s') or 9999.)
-    except (TypeError,ValueError):ttc_a=9999.
-    try: ttc_b=float(bm.get('min_rear_pair_ttc_s') or 9999.)
-    except (TypeError,ValueError):ttc_b=9999.
-    return {**out,'eligible':True,'reason':'', 'delta_progress_m':d,
-            'third_party_collision_a':collision_a,'third_party_collision_b':collision_b,
-            'signed_collision_effect':int(collision_a)-int(collision_b),
-            'hard_brake_a':hard_a,'hard_brake_b':hard_b,
-            'braking_roles_a':am.get('hard_brake_roles',[]),
-            'braking_roles_b':bm.get('hard_brake_roles',[]),
-            'signed_brake_proxy_effect':int(hard_a)-int(hard_b),
-            'signed_short_ttc_proxy_effect':int(ttc_a<p.ttc_s)-int(ttc_b<p.ttc_s)}
+        # These must be route-goal progress, not odometer/path length.
+        d1, d2 = float(am['ego_progress_m']), float(bm['ego_progress_m'])
+        if not math.isfinite(d1) or not math.isfinite(d2):
+            return False, 'nonfinite_progress', None
+        delta = abs(d1-d2)
+    except (KeyError, TypeError, ValueError):
+        return False, 'missing_progress', None
+    if delta > p.progress_m:
+        return False, 'progress_unmatched', delta
+    ok, why = distinct_executed_ego_actions(a, b, p)
+    if not ok:
+        return False, why, delta
+    return True, '', delta
+
+
+def _below(row: dict, metric: str, threshold: float) -> bool:
+    value = row.get(metric)
+    if value is None:
+        return False
+    try:
+        number = float(value)
+        return number < threshold if math.isfinite(number) else False
+    except (ValueError, TypeError):
+        return False
+
+
+def assess_pair(a: dict, b: dict, p: Protocol) -> dict[str, Any]:
+    """Signed effect for a preregistered (a,b) action pair; no cherry-picking."""
+    am, bm = a.get('metrics') or {}, b.get('metrics') or {}
+    ok, reason, delta = validate_pair(a, b, p)
+    if not ok:
+        return {'eligible': False, 'reason': reason, 'delta_progress_m': delta,
+                'a_reasons': am.get('reasons'), 'b_reasons': bm.get('reasons')}
+    ca, cb = bool(am.get('non_ego_pair_collision')), bool(bm.get('non_ego_pair_collision'))
+    ha, hb = bool(am.get('hard_brake')), bool(bm.get('hard_brake'))
+    ta = _below(am, 'min_rear_pair_ttc_s', p.ttc_s)
+    tb = _below(bm, 'min_rear_pair_ttc_s', p.ttc_s)
+    return {'eligible': True, 'reason': '', 'delta_progress_m': delta,
+            'third_party_collision_a': ca, 'third_party_collision_b': cb,
+            'signed_collision_effect': int(ca)-int(cb),
+            'hard_brake_a': ha, 'hard_brake_b': hb,
+            'braking_roles_a': am.get('hard_brake_roles', []),
+            'braking_roles_b': bm.get('hard_brake_roles', []),
+            'signed_brake_proxy_effect': int(ha)-int(hb),
+            'signed_short_ttc_proxy_effect': int(ta)-int(tb)}

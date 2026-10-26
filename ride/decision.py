@@ -17,7 +17,11 @@ def score(rollout_rows, selected_rows, progress_tolerance_m=3.):
         index[key]=r
     if duplicates:raise ValueError('Repeated rollout identity: '+str(duplicates[:2]))
     results=[]
+    seen_choices=set()
     for choice in selected_rows:
+        ident=tuple(str(choice.get(k,'')) for k in ('method_id','archetype','anchor','seed','response_family'))
+        if ident in seen_choices:raise ValueError('Duplicate baseline decisions for same context: '+str(ident))
+        seen_choices.add(ident)
         required=('method_id','archetype','anchor','seed','response_family','selected_action','choice_locked_before_rollout')
         if any(not choice.get(k) for k in required):
             results.append({'choice':choice,'valid':False,'reason':'missing_required_commitment_fields'});continue
@@ -55,7 +59,8 @@ def score(rollout_rows, selected_rows, progress_tolerance_m=3.):
                         'num_task_matched_candidates':len(eligible),
                         'selected_third_party_collision':actual[0],
                         'third_party_collision_regret':actual[0]-opt[0],
-                        'hard_brake_proxy_regret':actual[1]-min(mk[1] for _,m in eligible for mk in [measured_key(m)]),
+                        'hard_brake_proxy_regret':actual[1]-opt[1] if actual[0]==opt[0] else None,
+                        'regret_semantics':'lexicographic; braking regret only comparable at equal collision risk',
                         'post_hoc_best_measured_actions':[name for name,m in eligible if measured_key(m)==opt],
                         'evaluation_oracle_only':True})
     grouped=collections.defaultdict(list)

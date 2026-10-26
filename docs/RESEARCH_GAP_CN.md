@@ -47,7 +47,7 @@ J 的主评价终点须事先冻结：第三方 pair collision，ego safety，�
 
 ### RQ3：强基线是否仍系统性作出错误候选选择？
 
-先锁定 Action IDs 和进展，再运行完整基线：hard-constrained courtesy（充分调参）、RACP、GameFormer/HYPE、RCRSO/COWP、可行的责任安全过滤器。保证同等输入、模型权重、算力及 reactive evaluation，不用对某个算法在其原始理论保证前提外的试验冒充官方保证被推翻。
+先锁定 Action IDs 和进展，再运行完整基线：hard-constrained courtesy（充分调参）、RACP、GameFormer/HYPE、有限反事实响应证据方法、可行的责任安全过滤器。保证同等输入、模型权重、算力及 reactive evaluation，不用对某个算法在其原始理论保证前提外的试验冒充官方保证被推翻。
 
 如果 hard courtesy 或 RACP 在 RQ2 候选上已完全处理，就必须转向更具体的 residual gap，不再强行推广 RIDE。
 
@@ -87,7 +87,7 @@ S1-S4 都是研究中的 *candidate stress archetypes*，不是从原始 WOMD �
 - 审计全部尝试、报错、无匹配动作、不合法场景，不只展示精挑案例。
 - 主指标用 per-scene paired effect、collision regret、precision of unsafe selection、coverage vs regret、ego progress 和常规 safety。
 - 对稀有事故报告 scenario cluster bootstrap CI；无真实场景则不得从合成 demo 的 count 推总体频率。
-- 需要单独测 ground-truth response calibration / support，不能让 COWP 生成 root 和 oracle 同时担任 label 与评测模型。
+- 需要单独测 ground-truth response calibration / support，不能让 同源 teacher 生成 root 和 oracle 同时担任 label 与评测模型。
 
 ## 2026-09 至 2026-10 的必要增补文献：缩小“决策后悔值”原创性
 

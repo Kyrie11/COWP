@@ -6,7 +6,33 @@ from .science import Protocol, assess_pair, same_initial
 
 
 def read_jsonl(path):
-    return [json.loads(ln) for ln in Path(path).read_text(encoding='utf8').splitlines() if ln.strip()]
+    """Read *completed* outcome panels; reject partial runs as scientific data.
+
+    The manifest-only anchor file is intentionally not a valid outcome panel.
+    Combined panels have per-source counts in provenance rather than a run_end.
+    """
+    rows=[json.loads(ln) for ln in Path(path).read_text(encoding='utf8').splitlines() if ln.strip()]
+    manifests=[r for r in rows if r.get('type')=='manifest']
+    if len(manifests)!=1 or manifests[0].get('simulator')!='CARLA':
+        raise ValueError('Expected exactly one CARLA experiment manifest: '+str(path))
+    manifest=manifests[0]
+    trials=[r for r in rows if r.get('type')=='trial']
+    if manifest.get('archetype')=='MULTI':
+        sources=manifest.get('source_manifests')
+        if not sources or sum(int(x['count']) for x in sources)!=len(trials):
+            raise ValueError('Incomplete combined CARLA panel: '+str(path))
+        if any(r.get('archetype') not in {x['archetype'] for x in sources} for r in trials):
+            raise ValueError('Combined CARLA panel has unexpected archetype: '+str(path))
+        if any(r.get('type')=='run_end' for r in rows):
+            raise ValueError('Combined CARLA panel unexpectedly has a run_end')
+    else:
+        endings=[r for r in rows if r.get('type')=='run_end']
+        if (len(endings)!=1 or rows[-1] is not endings[0] or
+            endings[0].get('completed') is not True or endings[0].get('trial_count')!=len(trials)):
+            raise ValueError('Incomplete CARLA outcome panel (missing/mismatched run_end): '+str(path))
+        if any(r.get('archetype')!=manifest.get('archetype') for r in trials):
+            raise ValueError('Trial archetype disagrees with CARLA manifest: '+str(path))
+    return rows
 
 
 def cluster_bootstrap_mean(rows, seed=20261026, n=1000):

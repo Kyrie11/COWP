@@ -17,7 +17,7 @@ def inventory(raw_root, existing_ids=None):
                        'decoded_records':False}
     ids=Path(existing_ids) if existing_ids else None
     return {'root':str(root),'exists':True,'splits':splits,
-            'legacy_compact_exclusion_ids':sum(1 for x in ids.read_text().splitlines() if x.strip()) if ids and ids.exists() else None,
+            'prior_development_exclusion_ids':sum(1 for x in ids.read_text().splitlines() if x.strip()) if ids and ids.exists() else None,
             'note':'File inventory only. Not a decoded, independent scenario cohort.'}
 
 

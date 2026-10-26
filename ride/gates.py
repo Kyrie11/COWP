@@ -9,6 +9,8 @@ def evaluate(audit,decision=None,ranking=None):
         res['RQ1']='NOT_TESTED_VALIDLY'
     elif ranking is None:
         res['RQ1']='NOT_TESTED_ACTION_RANKING_REQUIRED'
+    elif not ranking['summary'].get('task_matched_cross_model_pairs'):
+        res['RQ1']='NOT_TESTED_NO_CROSS_FAMILY_TASK_MATCHED_ACTIONS'
     elif ranking['summary']['strict_risk_order_reversals']:
         res['RQ1']='SIMULATOR_RISK_RANKING_REVERSAL_NOT_ACTUAL_PLANNER_ERROR'
     elif ranking['summary']['tie_preference_mismatches']:
