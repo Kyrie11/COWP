@@ -1,0 +1,26 @@
+external_baselines:
+  baseline: idm
+  methods: [idm]
+  max_candidates: 24
+  policy:
+    risk_dt: 0.1
+    risk_clearance_buffer_m: 0.75
+    risk_clearance_scale_m: 2.0
+    risk_collision_temperature_m: 0.8
+    backup_deceleration_mps2: 5.0
+    backup_reaction_time_s: 0.25
+    idm_max_accel_mps2: 1.5
+    idm_comfort_decel_mps2: 2.0
+    idm_time_headway_s: 1.5
+    idm_min_gap_m: 2.0
+    idm_target_speed_mps: 13.0
+    idm_accel_exponent: 4.0
+    idm_collision_probability_gate: 0.55
+    idm_accel_tracking_weight: 1.0
+    idm_deviation_weight: 0.10
+    idm_risk_weight: 1.5
+    idm_utility_weight: 0.15
+  training:
+    validate_dataset: true
+    device: cpu
+    epochs: 1

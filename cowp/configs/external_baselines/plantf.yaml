@@ -1,0 +1,47 @@
+external_baselines:
+  baseline: plantf
+  methods: [plantf]
+  max_candidates: 24
+  supervision_target: logged_nominal
+  allow_teacher_supervision: false
+  model:
+    arch: plantf
+    max_candidates: 24
+    d_model: 192
+    num_layers: 4
+    num_heads: 8
+    dropout: 0.10
+    state_dropout: 0.25
+    history_len: 11
+    neighbors_to_predict: 8
+    future_len: 20
+    num_topology_agents: 16
+    actor_topology_feature_dim: 16
+    num_topology_map: 64
+    map_topology_feature_dim: 14
+  training:
+    sdpa_backend: safe
+    amp_dtype: auto
+    device: auto
+    distributed: auto
+    batch_size: 64
+    num_workers: 8
+    epochs: 25
+    lr: 0.0002
+    weight_decay: 0.0001
+    grad_clip: 5.0
+    tqdm: true
+    pin_memory: true
+    find_unused_parameters: false
+  loss_weights:
+    policy: 1.0
+    levelk: 0.0
+    level_response: 0.0
+    topology: 0.0
+    gameformer_traj: 0.0
+    pluto_contrastive: 0.0
+    utility: 0.0
+    hard: 0.0
+    harm: 0.0
+    oracle_rec: 0.0
+    deploy_rec: 0.0

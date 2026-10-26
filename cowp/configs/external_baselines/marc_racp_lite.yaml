@@ -1,0 +1,22 @@
+external_baselines:
+  methods: [marc_lite, racp_lite]
+  max_candidates: 24
+  policy:
+    gamma_H: 0.0
+    gamma_D: 5.0
+    gamma_branch_rec: 0.0
+    cvar_alpha: 0.20
+    risk_ttc_clearance_threshold_m: 0.0
+    marc_risk_tolerance: 0.35
+    marc_use_temporal_risk_for_admission: true
+    marc_shared_prefix_risk_weight: 0.45
+    marc_chance_threshold: 0.50
+    marc_branch_rec_weight: 1.0
+    marc_hard_weight: 10.0
+    marc_harm_weight: 1.5
+    racp_risk_tolerance: 0.60
+    racp_shared_prefix_risk_weight: 0.55
+    racp_chance_threshold: 0.50
+    racp_branch_rec_weight: 1.0
+    racp_hard_weight: 10.0
+    racp_harm_weight: 1.5

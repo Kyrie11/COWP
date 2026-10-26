@@ -1,0 +1,15 @@
+external_baselines:
+  baseline: oracle_recovery_filter
+  methods: [oracle_recovery_filter]
+  max_candidates: 24
+  policy:
+    gamma_H: 0.0
+    gamma_D: 5.0
+    gamma_branch_rec: 0.0
+    gamma_oracle_rec: 0.0
+    cvar_alpha: 0.20
+    oracle_utility_tiebreak: 0.001
+  training:
+    device: auto
+    batch_size: 64
+    epochs: 1

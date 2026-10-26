@@ -1,0 +1,30 @@
+external_baselines:
+  baseline: post_collision_restoration
+  methods: [post_collision_restoration]
+  max_candidates: 24
+  policy:
+    contact_dt: 0.1
+    contact_mu: 0.75
+    restoration_gamma: 0.0
+    restoration_tau0: 0.1
+    restoration_tau1: 0.45
+    restoration_tau2: 0.65
+    restoration_tau3: 0.95
+    restoration_tauc1: 0.35
+    restoration_tauc2: 0.85
+    restoration_A1: 0.175
+    restoration_A2: -0.10
+    restoration_accel_pulse: 0.9
+    restoration_kdir: 1.0
+    restoration_shape_weight: 0.8
+    restoration_yaw_rate_weight: 1.1
+    restoration_lateral_weight: 0.25
+    restoration_hard_weight: 9.0
+    restoration_harm_weight: 2.0
+    restoration_speed_preservation_weight: 2.0
+    restoration_min_speed_fraction: 0.45
+    restoration_admit_min_speed_fraction: 0.30
+    restoration_adhesion_weight: 0.75
+    restoration_utility_weight: 0.25
+    restoration_yaw_rate_gate: 2.2
+    restoration_hard_gate: 0.0

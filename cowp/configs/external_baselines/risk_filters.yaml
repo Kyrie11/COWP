@@ -1,0 +1,16 @@
+external_baselines:
+  methods: [expected_risk_filter, cvar_risk_filter, dro_cvar_filter]
+  max_candidates: 24
+  policy:
+    gamma_H: 0.0
+    gamma_D: 5.0
+    cvar_alpha: 0.20
+    risk_hard_weight: 1.0
+    risk_harm_weight: 0.25
+    expected_risk_threshold: 0.45
+    expected_risk_weight: 3.0
+    cvar_risk_threshold: 0.35
+    cvar_risk_weight: 3.0
+    dro_ambiguity_radius: 0.10
+    dro_cvar_threshold: 0.40
+    dro_cvar_risk_weight: 3.5
