@@ -92,12 +92,63 @@ python -m ride.doctor --server             # 必须核对 server/client 均为 0
 export CARLA_TOWN=Town04
 export RIDE_ANCHORS=1
 export RIDE_REPEATS=1
+bash scripts/01b_probe_anchors.sh convoy Town04  # 先确认候选数 > 0
 bash scripts/03_precommit_scenes.sh convoy
 bash scripts/03_run_carla_case.sh convoy
 bash scripts/04_analyze_carla.sh
 ```
 
 `03_precommit_scenes.sh` **只冻结**道路场景和车辆身份；`03_run_carla_case.sh` 在相同冻结地图下运行两类响应控制器及事先指定的 ego 动作对。`Town04` 未找到路口时，可对 `intersection` **另建新输出目录**并改用 Town03/Town05，不能混用地图/anchors 统计。
+
+### 当 `NO_ELIGIBLE_MAP_ANCHOR` 出现时：先诊断，不直接更换阈值
+
+原版的 `convoy` 搜索只用 `get_spawn_points()`，并要求 100m 的终点与
+原点具有完全相同的 `road_id`、`lane_id`，道路总偏航变化小于 12°。
+这不能证明 Town04 本身没有合适道路，只说明原先的**有限采样与过严限制**
+没有找到场景。CARLA 的 `Waypoint.next(distance)` 允许返回多条后续分支，
+大跨度 `next(100)` 也无法证明中间没有穿过路口。
+
+修订版先检索推荐出生点，不足时对 `generate_waypoints(10)` 的驾驶车道中心线做
+确定性扫描；对 B(-18m)、A(0m)、ego(+20m)、目的点(+100m) 之间的路线
+采用 3–5m 逐段检测，拒绝路口、路径分叉、车道 ID 跳变与过大转向。
+允许远处连续道路跨越 OpenDRIVE `road_id` 边界，但初始跟车对保持同一
+`road_id`，总偏航变化限制为 25°。**车辆间距、目标位置和实验动作协议保持不变。**
+
+在已启动 CARLA 0.9.16 的终端 B 中，先执行**只检查地图、不生成结果文件**：
+
+```bash
+source scripts/00_env.sh
+export RIDE_ANCHORS=1
+bash scripts/01b_probe_anchors.sh convoy Town04
+```
+
+成功时 `eligible_anchors` 大于零，并输出候选的物理坐标、road/lane 身份；
+`CARLA_MAP_ANCHOR_DIAGNOSTICS` 包含 `spawn_points_scanned`、
+`map_waypoints_scanned` 和 `rejections`，可辨认地图不足、路口、分叉与弯曲限制。
+如果 Town04 仍然返回零，分别**单独运行**：
+
+```bash
+bash scripts/01b_probe_anchors.sh convoy Town05
+bash scripts/01b_probe_anchors.sh convoy Town03
+# 若你的 CARLA 安装了 Town10HD，也可以尝试：
+# bash scripts/01b_probe_anchors.sh convoy Town10HD
+```
+
+选一个实际返回非零的 Town，且**正式冻结前建立新输出目录**：
+
+```bash
+export CARLA_TOWN=Town04  # 改成你刚刚验证有合格锚点的 Town
+export RIDE_OUTPUT_ROOT=/data0/senzeyu2/dataset/RIDE/evidence/convoy_town04_fix_v2
+bash scripts/03_precommit_scenes.sh convoy
+bash scripts/03_run_carla_case.sh convoy
+bash scripts/04_analyze_carla.sh
+```
+
+如果全部 Town 都为零，保留诊断输出，不应删除道路和几何验证或随机制造
+“正例”；应根据 `rejections` 检查该场景模板是否适合已安装地图。
+不要在同一个服务端执行中的 CARLA 实验上切换地图，也不要把不同 Town 的
+场景 ID 混到同一冻结数据中。**旧版冻结 manifest 不能复用**：本版会验证
+`anchor_protocol_version`，要求从头冻结新的地图锚点。
 
 ### 全部四类机制筛查
 
@@ -191,3 +242,5 @@ python -m ride.waymax.paired_idm --help
 当前交付的测试以合成数据、纯函数和假的 CARLA waypoint 为主，**并不等于在你的服务器上完成了 CARLA 0.9.16 物理执行、Waymax/TensorFlow 集成或真实 WOMD 标定**。当场景证据不足、任务/道路/车辆身份不匹配、有限响应库未找到 witness 时，必须报告 UNKNOWN、INVALID 或 NOT_TESTED；不得填写不经证实的正例率。
 
 具体文件迁移、实验逻辑修复、检查项与尚未实现的研究工作见 [docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md](docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md)，科研定位见 [docs/RESEARCH_GAP_CN.md](docs/RESEARCH_GAP_CN.md)。
+
+更多关于本次 `NO_ELIGIBLE_MAP_ANCHOR` 修复的诊断理由与服务器命令见 [docs/CONVOY_ANCHOR_FIX_CN.md](docs/CONVOY_ANCHOR_FIX_CN.md)。

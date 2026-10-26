@@ -331,9 +331,13 @@ def main():
                    default=['stop','cruise'])
     p.add_argument('--archetype',choices=('convoy','cut_in','intersection','support_gap'),default='convoy')
     p.add_argument('--manifest-only',action='store_true',help='Freeze scenario identities without executing outcomes')
+    p.add_argument('--inspect-anchors',action='store_true',
+                   help='Scan map and print eligible anchors and rejection counts; no result files or trials')
     p.add_argument('--anchors-from',help='Frozen manifest-only JSONL containing exact scenario anchors')
-    p.add_argument('--output',required=True)
+    p.add_argument('--output',help='Required unless --inspect-anchors is used')
     a=p.parse_args()
+    if not a.inspect_anchors and not a.output:
+        p.error('--output is required for freezing/executing experiments')
     if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
@@ -348,10 +352,14 @@ def main():
         raise RuntimeError(f'Expected CARLA 0.9.16 Python client, got {client_version}')
     if a.town:world=client.load_world(a.town)
     else:world=client.get_world()
+    if a.inspect_anchors and a.anchors_from:
+        raise ValueError('--inspect-anchors cannot be combined with --anchors-from')
+    from ride.carla_scenarios import ANCHOR_PROTOCOL_VERSION
     if a.anchors_from:
         with open(a.anchors_from,encoding='utf8') as f:
             frozen=json.loads(f.readline())
         if (frozen.get('type')!='manifest' or frozen.get('archetype')!=a.archetype or
+            frozen.get('anchor_protocol_version')!=ANCHOR_PROTOCOL_VERSION or
             frozen.get('carla_server_version')!=server_version or
             frozen.get('map')!=world.get_map().name or
             frozen.get('seed')!=a.seed or
@@ -362,13 +370,25 @@ def main():
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
     else:
         from ride.carla_scenarios import build_anchors
-        anchors=build_anchors(world,a.archetype,a.anchors,a.seed)
-    if not anchors:raise RuntimeError('NO_ELIGIBLE_MAP_ANCHOR: map lacks supported '+a.archetype+' scenario; this is a setup skip, not an observed negative result')
+        anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,a.seed,
+                                           with_diagnostics=True)
+        print('CARLA_MAP_ANCHOR_DIAGNOSTICS '+json.dumps(anchor_stats,sort_keys=True),flush=True)
+    if a.inspect_anchors:
+        print(json.dumps({'town':a.town,'eligible_anchors':len(anchors),
+                          'anchors':anchors},indent=2,ensure_ascii=False))
+        return
+    if not anchors:
+        raise RuntimeError('NO_ELIGIBLE_MAP_ANCHOR: no eligible ' + a.archetype +
+            ' corridor found after spawn-point AND map-waypoint scan on ' +
+            str(world.get_map().name) + '. Inspect diagnostic rejection counts; '
+            'try a different town with a fresh RIDE_OUTPUT_ROOT. This is a setup '
+            'skip, NOT a negative scientific result.')
     output=Path(a.output);output.parent.mkdir(parents=True,exist_ok=True)
     rows=[];trial_id=0
     with output.open('x',encoding='utf8') as dst:
         meta={'type':'manifest','simulator':'CARLA','archetype':a.archetype,'version_requested':'0.9.16',
               'map':world.get_map().name,'anchors':anchors,'dt':DT,
+              'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
               'seed':a.seed,'duration_s':a.duration_s,

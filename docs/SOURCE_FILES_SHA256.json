@@ -1,15 +1,20 @@
 {
   "project": "RIDE",
   "research_stage": "experimental_gate_not_validated_planner",
-  "source_files": 53,
+  "fix": "convoy map anchor v2: deterministic full-map fallback and stepwise lane validation",
+  "source_files": 55,
   "files": {
     "README.md": {
-      "sha256": "479d9e4ab8cb8ece4ac854105ed22493d04a60509f6a79828d777f9894df3c51",
-      "bytes": 10956
+      "sha256": "a2d24c95b8a04f5f6a78eb95c22d8d10b40fbaf703411a60c47a22b3c7fcd5d0",
+      "bytes": 13747
     },
     "docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md": {
       "sha256": "1899b3d2306ca9c23276afc49bfa3a3c3e451e85a37dd7ae7a73c2a00b9bc229",
       "bytes": 12074
+    },
+    "docs/CONVOY_ANCHOR_FIX_CN.md": {
+      "sha256": "c5fd74600cca62f579ae0f5cd6e42828c0efc5d67f8268fc5180d7afd885cbb9",
+      "bytes": 4747
     },
     "docs/RESEARCH_GAP_CN.md": {
       "sha256": "dce602ace320f0f9d219641fa30978f8458f55c75c4937d4233334eec0c282a5",
@@ -48,12 +53,12 @@
       "bytes": 4059
     },
     "ride/carla/run.py": {
-      "sha256": "9a13abc5bc508d40309b3ac020d6f0a588b4207e8259924a30397888343a9caf",
-      "bytes": 24095
+      "sha256": "e398a18913299fb1635f6ff4df3c674a72bdcd8c628831b680b0e9f9db9f02d7",
+      "bytes": 25357
     },
     "ride/carla_scenarios.py": {
-      "sha256": "add2dea8fe433ebe77119d20359ec57cb9d75ed8a91c0f9264f8e57945667cb8",
-      "bytes": 8275
+      "sha256": "ec4aa1fcf01f9a0edc0c830543f14a48e95bd6324a08025f94d4aac0802ed4b6",
+      "bytes": 12572
     },
     "ride/combine.py": {
       "sha256": "82200e759e8eed40e43a658dd911e8ce37435dfedd641b05a026edec36c0968b",
@@ -147,6 +152,10 @@
       "sha256": "cc7ccf5fbd63fc4b578e941ad73cadf2f5fcf33042b01b675e2e0700c0bbb2a6",
       "bytes": 420
     },
+    "scripts/01b_probe_anchors.sh": {
+      "sha256": "5722a1bc7d6295bb07de3e89f70b41a5ca5fcc67e260e30f1aa0b2c2bc61feac",
+      "bytes": 683
+    },
     "scripts/02_start_carla_headless.sh": {
       "sha256": "3df6b2b0865fd199688dad756730a7b925d30798928cf394a00485133eccc2df",
       "bytes": 577
@@ -208,13 +217,13 @@
       "bytes": 560
     },
     "tests/test_ride_regressions.py": {
-      "sha256": "7793c1659aac2fe01bda8bea8070498b203cd9e811360eb1b57f252160a25115",
-      "bytes": 12246
+      "sha256": "5dbe79cd7ed2f83384082cefa35e27fe4b0a06acf12a5a270ffdab90d503a60e",
+      "bytes": 15973
     },
     "tests/test_ride_science.py": {
       "sha256": "3f521d7677acbd6447cdae5ca915eb4cf4ee6cdd32da96a794252a6e5abfb554",
       "bytes": 8264
     }
   },
-  "note": "This manifest excludes itself and transient test caches. SHA256 verifies code file bytes, not runtime simulator results."
+  "note": "This manifest excludes itself and transient caches. Hashes verify source bytes, not CARLA simulation success."
 }

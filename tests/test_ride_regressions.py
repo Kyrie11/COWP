@@ -187,11 +187,11 @@ def test_manifest_only_entrypoint_runs_without_an_old_source_tree(tmp_path,monke
     StubCarla=type('StubCarla',(),{'Client':Client})
     monkeypatch.setattr(run,'_carla',lambda:StubCarla)
     monkeypatch.setattr('ride.carla_scenarios.build_anchors',
-                        lambda world, archetype, count, seed:[
+                        lambda world, archetype, count, seed, **kwargs:([
                             {'anchor':0,'key':[0.,0.,0.],'map':'Town04',
                              'waypoint_identities':{'ego':{'road_id':1,'lane_id':1,'yaw':0.}},
                              'coords':{'ego':[0.,0.,0.]},'archetype':archetype}
-                        ])
+                        ], {'anchors_found':1}))
     freeze=tmp_path/'anchors.jsonl'
     monkeypatch.setattr(sys,'argv',['ride.carla.run','--archetype','convoy',
                                     '--anchors','1','--seed','17','--cruise-mps','9',
@@ -254,3 +254,94 @@ def test_invalid_narrow_candidate_does_not_prove_finite_bank_miss():
     result=compare_banks([manifest,base],[manifest,base,good])
     assert result['summary']['finite_bank_misses']==0
     assert result['details'][0]['comparison_valid'] is False
+
+
+class _ContinuousRoadWaypoint:
+    """A physically continuous lane whose OpenDRIVE road ID changes ahead."""
+    lane_type=1
+    lane_id=1
+    is_junction=False
+    def __init__(self,x):
+        self.x=float(x)
+        self.road_id=1 if x<155. else 2
+        self.s=float(x)
+        self.transform=_Transform(self.x,0.)
+        self.transform.rotation.yaw=self.x*.15
+    def next(self,d):
+        # The spawn point at x=5 is unsuitable, but the sampled map at x=100
+        # contains a valid 100m lane segment.
+        x=self.x+float(d)
+        return [_ContinuousRoadWaypoint(x)] if self.x>=60. and x<=205. else []
+    def previous(self,d):
+        x=self.x-float(d)
+        return [_ContinuousRoadWaypoint(x)] if x>=60. else []
+
+
+class _ContinuousRoadMap:
+    name='Town04'
+    def get_spawn_points(self):return [_Transform(5.,0.)]
+    def get_waypoint(self,location,**kwargs):return _ContinuousRoadWaypoint(location.x)
+    def generate_waypoints(self,spacing):return [_ContinuousRoadWaypoint(100.)]
+
+
+class _ContinuousRoadWorld:
+    def get_map(self):return _ContinuousRoadMap()
+
+
+def test_convoy_scans_map_waypoints_beyond_spawn_points_and_follows_road_transitions(monkeypatch):
+    """A long no-junction lane may not include a recommended spawn point.
+
+    The previous implementation rejected this valid geometry because the
+    goal crossed an OpenDRIVE road boundary and had >12deg heading variation.
+    """
+    from ride.carla_scenarios import build_anchors
+    monkeypatch.setitem(sys.modules,'carla',_Carla)
+    rows,diag=build_anchors(_ContinuousRoadWorld(),'convoy',1,17,
+                            with_diagnostics=True)
+    assert len(rows)==1
+    assert rows[0]['coords']['ego'][0]==120.
+    assert rows[0]['coords']['follower_b'][0]==82.
+    assert rows[0]['coords']['end'][0]==200.
+    assert rows[0]['waypoint_identities']['end']['road_id']==2
+    assert diag['spawn_points_scanned']==1
+    assert diag['map_waypoints_scanned']==1
+    assert diag['rejections']['rear_lane_end_or_branch']==1
+
+
+def test_convoy_rejects_hidden_junction_inside_100m_instead_of_landing_after_it():
+    from ride.carla_scenarios import convoy_candidate
+    class JunctionCorridor(_ContinuousRoadWaypoint):
+        def next(self,d):
+            x=self.x+d
+            if 140.<=x<145.:
+                new=JunctionCorridor(x)
+                new.is_junction=True
+                return [new]
+            return [JunctionCorridor(x)] if self.x>=60. and x<=205. else []
+        def previous(self,d):
+            x=self.x-d
+            return [JunctionCorridor(x)] if x>=60. else []
+    reasons={}
+    assert convoy_candidate(JunctionCorridor(100.),_Carla,reasons) is None
+    assert reasons['forward_junction_or_non_driving']==1
+
+
+def test_inspect_anchors_is_read_only_and_reports_rejections(tmp_path,monkeypatch,capsys):
+    """The inspect command must not create or freeze scientific outcomes."""
+    from ride.carla import run
+    class Client:
+        def __init__(self,*args):pass
+        def set_timeout(self,*args):pass
+        def get_server_version(self):return '0.9.16'
+        def get_client_version(self):return '0.9.16'
+        def load_world(self,*args):return _ContinuousRoadWorld()
+    monkeypatch.setattr(run,'_carla',lambda:type('Carla',(),{'Client':Client}))
+    monkeypatch.setitem(sys.modules,'carla',_Carla)
+    output=tmp_path/'should_not_exist.jsonl'
+    monkeypatch.setattr(sys,'argv',['ride.carla.run','--archetype','convoy',
+             '--inspect-anchors','--town','Town04','--output',str(output)])
+    run.main()
+    out=capsys.readouterr().out
+    assert 'CARLA_MAP_ANCHOR_DIAGNOSTICS' in out
+    assert '"eligible_anchors": 1' in out
+    assert not output.exists()

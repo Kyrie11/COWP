@@ -7,6 +7,10 @@ Unsupported maps are explicitly skipped, not 'negative' scientific evidence.
 from __future__ import annotations
 import math, random
 
+# The frozen anchor protocol changed: old spawn-only manifests cannot be
+# silently reused in a revised map-search experiment.
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v2_20261026"
+
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
 
@@ -42,23 +46,72 @@ def cut_in_candidate(wp,carla):
     return None
 
 
-def convoy_candidate(wp,carla):
-    """Three vehicles in one uninterrupted, nearly straight driving corridor."""
-    if not _driving(wp,carla):return None
-    b=_one(wp.previous(18.));e=_one(wp.next(20.));end=_one(wp.next(100.))
-    if not all(_driving(x,carla) for x in (b,e,end)):return None
-    if not (wp.road_id==e.road_id==end.road_id==b.road_id and
-            wp.lane_id==e.lane_id==end.lane_id==b.lane_id):return None
-    if not all(yaw_diff(wp.transform.rotation.yaw,x.transform.rotation.yaw)<12.
-               for x in (e,end,b)):return None
-    # Check intermediate lane path for side streets/junctions rather than only
-    # comparing the first and final waypoint heading.
-    cur=wp
-    for _ in range(20):
-        cur=_one(cur.next(5.)) if cur else None
-        if not _driving(cur,carla) or cur.road_id!=wp.road_id or cur.lane_id!=wp.lane_id:
-            return None
-    return {'ego':e,'follower_a':wp,'follower_b':b,'end':end}
+def _unique_lane_step(wp, distance, carla, *, backward=False):
+    """Advance only if there is exactly one continuous, drivable lane path.
+
+    Large `next(100)` jumps can cross intersections/branching and omit the
+    intermediate lane geometry. Small steps explicitly reject such routes.
+    """
+    candidates = wp.previous(distance) if backward else wp.next(distance)
+    if len(candidates) != 1:
+        return None, 'lane_end_or_branch'
+    nxt = candidates[0]
+    if not _driving(nxt, carla):
+        return None, 'junction_or_non_driving'
+    if nxt.lane_id != wp.lane_id:
+        return None, 'lane_identity_changed'
+    if yaw_diff(nxt.transform.rotation.yaw, wp.transform.rotation.yaw) > 8.:
+        return None, 'sharp_local_bend'
+    return nxt, None
+
+
+def convoy_candidate(wp, carla, rejection=None):
+    """Find an actual 118m lane corridor for S2/S4, including a 100m goal.
+
+    Relative roles (meters along the driving lane) stay identical to the
+    original protocol: B=-18, A=0, ego=+20, goal=+100. We do *not* shorten
+    the goal, since that would change responder behavior and the experiment.
+    OpenDRIVE may change road_id on a continuous lane; the initial trailing
+    pair must share a road for interpretable same-lane TTC, while the future
+    goal is checked by physical lane continuity rather than one road_id.
+    """
+    def reject(reason):
+        if rejection is not None:
+            rejection[reason] = rejection.get(reason, 0) + 1
+        return None
+
+    if not _driving(wp, carla):
+        return reject('not_nonjunction_driving_lane')
+    # Check behind A too: a single `previous(18)` could jump over a junction.
+    back = wp
+    for _ in range(6):
+        back, why = _unique_lane_step(back, 3., carla, backward=True)
+        if why:
+            return reject('rear_' + why)
+        if back.road_id != wp.road_id:
+            return reject('rear_road_id_changed')
+    # Step all the way to the goal, so no branch, junction, or hidden
+    # 90-degree turn can exist between the three vehicles and the goal.
+    cur = wp
+    ego = None
+    for i in range(1, 21):
+        cur, why = _unique_lane_step(cur, 5., carla)
+        if why:
+            return reject('forward_' + why)
+        # The interacting pair and ego must begin on one unambiguous road.
+        # A future map road boundary alone should not invalidate the route.
+        if i <= 8 and cur.road_id != wp.road_id:
+            return reject('initial_corridor_road_id_changed')
+        if yaw_diff(cur.transform.rotation.yaw, wp.transform.rotation.yaw) > 25.:
+            return reject('corridor_curvature_over_25deg')
+        if i == 4:
+            ego = cur
+    # Projection-based progress/TTC assumes the corridor is not a U-turn.
+    if ego is None or _xy(ego.transform.location, wp.transform.location) < 18.:
+        return reject('ego_position_degenerate')
+    if _xy(cur.transform.location, ego.transform.location) < 70.:
+        return reject('goal_position_degenerate')
+    return {'ego': ego, 'follower_a': wp, 'follower_b': back, 'end': cur}
 
 
 def junction_candidate(wp,world,carla,incoming=None):
@@ -91,40 +144,86 @@ def junction_candidate(wp,world,carla,incoming=None):
     return None
 
 
-def build_anchors(world, archetype, count, seed):
-    """Use WAYPOINTS, not arbitrary world coordinates; no forced collision geometry."""
-    if archetype not in ('cut_in','convoy','intersection','support_gap'):
-        raise ValueError('Unknown case archetype: '+archetype)
+def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
+    """Select map-grounded anchors, checking all candidate road geometry.
+
+    First check recommended spawn points; if insufficient, search the map's
+    dense driving-lane waypoints. Spawn points are NOT an exhaustive road map.
+    The result and rejection counts are deterministic for a fixed map and seed.
+    """
+    if archetype not in ('cut_in', 'convoy', 'intersection', 'support_gap'):
+        raise ValueError('Unknown case archetype: ' + archetype)
     import carla
-    kind='convoy' if archetype=='support_gap' else archetype
-    find={'cut_in':cut_in_candidate,'convoy':convoy_candidate,'intersection':None}[kind]
-    if kind=='intersection':
-        incoming=[wp for wp in world.get_map().generate_waypoints(4.) if _driving(wp,carla)
-                  and any(x.is_junction for x in wp.next(14.))]
-        pts=[wp.transform for wp in incoming]
+    road_map = world.get_map()
+    kind = 'convoy' if archetype == 'support_gap' else archetype
+    find = {'cut_in':cut_in_candidate, 'convoy':convoy_candidate, 'intersection':None}[kind]
+    rng = random.Random(seed)
+    diagnostics = {'map':road_map.name, 'archetype':archetype,
+                   'spawn_points_scanned':0, 'map_waypoints_scanned':0,
+                   'rejections':{}, 'anchors_found':0}
+    rows = []; used = []
+
+    def try_candidate(wp):
+        if kind == 'intersection':
+            return junction_candidate(wp,world,carla,incoming)
+        if kind == 'convoy':
+            return convoy_candidate(wp,carla,diagnostics['rejections'])
+        return find(wp,carla)
+
+    def add(case):
+        center = case['follower_a'].transform.location
+        key = [float(center.x),float(center.y),float(center.z)]
+        if any(math.dist(key,x) < 65. for x in used):
+            return
+        used.append(key)
+        coords = {k:[round(getattr(v.transform.location,axis),3)
+                     for axis in ('x','y','z')]
+                  for k,v in case.items() if not k.startswith('_')}
+        identities = {k:{'road_id':int(v.road_id),'lane_id':int(v.lane_id),
+                          'yaw':round(float(v.transform.rotation.yaw),3)}
+                      for k,v in case.items() if not k.startswith('_')}
+        rows.append({'anchor':len(rows),'key':key,'coords':coords,
+                     'waypoint_identities':identities,
+                     'archetype':archetype,'target_lane_id':case.get('_target_lane_id'),
+                     'map':road_map.name})
+
+    if kind == 'intersection':
+        incoming=[wp for wp in road_map.generate_waypoints(4.)
+                  if _driving(wp,carla) and any(x.is_junction for x in wp.next(14.))]
+        candidates = list(incoming)
+        rng.shuffle(candidates)
+        for wp in candidates:
+            diagnostics['map_waypoints_scanned'] += 1
+            case = try_candidate(wp)
+            if case is not None: add(case)
+            if len(rows) >= count:break
     else:
         incoming=None
-        pts=world.get_map().get_spawn_points()
-    random.Random(seed).shuffle(pts)
-    rows=[]; used=[]
-    for tr in pts:
-        wp=world.get_map().get_waypoint(tr.location,project_to_road=True,lane_type=carla.LaneType.Driving)
-        case=junction_candidate(wp,world,carla,incoming) if kind=='intersection' else find(wp,carla)
-        if case is None:continue
-        c=case['follower_a'].transform.location
-        key=[float(c.x),float(c.y),float(c.z)]
-        if any(math.dist(key,x)<65. for x in used):continue
-        used.append(key)
-        coords={k:[round(getattr(v.transform.location,axis),3) for axis in ('x','y','z')]
-                for k,v in case.items() if not k.startswith('_')}
-        identities={k:{'road_id':int(v.road_id),'lane_id':int(v.lane_id),
-                        'yaw':round(float(v.transform.rotation.yaw),3)}
-                    for k,v in case.items() if not k.startswith('_')}
-        rows.append({'anchor':len(rows),'key':key,'coords':coords,'waypoint_identities':identities,
-                     'archetype':archetype,'target_lane_id':case.get('_target_lane_id'),
-                     'map':world.get_map().name})
-        if len(rows)>=count:break
-    return rows
+        spawn_points=list(road_map.get_spawn_points())
+        rng.shuffle(spawn_points)
+        for tr in spawn_points:
+            diagnostics['spawn_points_scanned'] += 1
+            wp = road_map.get_waypoint(tr.location,project_to_road=True,
+                                       lane_type=carla.LaneType.Driving)
+            case = try_candidate(wp)
+            if case is not None:add(case)
+            if len(rows) >= count:break
+        if len(rows) < count:
+            # CARLA's recommended spawn points are a *subset* of lanes; scan
+            # physical road centerlines without changing scene geometry.
+            road_waypoints=list(road_map.generate_waypoints(10.))
+            road_waypoints.sort(key=lambda x:(x.road_id,x.lane_id,
+                round(float(getattr(x,'s',0.)),2),
+                round(float(x.transform.location.x),2),
+                round(float(x.transform.location.y),2)))
+            rng.shuffle(road_waypoints)
+            for wp in road_waypoints:
+                diagnostics['map_waypoints_scanned'] += 1
+                case = try_candidate(wp)
+                if case is not None:add(case)
+                if len(rows) >= count:break
+    diagnostics['anchors_found'] = len(rows)
+    return (rows, diagnostics) if with_diagnostics else rows
 
 
 def restore(world,anchor,carla):
