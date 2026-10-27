@@ -43,3 +43,7 @@ python -m ride.carla.run \
   2>&1 | tee "$RIDE_OUTPUT_ROOT/carla/${CASE}.log"
 python -m ride.evidence --input "$OUT" --output "$RIDE_OUTPUT_ROOT/carla/${CASE}_audit.json"
 python -m ride.carla.analyze --jsonl "$OUT" --out "$RIDE_OUTPUT_ROOT/carla/${CASE}_joint_backup_audit.json"
+# Explicit separate smoke validity gate. Analysis artifacts are kept even on failure.
+if [[ "${RIDE_SMOKE_REQUIRE_VALID:-1}" == 1 ]]; then
+  python -m ride.carla.smoke_validate --jsonl "$OUT"
+fi

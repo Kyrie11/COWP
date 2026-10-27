@@ -6,6 +6,9 @@ from ride.carla.run import _prepare_trial_world
 from ride.carla.health import inspect
 
 
+class FakeActors(list):
+    def filter(self, pattern):return list(self)
+
 class FakeWorld:
     def __init__(self, name='Carla/Maps/Town04', count=0):
         self.name=name
@@ -13,7 +16,9 @@ class FakeWorld:
     def get_map(self):
         return SimpleNamespace(name=self.name)
     def get_actors(self):
-        return SimpleNamespace(filter=lambda pattern: [object()] * self.count)
+        return FakeActors([SimpleNamespace(id=i,type_id='vehicle.tesla.model3',attributes={},
+               get_location=lambda: SimpleNamespace(x=0.,y=0.,z=0.))
+               for i in range(self.count)])
     def get_snapshot(self):
         return SimpleNamespace(frame=123)
     def get_settings(self):

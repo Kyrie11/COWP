@@ -40,7 +40,9 @@ def summarise_trial(row):
     if row.get('unexpected_actor'):reasons.append('uncontrolled_actor')
     if row.get('simulation_exception'):reasons.append('simulation_exception')
     if any(not x['road_valid_all'] for x in ts):reasons.append('offroad_or_lane_departure')
-    if any(x.get('red_light_motion_roles') for x in ts):reasons.append('red_traffic_light_motion')
+    # CARLA is_at_traffic_light() denotes a traffic-light trigger area, not
+    # a verified crossing of the red stop line. This is a warning proxy only.
+    red_trigger_moving=any(x.get('red_light_motion_roles') for x in ts)
     if row.get('initial_state_mismatch'):reasons.append('unpaired_initial_state')
     if row.get('sensor_overlap_disagreement_pairs'):
         reasons.append('collision_sensor_vs_obb_disagreement')
@@ -55,6 +57,8 @@ def summarise_trial(row):
                else True)
     out={
       'valid':not reasons,'reasons':reasons,
+      'traffic_light_legality_verified':False,
+      'red_light_trigger_motion_proxy_observed':bool(red_trigger_moving),
       'ego_progress_m':road_end,
       'ego_path_length_m':float(ts[-1]['ego_path_length_m']),
       'progress_measure':ts[-1]['progress_measure'],

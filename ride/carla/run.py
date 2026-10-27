@@ -16,9 +16,10 @@ To run from your CARLA root, ensure `import carla` and
 `from agents.navigation... import ...` both work. See README.
 """
 from __future__ import annotations
-import argparse, json, math, os, random, sys, traceback, time
+import argparse, json, math, os, random, sys, traceback, time, uuid
 from pathlib import Path
 from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, closing_ttc, summarise_trial
+from .actor_lifecycle import check_spawn_state, destroy_verified, inventory
 
 
 def xy_distance(a,b):return math.hypot(a.x-b.x,a.y-b.y)
@@ -34,13 +35,17 @@ def _carla():
     return carla
 
 
-def _spawn(world,wp,blueprint):
+def _spawn(world,wp,blueprint,role_name=None):
     carla=_carla()
     t=wp.transform
     # Copy the transform. Mutating the returned waypoint transform is unsafe.
     tr=carla.Transform(
         carla.Location(x=t.location.x,y=t.location.y,z=t.location.z+0.25),
         carla.Rotation(pitch=t.rotation.pitch,yaw=t.rotation.yaw,roll=t.rotation.roll))
+    if role_name:
+        if not blueprint.has_attribute('role_name'):
+            raise RuntimeError('RIDE_ACTOR_OWNERSHIP_TAG_UNAVAILABLE: blueprint has no role_name')
+        blueprint.set_attribute('role_name', role_name)
     actor=world.try_spawn_actor(blueprint,tr)
     if actor is None:raise RuntimeError('Actor spawn failed; no collision-free spawn in selected lane')
     return actor
@@ -87,11 +92,13 @@ def _prepare_trial_world(client, args, family, profile):
             raise RuntimeError('ACTOR_RESET_MAP_MISMATCH: currently '+current_name+
                                ', expected '+target+'. Use a separate map setup before trials.')
         # This is a dedicated-server experiment. Never delete someone else's actors.
-        occupied = list(current_world.get_actors().filter('vehicle.*'))
+        occupied = [r for r in inventory(current_world)
+                    if r['type_id'].startswith('vehicle.')]
         if occupied:
             raise RuntimeError('ACTOR_RESET_WORLD_NOT_EMPTY: '+str(len(occupied))+
-                               ' existing vehicle(s). Use a dedicated server/port; '
-                               'do not delete unrelated actors.')
+                               ' existing vehicle(s) '+json.dumps(occupied,ensure_ascii=False)+
+                               '. First inspect with python -m ride.carla.actor_lifecycle; '
+                               'only explicitly delete confirmed owned IDs.')
         world = current_world
         print(f'RIDE_TRIAL_WORLD_REUSE family={family} profile={profile} '
               f'map={current_name}', flush=True)
@@ -122,13 +129,16 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
     settings.substepping=True;settings.max_substep_delta_time=0.01;settings.max_substeps=10
     tm=None
     actors=[];sensors=[];collisions=[];overlap_proxy=set();vehicles={}
+    # Unique identifier for every trial, enabling safe cleanup of future orphans.
+    trial_uid=uuid.uuid4().hex[:12]
     result={'anchor':anchor['anchor'],'family':family,'profile':profile,'seed':seed,
             'joint_targets':joint_targets,'recovery':recovery,'recovery_time_s':args.recovery_time_s,'trace':[],'collision_events':[],
             'archetype':getattr(args,'archetype','convoy'),
             'source':'CARLA_0_9_16_GENERATED_SCENE_NOT_WOMD',
             'causal_scope':'simulation_intervention_only',
-            'world_reset_protocol':args.world_reset,
-            'traffic_lights_reset':args.world_reset == 'actors'}
+            'world_reset_protocol':args.world_reset, 'trial_uid':trial_uid,
+            'traffic_lights_reset':args.world_reset == 'actors',
+            'traffic_light_legality_verified':False}
     try:
         world.apply_settings(settings)
         print(f'RIDE_WORLD_SETTINGS_APPLIED family={family} profile={profile}',flush=True)
@@ -149,7 +159,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         vehicles={}
         for role in ('ego','follower_a','follower_b'):
             # Pass fresh CARLA Transform: do not mutate live map waypoint position
-            vehicles[role]=_spawn(world,c[role],bp)
+            vehicles[role]=_spawn(world,c[role],bp,role_name=f'ride.{trial_uid}.{role}')
             actors.append(vehicles[role])
         actor_to_role={v.id:k for k,v in vehicles.items()}
         # Listen for physical collision events; pair IDs are scenario-local role
@@ -166,6 +176,15 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         for role,v in vehicles.items():
             d=c[role].transform.get_forward_vector()
             v.set_target_velocity(carla.Vector3D(d.x*args.cruise_mps,d.y*args.cruise_mps,0))
+        # CARLA synchronous spawning and velocity updates must be committed by a
+        # simulator tick. A zero-state read before this frame invalidates all
+        # collision/overlap conclusions (as happened in the uploaded smoke A).
+        print('RIDE_SPAWN_PRIME_TICK_BEGIN '+trial_uid, flush=True)
+        world.tick()
+        spawn_checks=check_spawn_state(vehicles,c)
+        result['spawn_checks']=spawn_checks
+        result['actor_ids']={role:int(actor.id) for role,actor in vehicles.items()}
+        print('RIDE_SPAWN_PRIME_TICK_DONE '+json.dumps(spawn_checks),flush=True)
         ego_ctrl=_pid(vehicles['ego'])
         responders={}
         if family=='behavior':
@@ -220,7 +239,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['initial_overlap_pairs']=initial_pairs
         result['initial_overlap']=bool(initial_pairs)
         if result['initial_overlap']:
-            result['reason']='overlap_after_warmup';return result
+            result['reason']='overlap_after_warmup'
+            result['metrics']={'valid':False,'reasons':['overlap_after_warmup']}
+            return result
         for step in range(round(args.duration_s/DT)):
             t=step*DT
             target=(args.cruise_mps if getattr(args,'archetype','convoy')=='cut_in'
@@ -306,7 +327,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                     if light is not None and light.get_state()==carla.TrafficLightState.Red and new_speeds[role]>0.5:
                         red_motion.append(role)
             frame={'t':round((step+1)*DT,3),
-                'red_light_motion_roles':red_motion,'ego_target_speed_mps':float(target),
+                # CARLA trigger-volume motion does not prove crossing a stop line.
+                'red_light_motion_roles':red_motion,
+                'ego_target_speed_mps':float(target),
                 'ego_speed_mps':new_speeds['ego'],'ego_progress_m':float(route_progress),
                 'ego_path_length_m':s['ego'],
                 'progress_measure':'goal_distance_reduction_proxy' if use_goal_distance else 'goal_axis_projection',
@@ -352,23 +375,33 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['metrics']=summarise_trial(result) if result['trace'] else {'valid':False,'reasons':['exception']}
         return result
     finally:
+        # Server-verified batch removal replaces unreliable consecutive
+        # actor.destroy calls. Keep synchronous world tick authority until the
+        # deletion acknowledgement; otherwise a later trial can see orphans.
         if tm is not None:
             for role in ('follower_a', 'follower_b'):
-                try:
-                    if role in vehicles:
-                        vehicles[role].set_autopilot(False, args.tm_port)
-                except Exception:pass
-        for a in sensors:
-            try:a.stop()
+                if role in vehicles:
+                    try:vehicles[role].set_autopilot(False, args.tm_port)
+                    except Exception as exc:
+                        print('RIDE_TM_DISABLE_WARNING '+repr(exc),flush=True)
+        for sensor in sensors:
+            try:sensor.stop()
             except Exception:pass
-        for a in sensors+actors:
-            try:a.destroy()
-            except Exception:pass
+        cleanup_exc=None
+        try:
+            destroy_verified(client,world,[a.id for a in sensors+actors],
+                             carla_api=carla,label=trial_uid)
+        except Exception as exc:
+            cleanup_exc=exc
+            print('RIDE_ACTOR_CLEANUP_FAILED '+repr(exc),flush=True)
         if tm is not None:
             try:tm.set_synchronous_mode(False)
-            except Exception:pass
+            except Exception as exc:print('RIDE_TM_RESTORE_WARNING '+repr(exc),flush=True)
         try:world.apply_settings(old)
-        except Exception:pass
+        except Exception as exc:
+            print('RIDE_WORLD_RESTORE_WARNING '+repr(exc),flush=True)
+        if cleanup_exc is not None:
+            raise RuntimeError('RIDE_TRIAL_NOT_CLEAN: '+str(cleanup_exc)) from cleanup_exc
 
 
 def main():
@@ -468,6 +501,9 @@ def main():
               'world_reset_protocol':('actors_only_per_trial_with_traffic_light_reset'
                                       if a.world_reset=='actors' else 'reload_world_per_trial'),
               'world_reset_policy':a.world_reset,
+              'actor_cleanup_protocol':'server_verified_batch_destroy_with_sync_tick',
+              'traffic_light_legality_protocol':'unverified_red_trigger_motion_proxy_only',
+              'spawn_init_protocol':'mandatory_post_spawn_sync_tick_and_anchor_validation',
               'scientific_reset_limitation':('actor reset does not restore all hidden Unreal '
                   'state; inspect initial_states, traffic lights, and run strict reload '
                   'on a stable server before making deterministic causal claims'
