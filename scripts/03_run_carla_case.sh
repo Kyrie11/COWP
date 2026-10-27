@@ -35,7 +35,7 @@ python -m ride.carla.run \
   --archetype "$CASE" --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
-  --warmup-ticks "${RIDE_WARMUP_TICKS:-0}" --no-rendering --anchors-from "$FROZEN" \
+  --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --no-rendering --anchors-from "$FROZEN" \
   --timeout "${RIDE_CARLA_TIMEOUT:-120}" --world-reset "${RIDE_WORLD_RESET:-actors}" \
   --families "${RIDE_FAMILY_LIST[@]}" \
   --profiles "${RIDE_PROFILE_LIST[@]}" \

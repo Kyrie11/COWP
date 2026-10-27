@@ -138,7 +138,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             'causal_scope':'simulation_intervention_only',
             'world_reset_protocol':args.world_reset, 'trial_uid':trial_uid,
             'traffic_lights_reset':args.world_reset == 'actors',
-            'traffic_light_legality_verified':False}
+            'traffic_light_legality_verified':False, 'warmup_ticks':args.warmup_ticks}
     try:
         world.apply_settings(settings)
         print(f'RIDE_WORLD_SETTINGS_APPLIED family={family} profile={profile}',flush=True)
@@ -231,6 +231,12 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         out_init={k:{'xyz':[v.x,v.y,v.z],'speed_mps':speeds[k]} for k,v in init_xy.items()}
         for k in out_init:out_init[k]['speed_mps']=speeds[k]
         result['initial_states']=out_init
+        # A collision sensor is armed BEFORE the prime tick and before the
+        # common warm-up. Those contacts are pre-intervention confounders,
+        # never ego-action-induced outcomes. Use CARLA frame IDs to separate
+        # late-arriving asynchronous collision callbacks reliably.
+        intervention_start_frame=int(world.get_snapshot().frame)
+        result['intervention_start_frame']=intervention_start_frame
         # No initial collisions or impossible follower overlaps.
         from ride.geometry import carla_actor_overlap
         initial_pairs=[(x,y) for x,y in
@@ -253,7 +259,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             else:
                 from ride.carla_scenarios import ego_target_waypoint
                 ego_wp=ego_target_waypoint(world,vehicles['ego'],c,args.archetype,profile,t,carla)
-            vehicles['ego'].apply_control(ego_ctrl.run_step(target*3.6,ego_wp))
+            ego_command=ego_ctrl.run_step(target*3.6,ego_wp)
+            vehicles['ego'].apply_control(ego_command)
             if family=='behavior':
                 for role,a in responders.items():vehicles[role].apply_control(a.run_step())
             if family=='joint_witness':
@@ -321,15 +328,38 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             # CARLA traffic-light observations: report traffic signal legality.
             # A trial that moves at a red signal is not a valid 'safe' witness.
             red_motion=[]
+            traffic_signal_states={}
+            controls={}
+            physics_long_accel={}
             for role,v in vehicles.items():
+                ctl=v.get_control()
+                controls[role]={'throttle':float(ctl.throttle),
+                                'brake':float(ctl.brake),
+                                'steer':float(ctl.steer)}
+                raw_accel=v.get_acceleration()
+                heading=v.get_transform().get_forward_vector()
+                physics_long_accel[role]=float(raw_accel.x*heading.x + raw_accel.y*heading.y)
                 if v.is_at_traffic_light():
                     light=v.get_traffic_light()
-                    if light is not None and light.get_state()==carla.TrafficLightState.Red and new_speeds[role]>0.5:
-                        red_motion.append(role)
+                    if light is not None:
+                        state=str(light.get_state())
+                        traffic_signal_states[role]={'traffic_light_id':int(light.id),
+                                                     'state':state,
+                                                     'is_trigger_overlap_only':True}
+                        if light.get_state()==carla.TrafficLightState.Red and new_speeds[role]>0.5:
+                            red_motion.append(role)
             frame={'t':round((step+1)*DT,3),
+                'controls_by_role':controls,
+                'physics_forward_accel_by_role':physics_long_accel,
+                'traffic_signal_states_by_role':traffic_signal_states,
                 # CARLA trigger-volume motion does not prove crossing a stop line.
                 'red_light_motion_roles':red_motion,
                 'ego_target_speed_mps':float(target),
+                'ego_controller_steer':float(ego_command.steer),
+                'ego_controller_brake':float(ego_command.brake),
+                'ego_controller_throttle':float(ego_command.throttle),
+                'ego_target_waypoint_lane_id':int(ego_wp.lane_id),
+                'ego_target_waypoint_road_id':int(ego_wp.road_id),
                 'ego_speed_mps':new_speeds['ego'],'ego_progress_m':float(route_progress),
                 'ego_path_length_m':s['ego'],
                 'progress_measure':'goal_distance_reduction_proxy' if use_goal_distance else 'goal_axis_projection',
@@ -342,6 +372,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'follower_a_in_junction':bool(a_wp_now and a_wp_now.is_junction),
                 'follower_a_accel':(new_speeds['follower_a']-speeds['follower_a'])/DT,
                 'follower_b_accel':(new_speeds['follower_b']-speeds['follower_b'])/DT,
+                'follower_a_lane_id':(int(awp.lane_id) if awp else None),
+                'follower_a_road_id':(int(awp.road_id) if awp else None),
+                'follower_b_lane_id':(int(bwp.lane_id) if bwp else None),
+                'follower_b_road_id':(int(bwp.road_id) if bwp else None),
                 'follower_a_speed_mps':new_speeds['follower_a'],
                 'follower_b_speed_mps':new_speeds['follower_b'],
                 'rear_pair_gap_m':gap,'rear_pair_ttc_s':min(ttc,9999.) if ttc is not None else None,
@@ -356,8 +390,11 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # frames. This bounded receive grace drains last-frame events without
         # taking another simulation tick (which would change the action).
         time.sleep(0.12)
-        result['collision_events']=collisions[:]
-        pairs={tuple(sorted((x['role_a'],x['role_b']))) for x in collisions}
+        pre_action=[event for event in collisions if event['frame']<=intervention_start_frame]
+        post_action=[event for event in collisions if event['frame']>intervention_start_frame]
+        result['pre_action_collision_events']=pre_action
+        result['collision_events']=post_action
+        pairs={tuple(sorted((x['role_a'],x['role_b']))) for x in post_action}
         result['ego_collision']=any('ego' in p for p in pairs)
         result['non_ego_collision']=any('ego' not in p for p in pairs)
         result['non_ego_pair_collision']=('follower_a','follower_b') in pairs
@@ -425,7 +462,8 @@ def main():
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
     p.add_argument('--cruise-mps',type=float,default=9.)
-    p.add_argument('--warmup-ticks',type=int,default=0)
+    p.add_argument('--warmup-ticks',type=int,default=20,
+                   help='common pre-action settle frames; action time t=0 starts after warmup')
     p.add_argument('--no-rendering',action='store_true')
     p.add_argument('--joint-profile',choices=PROFILES)
     p.add_argument('--joint-target-grid',type=float,nargs='+',default=[7.,10.,13.])
@@ -446,6 +484,7 @@ def main():
         p.error('--output is required for freezing/executing experiments')
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
+    if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
     if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
@@ -477,7 +516,8 @@ def main():
             frozen.get('map')!=world.get_map().name or
             frozen.get('seed')!=a.seed or
             frozen.get('cruise_mps')!=a.cruise_mps or
-            frozen.get('duration_s')!=a.duration_s):
+            frozen.get('duration_s')!=a.duration_s or
+            frozen.get('warmup_ticks',0)!=a.warmup_ticks):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
         anchors=frozen.get('anchors',[])
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')

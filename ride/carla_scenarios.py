@@ -9,9 +9,9 @@ import math, random
 
 # The frozen anchor protocol changed: old spawn-only manifests cannot be
 # silently reused in a revised map-search experiment.
-# v3 separates support_gap from the historical convoy alias and includes the
+# v4 positions ego within the true merge gap and includes the
 # CARLA 0.9.16 yaw fix.  Old frozen anchors must be regenerated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v3_20261027"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v4_20261027"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -29,36 +29,66 @@ def _same_dir(wp,other):return yaw_diff(wp.transform.rotation.yaw,other.transfor
 def _xy(a,b):return math.hypot(a.x-b.x,a.y-b.y)
 
 
-def cut_in_candidate(wp,carla):
-    """Ego in an adjacent lane, other vehicles in target lane. No initial overlap."""
-    if not _driving(wp,carla):return None
-    follower_b=_one(wp.previous(18.))
-    future=_one(wp.next(75.))
-    front=_one(wp.next(12.))
-    if not all(_driving(v,carla) for v in [follower_b,future,front]):return None
-    for neighbor in (front.get_left_lane(),front.get_right_lane()):
-        if not _driving(neighbor,carla):continue
-        if neighbor.road_id!=wp.road_id or not _same_dir(neighbor,wp):continue
-        # Normal neighboring driving lanes are only ~3.0-4.0m apart.
-        # The previous 5m minimum silently rejected ordinary cut-in anchors.
-        lateral=_xy(neighbor.transform.location,front.transform.location)
-        if not 2.4<=lateral<=6.5:continue
-        return {'ego':neighbor,'follower_a':wp,'follower_b':follower_b,'end':future,
-                '_target_lane_id':wp.lane_id}
+def cut_in_candidate(wp, carla):
+    """Pre-contact adjacent-lane gap: front A, ego within gap, rear B.
+
+    The former constructor put ego 12 m *ahead* of A and allowed a route
+    through a junction. It thus did not create the claimed cut-in conflict.
+    Here positions are arc-ordered A(0), ego(-9), B(-22), with an actual
+    adjacent lane and a junction-free 90 m target corridor. Unavailable geometry is
+    rejected, never silently approximated.
+    """
+    if not _driving(wp, carla):
+        return None
+    middle = _one(wp.previous(9.0))
+    behind = _one(wp.previous(22.0))
+    if not all(_driving(v, carla) for v in (middle, behind)):
+        return None
+    if not all(v.road_id == wp.road_id and v.lane_id == wp.lane_id and
+               _same_dir(v, wp) for v in (middle, behind)):
+        return None
+    # The 8s rollout at 9m/s can travel ~72m. Requiring only 35m of
+    # nonjunction road in v3 allowed 2513/3233 discovery trials to touch a
+    # junction, and BehaviorAgent could exhaust a dead-end local route.
+    # Verify a full 90m continuous target corridor, including the endpoint.
+    cur = wp
+    for _ in range(18):
+        nxt = _one(cur.next(5.0))
+        if (not _driving(nxt, carla) or not _same_dir(nxt, wp) or
+                nxt.lane_id != wp.lane_id):
+            return None
+        cur = nxt
+    end = cur
+    # The neighbor must exist at the prospective ego insertion position.
+    for neighbor in (middle.get_left_lane(), middle.get_right_lane()):
+        if not _driving(neighbor, carla):
+            continue
+        if neighbor.road_id != wp.road_id or not _same_dir(neighbor, wp):
+            continue
+        lateral = _xy(neighbor.transform.location, middle.transform.location)
+        if not 2.4 <= lateral <= 6.5:
+            continue
+        # Verify physical forward order with same-heading projection.
+        angle = math.radians(float(wp.transform.rotation.yaw))
+        hx, hy = math.cos(angle), math.sin(angle)
+        def forward_gap(a, b):
+            pa, pb = a.transform.location, b.transform.location
+            return float((pa.x-pb.x)*hx + (pa.y-pb.y)*hy)
+        if not (6.0 <= forward_gap(wp, neighbor) <= 12.0 and
+                9.0 <= forward_gap(neighbor, behind) <= 17.0):
+            continue
+        return {'ego': neighbor, 'follower_a': wp, 'follower_b': behind,
+                'end': end, '_target_lane_id': wp.lane_id}
+    return None
 
 
 def support_gap_candidate(wp, carla):
-    """Return a real adjacent-lane gap/merge anchor.
+    """Same *physical* gap class as cut_in, with finite-library diagnostics.
 
-    The finite response-bank experiment needs the ego to enter a target lane
-    between a front vehicle and a following pair.  It must not reuse the
-    straight convoy geometry, because that would make a ``support_gap`` label
-    with no gap or merge mechanism.  The same local lane construction is used
-    as ``cut_in_candidate`` so that the two scenarios differ only in the
-    downstream finite-response protocol.
+    This is not an independent fourth spatial archetype; S4 is a different
+    scientific experiment (nested recourse coverage) on the cut-in geometry.
     """
     return cut_in_candidate(wp, carla)
-    return None
 
 
 def _unique_lane_step(wp, distance, carla, *, backward=False):
@@ -81,7 +111,7 @@ def _unique_lane_step(wp, distance, carla, *, backward=False):
 
 
 def convoy_candidate(wp, carla, rejection=None):
-    """Find an actual 118m lane corridor for S2/S4, including a 100m goal.
+    """Find an actual 118m lane corridor for S2 convoy, including a 100m goal.
 
     Relative roles (meters along the driving lane) stay identical to the
     original protocol: B=-18, A=0, ego=+20, goal=+100. We do *not* shorten
@@ -271,7 +301,7 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
             choices=[x for x in (wp.get_left_lane(),wp.get_right_lane()) if x and
                      x.lane_id==target_lane_id and _driving(x,carla) and _same_dir(x,wp)]
             if choices:
-                nxt=_one(choices[0].next(9.))
+                nxt=_one(choices[0].next(7.))
                 if nxt is not None:return nxt
     ahead=wp.next(8.)
     if not ahead:return wp

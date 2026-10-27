@@ -13,12 +13,12 @@ python -m ride.carla.ports --mode client --host "$CARLA_HOST" \
 COMMON=(--host "$CARLA_HOST" --port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT" --archetype support_gap --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
-  --no-rendering --anchors-from "$FROZEN" --families tm behavior \
+  --no-rendering --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --anchors-from "$FROZEN" --families tm behavior \
   --profiles early_slow late_slow --joint-profile early_slow)
-# Narrow 3x3 candidate bank must be a strict subset of the wide 6x6 bank.
-python -m ride.carla.run "${COMMON[@]}" --joint-limit 9 \
-  --joint-target-grid 6 9 12 --output "$NARROW"
+# One wide physical run; derive NARROW by filtering exactly the same records.
+# This removes actor-reset hidden-state differences from the nested-bank test.
+# It is still *not* external replication or a global UNSAT certificate.
 python -m ride.carla.run "${COMMON[@]}" --joint-limit 36 \
   --joint-target-grid 4 6 8 9 10 12 --output "$WIDE"
-python -m ride.support --narrow "$NARROW" --wide "$WIDE" \
-  --output "$RIDE_OUTPUT_ROOT/carla/support_gap_bank_ablation.json"
+python -m ride.support --wide "$WIDE" --derive-narrow "$NARROW" \
+  --narrow-grid 6 9 12 --output "$RIDE_OUTPUT_ROOT/carla/support_gap_bank_ablation.json"

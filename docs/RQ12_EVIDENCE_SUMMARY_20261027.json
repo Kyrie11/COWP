@@ -1,0 +1,276 @@
+{
+  "audit_date": "2026-10-27",
+  "work_title": "RIDE: Response-Model-Induced Decision Errors in Interactive Driving",
+  "data_immutability": {
+    "自动驾驶论文定位分析.md": {
+      "size_bytes": 115236,
+      "sha256": "96daeded5ee626486de3435fd6c37942aef53247660ae16f6ca762aa85813802"
+    },
+    "RIDE.zip": {
+      "size_bytes": 237549,
+      "sha256": "b98a5ab20442ccc975e3f6709d4a7ea71d9cdd7619d14ef8c0baae7f71c45b39"
+    },
+    "rq12_discovery_20261027.zip": {
+      "size_bytes": 95325615,
+      "sha256": "a1e8c120cd0c85a5d29be85eb68a5f40bd9f5e75d2f8164df7237e4b8717f4a0"
+    },
+    "rq12_fix_smoke_20261027.zip": {
+      "size_bytes": 5291486,
+      "sha256": "923112d9bf516bd9beebf2339c897680430d14ca084099685e7f6653e0f1c212"
+    },
+    "womd_dev_20261027.zip": {
+      "size_bytes": 610167,
+      "sha256": "dc6aaec8a63cdd152df9b6ba0bf9cf5189c2677b3b333fc35da86fa4d1d3553f"
+    }
+  },
+  "smoke": {
+    "summary": {
+      "archetypes": [
+        "convoy",
+        "cut_in",
+        "intersection",
+        "support_gap"
+      ],
+      "total_trials": 65,
+      "complete_preregistered_contrasts": 8,
+      "missing_contrast_arms": 8,
+      "valid_task_matched_contrasts": 2,
+      "signed_effect_a_worse": 0,
+      "signed_effect_a_better": 0,
+      "cross_family_matching_collision_effects": 0,
+      "cross_family_response_disagreement": 0,
+      "invalid_reasons": {
+        "scenario_maneuver_not_executed": 4,
+        "invalid_trial": 2
+      },
+      "strict_physical_collision_is_not_human_causation": true,
+      "calibrated_independent_human_model": false,
+      "rq3_strong_baselines_executed": false,
+      "model_disagreement_is_not_a_proof_of_decision_error": true
+    },
+    "ranking": {
+      "candidate_pairs_checked": 4,
+      "task_matched_cross_model_pairs": 1,
+      "primary_pairs_preregistered": [
+        [
+          "early_slow",
+          "late_slow"
+        ],
+        [
+          "mild_early",
+          "mild_late"
+        ]
+      ],
+      "strict_risk_order_reversals": 0,
+      "tie_preference_mismatches": 0,
+      "posthoc_outcome_ranking_not_actual_planner_choice": true,
+      "third_party_endpoints_lexicographic": [
+        "third_party_pair_collision",
+        "hard_braking_proxy",
+        "short_ttc_proxy"
+      ],
+      "human_behavior_calibration_not_established": true
+    },
+    "support_gap": {
+      "cases": 1,
+      "valid_nested_bank_comparisons": 0,
+      "inconclusive_shared_candidate_inconsistency": 1,
+      "finite_bank_misses": 0,
+      "global_UNSAT_proven": false,
+      "labels_valid_only_under_explicit_CARLA_models": true
+    }
+  },
+  "discovery": {
+    "protocol": "descriptive_forensics_v1_not_science_gate",
+    "run_completed_and_count_verified": false,
+    "last_record_type": "trial",
+    "counts": {
+      "records": 3234,
+      "type_manifest": 1,
+      "declared_anchor_count": 10,
+      "type_trial": 3233,
+      "valid": 2346,
+      "hard_brake_original_proxy": 3233,
+      "ego_junction_touched": 2513,
+      "available_post_1s": 3233,
+      "post_1s_instantaneous_brake_proxy": 1918,
+      "post_1s_sustained_brake_proxy": 700,
+      "invalid_reason_offroad_or_lane_departure": 783,
+      "third_party_pair_collision": 843,
+      "ego_collision": 684,
+      "invalid_reason_collision_sensor_vs_obb_disagreement": 89,
+      "target_lane_touched": 1290,
+      "mechanism_executed": 30,
+      "simulation_exception": 15,
+      "incomplete_trial_trace": 15,
+      "invalid_reason_simulation_exception": 15,
+      "exception_AttributeError": 15
+    },
+    "family_counts": {
+      "tm": {
+        "trials": 450,
+        "valid": 342,
+        "hard_brake_original_proxy": 450,
+        "ego_junction_touched": 360,
+        "target_lane_touched": 105,
+        "mechanism_executed": 15
+      },
+      "behavior": {
+        "trials": 450,
+        "valid": 300,
+        "hard_brake_original_proxy": 450,
+        "ego_junction_touched": 360,
+        "target_lane_touched": 105,
+        "mechanism_executed": 15,
+        "simulation_exception": 15,
+        "incomplete_trial_trace": 15
+      },
+      "joint_witness": {
+        "trials": 2333,
+        "valid": 1704,
+        "hard_brake_original_proxy": 2333,
+        "ego_junction_touched": 1793,
+        "third_party_pair_collision": 843,
+        "ego_collision": 684,
+        "target_lane_touched": 1080
+      }
+    },
+    "rough_action_pairs_NOT_official_RQ1_or_RQ2": {
+      "complete_preregistered_arm_pairs": 300,
+      "maneuver_not_executed": 143,
+      "invalid_pair": 157
+    },
+    "distinct_anchor_seed_contexts": 75,
+    "limitations": [
+      "Only basic within-family action pairs are checked; use ride.evidence/ride.ranking for full validity",
+      "Post-1s braking counts are post-hoc sensitivity diagnostics, not pre-registered endpoints",
+      "Joint-witness externally controlled agents are not independent human responses",
+      "CARLA TM and BehaviorAgent share CARLA dynamics and map"
+    ]
+  },
+  "womd": {
+    "coverage": {
+      "complete": true,
+      "expected_shards": 150,
+      "actual_shards": 150,
+      "shard_indices_sha256": "0b2c0367a9867c5feb374972b8cb9f76f5eb4775e17833caf7d30f44e112f117",
+      "record_iteration_uncapped": true,
+      "bad_decoded_records": 0,
+      "decode_integrity_pass": true
+    },
+    "counts": {
+      "examined": 43695,
+      "usable": 40912,
+      "bad_records": 0,
+      "past_only_interactive": 38478,
+      "excluded_overlap": 2200
+    },
+    "num_cohort_entries": 2358,
+    "selection_splits": {
+      "development": 1758,
+      "sealed_holdout": 600
+    },
+    "observational_fit": {
+      "scientific_claim_allowed": false,
+      "attempted": 320,
+      "eligible": 310,
+      "errors": [],
+      "partition": "development",
+      "conditioning": "logged ego future, observational evaluation only",
+      "steps": 10,
+      "metrics": {
+        "constant_velocity": {
+          "ade1": {
+            "n": 310,
+            "mean_m": 0.15423330347343514,
+            "median_m": 0.1427301205295758,
+            "p90_m": 0.3055574069649479
+          },
+          "ade2": {
+            "n": 310,
+            "mean_m": 0.45072617708694523,
+            "median_m": 0.39751394151880914,
+            "p90_m": 0.9146563567442211
+          }
+        },
+        "cautious": {
+          "ade1": {
+            "n": 310,
+            "mean_m": 0.29408515673292973,
+            "median_m": 0.2659286197780937,
+            "p90_m": 0.4496941694135262
+          },
+          "ade2": {
+            "n": 310,
+            "mean_m": 0.8683505476903769,
+            "median_m": 0.7992348229407241,
+            "p90_m": 1.318434666657435
+          }
+        },
+        "assertive": {
+          "ade1": {
+            "n": 310,
+            "mean_m": 0.3364428783860011,
+            "median_m": 0.3284146577974993,
+            "p90_m": 0.4733230356614161
+          },
+          "ade2": {
+            "n": 310,
+            "mean_m": 1.0529717277611783,
+            "median_m": 1.0419832582646884,
+            "p90_m": 1.4854316381828485
+          }
+        },
+        "heterogeneous": {
+          "ade1": {
+            "n": 310,
+            "mean_m": 0.30248619980644775,
+            "median_m": 0.2938727254801336,
+            "p90_m": 0.437416567615853
+          },
+          "ade2": {
+            "n": 310,
+            "mean_m": 0.9174478016171014,
+            "median_m": 0.8872037274196058,
+            "p90_m": 1.343489092426437
+          }
+        },
+        "ttc_gap_rule": {
+          "ade1": {
+            "n": 310,
+            "mean_m": 0.16286175210890416,
+            "median_m": 0.14550907148000009,
+            "p90_m": 0.336009172836536
+          },
+          "ade2": {
+            "n": 310,
+            "mean_m": 0.45963271304189524,
+            "median_m": 0.4049705098378419,
+            "p90_m": 0.9711249351082233
+          }
+        }
+      },
+      "cv_better_ade1_scene_count": {
+        "cautious": 282,
+        "assertive": 290,
+        "heterogeneous": 288,
+        "ttc_gap_rule": 148
+      },
+      "claim": "No measured do-effect; fit quality does not establish human counterfactual validity."
+    }
+  },
+  "scientific_gate": {
+    "RQ1": "NOT_SUPPORTED_IN_VALID_COMPARISONS",
+    "RQ2": "NOT_SUPPORTED_IN_VALID_COMPARISONS",
+    "RQ3": "NOT_TESTED_DO_NOT_START_FULL_STRONG_BASELINES",
+    "note": "no evidence of absence; main blocker is scenario-mechanism validity and reactive calibration"
+  },
+  "code_modifications": "v4 new scene corridor, physical mechanism, sustained braking, warmup with intervention-frame collision separation, same-run nested banks, streaming forensics, baseline inventory",
+  "local_validation": {
+    "tests": 60,
+    "all_tests_passed": true,
+    "carla_server_run": false,
+    "waymax_run": false,
+    "checkpoint_run": false
+  }
+}

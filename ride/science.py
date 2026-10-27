@@ -78,6 +78,22 @@ def validate_pair(a: dict, b: dict, p: Protocol) -> tuple[bool, str, float | Non
     am, bm = a.get('metrics') or {}, b.get('metrics') or {}
     if not am.get('valid') or not bm.get('valid'):
         return False, 'invalid_trial', None
+    # The exploratory intersection builder only emits a red-trigger-motion
+    # proxy and goal-distance-reduction. Neither certifies signal legality,
+    # right-of-way or route arc progress. Prevent scientific false positives.
+    if a.get('archetype')=='intersection' or b.get('archetype')=='intersection':
+        if (am.get('traffic_light_legality_verified') is not True or
+                bm.get('traffic_light_legality_verified') is not True):
+            return False, 'intersection_legality_unverified', None
+        if (am.get('progress_measure')!='verified_route_arc_length' or
+                bm.get('progress_measure')!='verified_route_arc_length'):
+            return False, 'intersection_route_progress_unverified', None
+    # For map-grounded non-convoy scenes, unrecorded mechanism execution
+    # fails closed. Legacy synthetic convoy fixtures remain compatible.
+    for trial in (a,b):
+        if trial.get('archetype') in ('cut_in','support_gap','intersection') and \
+                trial.get('metrics',{}).get('mechanism_executed') is not True:
+            return False, 'scenario_maneuver_not_executed', None
     if not am.get('mechanism_executed', True) or not bm.get('mechanism_executed', True):
         return False, 'scenario_maneuver_not_executed', None
     ok, why = same_initial(a, b, p)

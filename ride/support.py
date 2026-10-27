@@ -4,7 +4,7 @@ Requires a nested search bank, identical initial states, simulator versions and
 shared candidate outcomes. If a shared candidate changes, flag inconclusive.
 """
 from __future__ import annotations
-import argparse, collections, json, math
+import argparse, collections, json, math, hashlib, copy
 from pathlib import Path
 from .evidence import read_jsonl
 from .science import same_initial, Protocol
@@ -26,8 +26,9 @@ def parse_bank(rows):
 
 def is_witness(row):
     m=row.get('metrics') or {}
-    return bool(m.get('valid') and not m.get('ego_collision') and
-                not m.get('non_ego_collision') and not m.get('hard_brake'))
+    return bool(m.get('valid') and m.get('mechanism_executed',True) is not False and
+                not m.get('ego_collision') and not m.get('non_ego_collision') and
+                not m.get('hard_brake'))
 
 
 
@@ -63,7 +64,7 @@ def compare(narrow,wide):
     mn,an=parse_bank(narrow);mw,aw=parse_bank(wide)
     if not an or not aw:raise ValueError('No joint-search trials in one bank')
     if an.keys()!=aw.keys():raise ValueError('Different scenario/profile identities across banks')
-    for attr in ('carla_server_version','carla_client_version','map','cruise_mps','dt','archetype','duration_s','seed','repetitions'):
+    for attr in ('carla_server_version','carla_client_version','map','cruise_mps','dt','archetype','duration_s','seed','repetitions','warmup_ticks','anchor_protocol_version'):
         if mn.get(attr)!=mw.get(attr):
             raise ValueError('Different simulator setup for '+attr)
     rows=[];proto=Protocol()
@@ -113,10 +114,56 @@ def compare(narrow,wide):
                        'labels_valid_only_under_explicit_CARLA_models':True},'details':rows}
 
 
+
+def derive_narrow_from_wide(wide, narrow_targets):
+    """Exact subset of ONE simulation run: no shared-trajectory drift confound.
+
+    This provides an in-sample finite-bank coverage contrast, NOT independent
+    simulator replication. Independent fresh-run repeat is still required.
+    """
+    from .evidence import read_jsonl  # noqa: F401, keep for legacy entrypoint
+    if not wide or wide[0].get('type') != 'manifest':
+        raise ValueError('Missing wide manifest')
+    if wide[-1].get('type') != 'run_end' or not wide[-1].get('completed'):
+        raise ValueError('Wide run incomplete; cannot derive finite-bank subset')
+    targets = {tuple(float(v) for v in x) for x in narrow_targets}
+    if not targets:
+        raise ValueError('Narrow bank empty')
+    narrow = []
+    found=set()
+    for x in wide:
+        if x.get('type')=='manifest':
+            y=copy.deepcopy(x)
+            y['joint_target_grid'] = sorted({v for p in targets for v in p})
+            y['joint_limit']=len(targets)
+            y['subset_provenance']='EXACT_SUBSET_OF_SINGLE_WIDE_RUN_NOT_INDEPENDENT_REPLICATION'
+            narrow.append(y)
+        elif x.get('type')=='trial':
+            if x.get('family')=='joint_witness':
+                k=tuple(float(z) for z in x.get('joint_targets') or ())
+                if k not in targets:
+                    continue
+                found.add(k)
+            narrow.append(copy.deepcopy(x))
+    if found != targets:
+        raise ValueError('Requested narrow candidates not present: '+str(sorted(targets-found)))
+    narrow.append({'type':'run_end','completed':True,
+                   'trial_count':sum(r.get('type')=='trial' for r in narrow)})
+    return narrow
+
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--narrow',required=True);p.add_argument('--wide',required=True)
+    p=argparse.ArgumentParser();p.add_argument('--narrow');p.add_argument('--wide',required=True)
+    p.add_argument('--derive-narrow',help='Derive identical shared trials from wide run into this JSONL')
+    p.add_argument('--narrow-grid',type=float,nargs='+',default=[6.,9.,12.])
     p.add_argument('--output',required=True);a=p.parse_args()
-    r=compare(read_jsonl(a.narrow),read_jsonl(a.wide))
+    wide=read_jsonl(a.wide)
+    if a.derive_narrow:
+        if Path(a.derive_narrow).exists():raise FileExistsError(a.derive_narrow)
+        subset=derive_narrow_from_wide(wide, [(x,y) for x in a.narrow_grid for y in a.narrow_grid])
+        Path(a.derive_narrow).write_text(''.join(json.dumps(x,allow_nan=False)+'\n' for x in subset))
+        a.narrow=a.derive_narrow
+    if not a.narrow:raise ValueError('Provide --narrow or --derive-narrow')
+    r=compare(read_jsonl(a.narrow),wide)
     dest=Path(a.output);dest.parent.mkdir(parents=True,exist_ok=True)
     dest.write_text(json.dumps(r,ensure_ascii=False,indent=2),encoding='utf8')
     print(json.dumps(r['summary'],ensure_ascii=False,indent=2))
