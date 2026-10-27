@@ -1,8 +1,10 @@
 """CARLA 0.9.16 pre-registered paired physical-response experiment.
 
 Runs REAL CARLA physics on one map. This does NOT replay WOMD or identify human
-counterfactuals. Per branch the world is reloaded and TM seeded; geometry,
-roles, scripted ego target-speed commands are identical. Responders are either
+counterfactuals. By default per branch experiment actors are destroyed/recreated in one world
+(to avoid an Unreal reload fault); TM is seeded and traffic lights are reset.
+Strict per-trial reload remains opt-in and should only be used once server health
+is established. Actor reset does NOT promise complete Unreal-world determinism. Responders are either
 CARLA Traffic Manager or CARLA BehaviorAgent (normal).
 
 An optional exploratory JOINT-WITNESS search executes separately controlled
@@ -71,43 +73,76 @@ def _pid(vehicle):
         max_throttle=0.75,max_brake=0.9,max_steering=0.7)
 
 
+def _prepare_trial_world(client, args, family, profile):
+    """Choose an explicitly recorded reset protocol; never mask reload failures."""
+    current_world = client.get_world()
+    current_name = str(current_world.get_map().name)
+    target = str(args.town or current_name)
+    same_map = current_name == target or current_name.endswith('/' + target)
+    mode = args.world_reset
+    print(f'RIDE_TRIAL_RESET_BEGIN family={family} profile={profile} '
+          f'target={target} mode={mode}', flush=True)
+    if mode == 'actors':
+        if not same_map:
+            raise RuntimeError('ACTOR_RESET_MAP_MISMATCH: currently '+current_name+
+                               ', expected '+target+'. Use a separate map setup before trials.')
+        # This is a dedicated-server experiment. Never delete someone else's actors.
+        occupied = list(current_world.get_actors().filter('vehicle.*'))
+        if occupied:
+            raise RuntimeError('ACTOR_RESET_WORLD_NOT_EMPTY: '+str(len(occupied))+
+                               ' existing vehicle(s). Use a dedicated server/port; '
+                               'do not delete unrelated actors.')
+        world = current_world
+        print(f'RIDE_TRIAL_WORLD_REUSE family={family} profile={profile} '
+              f'map={current_name}', flush=True)
+    elif mode == 'reload':
+        try:
+            world = client.reload_world() if same_map else client.load_world(target)
+        except RuntimeError as exc:
+            raise RuntimeError('CARLA_WORLD_RELOAD_FAILED: server did not complete the '
+                               'world reset. Check the Unreal server log/Signal 11; '
+                               'do not automatically retry a possibly dead instance. '
+                               'For a separately labelled exploratory run, set '
+                               'RIDE_WORLD_RESET=actors. Original error: '+str(exc)) from exc
+        print(f'RIDE_TRIAL_WORLD_RESET family={family} profile={profile} '
+              f'map={world.get_map().name}', flush=True)
+    else:
+        raise ValueError('Unknown world reset mode: '+str(mode))
+    return world
+
+
 def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None):
-    """One branch; own map restart for initial-state parity and TM state reset."""
+    """One trial; full map reset is opt-in, actor-only reset is default."""
     carla=_carla();client=carla.Client(args.host,args.port)
     client.set_timeout(args.timeout)
-    # Reload each trial for comparability but do not reload the *same* map by
-    # name every time. Avoid repeated full map-switch initialization on 0.9.16.
-    current_world=client.get_world()
-    current_name=str(current_world.get_map().name)
-    target=str(args.town or current_name)
-    print(f'RIDE_TRIAL_RESET_BEGIN family={family} profile={profile} target={target}',flush=True)
-    if current_name == target or current_name.endswith('/'+target):
-        world=client.reload_world()
-    else:
-        world=client.load_world(target)
-    print(f'RIDE_TRIAL_WORLD_RESET family={family} profile={profile} map={world.get_map().name}',flush=True)
+    world=_prepare_trial_world(client,args,family,profile)
     old=world.get_settings()
     settings=world.get_settings();settings.synchronous_mode=True;settings.fixed_delta_seconds=DT
     settings.no_rendering_mode=bool(args.no_rendering)
     settings.substepping=True;settings.max_substep_delta_time=0.01;settings.max_substeps=10
-    world.apply_settings(settings)
-    # Only TM trials should create/bind a Traffic Manager listener. Previous
-    # code touched TM:8000 in BehaviorAgent/joint trials unnecessarily.
     tm=None
-    if family=='tm':
-        print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
-        tm=client.get_trafficmanager(args.tm_port)
-        print(f'RIDE_TM_CREATE_DONE port={args.tm_port}',flush=True)
-        tm.set_synchronous_mode(True)
-        tm.set_random_device_seed(seed)
-    random.seed(seed)
-    actors=[];sensors=[];collisions=[];overlap_proxy=set()
+    actors=[];sensors=[];collisions=[];overlap_proxy=set();vehicles={}
     result={'anchor':anchor['anchor'],'family':family,'profile':profile,'seed':seed,
             'joint_targets':joint_targets,'recovery':recovery,'recovery_time_s':args.recovery_time_s,'trace':[],'collision_events':[],
             'archetype':getattr(args,'archetype','convoy'),
             'source':'CARLA_0_9_16_GENERATED_SCENE_NOT_WOMD',
-            'causal_scope':'simulation_intervention_only'}
+            'causal_scope':'simulation_intervention_only',
+            'world_reset_protocol':args.world_reset,
+            'traffic_lights_reset':args.world_reset == 'actors'}
     try:
+        world.apply_settings(settings)
+        print(f'RIDE_WORLD_SETTINGS_APPLIED family={family} profile={profile}',flush=True)
+        if args.world_reset == 'actors':
+            # Traffic-signal cycles must start from the same phase in each trial.
+            world.reset_all_traffic_lights()
+            print('RIDE_TRAFFIC_LIGHTS_RESET', flush=True)
+        if family=='tm':
+            print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
+            tm=client.get_trafficmanager(args.tm_port)
+            print(f'RIDE_TM_CREATE_DONE port={args.tm_port}',flush=True)
+            tm.set_synchronous_mode(True)
+            tm.set_random_device_seed(seed)
+        random.seed(seed)
         from ride.carla_scenarios import restore
         c=restore(world,anchor,carla)
         bp=_blueprint(world)
@@ -305,11 +340,24 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['metrics']=summarise_trial(result)
         return result
     except Exception as ex:
+        # A dead/unresponsive CARLA server must abort the batch rather than
+        # generating dozens of misleading per-trial invalid scientific rows.
+        message = str(ex).lower()
+        if ('time-out' in message or 'connection refused' in message or
+                'failed to connect' in message or 'rpc error' in message):
+            print('RIDE_FATAL_SIMULATOR_CONNECTION '+repr(ex),flush=True)
+            raise
         result['simulation_exception']=type(ex).__name__+': '+str(ex)
         result['traceback']=traceback.format_exc(limit=4)
         result['metrics']=summarise_trial(result) if result['trace'] else {'valid':False,'reasons':['exception']}
         return result
     finally:
+        if tm is not None:
+            for role in ('follower_a', 'follower_b'):
+                try:
+                    if role in vehicles:
+                        vehicles[role].set_autopilot(False, args.tm_port)
+                except Exception:pass
         for a in sensors:
             try:a.stop()
             except Exception:pass
@@ -328,7 +376,11 @@ def main():
     p.add_argument('--host',default=os.getenv('CARLA_HOST','127.0.0.1'));p.add_argument('--port',type=int,default=int(os.getenv('CARLA_RPC_PORT','2000')))
     p.add_argument('--tm-port',type=int,default=int(os.getenv('CARLA_TM_PORT','8100')))
     p.add_argument('--town',default='Town04')
-    p.add_argument('--timeout',type=float,default=40)
+    p.add_argument('--timeout',type=float,default=120,
+                   help='CARLA RPC timeout in seconds (map load can take >40 s)')
+    p.add_argument('--world-reset',choices=('actors','reload'),default='actors',
+                   help='actors: reuse Town, re-spawn RIDE vehicles (default). '
+                        'reload: strict world reset per trial; may trigger Unreal crashes.')
     p.add_argument('--anchors',type=int,default=3)
     p.add_argument('--seed',type=int,default=7)
     p.add_argument('--repetitions',type=int,default=2)
@@ -355,6 +407,8 @@ def main():
     a=p.parse_args()
     if not a.inspect_anchors and not a.output:
         p.error('--output is required for freezing/executing experiments')
+    if a.timeout <= 0:
+        raise ValueError('--timeout must be positive')
     if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
@@ -411,7 +465,13 @@ def main():
         meta={'type':'manifest','simulator':'CARLA','archetype':a.archetype,'version_requested':'0.9.16',
               'map':world.get_map().name,'anchors':anchors,'dt':DT,
               'rpc_host':a.host,'rpc_port':a.port,'tm_port':a.tm_port,
-              'world_reset_protocol':'reload_world_per_trial',
+              'world_reset_protocol':('actors_only_per_trial_with_traffic_light_reset'
+                                      if a.world_reset=='actors' else 'reload_world_per_trial'),
+              'world_reset_policy':a.world_reset,
+              'scientific_reset_limitation':('actor reset does not restore all hidden Unreal '
+                  'state; inspect initial_states, traffic lights, and run strict reload '
+                  'on a stable server before making deterministic causal claims'
+                  if a.world_reset=='actors' else 'Unreal full world reload'),
               'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
@@ -431,7 +491,13 @@ def main():
                 for family in a.families:
                     for profile in a.profiles:
                         seed=a.seed+rep
-                        row=run_trial(a,anchor,family,profile,seed)
+                        try:
+                            row=run_trial(a,anchor,family,profile,seed)
+                        except Exception as exc:
+                            dst.write(json.dumps({'type':'run_error','completed':False,
+                                'trial_id':trial_id,'family':family,'profile':profile,
+                                'error':str(exc)})+'\n');dst.flush()
+                            raise
                         row['type']='trial';row['trial_id']=trial_id;trial_id+=1
                         dst.write(json.dumps(row,allow_nan=False)+'\n');dst.flush()
                         print(f'[{trial_id}] {anchor["anchor"]} {family} {profile} '

@@ -1,3 +1,5 @@
+> **2026-10-27 CARLA reload timeout fix:** If `convoy` fails at `client.reload_world()` after `RIDE_TRIAL_RESET_BEGIN`, see [docs/CARLA_RELOAD_TIMEOUT_20261027_CN.md](docs/CARLA_RELOAD_TIMEOUT_20261027_CN.md). The default trial reset is now `actors` (reuse a dedicated current Town, respawn only RIDE vehicles) rather than `reload_world` per trial. Scientific cross-reset caveats and isolated tests are documented there.
+
 # RIDE — Response-Model-Induced Decision Errors in Interactive Driving
 
 > **2026-10-27 环境/端口修复说明：** 见 [`docs/CARLA_PORT_ENV_FIX_CN.md`](docs/CARLA_PORT_ENV_FIX_CN.md)。

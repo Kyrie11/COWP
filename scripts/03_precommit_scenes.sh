@@ -14,5 +14,5 @@ python -m ride.carla.run \
   --archetype "$CASE" --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --seed "${RIDE_SEED:-17}" \
   --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
-  --manifest-only --no-rendering --output "$OUT"
+  --timeout "${RIDE_CARLA_TIMEOUT:-120}" --manifest-only --no-rendering --output "$OUT"
 echo "Frozen scene locations BEFORE outcome rollouts: $OUT"
