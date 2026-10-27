@@ -1,12 +1,16 @@
 {
   "project": "RIDE",
   "research_stage": "experimental_gate_not_validated_planner",
-  "fix": "convoy map anchor v2: deterministic full-map fallback and stepwise lane validation",
-  "source_files": 55,
+  "fix": "2026-10-27 CARLA 0.9.16 inherited-env, port collision and unnecessary TM creation guard",
+  "source_files": 60,
   "files": {
     "README.md": {
-      "sha256": "a2d24c95b8a04f5f6a78eb95c22d8d10b40fbaf703411a60c47a22b3c7fcd5d0",
-      "bytes": 13747
+      "sha256": "ab54187cbf42d1ff3e1a545c269e79cac99258a15f7ddaf0902a6e29b48f3b15",
+      "bytes": 14102
+    },
+    "docs/CARLA_PORT_ENV_FIX_CN.md": {
+      "sha256": "4231d02d8b2749a486129ef7263089a9527180c446a8b9651ca59a089671f204",
+      "bytes": 9207
     },
     "docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md": {
       "sha256": "1899b3d2306ca9c23276afc49bfa3a3c3e451e85a37dd7ae7a73c2a00b9bc229",
@@ -48,13 +52,17 @@
       "sha256": "a79042d1148acdfcb650368d671d81a8c2f665c9140d9c365af47d00f2525cab",
       "bytes": 9156
     },
+    "ride/carla/ports.py": {
+      "sha256": "801bee165919f3f9cdfa7683ad9fd2c48244fffd39a2cf07b7093f7279a6ca1f",
+      "bytes": 3191
+    },
     "ride/carla/protocol.py": {
       "sha256": "f6f87ea45b0ff821bfdb2610d52c5ca1a8f94a50f68f9098c9f09b83cb177800",
       "bytes": 4059
     },
     "ride/carla/run.py": {
-      "sha256": "e398a18913299fb1635f6ff4df3c674a72bdcd8c628831b680b0e9f9db9f02d7",
-      "bytes": 25357
+      "sha256": "18856b74719f29cc1fc318d5a6ba558d92182a2be848ba28ed4980c1493c8f59",
+      "bytes": 26718
     },
     "ride/carla_scenarios.py": {
       "sha256": "ec4aa1fcf01f9a0edc0c830543f14a48e95bd6324a08025f94d4aac0802ed4b6",
@@ -77,8 +85,8 @@
       "bytes": 6298
     },
     "ride/doctor.py": {
-      "sha256": "d85acae27fc8f5a300f20d880a7441cf2d1e94471d252ab1f4e1b0ab03e4909d",
-      "bytes": 2691
+      "sha256": "df5f35ab60348a60662290d78020485507301ef8f3c60d8843946449d8b860ed",
+      "bytes": 3079
     },
     "ride/evidence.py": {
       "sha256": "c4d3cd0cf8efb69328e744aa2d55d68567a9cd97240568b366f0421d353edcd7",
@@ -144,33 +152,41 @@
       "sha256": "ab827695853ada6d9dd10a0c945f73ed41ad84004eb4c0bf229289755f41cda9",
       "bytes": 14434
     },
+    "scripts/00_check_ports.sh": {
+      "sha256": "d60f58385136e507d40956131cb8cbca9366dc64087e513eeb3107403515dee7",
+      "bytes": 195
+    },
+    "scripts/00_diagnose_carla.sh": {
+      "sha256": "2cefebe68392b700835f21f82cfb1f26dc50b9d83cc0fdc2b699e04a9f353ce9",
+      "bytes": 1291
+    },
     "scripts/00_env.sh": {
-      "sha256": "86d26067b0301c2fcdbf7fec29a8251f946a109b945fad17995023146e5a44d7",
-      "bytes": 939
+      "sha256": "5e16921a3621d4161351298df3ef5cc517cf0b1ed6db722576dc54464d97f780",
+      "bytes": 2649
     },
     "scripts/01_doctor.sh": {
-      "sha256": "cc7ccf5fbd63fc4b578e941ad73cadf2f5fcf33042b01b675e2e0700c0bbb2a6",
-      "bytes": 420
+      "sha256": "3b1b39e87b21a4adb4264050914638d9f68c6c04d1c1613d8c6cd52ee90c4e0c",
+      "bytes": 497
     },
     "scripts/01b_probe_anchors.sh": {
-      "sha256": "5722a1bc7d6295bb07de3e89f70b41a5ca5fcc67e260e30f1aa0b2c2bc61feac",
-      "bytes": 683
+      "sha256": "a1292d638ffe52df430e2888846e03e9b6489fca913bd2dcea6a3987d6cfe599",
+      "bytes": 882
     },
     "scripts/02_start_carla_headless.sh": {
-      "sha256": "3df6b2b0865fd199688dad756730a7b925d30798928cf394a00485133eccc2df",
-      "bytes": 577
+      "sha256": "38b258ff0ae13b60c23e5c466731b6c7caaa28c36a21c9689c889a9b7a866098",
+      "bytes": 1266
     },
     "scripts/03_precommit_scenes.sh": {
-      "sha256": "f1ff835ac47d7dfddab6fb81c54cc79c5d8147bb8ffa11f468502cff19cfe780",
-      "bytes": 765
+      "sha256": "1e2b24655ff6e3c3b75a4c6f115925e779abaf12e0c44f5413cd27a85d6e0c6e",
+      "bytes": 964
     },
     "scripts/03_run_carla_case.sh": {
-      "sha256": "3f5cedc4487e81ca7f423667bc718bd0d8a82f824fcd473cd06237cbf3742222",
-      "bytes": 1661
+      "sha256": "92cdc0a521b9e5708798af6d00b7845cc9eb0ca665509c393d98934e8f8025db",
+      "bytes": 1860
     },
     "scripts/03_support_ablation.sh": {
-      "sha256": "fb7bee48ef2d3eeb94d887756da383a32d6e42020ab59f8e8b17131f8b6ed207",
-      "bytes": 1240
+      "sha256": "cb42b9ae10d3e124f3b86c668e1b18203d4af4aecf5ecae1e5572c4969a10ecb",
+      "bytes": 1435
     },
     "scripts/04_analyze_carla.sh": {
       "sha256": "1c3b769669d175217a0b4f2ff3aff185d3fa57717b5f38fa6ccb75dc0538a2e0",
@@ -216,14 +232,17 @@
       "sha256": "ac5e19b208413026c8008c4aee80855ca6f965b1a85d2ee3b1ba57d973e5bcf6",
       "bytes": 560
     },
+    "tests/test_carla_ports_env.py": {
+      "sha256": "b2356ff009dbea4b72718f724e813947ffff364e5e2330746bb887d0250b74e4",
+      "bytes": 4092
+    },
     "tests/test_ride_regressions.py": {
-      "sha256": "5dbe79cd7ed2f83384082cefa35e27fe4b0a06acf12a5a270ffdab90d503a60e",
-      "bytes": 15973
+      "sha256": "be8c3b0ddd82635665fcf3782ca8b3144424ad3d37dc99f14996a77c1b7d4f8a",
+      "bytes": 16074
     },
     "tests/test_ride_science.py": {
       "sha256": "3f521d7677acbd6447cdae5ca915eb4cf4ee6cdd32da96a794252a6e5abfb554",
       "bytes": 8264
     }
-  },
-  "note": "This manifest excludes itself and transient caches. Hashes verify source bytes, not CARLA simulation success."
+  }
 }

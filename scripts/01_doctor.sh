@@ -2,7 +2,8 @@
 set -euo pipefail
 source "$(dirname "$0")/00_env.sh"
 mkdir -p "$RIDE_OUTPUT_ROOT/diagnostics"
-python -m ride.doctor --carla-root "$CARLA_ROOT" "$@" \
+python -m ride.doctor --carla-root "$CARLA_ROOT" \
+  --host "$CARLA_HOST" --port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT" "$@" \
   2>&1 | tee "$RIDE_OUTPUT_ROOT/diagnostics/doctor.log"
 python -m ride.datasets \
   --raw-root "$RAW_WOMD_ROOT" \

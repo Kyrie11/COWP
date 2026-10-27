@@ -75,15 +75,31 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
     """One branch; own map restart for initial-state parity and TM state reset."""
     carla=_carla();client=carla.Client(args.host,args.port)
     client.set_timeout(args.timeout)
-    # Reload EVERY trial, not just vehicle respawn: TM has hidden policy state.
-    world=client.load_world(args.town) if args.town else client.reload_world()
+    # Reload each trial for comparability but do not reload the *same* map by
+    # name every time. Avoid repeated full map-switch initialization on 0.9.16.
+    current_world=client.get_world()
+    current_name=str(current_world.get_map().name)
+    target=str(args.town or current_name)
+    print(f'RIDE_TRIAL_RESET_BEGIN family={family} profile={profile} target={target}',flush=True)
+    if current_name == target or current_name.endswith('/'+target):
+        world=client.reload_world()
+    else:
+        world=client.load_world(target)
+    print(f'RIDE_TRIAL_WORLD_RESET family={family} profile={profile} map={world.get_map().name}',flush=True)
     old=world.get_settings()
     settings=world.get_settings();settings.synchronous_mode=True;settings.fixed_delta_seconds=DT
     settings.no_rendering_mode=bool(args.no_rendering)
     settings.substepping=True;settings.max_substep_delta_time=0.01;settings.max_substeps=10
     world.apply_settings(settings)
-    tm=client.get_trafficmanager(args.tm_port);tm.set_synchronous_mode(True)
-    tm.set_random_device_seed(seed)
+    # Only TM trials should create/bind a Traffic Manager listener. Previous
+    # code touched TM:8000 in BehaviorAgent/joint trials unnecessarily.
+    tm=None
+    if family=='tm':
+        print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
+        tm=client.get_trafficmanager(args.tm_port)
+        print(f'RIDE_TM_CREATE_DONE port={args.tm_port}',flush=True)
+        tm.set_synchronous_mode(True)
+        tm.set_random_device_seed(seed)
     random.seed(seed)
     actors=[];sensors=[];collisions=[];overlap_proxy=set()
     result={'anchor':anchor['anchor'],'family':family,'profile':profile,'seed':seed,
@@ -300,16 +316,17 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         for a in sensors+actors:
             try:a.destroy()
             except Exception:pass
-        try:tm.set_synchronous_mode(False)
-        except Exception:pass
+        if tm is not None:
+            try:tm.set_synchronous_mode(False)
+            except Exception:pass
         try:world.apply_settings(old)
         except Exception:pass
 
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--host',default='127.0.0.1');p.add_argument('--port',type=int,default=2000)
-    p.add_argument('--tm-port',type=int,default=8000)
+    p.add_argument('--host',default=os.getenv('CARLA_HOST','127.0.0.1'));p.add_argument('--port',type=int,default=int(os.getenv('CARLA_RPC_PORT','2000')))
+    p.add_argument('--tm-port',type=int,default=int(os.getenv('CARLA_TM_PORT','8100')))
     p.add_argument('--town',default='Town04')
     p.add_argument('--timeout',type=float,default=40)
     p.add_argument('--anchors',type=int,default=3)
@@ -350,8 +367,13 @@ def main():
         raise RuntimeError(f'Expected CARLA 0.9.16 server, got {server_version}')
     if not client_version.startswith('0.9.16'):
         raise RuntimeError(f'Expected CARLA 0.9.16 Python client, got {client_version}')
-    if a.town:world=client.load_world(a.town)
-    else:world=client.get_world()
+    world=client.get_world()
+    if a.town and not (str(world.get_map().name)==a.town or
+                        str(world.get_map().name).endswith('/'+a.town)):
+        print(f'RIDE_WORLD_SWITCH to {a.town}',flush=True)
+        world=client.load_world(a.town)
+    else:
+        print(f'RIDE_WORLD_REUSE {world.get_map().name}',flush=True)
     if a.inspect_anchors and a.anchors_from:
         raise ValueError('--inspect-anchors cannot be combined with --anchors-from')
     from ride.carla_scenarios import ANCHOR_PROTOCOL_VERSION
@@ -388,6 +410,8 @@ def main():
     with output.open('x',encoding='utf8') as dst:
         meta={'type':'manifest','simulator':'CARLA','archetype':a.archetype,'version_requested':'0.9.16',
               'map':world.get_map().name,'anchors':anchors,'dt':DT,
+              'rpc_host':a.host,'rpc_port':a.port,'tm_port':a.tm_port,
+              'world_reset_protocol':'reload_world_per_trial',
               'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,

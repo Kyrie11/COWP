@@ -183,6 +183,7 @@ def test_manifest_only_entrypoint_runs_without_an_old_source_tree(tmp_path,monke
         def set_timeout(self,*args):pass
         def get_server_version(self):return '0.9.16'
         def get_client_version(self):return '0.9.16'
+        def get_world(self):return World()
         def load_world(self,*args):return World()
     StubCarla=type('StubCarla',(),{'Client':Client})
     monkeypatch.setattr(run,'_carla',lambda:StubCarla)
@@ -334,6 +335,7 @@ def test_inspect_anchors_is_read_only_and_reports_rejections(tmp_path,monkeypatc
         def set_timeout(self,*args):pass
         def get_server_version(self):return '0.9.16'
         def get_client_version(self):return '0.9.16'
+        def get_world(self):return _ContinuousRoadWorld()
         def load_world(self,*args):return _ContinuousRoadWorld()
     monkeypatch.setattr(run,'_carla',lambda:type('Carla',(),{'Client':Client}))
     monkeypatch.setitem(sys.modules,'carla',_Carla)

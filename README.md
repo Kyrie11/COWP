@@ -1,5 +1,9 @@
 # RIDE — Response-Model-Induced Decision Errors in Interactive Driving
 
+> **2026-10-27 环境/端口修复说明：** 见 [`docs/CARLA_PORT_ENV_FIX_CN.md`](docs/CARLA_PORT_ENV_FIX_CN.md)。
+> 默认 TM 改用 **8100**，CARLA RPC 仍默认 **2000**；若需要在 GPU 1 开独立 CARLA，可配置 **CARLA_RPC_PORT=2002 / CARLA_TM_PORT=8102 / CARLA_GPU_ADAPTER=1**。在启动前运行 `bash scripts/00_diagnose_carla.sh`。
+
+
 > **研究验证工程（research gate），不是已完成的 RIDE 规划器，也不是已证明的论文结论。**
 > 本工程只使用 `ride.*` 包名；CARLA / Waymax / WOMD 的运行代码均在本仓库内，不需要任何旧项目源码目录。
 

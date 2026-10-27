@@ -5,9 +5,12 @@ CASE="${1:?Usage: bash scripts/01b_probe_anchors.sh convoy|cut_in|intersection|s
 case "$CASE" in convoy|cut_in|intersection|support_gap) ;; *) echo "Unknown case: $CASE" >&2; exit 2;; esac
 TOWN="${2:-${CARLA_TOWN:-Town04}}"
 cd "$RIDE_HOME"
+python -m ride.carla.ports --mode client --host "$CARLA_HOST" \
+  --rpc-port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT"
 # Read-only scientific output; loads the requested CARLA map but writes no file.
 # Do not run while another CARLA trial is using the same server.
 python -m ride.carla.run \
+  --host "$CARLA_HOST" --port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT" \
   --archetype "$CASE" --town "$TOWN" \
   --anchors "${RIDE_ANCHORS:-1}" --seed "${RIDE_SEED:-17}" \
   --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
