@@ -34,8 +34,19 @@ def closing_ttc(rear_s,front_s,rear_v,front_v,vehicle_length=4.5):
 
 def summarise_trial(row):
     ts=row.get('trace',[])
-    if not ts:return {'valid':False,'reasons':['empty_trace']}
     reasons=[]
+    # Preserve the actionable failure reason when a trial aborts before the
+    # first physics frame.  The previous early return collapsed CARLA API
+    # errors into ``empty_trace`` and made the audit look like an ordinary
+    # invalid scene instead of an engineering failure.
+    if not ts:
+        if row.get('simulation_exception'):
+            reasons.append('simulation_exception')
+        else:
+            reasons.append('empty_trace')
+        return {'valid':False,'reasons':reasons,
+                'traffic_light_legality_verified':False,
+                'mechanism_executed':False}
     if row.get('initial_overlap'):reasons.append('initial_overlap')
     if row.get('unexpected_actor'):reasons.append('uncontrolled_actor')
     if row.get('simulation_exception'):reasons.append('simulation_exception')
@@ -50,11 +61,21 @@ def summarise_trial(row):
     ttc_values=[float(x['rear_pair_ttc_s']) for x in ts if x.get('rear_pair_ttc_s') is not None]
     gap_values=[float(x['rear_pair_gap_m']) for x in ts if x.get('rear_pair_gap_m') is not None]
     archetype=row.get('archetype','convoy')
-    mechanism=(all(x.get('ego_in_target_lane',False) for x in ts[-3:]) if archetype=='cut_in'
-               else (any(x.get('ego_in_junction',False) for x in ts) and
-                     any(x.get('follower_a_in_junction',False) for x in ts) and
-                     any(x.get('ego_follower_a_distance_m',9999.)<18. for x in ts)) if archetype=='intersection'
-               else True)
+    if archetype in ('cut_in','support_gap'):
+        # A valid merge must start in the adjacent lane and later occupy the
+        # target lane.  Merely spawning in the target lane or choosing a target
+        # waypoint without a physical lane transition is not mechanism
+        # execution.
+        first_lane=ts[0].get('ego_lane_id')
+        target_lane=ts[0].get('target_lane_id')
+        switched=(first_lane is not None and target_lane is not None and
+                  int(first_lane) != int(target_lane) and
+                  any(bool(x.get('ego_in_target_lane')) for x in ts))
+        mechanism=bool(switched and all(x.get('ego_in_target_lane',False) for x in ts[-3:]))
+    else:
+        mechanism=(any(x.get('ego_in_junction',False) for x in ts) and
+                   any(x.get('follower_a_in_junction',False) for x in ts) and
+                   any(x.get('ego_follower_a_distance_m',9999.)<18. for x in ts)) if archetype=='intersection' else True
     out={
       'valid':not reasons,'reasons':reasons,
       'traffic_light_legality_verified':False,

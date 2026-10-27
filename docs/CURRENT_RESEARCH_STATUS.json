@@ -1,0 +1,45 @@
+{
+  "project": "RIDE",
+  "title": "Response-Model-Induced Decision Errors in Interactive Driving",
+  "evidence_scope": "pilot_screening_only",
+  "rq1": "NO_STRICT_RQ1_REVERSAL_IN_PANEL",
+  "rq2": "NO_STABLE_RQ2_EFFECT_IN_PANEL",
+  "rq3": "NOT_TESTED_NO_LOCKED_STRONG_BASELINE_CHOICES",
+  "start_new_planner_algorithm": false,
+  "carla": {
+    "total_trials": 81,
+    "valid_task_matched_contrasts": 2,
+    "invalid_reasons": {
+      "progress_unmatched": 1,
+      "initial_speed_mismatch:follower_b": 1,
+      "invalid_trial": 12
+    },
+    "cross_family_matching_collision_effects": 0,
+    "strict_risk_order_reversals": 0
+  },
+  "womd_observational_fit": {
+    "attempted": 320,
+    "eligible": 310,
+    "scientific_claim_allowed": false,
+    "interpretation": "logged_future_conditioning_is_not_do_effect"
+  },
+  "waymax": {
+    "attempted": 22,
+    "complete": 17,
+    "errors": 5,
+    "all_regimes_matched": 0,
+    "scientific_claim_allowed": false
+  },
+  "support_gap": {
+    "valid_nested_bank_comparisons": 0,
+    "finite_bank_misses": 0,
+    "global_unsat_proven": false
+  },
+  "next_gate": "repair_execution_then_repeat_RQ1_RQ2",
+  "claim_boundary": [
+    "CARLA TM and BehaviorAgent are simulator policies, not human counterfactual truth",
+    "WOMD observational fit does not identify a response under do(ego_action)",
+    "missing finite-bank candidates are UNKNOWN, never UNSAT",
+    "post-hoc outcome ranking is not an online planner choice"
+  ]
+}

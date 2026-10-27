@@ -171,7 +171,7 @@ bash scripts/03_support_ablation.sh
 bash scripts/04_analyze_carla.sh
 ```
 
-若已执行某个场景，第二次执行会拒绝覆盖：请换用新的 `RIDE_OUTPUT_ROOT`。`support_gap` 和 `convoy` 使用同一种道路走廊，但测试**不同命题**：前者关注有限响应库的证据缺口，后者关注第三方连锁风险。`intersection` 的联合响应只是有限动作库中的**正向存在性见证**；搜索不到不等于不可行。`cut_in` 若实际没有变道，`mechanism_executed=false`，不纳入有效配对。
+若已执行某个场景，第二次执行会拒绝覆盖：请换用新的 `RIDE_OUTPUT_ROOT`。当前 v3 场景协议把 `support_gap` 定义为真实的相邻车道并线间隙，和直道 `convoy` 不再共享锚点；旧版 evidence 中把二者坐标复用的结果必须作废并重新冻结。`support_gap` 关注有限响应库的证据缺口，`convoy` 关注第三方连锁风险。`intersection` 的联合响应只是有限动作库中的**正向存在性见证**；搜索不到不等于不可行。`cut_in` 或 `support_gap` 若实际没有变道，`mechanism_executed=false`，不纳入有效配对。
 
 ### 主要 CARLA 输出
 

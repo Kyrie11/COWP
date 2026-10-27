@@ -9,7 +9,9 @@ import math, random
 
 # The frozen anchor protocol changed: old spawn-only manifests cannot be
 # silently reused in a revised map-search experiment.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v2_20261026"
+# v3 separates support_gap from the historical convoy alias and includes the
+# CARLA 0.9.16 yaw fix.  Old frozen anchors must be regenerated.
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v3_20261027"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -43,6 +45,19 @@ def cut_in_candidate(wp,carla):
         if not 2.4<=lateral<=6.5:continue
         return {'ego':neighbor,'follower_a':wp,'follower_b':follower_b,'end':future,
                 '_target_lane_id':wp.lane_id}
+
+
+def support_gap_candidate(wp, carla):
+    """Return a real adjacent-lane gap/merge anchor.
+
+    The finite response-bank experiment needs the ego to enter a target lane
+    between a front vehicle and a following pair.  It must not reuse the
+    straight convoy geometry, because that would make a ``support_gap`` label
+    with no gap or merge mechanism.  The same local lane construction is used
+    as ``cut_in_candidate`` so that the two scenarios differ only in the
+    downstream finite-response protocol.
+    """
+    return cut_in_candidate(wp, carla)
     return None
 
 
@@ -155,8 +170,9 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
         raise ValueError('Unknown case archetype: ' + archetype)
     import carla
     road_map = world.get_map()
-    kind = 'convoy' if archetype == 'support_gap' else archetype
-    find = {'cut_in':cut_in_candidate, 'convoy':convoy_candidate, 'intersection':None}[kind]
+    kind = archetype
+    find = {'cut_in':cut_in_candidate, 'support_gap':support_gap_candidate,
+            'convoy':convoy_candidate, 'intersection':None}[kind]
     rng = random.Random(seed)
     diagnostics = {'map':road_map.name, 'archetype':archetype,
                    'spawn_points_scanned':0, 'map_waypoints_scanned':0,
@@ -248,7 +264,7 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
     wp=world.get_map().get_waypoint(vehicle.get_location(),project_to_road=True,
                                     lane_type=carla.LaneType.Driving)
     if wp is None:raise RuntimeError('Ego exited supported drivable lane')
-    if archetype=='cut_in':
+    if archetype in ('cut_in', 'support_gap'):
         switch={'early_slow':1.5,'late_slow':4.5,'mild_early':2.5,'mild_late':3.5,'cruise':9.0}[profile]
         target_lane_id=scene['follower_a'].lane_id
         if t>=switch and wp.lane_id!=target_lane_id:
@@ -261,4 +277,7 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
     if not ahead:return wp
     # Choose the continuation with minimum direction change, explicitly not
     # claiming traffic-light compliance or a human-like navigation plan.
-    return min(ahead,key=lambda v:yaw_diff(v.transform.rotation.y,wp.transform.rotation.yaw))
+    # CARLA's Rotation exposes the heading as ``yaw``.  ``Rotation.y`` is
+    # not a valid 0.9.16 attribute and caused every non-convoy scene to abort
+    # before its first trace step (see evidence/carla/*_audit.json).
+    return min(ahead,key=lambda v:yaw_diff(v.transform.rotation.yaw,wp.transform.rotation.yaw))

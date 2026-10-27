@@ -45,5 +45,16 @@ python -m ride.evidence --input "$OUT" --output "$RIDE_OUTPUT_ROOT/carla/${CASE}
 python -m ride.carla.analyze --jsonl "$OUT" --out "$RIDE_OUTPUT_ROOT/carla/${CASE}_joint_backup_audit.json"
 # Explicit separate smoke validity gate. Analysis artifacts are kept even on failure.
 if [[ "${RIDE_SMOKE_REQUIRE_VALID:-1}" == 1 ]]; then
-  python -m ride.carla.smoke_validate --jsonl "$OUT"
+  SMOKE_ARGS=()
+  if [[ "${RIDE_SMOKE_REQUIRE_COMPLETE:-1}" == 1 ]]; then
+    SMOKE_ARGS+=(--require-complete)
+  fi
+  # A collision or a deliberate off-road candidate is a recorded outcome, not
+  # a missing trial.  Require complete traces by default; use REQUIRE_ALL=1
+  # for the ordinary (non-bank) scene smoke gate when every trial must also
+  # satisfy the validity predicate.
+  if [[ "${RIDE_SMOKE_REQUIRE_ALL:-0}" == 1 ]]; then
+    SMOKE_ARGS+=(--require-all)
+  fi
+  python -m ride.carla.smoke_validate --jsonl "$OUT" "${SMOKE_ARGS[@]}"
 fi

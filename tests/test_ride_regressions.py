@@ -148,11 +148,40 @@ class _Carla:
     Location=_Loc
 
 
+def test_ego_target_waypoint_uses_carla_yaw_attribute():
+    """CARLA 0.9.16 uses Rotation.yaw; the old Rotation.y path aborted trials."""
+    from ride.carla_scenarios import ego_target_waypoint
+
+    class Vehicle:
+        def get_location(self):
+            return _Loc(0., 0., 0.)
+
+    class Map:
+        def get_waypoint(self, *args, **kwargs):
+            return _Waypoint(0., 0., 1)
+
+    class World:
+        def get_map(self):
+            return Map()
+
+    scene = {'follower_a': _Waypoint(0., 0., 1)}
+    nxt = ego_target_waypoint(World(), Vehicle(), scene, 'convoy', 'mild_early', 0., _Carla)
+    assert nxt is not None
+
+
 def test_ordinary_adjacent_lane_is_not_rejected_by_cut_in_constructor():
     from ride.carla_scenarios import cut_in_candidate
     case=cut_in_candidate(_Waypoint(),_Carla)
     assert case is not None and case['ego'].lane_id==2
     assert case['follower_a'].lane_id==1
+
+
+def test_support_gap_is_a_merge_geometry_not_a_convoy_alias():
+    from ride.carla_scenarios import support_gap_candidate
+    case = support_gap_candidate(_Waypoint(), _Carla)
+    assert case is not None
+    assert case['ego'].lane_id != case['follower_a'].lane_id
+    assert case['follower_b'].lane_id == case['follower_a'].lane_id
 
 
 def test_restore_requires_original_lane_identity_not_just_nearby_coordinates():

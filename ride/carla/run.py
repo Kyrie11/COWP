@@ -244,7 +244,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             return result
         for step in range(round(args.duration_s/DT)):
             t=step*DT
-            target=(args.cruise_mps if getattr(args,'archetype','convoy')=='cut_in'
+            target=(args.cruise_mps if getattr(args,'archetype','convoy') in ('cut_in','support_gap')
                     else target_speed_mps(profile,t,args.cruise_mps))
             if recovery is not None and t>=args.recovery_time_s:
                 target=0. if recovery=='stop' else args.cruise_mps
@@ -283,7 +283,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                                                lane_type=carla.LaneType.Driving)
                 is_road.append(wp is not None and (getattr(args,'archetype','convoy')=='intersection'
                                        or wp.lane_id==c[role].lane_id or
-                                       (getattr(args,'archetype','convoy')=='cut_in' and role=='ego')))
+                                       (getattr(args,'archetype','convoy') in ('cut_in','support_gap') and role=='ego')))
             # TTC applies only to a verified same-road/same-lane following pair.
             # Using 18m plus individual odometers gives incorrect gap on bends,
             # lane changes and non-constant CARLA vehicle trajectories.
@@ -333,6 +333,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'ego_speed_mps':new_speeds['ego'],'ego_progress_m':float(route_progress),
                 'ego_path_length_m':s['ego'],
                 'progress_measure':'goal_distance_reduction_proxy' if use_goal_distance else 'goal_axis_projection',
+                'ego_lane_id':(int(ego_wp_now.lane_id) if ego_wp_now is not None else None),
+                'ego_road_id':(int(ego_wp_now.road_id) if ego_wp_now is not None else None),
+                'target_lane_id':(int(c['follower_a'].lane_id)
+                                  if getattr(args,'archetype','convoy') in ('cut_in','support_gap') else None),
                 'ego_in_target_lane':ego_in_target,
                 'ego_in_junction':bool(ego_wp_now and ego_wp_now.is_junction),
                 'follower_a_in_junction':bool(a_wp_now and a_wp_now.is_junction),
