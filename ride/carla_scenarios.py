@@ -12,7 +12,7 @@ import math, random
 # v5 uses a longer insertion gap, a continuous target-lane centerline and
 # a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
 # of old v4 outputs. All v4 anchors MUST be invalidated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v10_20261028"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v11_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -255,6 +255,25 @@ def junction_candidate(wp,world,carla,incoming=None):
     return None
 
 
+def _anchor_roundtrip_valid(road_map, carla, coords, identities):
+    """Reject a frozen candidate if the same saved XYZ will not resolve to
+    the same OpenDRIVE identity. No outcome-dependent retry or silent remapping.
+    v10 exhibited 10/60 confirmation failures when frozen follower_c
+    road identities were restored; precision and seam ambiguity are suspects.
+    """
+    for role, xyz in coords.items():
+        loc=carla.Location(x=float(xyz[0]),y=float(xyz[1]),z=float(xyz[2]))
+        wp=road_map.get_waypoint(loc,project_to_road=True,
+                                 lane_type=carla.LaneType.Driving)
+        exp=identities[role]
+        if wp is None or _xy(wp.transform.location,loc)>2.0:
+            return False, role+':unresolved_waypoint'
+        if (wp.road_id!=exp['road_id'] or wp.lane_id!=exp['lane_id'] or
+            yaw_diff(wp.transform.rotation.yaw,exp['yaw'])>5.):
+            return False, role+':identity_ambiguous_after_freeze'
+    return True,''
+
+
 def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
                   cutin_ego_gap_m=20., cutin_rear_gap_m=45., chain_bc_gap_m=25.,
                   forbidden_anchor_keys=(), exclusion_radius_m=90.):
@@ -290,18 +309,25 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
     def add(case):
         center = case['follower_a'].transform.location
         key = [float(center.x),float(center.y),float(center.z)]
-        if any(math.dist(key,x) < 65. for x in used):
+        if any(math.dist(key,x) < max(90.0,exclusion_radius_m) for x in used):
             return
         if any(math.dist(key,x) < exclusion_radius_m for x in forbidden_anchor_keys):
             diagnostics["excluded_for_holdout"] += 1
             return
-        used.append(key)
-        coords = {k:[round(getattr(v.transform.location,axis),3)
+        # Keep enough floating-point precision that a CARLA road boundary
+        # does not move to an adjacent road_id when frozen and restored.
+        coords = {k:[round(float(getattr(v.transform.location,axis)),7)
                      for axis in ('x','y','z')]
                   for k,v in case.items() if not k.startswith('_')}
         identities = {k:{'road_id':int(v.road_id),'lane_id':int(v.lane_id),
-                          'yaw':round(float(v.transform.rotation.yaw),3)}
+                          'yaw':round(float(v.transform.rotation.yaw),6)}
                       for k,v in case.items() if not k.startswith('_')}
+        ok,reason=_anchor_roundtrip_valid(road_map,carla,coords,identities)
+        if not ok:
+            rejects=diagnostics['rejections']
+            rejects['frozen_roundtrip:'+reason]=rejects.get('frozen_roundtrip:'+reason,0)+1
+            return
+        used.append(key)
         geo=None
         if archetype in ('cut_in','support_gap','chain_cut_in'):
             forward=case['follower_a'].transform.get_forward_vector()

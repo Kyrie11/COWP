@@ -11,8 +11,10 @@ p=Path(sys.argv[1]);m=json.loads(p.read_text().splitlines()[0])
 assert m['archetype']=='chain_cut_in', 'wrong development archetype'
 report=p.parents[1]/'carla'/'chain_m0_gate.json'
 r=json.loads(report.read_text())
-assert r.get('batch_completed') and r.get('valid_cross_family_task_matched_pairs',0)>0, 'STOP: failed dev chain M0'
-print('development chain M0 pairs:',r['valid_cross_family_task_matched_pairs'])
+assert (r.get('batch_completed') and
+        r.get('status')=='M0_CROSS_FAMILY_PAIRS_AVAILABLE_NOT_RQ1_OR_RQ2_PROOF' and
+        r.get('valid_cross_family_task_matched_pairs',0)>0), 'STOP: dev M0 has exceptions or no valid cross-family pairs'
+print('development chain M0 status:',r['status'],'pairs:',r['valid_cross_family_task_matched_pairs'])
 PY
 export RIDE_CRUISE_MPS="${RIDE_CRUISE_MPS:-8}"
 export RIDE_REAR_SPEED_DELTA_MPS="${RIDE_REAR_SPEED_DELTA_MPS:-0}"

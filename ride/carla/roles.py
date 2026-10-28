@@ -28,3 +28,19 @@ def nominal_speed(role, *, archetype, cruise_mps, rear_speed_delta_mps=0.0,
     if role == 'follower_c' and archetype == CHAIN:
         return val + float(chain_c_speed_delta_mps)
     return val
+
+# Deliberately exploratory heterogeneous controller compositions.
+# A and B choose the first family; C independently chooses the other one.
+HETEROGENEOUS_FAMILIES = ('mixed_b_tm_c_behavior','mixed_b_behavior_c_tm')
+
+def per_role_response_modes(archetype, family):
+    roles=response_roles(archetype)
+    if family in ('tm','behavior'):
+        return {r:family for r in roles}
+    if archetype!=CHAIN:
+        raise ValueError('Mixed responder policies are only defined for chain_cut_in')
+    if family=='mixed_b_tm_c_behavior':
+        return {'follower_a':'tm','follower_b':'tm','follower_c':'behavior'}
+    if family=='mixed_b_behavior_c_tm':
+        return {'follower_a':'behavior','follower_b':'behavior','follower_c':'tm'}
+    raise ValueError('Unknown responder family: '+str(family))

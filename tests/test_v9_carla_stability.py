@@ -13,7 +13,7 @@ def test_9mps_violates_30kmh():
         speed_limit_percentage(30.,9.)
 
 def test_manifest_protocol_bumped():
-    assert ANCHOR_PROTOCOL_VERSION=='ride_lane_corridor_v10_20261028'
+    assert ANCHOR_PROTOCOL_VERSION=='ride_lane_corridor_v11_20261028'
 
 def test_m0_fails_on_missing_tm_trials():
     rows=[{'type':'manifest','simulator':'CARLA'},

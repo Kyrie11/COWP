@@ -1,3 +1,9 @@
+# 最新实验协议：RIDE v11 (2026-10-28)
+
+**请先阅读 [README_V11_CN.md](README_V11_CN.md)。** 本工程包含从 v10 升级的 CARLA 四车机制研究和只读科学审计。下方历史 README 属于之前的版本，不构成当前 RQ1/RQ2 的通过证据。
+
+---
+
 # RIDE v8 (2026-10-28): 请以 [README_V8_CN.md](README_V8_CN.md) 和 [科学审计](docs/V8_FORENSICS_AND_ACTIONS_CN.md) 为准。以下 v6 内容仅为历史记录。
 
 # RIDE RQ1/RQ2 v6 (2026-10-28)

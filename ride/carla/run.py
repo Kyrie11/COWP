@@ -21,7 +21,7 @@ from pathlib import Path
 from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, closing_ttc, summarise_trial
 from .actor_lifecycle import check_spawn_state, destroy_verified, inventory
 from .tm_policy import configure_tm_speed
-from .roles import all_roles, response_roles, primary_pair, nominal_speed
+from .roles import all_roles, response_roles, primary_pair, nominal_speed, per_role_response_modes, HETEROGENEOUS_FAMILIES
 from .behavior_policy import cap_behavior_agent
 from .pair_geometry import longitudinal_pair_eligible
 
@@ -213,41 +213,55 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                     speed*3.6,_target_waypoint(world,vehicles[role])))
             world.tick()
         print('RIDE_COMMON_WARMUP_DONE '+trial_uid,flush=True)
-        if family=='behavior':
-            from agents.navigation.behavior_agent import BehaviorAgent
-            result['behavior_speed_configuration']={}
-            for role in responders_roles:
-                a=BehaviorAgent(vehicles[role],behavior='normal')
-                a.set_destination(c.get('end_follower',c['end']).transform.location)
-                if args.behavior_speed_protocol == 'nominal_cap':
-                    desired=nominal_speed(role,archetype=args.archetype,
+        tm_roles=[]
+        if family in ('tm','behavior')+HETEROGENEOUS_FAMILIES:
+            policy_modes=per_role_response_modes(args.archetype,family)
+            result['responder_modes_by_role']=policy_modes
+            behavior_roles=[role for role, mode in policy_modes.items() if mode=='behavior']
+            tm_roles=[role for role, mode in policy_modes.items() if mode=='tm']
+            if behavior_roles:
+                from agents.navigation.behavior_agent import BehaviorAgent
+                result['behavior_speed_configuration']={}
+                for role in behavior_roles:
+                    a=BehaviorAgent(vehicles[role],behavior='normal')
+                    a.set_destination(c.get('end_follower',c['end']).transform.location)
+                    # Detect CARLA BehaviorAgent's missing route waypoints
+                    # before collecting an apparently valid partial trajectory.
+                    # This is a *failure report*, not a fallback controller:
+                    # never replace the author's policy with a different one.
+                    route_probe=getattr(a._local_planner,'get_incoming_waypoint_and_direction',None)
+                    if route_probe is None:
+                        raise RuntimeError('BEHAVIOR_ROUTE_PREFLIGHT_API_MISSING:'+role)
+                    wp_probe,_=route_probe(steps=3)
+                    if wp_probe is None:
+                        raise RuntimeError('BEHAVIOR_ROUTE_PREFLIGHT_NO_WAYPOINT:'+role)
+                    if args.behavior_speed_protocol=='nominal_cap':
+                        desired=nominal_speed(role,archetype=args.archetype,
+                            cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                            chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
+                        result['behavior_speed_configuration'][role]=cap_behavior_agent(a,desired)
+                    else:
+                        result['behavior_speed_configuration'][role]={'protocol':'native_behavior_agent',
+                            'original_max_kmh':float(a._behavior.max_speed)}
+                    responders[role]=a
+            if tm_roles:
+                print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
+                tm=client.get_trafficmanager(args.tm_port)
+                tm.set_synchronous_mode(True)
+                tm.set_random_device_seed(seed)
+                for role in tm_roles:
+                    actor=vehicles[role]
+                    actor.set_autopilot(True,args.tm_port)
+                    tm.auto_lane_change(actor,False)
+                    tm.distance_to_leading_vehicle(actor,2.5)
+                    tm_role_speed=nominal_speed(role,archetype=args.archetype,
                         cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
                         chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
-                    result['behavior_speed_configuration'][role]=cap_behavior_agent(a,desired)
-                else:
-                    result['behavior_speed_configuration'][role]={'protocol':'native_behavior_agent',
-                        'original_max_kmh':float(a._behavior.max_speed)}
-                responders[role]=a
-        elif family=='tm':
-            print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
-            tm=client.get_trafficmanager(args.tm_port)
-            tm.set_synchronous_mode(True)
-            tm.set_random_device_seed(seed)
-            for role in responders_roles:
-                a=vehicles[role]
-                a.set_autopilot(True,args.tm_port)
-                tm.auto_lane_change(a,False)
-                tm.distance_to_leading_vehicle(a,2.5)
-                tm_role_speed=nominal_speed(role,archetype=args.archetype,
-                    cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
-                    chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
-                # Percentage 0 means FULL SPEED LIMIT, not nominal cruise speed.
-                # This bug caused TM agents to reach 20-24 m/s in the uploaded v7.
-                tm_pct, limit_kmh = configure_tm_speed(tm,a,tm_role_speed)
-                result.setdefault('tm_speed_configuration',{})[role] = {
-                     'speed_limit_kmh':round(limit_kmh,3),
-                     'target_speed_mps':float(tm_role_speed),
-                     'percentage_below_limit':round(tm_pct,3)}
+                    pct, limit_kmh=configure_tm_speed(tm,actor,tm_role_speed)
+                    result.setdefault('tm_speed_configuration',{})[role]={
+                        'speed_limit_kmh':round(limit_kmh,3),
+                        'target_speed_mps':float(tm_role_speed),
+                        'percentage_below_limit':round(pct,3)}
         elif family=='joint_witness':
             if joint_targets is None or len(joint_targets)!=2:
                 raise ValueError('joint_witness must specify two target speeds')
@@ -295,7 +309,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 # Account for road-segment speed-limit changes while respecting
                 # the registered nominal-speed condition. Never silently use
                 # TM's default '100 percent of road limit' target.
-                for role in responders_roles:
+                for role in tm_roles:
                     speed_nom=nominal_speed(role,archetype=args.archetype,
                         cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
                         chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
@@ -315,7 +329,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                                      lateral_lookahead_m=args.cutin_lateral_lookahead_m)
             ego_command=ego_ctrl.run_step(target*3.6,ego_wp)
             vehicles['ego'].apply_control(ego_command)
-            if family=='behavior':
+            if family in ('tm','behavior')+HETEROGENEOUS_FAMILIES:
                 for role,a in responders.items():vehicles[role].apply_control(a.run_step())
             if family=='joint_witness':
                 for role,a in responders.items():
@@ -510,7 +524,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # actor.destroy calls. Keep synchronous world tick authority until the
         # deletion acknowledgement; otherwise a later trial can see orphans.
         if tm is not None:
-            for role in responders_roles:
+            for role in tm_roles if 'tm_roles' in locals() else []:
                 if role in vehicles:
                     try:vehicles[role].set_autopilot(False, args.tm_port)
                     except Exception as exc:
@@ -556,7 +570,7 @@ def main():
     p.add_argument('--seed',type=int,default=7)
     p.add_argument('--repetitions',type=int,default=2)
     p.add_argument('--profiles',nargs='+',choices=PROFILES,default=list(PROFILES))
-    p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
+    p.add_argument('--families',nargs='+',choices=('tm','behavior')+HETEROGENEOUS_FAMILIES,default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
     p.add_argument('--cruise-mps',type=float,default=8.)
     p.add_argument('--cutin-ego-gap-m',type=float,default=20.,
@@ -601,6 +615,8 @@ def main():
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
     if a.duration_s<6 or a.cruise_mps<=0 or abs(a.chain_c_speed_delta_mps)>3.0 or a.cruise_mps+a.chain_c_speed_delta_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0 or not 0<=a.rear_speed_delta_mps<=4.:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
+    if a.archetype != 'chain_cut_in' and any(f in HETEROGENEOUS_FAMILIES for f in a.families):
+        raise ValueError('MIXED_RESPONDERS_REQUIRE_CHAIN_SCENE')
     if a.archetype == 'chain_cut_in' and a.joint_profile is not None:
         raise ValueError('FOUR_CAR_JOINT_WITNESS_UNSUPPORTED: two-target bank cannot control A/B/C; run chain M0 with tm/behavior only')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
@@ -730,8 +746,10 @@ def main():
               'cutin_late_switch_s':a.cutin_late_switch_s,
               'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
+              'frozen_anchor_roundtrip_validated':True,
               'cut_in_profiles_use_lateral_switch_time_only':True,
               'third_party_pair_roles':list(primary_pair(a.archetype)),
+              'mixed_responder_families_exploratory_only':list(HETEROGENEOUS_FAMILIES),
               'action_semantics_protocol_v10':{'cut_in':'lateral_switch_time_only',
                                               'chain_cut_in':'lateral_switch_time_only',
                                               'support_gap':'lateral_switch_time_only',
