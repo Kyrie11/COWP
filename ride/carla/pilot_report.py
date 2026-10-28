@@ -24,17 +24,13 @@ def report(root: Path):
                 'rear_gap_m':manifest.get('cutin_rear_gap_m'),
                 'rear_speed_delta_mps':manifest.get('rear_speed_delta_mps'),
                 'anchors':len(manifest.get('anchors') or []),
-                'mechanism_executed_trials_raw':me.get('mechanism_executed'),
-                'valid_mechanism_trials':sum(t['valid'] and t['mechanism_executed']
-                                              for t in audit_mechanism(data)['trials']),
+                'valid_mechanism_trials':me.get('mechanism_executed'),
                 'valid_trials':me.get('valid'),
                 'cruise_rear_braking_trials':me.get('cruise_rear_braking_trials'),
                 'valid_within_family_pairs':me.get('valid_task_matched_mechanism_pairs'),
                 'task_matched_cross_family_pairs':rk.get('task_matched_cross_model_pairs'),
                 'strict_ranking_reversals':rk.get('strict_risk_order_reversals'),
-                'third_party_collisions_raw':me.get('third_party_collision'),
-                'third_party_collisions_valid':sum(t['valid'] and t['third_party_pair_collision']
-                                                     for t in audit_mechanism(data)['trials'])})
+                'third_party_collisions':me.get('third_party_collision')})
         except (ValueError,KeyError,OSError) as e:
             item.update({'status':'INVALID_OR_INCOMPLETE','error':str(e),
                 'not_a_negative_scientific_result':True})

@@ -216,7 +216,8 @@ def junction_candidate(wp,world,carla,incoming=None):
 
 
 def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
-                  cutin_ego_gap_m=20., cutin_rear_gap_m=45.):
+                  cutin_ego_gap_m=20., cutin_rear_gap_m=45.,
+                  forbidden_anchor_keys=(), exclusion_radius_m=90.):
     """Select map-grounded anchors, checking all candidate road geometry.
 
     First check recommended spawn points; if insufficient, search the map's
@@ -233,7 +234,7 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
     rng = random.Random(seed)
     diagnostics = {'map':road_map.name, 'archetype':archetype,
                    'spawn_points_scanned':0, 'map_waypoints_scanned':0,
-                   'rejections':{}, 'anchors_found':0}
+                   'rejections':{}, 'anchors_found':0, 'excluded_for_holdout':0}
     rows = []; used = []
 
     def try_candidate(wp):
@@ -247,6 +248,9 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
         center = case['follower_a'].transform.location
         key = [float(center.x),float(center.y),float(center.z)]
         if any(math.dist(key,x) < 65. for x in used):
+            return
+        if any(math.dist(key,x) < exclusion_radius_m for x in forbidden_anchor_keys):
+            diagnostics["excluded_for_holdout"] += 1
             return
         used.append(key)
         coords = {k:[round(getattr(v.transform.location,axis),3)

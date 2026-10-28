@@ -1,3 +1,5 @@
+# RIDE v8 (2026-10-28): 请以 [README_V8_CN.md](README_V8_CN.md) 和 [科学审计](docs/V8_FORENSICS_AND_ACTIONS_CN.md) 为准。以下 v6 内容仅为历史记录。
+
 # RIDE RQ1/RQ2 v6 (2026-10-28)
 
 **Latest instructions:** [README_V6_CN.md](README_V6_CN.md). The v5 files remain only as historical protocol docs. The v6 package includes `ride/reactsim_tokens.py`, `ride/carla/mechanism_audit.py`, new `scripts/17-20`, an explicit two-factor scene pilot and regression tests.
@@ -268,8 +270,3 @@ python -m ride.waymax.paired_idm --help
 `21_audit_factorial_mechanisms.sh` 会对每个冻结 factorial panel 重新生成机制时序和连续制动负担诊断。该诊断不能替换预注册的 RQ1/RQ2 主端点。
 
 ReactSim 的 DB 文件先运行 `scripts/22_reactsim_db_coverage.sh` 做全 split log-name 盘点，再运行 `scripts/17_reactsim_preprocess_checked.sh inspect-val` 做 token/SQLite 盘点；两者分别回答“文件是否在本地某个 split”和“该 token 是否能成为合法场景”。
-
-
-### V8 (2026-10-28) frozen evidence gate
-
-See [`docs/V8_SCIENCE_REPORT_AND_RUNBOOK_CN.md`](docs/V8_SCIENCE_REPORT_AND_RUNBOOK_CN.md) for the **current** research results, exact commands, CARLA frozen protocol, NuPlan missing-DB diagnosis, ReactSim subset installation, and GameFormer/Bosch native reproduction. Historical README versions describe older experimental protocols, **not** v8.

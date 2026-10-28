@@ -46,31 +46,3 @@ def map_lane_center_valid(location, road_map, carla, tolerance_m=0.12):
     if width<=0 or not math.isfinite(width):
         return False, delta
     return delta <= width*0.5 + tolerance_m, delta
-
-
-def project_to_polyline(x: float, y: float, points):
-    """Return (station_m, offset_m, tangent_x, tangent_y) on ordered road centerline.
-
-    Can cross OpenDRIVE road-ID changes. For an adjacent ego lane the station
-    is a longitudinal progress proxy, not a certificate of being inside target
-    lane. Ties use earliest station, so equal-distance projections are stable.
-    """
-    if points is None or len(points) < 2:
-        raise ValueError('Need at least two centerline points')
-    x,y=float(x),float(y)
-    if not all(math.isfinite(v) for v in (x,y)):
-        raise ValueError('Nonfinite projection query')
-    best=None; acc=0.
-    for a,b in zip(points[:-1],points[1:]):
-        ax,ay=float(a[0]),float(a[1]);bx,by=float(b[0]),float(b[1])
-        dx,dy=bx-ax,by-ay
-        length=math.hypot(dx,dy)
-        if length <= 1e-6 or not all(math.isfinite(z) for z in (ax,ay,bx,by,length)):
-            raise ValueError('Invalid centerline segment')
-        u=max(0.,min(1.,((x-ax)*dx+(y-ay)*dy)/(length*length)))
-        d=math.hypot(x-(ax+u*dx),y-(ay+u*dy))
-        station=acc+u*length
-        candidate=(d,station,dx/length,dy/length)
-        if best is None or candidate[:2]<best[:2]:best=candidate
-        acc+=length
-    return best[1],best[0],best[2],best[3]

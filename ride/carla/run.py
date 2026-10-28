@@ -20,6 +20,7 @@ import argparse, json, math, os, random, sys, traceback, time, uuid
 from pathlib import Path
 from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, closing_ttc, summarise_trial
 from .actor_lifecycle import check_spawn_state, destroy_verified, inventory
+from .tm_policy import configure_tm_speed, nominal_target_speeds
 
 
 def xy_distance(a,b):return math.hypot(a.x-b.x,a.y-b.y)
@@ -165,8 +166,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             def on_collision(evt,r=role):
                 other=actor_to_role.get(evt.other_actor.id,'external')
                 collisions.append({'frame':int(evt.frame),'role_a':r,'role_b':other,
-                                   'other_actor_type_id':str(evt.other_actor.type_id),
-                                   'other_actor_id':int(evt.other_actor.id)})
+                                   'other_actor_id':int(evt.other_actor.id),
+                                   'other_actor_type':str(evt.other_actor.type_id),
+                                   'external_contact_type':('nonlocal_vehicle' if other=='external' and str(evt.other_actor.type_id).startswith('vehicle.')
+                                                            else 'other_external' if other=='external' else None)})
             sensor.listen(on_collision)
         # Initialize same longitudinal velocities in lane-forward direction.
         for role,v in vehicles.items():
@@ -221,7 +224,16 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 a.set_autopilot(True,args.tm_port)
                 tm.auto_lane_change(a,False)
                 tm.distance_to_leading_vehicle(a,2.5)
-                tm.vehicle_percentage_speed_difference(a,0.)
+                tm_role_speed = (args.cruise_mps + args.rear_speed_delta_mps
+                                 if role == 'follower_b' and args.archetype in ('cut_in','support_gap')
+                                 else args.cruise_mps)
+                # Percentage 0 means FULL SPEED LIMIT, not nominal cruise speed.
+                # This bug caused TM agents to reach 20-24 m/s in the uploaded v7.
+                tm_pct, limit_kmh = configure_tm_speed(tm,a,tm_role_speed)
+                result.setdefault('tm_speed_configuration',{})[role] = {
+                     'speed_limit_kmh':round(limit_kmh,3),
+                     'target_speed_mps':float(tm_role_speed),
+                     'percentage_below_limit':round(tm_pct,3)}
         elif family=='joint_witness':
             if joint_targets is None or len(joint_targets)!=2:
                 raise ValueError('joint_witness must specify two target speeds')
@@ -235,19 +247,13 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         if start_to_goal<8.:
             raise RuntimeError('Task target too close for matched progress assessment')
         route_direction=((goal.x-xy0.x)/start_to_goal,(goal.y-xy0.y)/start_to_goal)
-        from .lane_geometry import project_to_polyline
-        frozen_corridor=c.get('_target_corridor_xy')
-        ego_station0=(project_to_polyline(xy0.x,xy0.y,frozen_corridor)[0]
-                      if frozen_corridor is not None else None)
         # For curved junctions the goal-distance reduction is only a proxy.
         # For lane corridors signed projection is NOT equivalent to odometer.
         use_goal_distance=(args.archetype=='intersection')
         prev_xy=dict(init_xy)
         travel={k:0. for k in vehicles}
         out_init={k:{'xyz':[v.x,v.y,v.z],'speed_mps':speeds[k]} for k,v in init_xy.items()}
-        for k in out_init:
-            out_init[k]['speed_mps']=speeds[k]
-            out_init[k]['yaw_deg']=float(vehicles[k].get_transform().rotation.yaw)
+        for k in out_init:out_init[k]['speed_mps']=speeds[k]
         result['initial_states']=out_init
         # A collision sensor is armed BEFORE the prime tick and before the
         # common warm-up. Those contacts are pre-intervention confounders,
@@ -268,6 +274,15 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             return result
         for step in range(round(args.duration_s/DT)):
             t=step*DT
+            if tm is not None and step > 0 and step % 10 == 0:
+                # Account for road-segment speed-limit changes while respecting
+                # the registered nominal-speed condition. Never silently use
+                # TM's default '100 percent of road limit' target.
+                for role in ('follower_a','follower_b'):
+                    speed_nom = nominal_target_speeds(args.cruise_mps,args.rear_speed_delta_mps,args.archetype)[role]
+                    pct,limit=configure_tm_speed(tm,vehicles[role],speed_nom)
+                    result['tm_speed_configuration'][role]['latest_limit_kmh']=round(limit,3)
+                    result['tm_speed_configuration'][role]['latest_pct']=round(pct,3)
             target=(args.cruise_mps if getattr(args,'archetype','convoy') in ('cut_in','support_gap')
                     else target_speed_mps(profile,t,args.cruise_mps))
             if recovery is not None and t>=args.recovery_time_s:
@@ -327,40 +342,23 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             pair_same_lane=(awp is not None and bwp is not None and
                             awp.road_id==bwp.road_id and awp.lane_id==bwp.lane_id and
                             abs((awp.transform.rotation.yaw-bwp.transform.rotation.yaw+180.)%360.-180.)<18.)
-            pair_stations={}
-            # Use the continuous frozen target-lane polyline across road-ID boundaries.
-            if frozen_corridor is not None:
-                pair_stations={role:project_to_polyline(loc.x,loc.y,frozen_corridor)
-                               for role,loc in now.items()}
-                lane_tol=min(1.5,0.42*float(c['_target_lane_width_m']))
-                pair_same_lane=(pair_stations['follower_a'][1] <= lane_tol and
-                                pair_stations['follower_b'][1] <= lane_tol and
-                                pair_stations['follower_a'][0] > pair_stations['follower_b'][0])
             if pair_same_lane and args.archetype!='intersection':
+                h=awp.transform.get_forward_vector()
+                diff=now['follower_a']-now['follower_b']
+                along=float(diff.x*h.x+diff.y*h.y)
                 bumper_length=(vehicles['follower_a'].bounding_box.extent.x+
                                vehicles['follower_b'].bounding_box.extent.x)
-                va=vehicles['follower_a'].get_velocity();vb=vehicles['follower_b'].get_velocity()
-                if pair_stations:
-                    front=pair_stations['follower_a'];rear=pair_stations['follower_b']
-                    along=front[0]-rear[0]
-                    front_speed=float(va.x*front[2]+va.y*front[3])
-                    rear_speed=float(vb.x*rear[2]+vb.y*rear[3])
-                else:
-                    h=awp.transform.get_forward_vector()
-                    diff=now['follower_a']-now['follower_b']
-                    along=float(diff.x*h.x+diff.y*h.y)
-                    front_speed=float(va.x*h.x+va.y*h.y)
-                    rear_speed=float(vb.x*h.x+vb.y*h.y)
                 gap=along-bumper_length
-                ttc=closing_ttc(0.,along,rear_speed,front_speed,
+                va=vehicles['follower_a'].get_velocity();vb=vehicles['follower_b'].get_velocity()
+                front_speed=float(va.x*h.x+va.y*h.y)
+                rear_speed=float(vb.x*h.x+vb.y*h.y)
+                ttc=closing_ttc(0.,gap+bumper_length,rear_speed,front_speed,
                                 vehicle_length=bumper_length)
             else:
                 gap=None;ttc=None
             goal_distance=xy_distance(now['ego'],goal)
-            route_progress=(
-                pair_stations['ego'][0]-ego_station0 if ego_station0 is not None else
-                (start_to_goal-goal_distance if use_goal_distance else
-                 (now['ego'].x-xy0.x)*route_direction[0]+(now['ego'].y-xy0.y)*route_direction[1]))
+            route_progress=(start_to_goal-goal_distance if use_goal_distance else
+                (now['ego'].x-xy0.x)*route_direction[0]+(now['ego'].y-xy0.y)*route_direction[1])
             ego_wp_now=world.get_map().get_waypoint(now['ego'],project_to_road=False,
                                                     lane_type=carla.LaneType.Driving)
             a_wp_now=world.get_map().get_waypoint(now['follower_a'],project_to_road=False,
@@ -406,15 +404,12 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'ego_controller_steer':float(ego_command.steer),
                 'ego_controller_brake':float(ego_command.brake),
                 'ego_controller_throttle':float(ego_command.throttle),
+                'physics_frame_id':int(world.get_snapshot().frame),
                 'ego_target_waypoint_lane_id':int(ego_wp.lane_id),
                 'ego_target_waypoint_road_id':int(ego_wp.road_id),
                 'ego_speed_mps':new_speeds['ego'],'ego_progress_m':float(route_progress),
                 'ego_path_length_m':s['ego'],
-                'progress_measure':('frozen_target_corridor_station' if ego_station0 is not None
-                                    else ('goal_distance_reduction_proxy' if use_goal_distance
-                                          else 'goal_axis_projection')),
-                'target_corridor_station_m_by_role':{role:val[0] for role,val in pair_stations.items()},
-                'target_corridor_offset_m_by_role':{role:val[1] for role,val in pair_stations.items()},
+                'progress_measure':'goal_distance_reduction_proxy' if use_goal_distance else 'goal_axis_projection',
                 'ego_lane_id':(int(ego_wp_now.lane_id) if ego_wp_now is not None else None),
                 'ego_road_id':(int(ego_wp_now.road_id) if ego_wp_now is not None else None),
                 'target_lane_id':(int(c['follower_a'].lane_id)
@@ -431,6 +426,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'follower_b_road_id':(int(bwp.road_id) if bwp else None),
                 'follower_a_speed_mps':new_speeds['follower_a'],
                 'follower_b_speed_mps':new_speeds['follower_b'],
+                'follower_a_speed_limit_kmh':float(vehicles['follower_a'].get_speed_limit()),
+                'follower_b_speed_limit_kmh':float(vehicles['follower_b'].get_speed_limit()),
                 'rear_pair_gap_m':gap,'rear_pair_ttc_s':min(ttc,9999.) if ttc is not None else None,
                 'road_valid_all':all(is_road),
                 'road_center_valid_by_role':road_role_valid,
@@ -458,6 +455,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['kinematic_overlap_pairs']=[list(x) for x in sorted(overlap_proxy)]
         result['sensor_overlap_disagreement_pairs']=[list(x) for x in sorted(overlap_proxy-pairs)]
         result['metrics']=summarise_trial(result)
+        result['max_observed_follower_speed_mps']={role:max(
+            float(frame[f'{role}_speed_mps']) for frame in result['trace'])
+            for role in ('follower_a','follower_b')}
         return result
     except Exception as ex:
         # A dead/unresponsive CARLA server must abort the batch rather than
@@ -512,9 +512,11 @@ def main():
                    help='actors: reuse Town, re-spawn RIDE vehicles (default). '
                         'reload: strict world reset per trial; may trigger Unreal crashes.')
     p.add_argument('--anchors',type=int,default=3)
+    p.add_argument('--exclude-anchors-from',nargs='*',default=[],
+                   help='Frozen development manifest(s) to exclude by physical distance when creating heldout anchors')
+    p.add_argument('--exclude-radius-m',type=float,default=90.,
+                   help='Minimum XY distance from a development anchor (90m default)')
     p.add_argument('--seed',type=int,default=7)
-    p.add_argument('--anchor-selection-seed',type=int,default=None,
-                   help='Decouple physical corridor selection from responder random seed')
     p.add_argument('--repetitions',type=int,default=2)
     p.add_argument('--profiles',nargs='+',choices=PROFILES,default=list(PROFILES))
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
@@ -580,6 +582,23 @@ def main():
         world=client.load_world(a.town)
     else:
         print(f'RIDE_WORLD_REUSE {world.get_map().name}',flush=True)
+    if a.anchors_from and a.exclude_anchors_from:
+        raise ValueError('Exclusion works during freezing only, not when replaying frozen anchors')
+    if not 30 <= a.exclude_radius_m <= 1000:
+        raise ValueError('Invalid exclude radius')
+    forbidden_keys=[]
+    exclusion_sources=[]
+    for frozen_path in a.exclude_anchors_from:
+        source=Path(frozen_path)
+        with source.open(encoding='utf8') as handle:
+            prior=json.loads(handle.readline())
+        if prior.get('type')!='manifest' or not prior.get('map'):
+            raise ValueError('Malformed exclusion manifest: '+str(source))
+        # Different towns are independent physical maps; XY alone is meaningless across towns.
+        if prior['map']==world.get_map().name:
+            forbidden_keys.extend([a['key'] for a in prior.get('anchors',[])])
+        exclusion_sources.append({'path':str(source),'map':prior['map'],
+                                  'anchors':len(prior.get('anchors',[]))})
     if a.inspect_anchors and a.anchors_from:
         raise ValueError('--inspect-anchors cannot be combined with --anchors-from')
     from ride.carla_scenarios import ANCHOR_PROTOCOL_VERSION
@@ -590,8 +609,7 @@ def main():
             frozen.get('anchor_protocol_version')!=ANCHOR_PROTOCOL_VERSION or
             frozen.get('carla_server_version')!=server_version or
             frozen.get('map')!=world.get_map().name or
-            frozen.get('anchor_selection_seed', frozen.get('seed')) != (
-                a.anchor_selection_seed if a.anchor_selection_seed is not None else a.seed) or
+            frozen.get('seed')!=a.seed or
             frozen.get('cruise_mps')!=a.cruise_mps or
             frozen.get('duration_s')!=a.duration_s or
             frozen.get('warmup_ticks',0)!=a.warmup_ticks or
@@ -605,16 +623,19 @@ def main():
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
     else:
         from ride.carla_scenarios import build_anchors
-        anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,(a.anchor_selection_seed
-                                           if a.anchor_selection_seed is not None else a.seed),
+        anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,a.seed,
                                            with_diagnostics=True,
                                            cutin_ego_gap_m=a.cutin_ego_gap_m,
-                                           cutin_rear_gap_m=a.cutin_rear_gap_m)
+                                           cutin_rear_gap_m=a.cutin_rear_gap_m,
+                                           forbidden_anchor_keys=forbidden_keys,
+                                           exclusion_radius_m=a.exclude_radius_m)
         print('CARLA_MAP_ANCHOR_DIAGNOSTICS '+json.dumps(anchor_stats,sort_keys=True),flush=True)
     if a.inspect_anchors:
         print(json.dumps({'town':a.town,'eligible_anchors':len(anchors),
                           'anchors':anchors},indent=2,ensure_ascii=False))
         return
+    if a.exclude_anchors_from and len(anchors)<a.anchors:
+        raise RuntimeError('HOLDOUT_INSUFFICIENT_DISJOINT_CORRIDORS: found %s vs requested %s; use new Town or smaller predeclared holdout size' % (len(anchors),a.anchors))
     if not anchors:
         raise RuntimeError('NO_ELIGIBLE_MAP_ANCHOR: no eligible ' + a.archetype +
             ' corridor found after spawn-point AND map-waypoint scan on ' +
@@ -638,12 +659,13 @@ def main():
                   'on a stable server before making deterministic causal claims'
                   if a.world_reset=='actors' else 'Unreal full world reload'),
               'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
+              'anchor_exclusion_sources':exclusion_sources,
+              'anchor_exclusion_radius_m':a.exclude_radius_m,
+              'tm_speed_protocol':'speed_limit_percentage_to_nominal_mps_v8',
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'physics_ticks_per_recorded_step':1,'physics_dt_s':DT,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
-              'seed':a.seed,'anchor_selection_seed':(a.anchor_selection_seed
-                        if a.anchor_selection_seed is not None else a.seed),
-              'duration_s':a.duration_s,
+              'seed':a.seed,'duration_s':a.duration_s,
               'rear_speed_delta_mps':a.rear_speed_delta_mps,
               'cutin_ego_gap_m':a.cutin_ego_gap_m,
               'cutin_rear_gap_m':a.cutin_rear_gap_m,
@@ -651,12 +673,9 @@ def main():
               'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'cut_in_profiles_use_lateral_switch_time_only':True,
-              'action_protocol_v8':{'archetype':'cut_in', 'main_variable':'lateral_merge_command_start',
-                  'speed_mps_across_cut_in_arms':a.cruise_mps,
-                  'early_slow_switch_s':1.5, 'mild_early_switch_s':2.5,
-                  'late_slow_switch_s':a.cutin_late_switch_s,
-                  'mild_late_switch_s':a.cutin_late_switch_s,
-                  'caveat':'historical profile names refer to longitudinal braking, but cut-in is lateral timing only'},
+              'action_semantics_protocol_v8':{'cut_in':'lateral_switch_time_only',
+                                              'support_gap':'lateral_switch_time_only',
+                                              'convoy':'longitudinal_speed_profile'},
               'joint_profile':a.joint_profile,'joint_limit':a.joint_limit,
               'joint_target_grid':a.joint_target_grid,
               'recovery_profile':a.recovery_profile,'warmup_ticks':a.warmup_ticks,

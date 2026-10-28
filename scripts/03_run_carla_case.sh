@@ -33,8 +33,7 @@ python -m ride.carla.ports --mode client --host "$CARLA_HOST" \
 python -m ride.carla.run \
   --host "$CARLA_HOST" --port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT" \
   --archetype "$CASE" --town "${CARLA_TOWN:-Town04}" \
-  --anchors "${RIDE_ANCHORS:-1}" \
-  --anchor-selection-seed "${RIDE_ANCHOR_SELECTION_SEED:-${RIDE_SEED:-17}}" --repetitions "${RIDE_REPEATS:-1}" \
+  --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
   --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
   --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \

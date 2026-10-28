@@ -2,6 +2,10 @@
 # Small, PRE-REGISTERED parameter screen. No autoscaling from outcome signals.
 set -euo pipefail
 source "$(dirname "$0")/00_env.sh"
+if [[ -z "${RIDE_CUTIN_LATE_SWITCH_S:-}" || -z "${RIDE_CUTIN_LATERAL_LOOKAHEAD_M:-}" ]]; then
+  echo "FATAL: pre-register RIDE_CUTIN_LATE_SWITCH_S and RIDE_CUTIN_LATERAL_LOOKAHEAD_M explicitly" >&2
+  exit 4
+fi
 base="${RIDE_FACTORIAL_OUTPUT_ROOT:-$DATASET_ROOT/RIDE/evidence/rq12_v6_factorial}"
 read -r -a grid <<< "${RIDE_REAR_SPEED_GRID:-0 1.0}"
 read -r -a gaps <<< "${RIDE_REAR_GAP_GRID:-35 45}"
@@ -21,12 +25,6 @@ for delta in "${grid[@]}"; do
   export RIDE_SMOKE_REQUIRE_VALID=1
   echo "========== rear_gap=$rear_gap delta=$delta output=$RIDE_OUTPUT_ROOT ========== " >&2
   bash "$RIDE_HOME/scripts/03_precommit_scenes.sh" cut_in
-  if [[ -n "${RIDE_FORBIDDEN_ANCHORS_JSONL:-}" ]]; then
-    python -m ride.anchor_disjoint --reference "$RIDE_FORBIDDEN_ANCHORS_JSONL" \
-      --candidate "$RIDE_OUTPUT_ROOT/frozen/cut_in_anchors.jsonl" \
-      --radius-m "${RIDE_DISJOINT_RADIUS_M:-25}" --enforce \
-      --output "$RIDE_OUTPUT_ROOT/frozen/prospective_disjointness.json"
-  fi
   bash "$RIDE_HOME/scripts/03_run_carla_case.sh" cut_in
   bash "$RIDE_HOME/scripts/04_analyze_carla.sh"
   bash "$RIDE_HOME/scripts/18_reaudit_mechanism.sh" cut_in
