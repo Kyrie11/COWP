@@ -1,0 +1,72 @@
+{
+  "cells": [
+    {
+      "panel": "v6_results/rq12_v6_factorial_20261028/rear_gap_35/rear_delta_0/carla/cut_in.jsonl",
+      "relative_panel": "rear_gap_35/rear_delta_0/carla/cut_in.jsonl",
+      "status": "COMPLETE",
+      "rear_gap_m": 35.0,
+      "rear_speed_delta_mps": 0.0,
+      "anchors": 2,
+      "valid_mechanism_trials": 16,
+      "valid_trials": 18,
+      "cruise_rear_braking_trials": 2,
+      "valid_within_family_pairs": 3,
+      "task_matched_cross_family_pairs": 0,
+      "strict_ranking_reversals": 0,
+      "third_party_collisions": 0
+    },
+    {
+      "panel": "v6_results/rq12_v6_factorial_20261028/rear_gap_35/rear_delta_1p0/carla/cut_in.jsonl",
+      "relative_panel": "rear_gap_35/rear_delta_1p0/carla/cut_in.jsonl",
+      "status": "COMPLETE",
+      "rear_gap_m": 35.0,
+      "rear_speed_delta_mps": 1.0,
+      "anchors": 2,
+      "valid_mechanism_trials": 16,
+      "valid_trials": 18,
+      "cruise_rear_braking_trials": 1,
+      "valid_within_family_pairs": 4,
+      "task_matched_cross_family_pairs": 1,
+      "strict_ranking_reversals": 0,
+      "third_party_collisions": 0
+    },
+    {
+      "panel": "v6_results/rq12_v6_factorial_20261028/rear_gap_45/rear_delta_0/carla/cut_in.jsonl",
+      "relative_panel": "rear_gap_45/rear_delta_0/carla/cut_in.jsonl",
+      "status": "COMPLETE",
+      "rear_gap_m": 45.0,
+      "rear_speed_delta_mps": 0.0,
+      "anchors": 2,
+      "valid_mechanism_trials": 16,
+      "valid_trials": 18,
+      "cruise_rear_braking_trials": 4,
+      "valid_within_family_pairs": 6,
+      "task_matched_cross_family_pairs": 3,
+      "strict_ranking_reversals": 0,
+      "third_party_collisions": 0
+    },
+    {
+      "panel": "v6_results/rq12_v6_factorial_20261028/rear_gap_45/rear_delta_1p0/carla/cut_in.jsonl",
+      "relative_panel": "rear_gap_45/rear_delta_1p0/carla/cut_in.jsonl",
+      "status": "COMPLETE",
+      "rear_gap_m": 45.0,
+      "rear_speed_delta_mps": 1.0,
+      "anchors": 2,
+      "valid_mechanism_trials": 16,
+      "valid_trials": 18,
+      "cruise_rear_braking_trials": 4,
+      "valid_within_family_pairs": 4,
+      "task_matched_cross_family_pairs": 2,
+      "strict_ranking_reversals": 0,
+      "third_party_collisions": 0
+    }
+  ],
+  "cells_found": 4,
+  "valid_cells": 4,
+  "limits": [
+    "Discovery cells are not independent observations when corridors repeat",
+    "Do not select favorable gaps and report only those on a holdout",
+    "RQ1 strict ranking uses post-hoc simulator outcomes, not actual planner choices",
+    "cruise does not satisfy the same merge task; it is a mechanism control only"
+  ]
+}

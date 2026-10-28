@@ -338,13 +338,13 @@ def restore(world,anchor,carla):
     return scene
 
 
-def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
+def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla,*,late_switch_s=4.5,lateral_lookahead_m=15.0):
     wp=world.get_map().get_waypoint(vehicle.get_location(),project_to_road=True,
                                     lane_type=carla.LaneType.Driving)
     if wp is None:raise RuntimeError('Ego exited supported drivable lane')
     if archetype in ('cut_in', 'support_gap'):
-        switch={'early_slow':1.5,'late_slow':4.5,'mild_early':2.5,
-                'mild_late':3.5,'merge_early':1.5,'merge_late':4.5,'cruise':9.0}[profile]
+        switch={'early_slow':1.5,'late_slow':late_switch_s,'mild_early':2.5,
+                'mild_late':3.5,'merge_early':1.5,'merge_late':late_switch_s,'cruise':9.0}[profile]
         target_lane_id=scene['follower_a'].lane_id
         if t>=switch and wp.lane_id!=target_lane_id:
             choices=[x for x in (wp.get_left_lane(),wp.get_right_lane()) if x and
@@ -352,7 +352,7 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
             if choices:
                 # A longer waypoint lookahead avoids the sharp, short-radius
                 # lateral lunge in the old 7m-target cut-in controller.
-                nxt=_one(choices[0].next(15.))
+                nxt=_one(choices[0].next(float(lateral_lookahead_m)))
                 if nxt is not None:return nxt
     ahead=wp.next(8.)
     if not ahead:return wp

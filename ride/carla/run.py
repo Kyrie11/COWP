@@ -268,7 +268,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 ego_wp=_target_waypoint(world,vehicles['ego'])
             else:
                 from ride.carla_scenarios import ego_target_waypoint
-                ego_wp=ego_target_waypoint(world,vehicles['ego'],c,args.archetype,profile,t,carla)
+                ego_wp=ego_target_waypoint(world,vehicles['ego'],c,args.archetype,profile,t,carla,
+                                     late_switch_s=args.cutin_late_switch_s,
+                                     lateral_lookahead_m=args.cutin_lateral_lookahead_m)
             ego_command=ego_ctrl.run_step(target*3.6,ego_wp)
             vehicles['ego'].apply_control(ego_command)
             if family=='behavior':
@@ -491,6 +493,10 @@ def main():
                    help='Positive along-lane distance from lead A to adjacent ego (5m grid)')
     p.add_argument('--cutin-rear-gap-m',type=float,default=45.,
                    help='Positive along-lane distance from lead A to rear B (5m grid)')
+    p.add_argument('--cutin-late-switch-s',type=float,default=4.5,
+                   help='Lateral switch time for late_slow/merge_late; freeze per protocol')
+    p.add_argument('--cutin-lateral-lookahead-m',type=float,default=15.,
+                   help='Target-lane waypoint lookahead for cut-in controller')
     p.add_argument('--rear-speed-delta-mps',type=float,default=0.,
                    help='Extra initial and shared warm-up speed of rear follower on cut-in; '
                         'prespecified stress factor, NOT a fitted behavioral truth')
@@ -521,6 +527,8 @@ def main():
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
         raise ValueError('Recovery cutoff outside horizon')
+    if not 2.0 <= a.cutin_late_switch_s <= 6.0 or not 5.0 <= a.cutin_lateral_lookahead_m <= 30.0:
+        raise ValueError('Cut-in control parameters outside pre-registered bounds')
     if any(v<0 for v in a.joint_target_grid):raise ValueError('Negative responder speed not allowed')
     if (a.cutin_ego_gap_m < 20. or a.cutin_rear_gap_m < a.cutin_ego_gap_m+15. or
         a.cutin_rear_gap_m > 70. or
@@ -557,7 +565,9 @@ def main():
             frozen.get('warmup_ticks',0)!=a.warmup_ticks or
             frozen.get('rear_speed_delta_mps')!=a.rear_speed_delta_mps or
             frozen.get('cutin_ego_gap_m')!=a.cutin_ego_gap_m or
-            frozen.get('cutin_rear_gap_m')!=a.cutin_rear_gap_m):
+            frozen.get('cutin_rear_gap_m')!=a.cutin_rear_gap_m or
+            frozen.get('cutin_late_switch_s',4.5)!=a.cutin_late_switch_s or
+            frozen.get('cutin_lateral_lookahead_m',15.)!=a.cutin_lateral_lookahead_m):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
         anchors=frozen.get('anchors',[])
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
@@ -596,11 +606,14 @@ def main():
                   if a.world_reset=='actors' else 'Unreal full world reload'),
               'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
+              'physics_ticks_per_recorded_step':1,'physics_dt_s':DT,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
               'seed':a.seed,'duration_s':a.duration_s,
               'rear_speed_delta_mps':a.rear_speed_delta_mps,
               'cutin_ego_gap_m':a.cutin_ego_gap_m,
               'cutin_rear_gap_m':a.cutin_rear_gap_m,
+              'cutin_late_switch_s':a.cutin_late_switch_s,
+              'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'cut_in_profiles_use_lateral_switch_time_only':True,
               'action_protocol_v5':'mild_speed_amplitude_1.8_mps_primary_3.0_mps_lateral_early_1.5_late_4.5',

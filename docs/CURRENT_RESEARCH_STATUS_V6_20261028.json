@@ -1,0 +1,41 @@
+{
+  "project": "RIDE",
+  "title": "Response-Model-Induced Decision Errors in Interactive Driving",
+  "evidence_scope": "v6_factorial_discovery_screening_only",
+  "rq1": "NOT_SUPPORTED_IN_PILOT_NO_STRICT_CROSS_FAMILY_REVERSAL",
+  "rq2": "NOT_SUPPORTED_IN_PILOT_NO_STABLE_PAIRED_THIRD_PARTY_EFFECT",
+  "rq3": "NOT_STARTED_NO_LOCKED_STRONG_BASELINE_CHOICES",
+  "start_new_planner_algorithm": false,
+  "v6_factorial": {
+    "cells": 4,
+    "total_trials": 80,
+    "valid_trials": 72,
+    "mechanism_executed_trials": 64,
+    "task_matched_cross_family_pairs": 6,
+    "strict_ranking_reversals": 0,
+    "third_party_pair_collisions": 0,
+    "cruise_rear_braking_trials_by_cell": [2, 1, 4, 4],
+    "independent_anchors": 2,
+    "seeds": [17],
+    "repetitions": 1,
+    "traffic_light_legality_verified": false
+  },
+  "reactsim_data": {
+    "example_token_status": "FILTERED_SCENE_BOUNDARY",
+    "example_db_sqlite_quick_check": "ok",
+    "val_ids": 2636,
+    "val_eligible_by_sql_joins": 1135,
+    "val_db_missing_in_staged_trainval": 1501,
+    "train_audit_limit": 200,
+    "train_db_missing_in_sample": 200,
+    "interpretation": "Diagnose all source splits before incremental DB download; do not call a subset full benchmark"
+  },
+  "next_gate": "repair_late_merge_and_initial_state_pairing_then_repeat_on_holdout",
+  "claim_boundary": [
+    "CARLA TM and BehaviorAgent are simulator policies, not human counterfactual truth",
+    "WOMD observational fit does not identify a response under do(ego_action)",
+    "missing finite-bank candidates are UNKNOWN, never UNSAT",
+    "post-hoc outcome ranking is not an online planner choice",
+    "downloaded baseline source is not a reproduced baseline until commit/checkpoint/cache/choice manifest are locked"
+  ]
+}

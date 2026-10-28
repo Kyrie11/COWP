@@ -17,6 +17,8 @@ python -m ride.carla.run \
   --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
   --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \
   --cutin-rear-gap-m "${RIDE_CUTIN_REAR_GAP_M:-45}" \
+  --cutin-late-switch-s "${RIDE_CUTIN_LATE_SWITCH_S:-4.5}" \
+  --cutin-lateral-lookahead-m "${RIDE_CUTIN_LATERAL_LOOKAHEAD_M:-15}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" \
   --timeout "${RIDE_CARLA_TIMEOUT:-120}" --manifest-only --no-rendering --output "$OUT"
 echo "Frozen scene locations BEFORE outcome rollouts: $OUT"

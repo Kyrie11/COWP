@@ -221,7 +221,8 @@ python -m pip install -U huggingface_hub
 cd /data0/senzeyu2/dataset/RIDE/code/RIDE_RQ12_V5_20261028
 source scripts/00_env.sh
 bash scripts/14_download_reactsim_weights.sh smart.ckpt
-# 权重在 HF datasets 仓库；脚本已显式使用 --repo-type dataset。
+# 权重在 HF model 仓库（zzzy0729/ReactSim-Bench-Models）；脚本使用 --repo-type model。
+# 不需要先训练这些官方 checkpoint；只有要重训/适配新数据时才进入作者训练流程。
 # 若本地此前已有同名权重，下载脚本默认拒绝覆盖：先检查文件是否真实完整。
 bash scripts/16_reactsim_run.sh preflight
 bash scripts/16_reactsim_run.sh smart

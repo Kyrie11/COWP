@@ -258,3 +258,13 @@ python -m ride.waymax.paired_idm --help
 具体文件迁移、实验逻辑修复、检查项与尚未实现的研究工作见 [docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md](docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md)，科研定位见 [docs/RESEARCH_GAP_CN.md](docs/RESEARCH_GAP_CN.md)。
 
 更多关于本次 `NO_ELIGIBLE_MAP_ANCHOR` 修复的诊断理由与服务器命令见 [docs/CONVOY_ANCHOR_FIX_CN.md](docs/CONVOY_ANCHOR_FIX_CN.md)。
+
+## 2026-10-28 v6 结果与工程修订
+
+本轮上传的 factorial 结果复核见 [`docs/V6_FACTORIAL_FORENSIC_20261028_CN.md`](docs/V6_FACTORIAL_FORENSIC_20261028_CN.md)，结构化 cell 审计见 [`docs/V6_UPLOADED_ALL_CELLS_AUDIT_20261028.json`](docs/V6_UPLOADED_ALL_CELLS_AUDIT_20261028.json)。外部仓库的角色与可接入边界见 [`docs/BASELINE_INTEGRATION_MATRIX_CN.md`](docs/BASELINE_INTEGRATION_MATRIX_CN.md)。
+
+`14_download_reactsim_weights.sh` 已修正为 Hugging Face **model** 仓库，并默认固定到作者公开模型提交；官方页面当前的根目录布局和作者上传脚本可能产生的 `ckpts/` 布局都可识别。脚本会拒绝 LFS pointer、拒绝覆盖已有文件并记录 SHA256。下载 checkpoint 不需要先训练；训练只用于明确的重训或域适配实验。
+
+`21_audit_factorial_mechanisms.sh` 会对每个冻结 factorial panel 重新生成机制时序和连续制动负担诊断。该诊断不能替换预注册的 RQ1/RQ2 主端点。
+
+ReactSim 的 DB 文件先运行 `scripts/22_reactsim_db_coverage.sh` 做全 split log-name 盘点，再运行 `scripts/17_reactsim_preprocess_checked.sh inspect-val` 做 token/SQLite 盘点；两者分别回答“文件是否在本地某个 split”和“该 token 是否能成为合法场景”。
