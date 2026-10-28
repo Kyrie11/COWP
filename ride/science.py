@@ -18,6 +18,7 @@ class Protocol:
     # Fix BEFORE looking at V5 outcome rollouts, not post-hoc.
     init_position_m: float = 0.5
     init_speed_mps: float = 0.5
+    init_yaw_deg: float = 5.0
     min_action_xy_difference_m: float = 0.5
     min_action_speed_difference_mps: float = 0.35
     braking_mps2: float = -4.0
@@ -46,6 +47,16 @@ def same_initial(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
                 return False, 'initial_position_mismatch:' + role
             if abs(v1-v2) > p.init_speed_mps:
                 return False, 'initial_speed_mismatch:' + role
+            # Yaw is mandatory in v8; legacy records without yaw can still be
+            # audited as historical evidence, but are not retroactively upgraded.
+            if ('yaw_deg' in s) != ('yaw_deg' in t):
+                return False, 'partial_initial_yaw:' + role
+            if 'yaw_deg' in s and 'yaw_deg' in t:
+                yaw_a, yaw_b = float(s['yaw_deg']), float(t['yaw_deg'])
+                if not math.isfinite(yaw_a) or not math.isfinite(yaw_b):
+                    return False, 'nonfinite_initial_yaw:' + role
+                if abs((yaw_a-yaw_b+180.) % 360.-180.) > p.init_yaw_deg:
+                    return False, 'initial_yaw_mismatch:' + role
         except (TypeError, KeyError, ValueError):
             return False, 'malformed_initial_state:' + role
     return True, ''

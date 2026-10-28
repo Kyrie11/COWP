@@ -12,7 +12,7 @@ import math, random
 # v5 uses a longer insertion gap, a continuous target-lane centerline and
 # a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
 # of old v4 outputs. All v4 anchors MUST be invalidated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v6_20261028"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v8_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)

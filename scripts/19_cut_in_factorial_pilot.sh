@@ -21,6 +21,12 @@ for delta in "${grid[@]}"; do
   export RIDE_SMOKE_REQUIRE_VALID=1
   echo "========== rear_gap=$rear_gap delta=$delta output=$RIDE_OUTPUT_ROOT ========== " >&2
   bash "$RIDE_HOME/scripts/03_precommit_scenes.sh" cut_in
+  if [[ -n "${RIDE_FORBIDDEN_ANCHORS_JSONL:-}" ]]; then
+    python -m ride.anchor_disjoint --reference "$RIDE_FORBIDDEN_ANCHORS_JSONL" \
+      --candidate "$RIDE_OUTPUT_ROOT/frozen/cut_in_anchors.jsonl" \
+      --radius-m "${RIDE_DISJOINT_RADIUS_M:-25}" --enforce \
+      --output "$RIDE_OUTPUT_ROOT/frozen/prospective_disjointness.json"
+  fi
   bash "$RIDE_HOME/scripts/03_run_carla_case.sh" cut_in
   bash "$RIDE_HOME/scripts/04_analyze_carla.sh"
   bash "$RIDE_HOME/scripts/18_reaudit_mechanism.sh" cut_in

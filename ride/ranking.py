@@ -66,8 +66,8 @@ def audit_rankings(rows, protocol=None):
                 # and legacy datasets without this recorded protocol are excluded
                 # from the additional v6 gate rather than silently retroactively
                 # upgrading their evidence.
-                if str(meta.get('anchor_protocol_version','')).startswith(('ride_lane_corridor_v5_',
-                                                                            'ride_lane_corridor_v6_')):
+                if str(meta.get('anchor_protocol_version','')).startswith(tuple(
+                        f'ride_lane_corridor_v{n}_' for n in range(5, 50))):
                     exec_ok,exec_why=same_ego_execution(fam[left][action],fam[right][action])
                     if not exec_ok:reasons.append('cross_family:'+action+':'+exec_why)
             ranks={f:sign(metrics[f]['a'],metrics[f]['b']) for f in p.families}

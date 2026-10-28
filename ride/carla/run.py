@@ -164,7 +164,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             sensors.append(sensor)
             def on_collision(evt,r=role):
                 other=actor_to_role.get(evt.other_actor.id,'external')
-                collisions.append({'frame':int(evt.frame),'role_a':r,'role_b':other})
+                collisions.append({'frame':int(evt.frame),'role_a':r,'role_b':other,
+                                   'other_actor_type_id':str(evt.other_actor.type_id),
+                                   'other_actor_id':int(evt.other_actor.id)})
             sensor.listen(on_collision)
         # Initialize same longitudinal velocities in lane-forward direction.
         for role,v in vehicles.items():
@@ -233,13 +235,19 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         if start_to_goal<8.:
             raise RuntimeError('Task target too close for matched progress assessment')
         route_direction=((goal.x-xy0.x)/start_to_goal,(goal.y-xy0.y)/start_to_goal)
+        from .lane_geometry import project_to_polyline
+        frozen_corridor=c.get('_target_corridor_xy')
+        ego_station0=(project_to_polyline(xy0.x,xy0.y,frozen_corridor)[0]
+                      if frozen_corridor is not None else None)
         # For curved junctions the goal-distance reduction is only a proxy.
         # For lane corridors signed projection is NOT equivalent to odometer.
         use_goal_distance=(args.archetype=='intersection')
         prev_xy=dict(init_xy)
         travel={k:0. for k in vehicles}
         out_init={k:{'xyz':[v.x,v.y,v.z],'speed_mps':speeds[k]} for k,v in init_xy.items()}
-        for k in out_init:out_init[k]['speed_mps']=speeds[k]
+        for k in out_init:
+            out_init[k]['speed_mps']=speeds[k]
+            out_init[k]['yaw_deg']=float(vehicles[k].get_transform().rotation.yaw)
         result['initial_states']=out_init
         # A collision sensor is armed BEFORE the prime tick and before the
         # common warm-up. Those contacts are pre-intervention confounders,
@@ -319,23 +327,40 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             pair_same_lane=(awp is not None and bwp is not None and
                             awp.road_id==bwp.road_id and awp.lane_id==bwp.lane_id and
                             abs((awp.transform.rotation.yaw-bwp.transform.rotation.yaw+180.)%360.-180.)<18.)
+            pair_stations={}
+            # Use the continuous frozen target-lane polyline across road-ID boundaries.
+            if frozen_corridor is not None:
+                pair_stations={role:project_to_polyline(loc.x,loc.y,frozen_corridor)
+                               for role,loc in now.items()}
+                lane_tol=min(1.5,0.42*float(c['_target_lane_width_m']))
+                pair_same_lane=(pair_stations['follower_a'][1] <= lane_tol and
+                                pair_stations['follower_b'][1] <= lane_tol and
+                                pair_stations['follower_a'][0] > pair_stations['follower_b'][0])
             if pair_same_lane and args.archetype!='intersection':
-                h=awp.transform.get_forward_vector()
-                diff=now['follower_a']-now['follower_b']
-                along=float(diff.x*h.x+diff.y*h.y)
                 bumper_length=(vehicles['follower_a'].bounding_box.extent.x+
                                vehicles['follower_b'].bounding_box.extent.x)
-                gap=along-bumper_length
                 va=vehicles['follower_a'].get_velocity();vb=vehicles['follower_b'].get_velocity()
-                front_speed=float(va.x*h.x+va.y*h.y)
-                rear_speed=float(vb.x*h.x+vb.y*h.y)
-                ttc=closing_ttc(0.,gap+bumper_length,rear_speed,front_speed,
+                if pair_stations:
+                    front=pair_stations['follower_a'];rear=pair_stations['follower_b']
+                    along=front[0]-rear[0]
+                    front_speed=float(va.x*front[2]+va.y*front[3])
+                    rear_speed=float(vb.x*rear[2]+vb.y*rear[3])
+                else:
+                    h=awp.transform.get_forward_vector()
+                    diff=now['follower_a']-now['follower_b']
+                    along=float(diff.x*h.x+diff.y*h.y)
+                    front_speed=float(va.x*h.x+va.y*h.y)
+                    rear_speed=float(vb.x*h.x+vb.y*h.y)
+                gap=along-bumper_length
+                ttc=closing_ttc(0.,along,rear_speed,front_speed,
                                 vehicle_length=bumper_length)
             else:
                 gap=None;ttc=None
             goal_distance=xy_distance(now['ego'],goal)
-            route_progress=(start_to_goal-goal_distance if use_goal_distance else
-                (now['ego'].x-xy0.x)*route_direction[0]+(now['ego'].y-xy0.y)*route_direction[1])
+            route_progress=(
+                pair_stations['ego'][0]-ego_station0 if ego_station0 is not None else
+                (start_to_goal-goal_distance if use_goal_distance else
+                 (now['ego'].x-xy0.x)*route_direction[0]+(now['ego'].y-xy0.y)*route_direction[1]))
             ego_wp_now=world.get_map().get_waypoint(now['ego'],project_to_road=False,
                                                     lane_type=carla.LaneType.Driving)
             a_wp_now=world.get_map().get_waypoint(now['follower_a'],project_to_road=False,
@@ -385,7 +410,11 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'ego_target_waypoint_road_id':int(ego_wp.road_id),
                 'ego_speed_mps':new_speeds['ego'],'ego_progress_m':float(route_progress),
                 'ego_path_length_m':s['ego'],
-                'progress_measure':'goal_distance_reduction_proxy' if use_goal_distance else 'goal_axis_projection',
+                'progress_measure':('frozen_target_corridor_station' if ego_station0 is not None
+                                    else ('goal_distance_reduction_proxy' if use_goal_distance
+                                          else 'goal_axis_projection')),
+                'target_corridor_station_m_by_role':{role:val[0] for role,val in pair_stations.items()},
+                'target_corridor_offset_m_by_role':{role:val[1] for role,val in pair_stations.items()},
                 'ego_lane_id':(int(ego_wp_now.lane_id) if ego_wp_now is not None else None),
                 'ego_road_id':(int(ego_wp_now.road_id) if ego_wp_now is not None else None),
                 'target_lane_id':(int(c['follower_a'].lane_id)
@@ -484,6 +513,8 @@ def main():
                         'reload: strict world reset per trial; may trigger Unreal crashes.')
     p.add_argument('--anchors',type=int,default=3)
     p.add_argument('--seed',type=int,default=7)
+    p.add_argument('--anchor-selection-seed',type=int,default=None,
+                   help='Decouple physical corridor selection from responder random seed')
     p.add_argument('--repetitions',type=int,default=2)
     p.add_argument('--profiles',nargs='+',choices=PROFILES,default=list(PROFILES))
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
@@ -559,7 +590,8 @@ def main():
             frozen.get('anchor_protocol_version')!=ANCHOR_PROTOCOL_VERSION or
             frozen.get('carla_server_version')!=server_version or
             frozen.get('map')!=world.get_map().name or
-            frozen.get('seed')!=a.seed or
+            frozen.get('anchor_selection_seed', frozen.get('seed')) != (
+                a.anchor_selection_seed if a.anchor_selection_seed is not None else a.seed) or
             frozen.get('cruise_mps')!=a.cruise_mps or
             frozen.get('duration_s')!=a.duration_s or
             frozen.get('warmup_ticks',0)!=a.warmup_ticks or
@@ -573,7 +605,8 @@ def main():
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
     else:
         from ride.carla_scenarios import build_anchors
-        anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,a.seed,
+        anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,(a.anchor_selection_seed
+                                           if a.anchor_selection_seed is not None else a.seed),
                                            with_diagnostics=True,
                                            cutin_ego_gap_m=a.cutin_ego_gap_m,
                                            cutin_rear_gap_m=a.cutin_rear_gap_m)
@@ -608,7 +641,9 @@ def main():
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'physics_ticks_per_recorded_step':1,'physics_dt_s':DT,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
-              'seed':a.seed,'duration_s':a.duration_s,
+              'seed':a.seed,'anchor_selection_seed':(a.anchor_selection_seed
+                        if a.anchor_selection_seed is not None else a.seed),
+              'duration_s':a.duration_s,
               'rear_speed_delta_mps':a.rear_speed_delta_mps,
               'cutin_ego_gap_m':a.cutin_ego_gap_m,
               'cutin_rear_gap_m':a.cutin_rear_gap_m,
@@ -616,7 +651,12 @@ def main():
               'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'cut_in_profiles_use_lateral_switch_time_only':True,
-              'action_protocol_v5':'mild_speed_amplitude_1.8_mps_primary_3.0_mps_lateral_early_1.5_late_4.5',
+              'action_protocol_v8':{'archetype':'cut_in', 'main_variable':'lateral_merge_command_start',
+                  'speed_mps_across_cut_in_arms':a.cruise_mps,
+                  'early_slow_switch_s':1.5, 'mild_early_switch_s':2.5,
+                  'late_slow_switch_s':a.cutin_late_switch_s,
+                  'mild_late_switch_s':a.cutin_late_switch_s,
+                  'caveat':'historical profile names refer to longitudinal braking, but cut-in is lateral timing only'},
               'joint_profile':a.joint_profile,'joint_limit':a.joint_limit,
               'joint_target_grid':a.joint_target_grid,
               'recovery_profile':a.recovery_profile,'warmup_ticks':a.warmup_ticks,
