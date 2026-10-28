@@ -18,6 +18,7 @@ class Protocol:
     # Fix BEFORE looking at V5 outcome rollouts, not post-hoc.
     init_position_m: float = 0.5
     init_speed_mps: float = 0.5
+    init_yaw_deg: float = 5.0
     min_action_xy_difference_m: float = 0.5
     min_action_speed_difference_mps: float = 0.35
     braking_mps2: float = -4.0
@@ -30,7 +31,10 @@ class Protocol:
 
 def same_initial(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
     left, right = a.get('initial_states') or {}, b.get('initial_states') or {}
-    for role in ('ego', 'follower_a', 'follower_b'):
+    roles = ('ego','follower_a','follower_b','follower_c') if (
+        a.get('archetype')=='chain_cut_in' or b.get('archetype')=='chain_cut_in') else (
+        'ego','follower_a','follower_b')
+    for role in roles:
         s, t = left.get(role), right.get(role)
         if s is None or t is None:
             return False, 'missing_initial_state:' + role
@@ -46,6 +50,16 @@ def same_initial(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
                 return False, 'initial_position_mismatch:' + role
             if abs(v1-v2) > p.init_speed_mps:
                 return False, 'initial_speed_mismatch:' + role
+            # Historical v8/v9 rows lack yaw; keep them readable, but enforce
+            # heading parity for every new v10 trajectory which logs it.
+            if ('yaw_deg' in s) != ('yaw_deg' in t):
+                return False, 'initial_heading_missing_one_arm:' + role
+            if 'yaw_deg' in s:
+                yaw1,yaw2=float(s['yaw_deg']),float(t['yaw_deg'])
+                if not math.isfinite(yaw1) or not math.isfinite(yaw2):
+                    return False, 'initial_heading_nonfinite:' + role
+                if abs((yaw1-yaw2+180.)%360.-180.) > p.init_yaw_deg:
+                    return False, 'initial_heading_mismatch:' + role
         except (TypeError, KeyError, ValueError):
             return False, 'malformed_initial_state:' + role
     return True, ''
@@ -122,7 +136,7 @@ def validate_pair(a: dict, b: dict, p: Protocol) -> tuple[bool, str, float | Non
     # For map-grounded non-convoy scenes, unrecorded mechanism execution
     # fails closed. Legacy synthetic convoy fixtures remain compatible.
     for trial in (a,b):
-        if trial.get('archetype') in ('cut_in','support_gap','intersection') and \
+        if trial.get('archetype') in ('cut_in','support_gap','chain_cut_in','intersection') and \
                 trial.get('metrics',{}).get('mechanism_executed') is not True:
             return False, 'scenario_maneuver_not_executed', None
     if not am.get('mechanism_executed', True) or not bm.get('mechanism_executed', True):

@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/00_env.sh"
 mkdir -p "$RIDE_OUTPUT_ROOT/carla"
 FILES=()
-for scene in convoy cut_in intersection support_gap; do
+for scene in convoy cut_in chain_cut_in intersection support_gap; do
   f="$RIDE_OUTPUT_ROOT/carla/${scene}.jsonl"
   if [[ -f "$f" ]]; then FILES+=("$f"); fi
 done

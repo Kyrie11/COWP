@@ -35,7 +35,10 @@ python -m ride.protocol_lock --frozen "$RIDE_DEV_FROZEN" \
   --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \
   --rear-speed-delta-mps "$RIDE_REAR_SPEED_DELTA_MPS" \
   --cruise-mps "${RIDE_CRUISE_MPS:-8}" \
-  --warmup-ticks "${RIDE_WARMUP_TICKS:-20}"
+  --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" \
+  --chain-bc-gap-m "${RIDE_CHAIN_BC_GAP_M:-25}" \
+  --chain-c-speed-delta-mps "${RIDE_CHAIN_C_SPEED_DELTA_MPS:-0}" \
+  --behavior-speed-protocol "${RIDE_BEHAVIOR_SPEED_PROTOCOL:-nominal_cap}"
 # Critical: never silently switch Unreal's loaded map in a batch. Verify here,
 # BEFORE creating any seed/frozen directory. Use a dedicated Town05 server.
 bash "$RIDE_HOME/scripts/29_v9_carla_preflight.sh" "${CARLA_TOWN:-Town04}"

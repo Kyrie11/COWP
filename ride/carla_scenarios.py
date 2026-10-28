@@ -12,7 +12,7 @@ import math, random
 # v5 uses a longer insertion gap, a continuous target-lane centerline and
 # a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
 # of old v4 outputs. All v4 anchors MUST be invalidated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v9_20261028"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v10_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -106,6 +106,46 @@ def cut_in_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45.):
                 '_target_corridor_xy':corridor,
                 '_target_lane_width_m':float(getattr(wp,'lane_width',3.5))}
     return None
+
+
+def chain_cut_in_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45., chain_bc_gap_m=25.):
+    """Four-car chain: L(A) -- B -- C share target lane, ego merges ahead of B.
+
+    C is behind B at a pre-registered along-lane distance. Require a smooth,
+    nonjunction CARLA lane to spawn C; never synthesize coordinates.
+    This creates an *opportunity to test* secondary effects, not a positive
+    witness. RQ2 primary pair is B-C, independent of ego collision handling.
+    """
+    if not 20. <= chain_bc_gap_m <= 45. or abs(chain_bc_gap_m / 5. - round(chain_bc_gap_m / 5.)) > 1e-8:
+        raise ValueError('chain_bc_gap_m must be a 5m multiple in [20,45]')
+    case = cut_in_candidate(wp, carla, ego_gap_m, rear_gap_m)
+    if case is None:
+        return None
+    behind = case['follower_b']
+    traversed=[]
+    for _ in range(int(round(chain_bc_gap_m / 5.))):
+        nxt = _one(behind.previous(5.))
+        if (not _driving(nxt,carla) or nxt.lane_id != wp.lane_id or
+            not _same_dir(nxt,wp)):
+            return None
+        behind = nxt
+        traversed.append(behind)
+    angle = math.radians(float(wp.transform.rotation.yaw))
+    hx,hy = math.cos(angle),math.sin(angle)
+    b = case['follower_b'].transform.location
+    c = behind.transform.location
+    projected = (b.x-c.x)*hx + (b.y-c.y)*hy
+    if abs(projected - chain_bc_gap_m) > 3.:
+        return None
+    case['follower_c'] = behind
+    # The CARLA TTC checker must have a frozen target lane reaching C.
+    # The original cut-in corridor stopped at B, incorrectly making B-C
+    # 'non-collinear' whenever C was 20-45m further back.
+    extension = [[float(v.transform.location.x),float(v.transform.location.y)]
+                 for v in reversed(traversed)]
+    case['_target_corridor_xy']=extension+case['_target_corridor_xy']
+    case['_chain_bc_gap_m'] = float(projected)
+    return case
 
 
 def support_gap_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45.):
@@ -216,7 +256,7 @@ def junction_candidate(wp,world,carla,incoming=None):
 
 
 def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
-                  cutin_ego_gap_m=20., cutin_rear_gap_m=45.,
+                  cutin_ego_gap_m=20., cutin_rear_gap_m=45., chain_bc_gap_m=25.,
                   forbidden_anchor_keys=(), exclusion_radius_m=90.):
     """Select map-grounded anchors, checking all candidate road geometry.
 
@@ -224,12 +264,13 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
     dense driving-lane waypoints. Spawn points are NOT an exhaustive road map.
     The result and rejection counts are deterministic for a fixed map and seed.
     """
-    if archetype not in ('cut_in', 'convoy', 'intersection', 'support_gap'):
+    if archetype not in ('cut_in', 'convoy', 'intersection', 'support_gap', 'chain_cut_in'):
         raise ValueError('Unknown case archetype: ' + archetype)
     import carla
     road_map = world.get_map()
     kind = archetype
     find = {'cut_in':cut_in_candidate, 'support_gap':support_gap_candidate,
+            'chain_cut_in':chain_cut_in_candidate,
             'convoy':convoy_candidate, 'intersection':None}[kind]
     rng = random.Random(seed)
     diagnostics = {'map':road_map.name, 'archetype':archetype,
@@ -242,7 +283,9 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
             return junction_candidate(wp,world,carla,incoming)
         if kind == 'convoy':
             return convoy_candidate(wp,carla,diagnostics['rejections'])
-        return find(wp,carla,cutin_ego_gap_m,cutin_rear_gap_m)
+        return (find(wp,carla,cutin_ego_gap_m,cutin_rear_gap_m,chain_bc_gap_m)
+                if kind == 'chain_cut_in' else
+                find(wp,carla,cutin_ego_gap_m,cutin_rear_gap_m))
 
     def add(case):
         center = case['follower_a'].transform.location
@@ -260,13 +303,15 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
                           'yaw':round(float(v.transform.rotation.yaw),3)}
                       for k,v in case.items() if not k.startswith('_')}
         geo=None
-        if archetype in ('cut_in','support_gap'):
+        if archetype in ('cut_in','support_gap','chain_cut_in'):
             forward=case['follower_a'].transform.get_forward_vector()
             lead=case['follower_a'].transform.location
             ego=case['ego'].transform.location
             rear=case['follower_b'].transform.location
             geo={'front_to_ego_m':round((lead.x-ego.x)*forward.x+(lead.y-ego.y)*forward.y,3),
                  'front_to_rear_m':round((lead.x-rear.x)*forward.x+(lead.y-rear.y)*forward.y,3)}
+            if archetype == 'chain_cut_in':
+                geo['rear_b_to_c_m']=round(float(case['_chain_bc_gap_m']),3)
         rows.append({'anchor':len(rows),'key':key,'coords':coords,'gap_geometry_m':geo,
                      'waypoint_identities':identities,
                      'archetype':archetype,'target_lane_id':case.get('_target_lane_id'),
@@ -328,7 +373,7 @@ def restore(world,anchor,carla):
                 yaw_diff(wp.transform.rotation.yaw,expected['yaw'])>5.):
             raise RuntimeError('Frozen anchor road/lane or heading changed: '+k)
         scene[k]=wp
-    if anchor.get('archetype') in ('cut_in','support_gap'):
+    if anchor.get('archetype') in ('cut_in','support_gap','chain_cut_in'):
         from ride.carla.lane_geometry import distance_to_polyline
         corridor=anchor.get('target_corridor_xy')
         if not corridor or len(corridor)<20:
@@ -346,7 +391,7 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla,*,late_swi
     wp=world.get_map().get_waypoint(vehicle.get_location(),project_to_road=True,
                                     lane_type=carla.LaneType.Driving)
     if wp is None:raise RuntimeError('Ego exited supported drivable lane')
-    if archetype in ('cut_in', 'support_gap'):
+    if archetype in ('cut_in', 'support_gap', 'chain_cut_in'):
         switch={'early_slow':1.5,'late_slow':late_switch_s,'mild_early':2.5,
                 'mild_late':3.5,'merge_early':1.5,'merge_late':late_switch_s,'cruise':9.0}[profile]
         target_lane_id=scene['follower_a'].lane_id

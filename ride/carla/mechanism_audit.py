@@ -43,7 +43,7 @@ def _burden(frames, role: str, *, threshold: float = 3.) -> float:
     return round(sum(max(0., -float(x.get(f'{role}_accel',0)) - threshold)*dt for x in ts), 5)
 
 def _treatment_time(row, ts):
-    if row.get('archetype') not in ('cut_in', 'support_gap'):
+    if row.get('archetype') not in ('cut_in', 'support_gap', 'chain_cut_in'):
         return None
     for x in ts:
         dest=x.get('target_lane_id')
@@ -60,6 +60,7 @@ def summarize_one(row):
     cmd_time = _treatment_time(row, ts)
     brake_a = _sustained_start(ts,'follower_a')
     brake_b = _sustained_start(ts,'follower_b')
+    brake_c = _sustained_start(ts,'follower_c') if row.get('archetype')=='chain_cut_in' else None
     return {
         'archetype':row.get('archetype'), 'anchor':str(row.get('anchor')),
         'seed':str(row.get('seed')), 'family':row.get('family'), 'profile':row.get('profile'),
@@ -68,7 +69,9 @@ def summarize_one(row):
         'ego_progress_m':m.get('ego_progress_m'),
         'first_lateral_command_s':cmd_time, 'first_ego_target_lane_s':target_enter,
         'first_sustained_brake_a_s':brake_a,'first_sustained_brake_b_s':brake_b,
+        'first_sustained_brake_c_s':brake_c,
         'burden_a_mps':_burden(ts,'follower_a'), 'burden_b_mps':_burden(ts,'follower_b'),
+        'burden_c_mps':_burden(ts,'follower_c') if row.get('archetype')=='chain_cut_in' else None,
         'min_ttc_s':m.get('min_rear_pair_ttc_s'), 'reasons':m.get('reasons',[])
     }
 

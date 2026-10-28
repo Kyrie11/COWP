@@ -20,7 +20,10 @@ import argparse, json, math, os, random, sys, traceback, time, uuid
 from pathlib import Path
 from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, closing_ttc, summarise_trial
 from .actor_lifecycle import check_spawn_state, destroy_verified, inventory
-from .tm_policy import configure_tm_speed, nominal_target_speeds
+from .tm_policy import configure_tm_speed
+from .roles import all_roles, response_roles, primary_pair, nominal_speed
+from .behavior_policy import cap_behavior_agent
+from .pair_geometry import longitudinal_pair_eligible
 
 
 def xy_distance(a,b):return math.hypot(a.x-b.x,a.y-b.y)
@@ -152,7 +155,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         c=restore(world,anchor,carla)
         bp=_blueprint(world)
         vehicles={}
-        for role in ('ego','follower_a','follower_b'):
+        roles=all_roles(args.archetype)
+        responders_roles=response_roles(args.archetype)
+        pair_roles=primary_pair(args.archetype)
+        for role in roles:
             # Pass fresh CARLA Transform: do not mutate live map waypoint position
             vehicles[role]=_spawn(world,c[role],bp,role_name=f'ride.{trial_uid}.{role}')
             actors.append(vehicles[role])
@@ -174,9 +180,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # Initialize same longitudinal velocities in lane-forward direction.
         for role,v in vehicles.items():
             d=c[role].transform.get_forward_vector()
-            initial_speed=(args.cruise_mps + args.rear_speed_delta_mps
-                           if role=='follower_b' and args.archetype in ('cut_in','support_gap')
-                           else args.cruise_mps)
+            initial_speed=nominal_speed(role,archetype=args.archetype,
+                cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
             v.set_target_velocity(carla.Vector3D(d.x*initial_speed,d.y*initial_speed,0))
         # CARLA synchronous spawning and velocity updates must be committed by a
         # simulator tick. A zero-state read before this frame invalidates all
@@ -195,38 +201,46 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # V5 uses the same PID settle policy for every role across ALL arms.
         # The first TM/BehaviorAgent control is applied only after the
         # intervention start frame. This still requires recorded state parity.
-        settle_controllers={role:_pid(vehicles[role])
-                            for role in ('follower_a','follower_b')}
+        settle_controllers={role:_pid(vehicles[role]) for role in responders_roles}
         for j in range(args.warmup_ticks):
             vehicles['ego'].apply_control(ego_ctrl.run_step(
                 args.cruise_mps*3.6,_target_waypoint(world,vehicles['ego'])))
             for role,ctrl in settle_controllers.items():
-                speed=(args.cruise_mps+args.rear_speed_delta_mps
-                       if role=='follower_b' and args.archetype in ('cut_in','support_gap')
-                       else args.cruise_mps)
+                speed=nominal_speed(role,archetype=args.archetype,
+                    cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                    chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
                 vehicles[role].apply_control(ctrl.run_step(
                     speed*3.6,_target_waypoint(world,vehicles[role])))
             world.tick()
         print('RIDE_COMMON_WARMUP_DONE '+trial_uid,flush=True)
         if family=='behavior':
             from agents.navigation.behavior_agent import BehaviorAgent
-            for role in ('follower_a','follower_b'):
+            result['behavior_speed_configuration']={}
+            for role in responders_roles:
                 a=BehaviorAgent(vehicles[role],behavior='normal')
                 a.set_destination(c.get('end_follower',c['end']).transform.location)
+                if args.behavior_speed_protocol == 'nominal_cap':
+                    desired=nominal_speed(role,archetype=args.archetype,
+                        cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                        chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
+                    result['behavior_speed_configuration'][role]=cap_behavior_agent(a,desired)
+                else:
+                    result['behavior_speed_configuration'][role]={'protocol':'native_behavior_agent',
+                        'original_max_kmh':float(a._behavior.max_speed)}
                 responders[role]=a
         elif family=='tm':
             print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
             tm=client.get_trafficmanager(args.tm_port)
             tm.set_synchronous_mode(True)
             tm.set_random_device_seed(seed)
-            for role in ('follower_a','follower_b'):
+            for role in responders_roles:
                 a=vehicles[role]
                 a.set_autopilot(True,args.tm_port)
                 tm.auto_lane_change(a,False)
                 tm.distance_to_leading_vehicle(a,2.5)
-                tm_role_speed = (args.cruise_mps + args.rear_speed_delta_mps
-                                 if role == 'follower_b' and args.archetype in ('cut_in','support_gap')
-                                 else args.cruise_mps)
+                tm_role_speed=nominal_speed(role,archetype=args.archetype,
+                    cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                    chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
                 # Percentage 0 means FULL SPEED LIMIT, not nominal cruise speed.
                 # This bug caused TM agents to reach 20-24 m/s in the uploaded v7.
                 tm_pct, limit_kmh = configure_tm_speed(tm,a,tm_role_speed)
@@ -237,7 +251,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         elif family=='joint_witness':
             if joint_targets is None or len(joint_targets)!=2:
                 raise ValueError('joint_witness must specify two target speeds')
-            responders={k:_pid(vehicles[k]) for k in ('follower_a','follower_b')}
+            responders={k:_pid(vehicles[k]) for k in responders_roles}
         else:raise ValueError(family)
         speeds={k:vehicle_speed(v) for k,v in vehicles.items()}
         init_xy={k:v.get_location() for k,v in vehicles.items()}
@@ -253,7 +267,11 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         prev_xy=dict(init_xy)
         travel={k:0. for k in vehicles}
         out_init={k:{'xyz':[v.x,v.y,v.z],'speed_mps':speeds[k]} for k,v in init_xy.items()}
-        for k in out_init:out_init[k]['speed_mps']=speeds[k]
+        for k in out_init:
+            out_init[k]['speed_mps']=speeds[k]
+            out_init[k]['yaw_deg']=float(vehicles[k].get_transform().rotation.yaw)
+            vv=vehicles[k].get_velocity()
+            out_init[k]['velocity_world_mps']=[float(vv.x),float(vv.y),float(vv.z)]
         result['initial_states']=out_init
         # A collision sensor is armed BEFORE the prime tick and before the
         # common warm-up. Those contacts are pre-intervention confounders,
@@ -263,8 +281,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['intervention_start_frame']=intervention_start_frame
         # No initial collisions or impossible follower overlaps.
         from ride.geometry import carla_actor_overlap
-        initial_pairs=[(x,y) for x,y in
-                       [('ego','follower_a'),('follower_a','follower_b'),('ego','follower_b')]
+        initial_pairs=[(x,y) for i,x in enumerate(roles) for y in roles[i+1:]
                        if carla_actor_overlap(vehicles[x],vehicles[y])]
         result['initial_overlap_pairs']=initial_pairs
         result['initial_overlap']=bool(initial_pairs)
@@ -278,12 +295,14 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 # Account for road-segment speed-limit changes while respecting
                 # the registered nominal-speed condition. Never silently use
                 # TM's default '100 percent of road limit' target.
-                for role in ('follower_a','follower_b'):
-                    speed_nom = nominal_target_speeds(args.cruise_mps,args.rear_speed_delta_mps,args.archetype)[role]
+                for role in responders_roles:
+                    speed_nom=nominal_speed(role,archetype=args.archetype,
+                        cruise_mps=args.cruise_mps,rear_speed_delta_mps=args.rear_speed_delta_mps,
+                        chain_c_speed_delta_mps=args.chain_c_speed_delta_mps)
                     pct,limit=configure_tm_speed(tm,vehicles[role],speed_nom)
                     result['tm_speed_configuration'][role]['latest_limit_kmh']=round(limit,3)
                     result['tm_speed_configuration'][role]['latest_pct']=round(pct,3)
-            target=(args.cruise_mps if getattr(args,'archetype','convoy') in ('cut_in','support_gap')
+            target=(args.cruise_mps if getattr(args,'archetype','convoy') in ('cut_in','support_gap','chain_cut_in')
                     else target_speed_mps(profile,t,args.cruise_mps))
             if recovery is not None and t>=args.recovery_time_s:
                 target=0. if recovery=='stop' else args.cruise_mps
@@ -305,8 +324,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             world.tick()
             # OBB is a sensor-health diagnostic only; NEVER substitute an OBB
             # overlap for a physically reported collision event.
-            for x,y in [('ego','follower_a'),('ego','follower_b'),
-                        ('follower_a','follower_b')]:
+            for i,x in enumerate(roles):
+              for y in roles[i+1:]:
                 if carla_actor_overlap(vehicles[x],vehicles[y]):
                     overlap_proxy.add(tuple(sorted((x,y))))
             now={k:v.get_location() for k,v in vehicles.items()}
@@ -335,25 +354,28 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             # TTC applies only to a verified same-road/same-lane following pair.
             # Using 18m plus individual odometers gives incorrect gap on bends,
             # lane changes and non-constant CARLA vehicle trajectories.
-            awp=world.get_map().get_waypoint(now['follower_a'],project_to_road=False,
+            awp=world.get_map().get_waypoint(now[pair_roles[0]],project_to_road=False,
                                               lane_type=carla.LaneType.Driving)
-            bwp=world.get_map().get_waypoint(now['follower_b'],project_to_road=False,
+            bwp=world.get_map().get_waypoint(now[pair_roles[1]],project_to_road=False,
                                               lane_type=carla.LaneType.Driving)
-            pair_same_lane=(awp is not None and bwp is not None and
-                            awp.road_id==bwp.road_id and awp.lane_id==bwp.lane_id and
-                            abs((awp.transform.rotation.yaw-bwp.transform.rotation.yaw+180.)%360.-180.)<18.)
+            pair_same_lane=longitudinal_pair_eligible(awp,bwp,
+                now[pair_roles[0]],now[pair_roles[1]],
+                target_corridor_xy=c.get('_target_corridor_xy') if args.archetype in
+                ('cut_in','support_gap','chain_cut_in') else None)
             if pair_same_lane and args.archetype!='intersection':
                 h=awp.transform.get_forward_vector()
-                diff=now['follower_a']-now['follower_b']
+                diff=now[pair_roles[0]]-now[pair_roles[1]]
                 along=float(diff.x*h.x+diff.y*h.y)
-                bumper_length=(vehicles['follower_a'].bounding_box.extent.x+
-                               vehicles['follower_b'].bounding_box.extent.x)
+                bumper_length=sum(vehicles[role].bounding_box.extent.x for role in pair_roles)
                 gap=along-bumper_length
-                va=vehicles['follower_a'].get_velocity();vb=vehicles['follower_b'].get_velocity()
+                if along < -1.:
+                    pair_same_lane=False
+                va=vehicles[pair_roles[0]].get_velocity();vb=vehicles[pair_roles[1]].get_velocity()
                 front_speed=float(va.x*h.x+va.y*h.y)
                 rear_speed=float(vb.x*h.x+vb.y*h.y)
-                ttc=closing_ttc(0.,gap+bumper_length,rear_speed,front_speed,
-                                vehicle_length=bumper_length)
+                ttc=(closing_ttc(0.,gap+bumper_length,rear_speed,front_speed,
+                                vehicle_length=bumper_length) if pair_same_lane else None)
+                if not pair_same_lane:gap=None
             else:
                 gap=None;ttc=None
             goal_distance=xy_distance(now['ego'],goal)
@@ -413,17 +435,17 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'ego_lane_id':(int(ego_wp_now.lane_id) if ego_wp_now is not None else None),
                 'ego_road_id':(int(ego_wp_now.road_id) if ego_wp_now is not None else None),
                 'target_lane_id':(int(c['follower_a'].lane_id)
-                                  if getattr(args,'archetype','convoy') in ('cut_in','support_gap') else None),
+                                  if getattr(args,'archetype','convoy') in ('cut_in','support_gap','chain_cut_in') else None),
                 'ego_in_target_lane':ego_in_target,
                 'ego_target_centerline_error_m':target_centerline_error,
                 'ego_in_junction':bool(ego_wp_now and ego_wp_now.is_junction),
                 'follower_a_in_junction':bool(a_wp_now and a_wp_now.is_junction),
                 'follower_a_accel':(new_speeds['follower_a']-speeds['follower_a'])/DT,
                 'follower_b_accel':(new_speeds['follower_b']-speeds['follower_b'])/DT,
-                'follower_a_lane_id':(int(awp.lane_id) if awp else None),
-                'follower_a_road_id':(int(awp.road_id) if awp else None),
-                'follower_b_lane_id':(int(bwp.lane_id) if bwp else None),
-                'follower_b_road_id':(int(bwp.road_id) if bwp else None),
+                'follower_a_lane_id':(int(a_wp_now.lane_id) if a_wp_now else None),
+                'follower_a_road_id':(int(a_wp_now.road_id) if a_wp_now else None),
+                'follower_b_lane_id':(int((bwp if pair_roles[1]=='follower_b' else awp).lane_id) if (bwp if pair_roles[1]=='follower_b' else awp) else None),
+                'follower_b_road_id':(int((bwp if pair_roles[1]=='follower_b' else awp).road_id) if (bwp if pair_roles[1]=='follower_b' else awp) else None),
                 'follower_a_speed_mps':new_speeds['follower_a'],
                 'follower_b_speed_mps':new_speeds['follower_b'],
                 'follower_a_speed_limit_kmh':float(vehicles['follower_a'].get_speed_limit()),
@@ -436,7 +458,16 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'rear_pair_ttc_applicable':bool(pair_same_lane and args.archetype!='intersection'),
                 'follower_a_progress_m':s['follower_a'],'follower_b_progress_m':s['follower_b'],
                 'ego_follower_a_distance_m':xy_distance(now['ego'],now['follower_a']),
-                'xy_by_role':{k:[float(v.x),float(v.y)] for k,v in now.items()}}
+                'xy_by_role':{k:[float(v.x),float(v.y)] for k,v in now.items()},
+                'third_party_pair_roles':list(pair_roles)}
+            if args.archetype == 'chain_cut_in':
+                frame['follower_c_accel']=(new_speeds['follower_c']-speeds['follower_c'])/DT
+                frame['follower_c_speed_mps']=new_speeds['follower_c']
+                frame['follower_c_progress_m']=s['follower_c']
+                c_wp_now = world.get_map().get_waypoint(now['follower_c'], project_to_road=False,
+                    lane_type=carla.LaneType.Driving)
+                frame['follower_c_lane_id']=int(c_wp_now.lane_id) if c_wp_now else None
+                frame['follower_c_road_id']=int(c_wp_now.road_id) if c_wp_now else None
             result['trace'].append(frame)
             speeds=new_speeds
         # Sensor callbacks are asynchronous relative to synchronous physics
@@ -450,14 +481,15 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         pairs={tuple(sorted((x['role_a'],x['role_b']))) for x in post_action}
         result['ego_collision']=any('ego' in p for p in pairs)
         result['non_ego_collision']=any('ego' not in p for p in pairs)
-        result['non_ego_pair_collision']=('follower_a','follower_b') in pairs
+        result['non_ego_pair_collision']=tuple(sorted(pair_roles)) in pairs
+        result['primary_third_party_pair_roles']=list(pair_roles)
         result['unexpected_actor']=any('external' in p for p in pairs)
         result['kinematic_overlap_pairs']=[list(x) for x in sorted(overlap_proxy)]
         result['sensor_overlap_disagreement_pairs']=[list(x) for x in sorted(overlap_proxy-pairs)]
         result['metrics']=summarise_trial(result)
         result['max_observed_follower_speed_mps']={role:max(
             float(frame[f'{role}_speed_mps']) for frame in result['trace'])
-            for role in ('follower_a','follower_b')}
+            for role in responders_roles}
         return result
     except Exception as ex:
         # A dead/unresponsive CARLA server must abort the batch rather than
@@ -478,7 +510,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # actor.destroy calls. Keep synchronous world tick authority until the
         # deletion acknowledgement; otherwise a later trial can see orphans.
         if tm is not None:
-            for role in ('follower_a', 'follower_b'):
+            for role in responders_roles:
                 if role in vehicles:
                     try:vehicles[role].set_autopilot(False, args.tm_port)
                     except Exception as exc:
@@ -531,6 +563,12 @@ def main():
                    help='Positive along-lane distance from lead A to adjacent ego (5m grid)')
     p.add_argument('--cutin-rear-gap-m',type=float,default=45.,
                    help='Positive along-lane distance from lead A to rear B (5m grid)')
+    p.add_argument('--chain-bc-gap-m',type=float,default=25.,
+                   help='B-to-C follower spacing in chain_cut_in [20,45] on 5m grid')
+    p.add_argument('--chain-c-speed-delta-mps',type=float,default=0.,
+                   help='C nominal-speed offset from cruise; default 0. Pre-register.')
+    p.add_argument('--behavior-speed-protocol',choices=('nominal_cap','native'),
+                   default='nominal_cap',help='Cap BA maximum speed to nominal or use unmodified agent')
     p.add_argument('--cutin-late-switch-s',type=float,default=4.5,
                    help='Lateral switch time for late_slow/merge_late; freeze per protocol')
     p.add_argument('--cutin-lateral-lookahead-m',type=float,default=15.,
@@ -549,7 +587,7 @@ def main():
     p.add_argument('--recovery-time-s',type=float,default=3.5)
     p.add_argument('--recovery-options',nargs='+',choices=('stop','cruise'),
                    default=['stop','cruise'])
-    p.add_argument('--archetype',choices=('convoy','cut_in','intersection','support_gap'),default='convoy')
+    p.add_argument('--archetype',choices=('convoy','cut_in','chain_cut_in','intersection','support_gap'),default='convoy')
     p.add_argument('--manifest-only',action='store_true',help='Freeze scenario identities without executing outcomes')
     p.add_argument('--inspect-anchors',action='store_true',
                    help='Scan map and print eligible anchors and rejection counts; no result files or trials')
@@ -561,8 +599,10 @@ def main():
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
-    if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0 or not 0<=a.rear_speed_delta_mps<=4.:
+    if a.duration_s<6 or a.cruise_mps<=0 or abs(a.chain_c_speed_delta_mps)>3.0 or a.cruise_mps+a.chain_c_speed_delta_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0 or not 0<=a.rear_speed_delta_mps<=4.:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
+    if a.archetype == 'chain_cut_in' and a.joint_profile is not None:
+        raise ValueError('FOUR_CAR_JOINT_WITNESS_UNSUPPORTED: two-target bank cannot control A/B/C; run chain M0 with tm/behavior only')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
         raise ValueError('Recovery cutoff outside horizon')
     if not 2.0 <= a.cutin_late_switch_s <= 6.0 or not 5.0 <= a.cutin_lateral_lookahead_m <= 30.0:
@@ -627,6 +667,9 @@ def main():
             frozen.get('rear_speed_delta_mps')!=a.rear_speed_delta_mps or
             frozen.get('cutin_ego_gap_m')!=a.cutin_ego_gap_m or
             frozen.get('cutin_rear_gap_m')!=a.cutin_rear_gap_m or
+            frozen.get('chain_bc_gap_m',25.)!=a.chain_bc_gap_m or
+            frozen.get('chain_c_speed_delta_mps',0.)!=a.chain_c_speed_delta_mps or
+            frozen.get('behavior_speed_protocol')!=a.behavior_speed_protocol or
             frozen.get('cutin_late_switch_s',4.5)!=a.cutin_late_switch_s or
             frozen.get('cutin_lateral_lookahead_m',15.)!=a.cutin_lateral_lookahead_m):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
@@ -638,6 +681,7 @@ def main():
                                            with_diagnostics=True,
                                            cutin_ego_gap_m=a.cutin_ego_gap_m,
                                            cutin_rear_gap_m=a.cutin_rear_gap_m,
+                                           chain_bc_gap_m=a.chain_bc_gap_m,
                                            forbidden_anchor_keys=forbidden_keys,
                                            exclusion_radius_m=a.exclude_radius_m)
         print('CARLA_MAP_ANCHOR_DIAGNOSTICS '+json.dumps(anchor_stats,sort_keys=True),flush=True)
@@ -680,11 +724,16 @@ def main():
               'rear_speed_delta_mps':a.rear_speed_delta_mps,
               'cutin_ego_gap_m':a.cutin_ego_gap_m,
               'cutin_rear_gap_m':a.cutin_rear_gap_m,
+              'chain_bc_gap_m':a.chain_bc_gap_m,
+              'chain_c_speed_delta_mps':a.chain_c_speed_delta_mps,
+              'behavior_speed_protocol':a.behavior_speed_protocol,
               'cutin_late_switch_s':a.cutin_late_switch_s,
               'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'cut_in_profiles_use_lateral_switch_time_only':True,
-              'action_semantics_protocol_v8':{'cut_in':'lateral_switch_time_only',
+              'third_party_pair_roles':list(primary_pair(a.archetype)),
+              'action_semantics_protocol_v10':{'cut_in':'lateral_switch_time_only',
+                                              'chain_cut_in':'lateral_switch_time_only',
                                               'support_gap':'lateral_switch_time_only',
                                               'convoy':'longitudinal_speed_profile'},
               'joint_profile':a.joint_profile,'joint_limit':a.joint_limit,

@@ -310,3 +310,17 @@ python -m ride.waymax.paired_idm --help
 `21_audit_factorial_mechanisms.sh` 会对每个冻结 factorial panel 重新生成机制时序和连续制动负担诊断。该诊断不能替换预注册的 RQ1/RQ2 主端点。
 
 ReactSim 的 DB 文件先运行 `scripts/22_reactsim_db_coverage.sh` 做全 split log-name 盘点，再运行 `scripts/17_reactsim_preprocess_checked.sh inspect-val` 做 token/SQLite 盘点；两者分别回答“文件是否在本地某个 split”和“该 token 是否能成为合法场景”。
+
+## V10 science gate (2026-10-28)
+
+Four-car `chain_cut_in` research-only CARLA scenario (primary **B--C** pair),
+BehaviorAgent nominal cruise-speed cap, heading-matched initial states, and
+cruise negative-control audits. Does **not** certify human causality or a
+planner decision error. Retains the uploaded explicit safe map-change entry
+`scripts/02c_prepare_carla_town.sh`. The new freeze protocol is
+`ride_lane_corridor_v10_20261028`; do **not** mix v9 and v10 panels.
+
+**Start here:** `docs/V10_RQ12_SCIENCE_AND_EXECUTION_CN.md`.
+
+New scripts: `31_v10_chain_m0.sh`, `32_v10_reaudit.sh`,
+`33_v10_chain_confirm.sh`.

@@ -57,6 +57,7 @@ def audit_rows(rows):
                 'rq1_pair_eligible':ok_all})
     families_ready=all(counts['ego_safe_mechanism_'+fam]>0 for fam in p.families)
     if not completed:status='INCOMPLETE_PANEL_NOT_SCIENTIFIC_DATA'
+    elif reasons['duplicate_trial_key']>0:status='ENGINEERING_DUPLICATE_TRIAL_KEYS'
     elif any(r.get('simulation_exception') for r in trials):status='ENGINEERING_EXCEPTION_BLOCKER'
     elif not families_ready:status='M0_MECHANISM_OR_VALIDITY_BLOCKER'
     elif matched==0:status='M0_PHYSICS_EXECUTES_BUT_NO_CROSS_FAMILY_TASK_MATCH'

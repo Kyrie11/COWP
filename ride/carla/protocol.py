@@ -69,7 +69,7 @@ def summarise_trial(row):
     ttc_values=[float(x['rear_pair_ttc_s']) for x in ts if x.get('rear_pair_ttc_s') is not None]
     gap_values=[float(x['rear_pair_gap_m']) for x in ts if x.get('rear_pair_gap_m') is not None]
     archetype=row.get('archetype','convoy')
-    if archetype in ('cut_in','support_gap'):
+    if archetype in ('cut_in','support_gap','chain_cut_in'):
         # A valid merge must start in the adjacent lane and later occupy the
         # target lane.  Merely spawning in the target lane or choosing a target
         # waypoint without a physical lane transition is not mechanism
@@ -99,8 +99,9 @@ def summarise_trial(row):
     if not tbrake:
         reasons.append('insufficient_post_startup_observation')
         tbrake=ts
-    full_min=min(min(x['follower_a_accel'],x['follower_b_accel']) for x in ts)
-    post_min=min(min(x['follower_a_accel'],x['follower_b_accel']) for x in tbrake)
+    risk_roles = ('follower_b','follower_c') if archetype == 'chain_cut_in' else ('follower_a','follower_b')
+    full_min=min(min(x[role+'_accel'] for role in risk_roles) for x in ts)
+    post_min=min(min(x[role+'_accel'] for role in risk_roles) for x in tbrake)
     # One noisy acceleration sample is not a real emergency-braking episode.
     # Require >=0.20 seconds continuously below threshold; retain the raw
     # one-sample flag for sensitivity analysis. This is a new v4 metric.
@@ -112,8 +113,9 @@ def summarise_trial(row):
         return longest
     duration_a=longest_run('follower_a_accel') * DT
     duration_b=longest_run('follower_b_accel') * DT
-    hard_roles=[name for name,duration in (('follower_a',duration_a),
-                                           ('follower_b',duration_b)) if duration >= 0.20-1e-8]
+    duration_c=longest_run('follower_c_accel') * DT if archetype == 'chain_cut_in' else None
+    durations={'follower_a':duration_a,'follower_b':duration_b,'follower_c':duration_c}
+    hard_roles=[name for name in risk_roles if durations[name] >= 0.20-1e-8]
     out={
       'valid':not reasons,'reasons':reasons,
       'brake_observation_start_s':BRAKE_OBSERVATION_START_S,
@@ -127,7 +129,7 @@ def summarise_trial(row):
       'ego_path_length_m':float(ts[-1]['ego_path_length_m']),
       'progress_measure':ts[-1]['progress_measure'],
       'mechanism_executed':bool(mechanism),
-      'target_lane_dwell_max_s':(max_dwell*DT if archetype in ('cut_in','support_gap') else None),
+      'target_lane_dwell_max_s':(max_dwell*DT if archetype in ('cut_in','support_gap','chain_cut_in') else None),
       'follower_a_progress_m':float(ts[-1]['follower_a_progress_m']),
       'follower_b_progress_m':float(ts[-1]['follower_b_progress_m']),
       'ego_collision':bool(row.get('ego_collision',False)),
@@ -144,6 +146,10 @@ def summarise_trial(row):
       'hard_brake_instantaneous_post_startup_proxy':post_min < -4.0,
       'follower_a_max_sustained_brake_s':duration_a,
       'follower_b_max_sustained_brake_s':duration_b,
+      'primary_third_party_pair_roles':list(risk_roles),
+      'follower_c_max_sustained_brake_s':duration_c,
+      'min_follower_c_accel_mps2':(min(x['follower_c_accel'] for x in tbrake)
+                                    if archetype=='chain_cut_in' else None),
       'ego_action_tracking_mse':sum((x['ego_target_speed_mps']-x['ego_speed_mps'])**2 for x in ts)/len(ts),
     }
     return out

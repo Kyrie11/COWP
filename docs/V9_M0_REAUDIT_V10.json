@@ -1,0 +1,613 @@
+{
+  "protocol": "RIDE_V10_CARLA_SIMULATED_SCREENING",
+  "complete": true,
+  "duplicate_keys": [],
+  "counts": {
+    "trials": 20,
+    "valid_trials": 20,
+    "executed_valid_mechanisms": 16,
+    "valid_primary_pair_collisions": 0,
+    "task_matched_cross_family_pairs": 3,
+    "independent_physical_anchors_with_cross_family_pairs": 2,
+    "strict_primary_endpoint_ranking_reversals": 0
+  },
+  "comparisons": [
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17"
+      ],
+      "actions": [
+        "early_slow",
+        "late_slow"
+      ],
+      "families": {
+        "tm": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.08822627599150934,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.0
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.15113004617201398,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.0
+        }
+      },
+      "cross_family_eligible": true,
+      "cross_family_errors": [],
+      "strict_primary_endpoint_reversal": false
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17"
+      ],
+      "actions": [
+        "mild_early",
+        "mild_late"
+      ],
+      "families": {
+        "tm": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.1340126534502062,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.0
+        },
+        "behavior": {
+          "eligible": false,
+          "reason": "initial_position_mismatch:follower_b",
+          "progress_difference_m": null,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": null,
+          "continuous_burden_b_delta_mps": null
+        }
+      },
+      "cross_family_eligible": false,
+      "cross_family_errors": [],
+      "strict_primary_endpoint_reversal": false
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17"
+      ],
+      "actions": [
+        "early_slow",
+        "late_slow"
+      ],
+      "families": {
+        "tm": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.1312275646501675,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.0
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.051771683352832554,
+          "primary_endpoint_a": [
+            0,
+            1,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            1,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.31308
+        }
+      },
+      "cross_family_eligible": true,
+      "cross_family_errors": [],
+      "strict_primary_endpoint_reversal": false
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17"
+      ],
+      "actions": [
+        "mild_early",
+        "mild_late"
+      ],
+      "families": {
+        "tm": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.04456217600937862,
+          "primary_endpoint_a": [
+            0,
+            0,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            0,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": -0.00609
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "progress_difference_m": 0.021667040174484953,
+          "primary_endpoint_a": [
+            0,
+            1,
+            0
+          ],
+          "primary_endpoint_b": [
+            0,
+            1,
+            0
+          ],
+          "primary_risk_order": 0,
+          "continuous_burden_b_delta_mps": 0.27983
+        }
+      },
+      "cross_family_eligible": true,
+      "cross_family_errors": [],
+      "strict_primary_endpoint_reversal": false
+    }
+  ],
+  "cruise_negative_controls": [
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "behavior"
+      ],
+      "action": "early_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.0,
+      "pre_action_max_responder_speed_diff_mps": 0.0,
+      "lateral_command_s": 1.55,
+      "first_target_lane_s": 3.55,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.0,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "behavior"
+      ],
+      "action": "late_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.0,
+      "pre_action_max_responder_speed_diff_mps": 0.0,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.0,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "behavior"
+      ],
+      "action": "mild_early",
+      "eligible": false,
+      "reason": "initial_position_mismatch:follower_b"
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "behavior"
+      ],
+      "action": "mild_late",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.0,
+      "pre_action_max_responder_speed_diff_mps": 0.0,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.0,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.0,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "tm"
+      ],
+      "action": "early_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.02248,
+      "pre_action_max_responder_speed_diff_mps": 0.03363,
+      "lateral_command_s": 1.55,
+      "first_target_lane_s": 3.55,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.5722625690347485,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.16997,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.01876,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "tm"
+      ],
+      "action": "late_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 3e-05,
+      "pre_action_max_responder_xy_m": 0.01023,
+      "pre_action_max_responder_speed_diff_mps": 0.07841,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.5764668895450376,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.12616,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.01897,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "tm"
+      ],
+      "action": "mild_early",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0417,
+      "pre_action_max_responder_xy_m": 0.10363,
+      "pre_action_max_responder_speed_diff_mps": 0.25957,
+      "lateral_command_s": 2.55,
+      "first_target_lane_s": 4.55,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.41928060639563736,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.11159,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.09601,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "0",
+        "17",
+        "tm"
+      ],
+      "action": "mild_late",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 3e-05,
+      "pre_action_max_responder_xy_m": 0.08807,
+      "pre_action_max_responder_speed_diff_mps": 0.14651,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.5981432991605171,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.12114,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.03829,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "behavior"
+      ],
+      "action": "early_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.00211,
+      "pre_action_max_responder_speed_diff_mps": 0.00599,
+      "lateral_command_s": 1.55,
+      "first_target_lane_s": 3.65,
+      "baseline_cruise_has_hard_brake": true,
+      "max_follower_b_speed_delta_post_mps": 3.0502366928256155,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.42135,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.00462,
+      "post_command_incremental_burden_b_mps": 0.40125,
+      "full_horizon_incremental_burden_b_mps": 0.40125,
+      "candidate_b_brake_s": 3.85,
+      "cruise_b_brake_s": 4.25,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "behavior"
+      ],
+      "action": "late_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.00023,
+      "pre_action_max_responder_speed_diff_mps": 0.00033,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.7,
+      "baseline_cruise_has_hard_brake": true,
+      "max_follower_b_speed_delta_post_mps": 0.5671153224469627,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.06903,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.00011,
+      "post_command_incremental_burden_b_mps": 0.08817,
+      "full_horizon_incremental_burden_b_mps": 0.08817,
+      "candidate_b_brake_s": 4.25,
+      "cruise_b_brake_s": 4.25,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "behavior"
+      ],
+      "action": "mild_early",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 2e-05,
+      "pre_action_max_responder_speed_diff_mps": 5e-05,
+      "lateral_command_s": 2.55,
+      "first_target_lane_s": 4.65,
+      "baseline_cruise_has_hard_brake": true,
+      "max_follower_b_speed_delta_post_mps": 0.872806886693974,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.0608,
+      "mean_abs_follower_b_speed_delta_pre_mps": 2e-05,
+      "post_command_incremental_burden_b_mps": 0.26063,
+      "full_horizon_incremental_burden_b_mps": 0.26063,
+      "candidate_b_brake_s": 4.25,
+      "cruise_b_brake_s": 4.25,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "behavior"
+      ],
+      "action": "mild_late",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.02362,
+      "pre_action_max_responder_speed_diff_mps": 0.03549,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.7,
+      "baseline_cruise_has_hard_brake": true,
+      "max_follower_b_speed_delta_post_mps": 0.43414495376946327,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.15421,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.01139,
+      "post_command_incremental_burden_b_mps": -0.0192,
+      "full_horizon_incremental_burden_b_mps": -0.0192,
+      "candidate_b_brake_s": 4.15,
+      "cruise_b_brake_s": 4.25,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "tm"
+      ],
+      "action": "early_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.00026,
+      "pre_action_max_responder_xy_m": 0.08063,
+      "pre_action_max_responder_speed_diff_mps": 0.11169,
+      "lateral_command_s": 1.55,
+      "first_target_lane_s": 3.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.38120206390507505,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.12009,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.05149,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "tm"
+      ],
+      "action": "late_slow",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.09023,
+      "pre_action_max_responder_speed_diff_mps": 0.32452,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.7,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.6101243588683571,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.16606,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.13504,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "tm"
+      ],
+      "action": "mild_early",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.0,
+      "pre_action_max_responder_xy_m": 0.07613,
+      "pre_action_max_responder_speed_diff_mps": 0.13775,
+      "lateral_command_s": 2.55,
+      "first_target_lane_s": 4.65,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.4501016520205985,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.10867,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.03014,
+      "post_command_incremental_burden_b_mps": 0.0,
+      "full_horizon_incremental_burden_b_mps": 0.0,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    },
+    {
+      "context": [
+        "cut_in",
+        "1",
+        "17",
+        "tm"
+      ],
+      "action": "mild_late",
+      "eligible": true,
+      "pre_action_max_ego_xy_m": 0.01131,
+      "pre_action_max_responder_xy_m": 0.01406,
+      "pre_action_max_responder_speed_diff_mps": 0.05927,
+      "lateral_command_s": 3.55,
+      "first_target_lane_s": 5.7,
+      "baseline_cruise_has_hard_brake": false,
+      "max_follower_b_speed_delta_post_mps": 0.5706532940019322,
+      "mean_abs_follower_b_speed_delta_post_mps": 0.13376,
+      "mean_abs_follower_b_speed_delta_pre_mps": 0.02411,
+      "post_command_incremental_burden_b_mps": 0.00609,
+      "full_horizon_incremental_burden_b_mps": 0.00609,
+      "candidate_b_brake_s": null,
+      "cruise_b_brake_s": null,
+      "primary_pair_roles": null
+    }
+  ],
+  "exploratory_observed_speed_by_family": {
+    "tm": {
+      "trials_with_observed_speed": 10,
+      "trials_exceed_nominal_by_over_1p5_mps": 0,
+      "maximum_observed_responder_speed_mps": 8.3949
+    },
+    "behavior": {
+      "trials_with_observed_speed": 10,
+      "trials_exceed_nominal_by_over_1p5_mps": 5,
+      "maximum_observed_responder_speed_mps": 12.1285
+    }
+  },
+  "RQ1": "NOT_ESTABLISHED",
+  "RQ2": "NOT_ESTABLISHED_REQUIRES_MATCHED_AVOIDABLE_EFFECT_AND_INDEPENDENT_REPLICATION",
+  "RQ3": "NOT_TESTED_NO_LOCKED_PLANNER_CHOICES",
+  "scope_limits": [
+    "Simulated intervention, not human causal ground truth",
+    "Posthoc outcome ordering, not pre-rollout planner decision",
+    "Continuous burden and cruise relative deltas are exploratory diagnostics",
+    "The cruise no-merge control is not a task-matched RQ2 alternative",
+    "An ineligible trial cannot become a positive causal witness",
+    "One corridor under multiple policies/seeds is not multiple independent physical scenes"
+  ],
+  "broken_json_lines": 0
+}

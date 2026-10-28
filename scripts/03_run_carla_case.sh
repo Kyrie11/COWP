@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname "$0")/00_env.sh"
-CASE="${1:?Usage: bash scripts/03_run_carla_case.sh convoy|cut_in|intersection|support_gap}"
-case "$CASE" in convoy|cut_in|intersection|support_gap) ;; *) echo "Unknown case: $CASE" >&2; exit 2;; esac
+CASE="${1:?Usage: bash scripts/03_run_carla_case.sh convoy|cut_in|chain_cut_in|intersection|support_gap}"
+case "$CASE" in convoy|cut_in|chain_cut_in|intersection|support_gap) ;; *) echo "Unknown case: $CASE" >&2; exit 2;; esac
 mkdir -p "$RIDE_OUTPUT_ROOT/carla"
 OUT="$RIDE_OUTPUT_ROOT/carla/${CASE}.jsonl"
 FROZEN="$RIDE_OUTPUT_ROOT/frozen/${CASE}_anchors.jsonl"
@@ -38,6 +38,9 @@ python -m ride.carla.run \
   --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
   --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \
   --cutin-rear-gap-m "${RIDE_CUTIN_REAR_GAP_M:-45}" \
+  --chain-bc-gap-m "${RIDE_CHAIN_BC_GAP_M:-25}" \
+  --chain-c-speed-delta-mps "${RIDE_CHAIN_C_SPEED_DELTA_MPS:-0}" \
+  --behavior-speed-protocol "${RIDE_BEHAVIOR_SPEED_PROTOCOL:-nominal_cap}" \
   --cutin-late-switch-s "${RIDE_CUTIN_LATE_SWITCH_S:-4.5}" \
   --cutin-lateral-lookahead-m "${RIDE_CUTIN_LATERAL_LOOKAHEAD_M:-15}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --no-rendering --anchors-from "$FROZEN" \
