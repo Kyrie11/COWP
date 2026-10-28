@@ -4,7 +4,8 @@ import argparse,json
 from pathlib import Path
 
 
-def validate(rows, min_valid=1, require_all=False, require_complete=False):
+def validate(rows, min_valid=1, require_all=False, require_complete=False,
+             require_mechanism=False):
     manifest=next((r for r in rows if r.get('type')=='manifest'),None)
     trials=[r for r in rows if r.get('type')=='trial']
     end=next((r for r in rows if r.get('type')=='run_end'),None)
@@ -35,6 +36,12 @@ def validate(rows, min_valid=1, require_all=False, require_complete=False):
         summary['all_trials_have_trace_without_exception'] = complete
     else:
         summary['require_complete'] = False
+    mechanism_rows=[r for r in valid if r.get('metrics',{}).get('mechanism_executed')
+                    and not r.get('metrics',{}).get('ego_collision')]
+    summary['valid_executed_ego_safe_mechanism_trials']=len(mechanism_rows)
+    if require_mechanism:
+        passed=passed and len(mechanism_rows)>0
+    summary['require_mechanism']=require_mechanism
     return passed,summary
 
 
@@ -46,10 +53,13 @@ def main(argv=None):
                         help='Fail unless every recorded trial has a non-empty valid trace')
     parser.add_argument('--require-complete',action='store_true',
                         help='Fail unless every trial emitted a trace and no simulation exception')
+    parser.add_argument('--require-mechanism',action='store_true',
+                        help='Fail unless at least one valid trial physically executes the maneuver with ego collision-free')
     a=parser.parse_args(argv)
     if a.min_valid<1:parser.error('min-valid must be positive')
     rows=[json.loads(x) for x in Path(a.jsonl).read_text().splitlines() if x.strip()]
-    passed,summary=validate(rows,a.min_valid,a.require_all,a.require_complete)
+    passed,summary=validate(rows,a.min_valid,a.require_all,a.require_complete,
+                            a.require_mechanism)
     print('RIDE_SMOKE_'+('PASS' if passed else 'FAIL')+' '+json.dumps(summary))
     return 0 if passed else 4
 

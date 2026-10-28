@@ -13,6 +13,7 @@ python -m ride.carla.ports --mode client --host "$CARLA_HOST" \
 COMMON=(--host "$CARLA_HOST" --port "$CARLA_RPC_PORT" --tm-port "$CARLA_TM_PORT" --archetype support_gap --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
+  --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
   --no-rendering --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --anchors-from "$FROZEN" --families tm behavior \
   --profiles early_slow late_slow --joint-profile early_slow)
 # One wide physical run; derive NARROW by filtering exactly the same records.

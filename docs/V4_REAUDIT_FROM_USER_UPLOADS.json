@@ -1,0 +1,115 @@
+{
+  "convoy": {
+    "trials": 8,
+    "run_completed": true,
+    "families": {
+      "tm": 4,
+      "behavior": 4
+    },
+    "valid": 8,
+    "mechanism_executed": 8,
+    "ego_collision": 0,
+    "third_party_collision": 0,
+    "invalid_reasons": {},
+    "collision_role_pairs": {},
+    "target_lane_dwell_positive": 0,
+    "road_valid_frames_invalid": 0
+  },
+  "cut_in": {
+    "trials": 8,
+    "run_completed": true,
+    "families": {
+      "tm": 4,
+      "behavior": 4
+    },
+    "valid": 2,
+    "mechanism_executed": 0,
+    "ego_collision": 8,
+    "third_party_collision": 0,
+    "invalid_reasons": {
+      "offroad_or_lane_departure": 6
+    },
+    "collision_role_pairs": {
+      "('ego', 'follower_a')": 1356
+    },
+    "target_lane_dwell_positive": 0,
+    "road_valid_frames_invalid": 13
+  },
+  "support_gap_WIDE": {
+    "trials": 40,
+    "run_completed": true,
+    "families": {
+      "tm": 2,
+      "behavior": 2,
+      "joint_witness": 36
+    },
+    "valid": 0,
+    "mechanism_executed": 0,
+    "ego_collision": 28,
+    "third_party_collision": 4,
+    "invalid_reasons": {
+      "offroad_or_lane_departure": 40
+    },
+    "collision_role_pairs": {
+      "('ego', 'follower_a')": 3296,
+      "('follower_a', 'follower_b')": 732,
+      "('ego', 'follower_b')": 1558
+    },
+    "target_lane_dwell_positive": 0,
+    "road_valid_frames_invalid": 58
+  },
+  "all_scenes_audit.json": {
+    "archetypes": [
+      "convoy",
+      "cut_in"
+    ],
+    "total_trials": 16,
+    "complete_preregistered_contrasts": 8,
+    "missing_contrast_arms": 0,
+    "valid_task_matched_contrasts": 0,
+    "signed_effect_a_worse": 0,
+    "signed_effect_a_better": 0,
+    "cross_family_matching_collision_effects": 0,
+    "cross_family_response_disagreement": 0,
+    "invalid_reasons": {
+      "initial_position_mismatch:ego": 1,
+      "progress_unmatched": 3,
+      "invalid_trial": 4
+    },
+    "strict_physical_collision_is_not_human_causation": true,
+    "calibrated_independent_human_model": false,
+    "rq3_strong_baselines_executed": false,
+    "model_disagreement_is_not_a_proof_of_decision_error": true
+  },
+  "risk_ranking_disagreement.json": {
+    "candidate_pairs_checked": 4,
+    "task_matched_cross_model_pairs": 0,
+    "primary_pairs_preregistered": [
+      [
+        "early_slow",
+        "late_slow"
+      ],
+      [
+        "mild_early",
+        "mild_late"
+      ]
+    ],
+    "strict_risk_order_reversals": 0,
+    "tie_preference_mismatches": 0,
+    "posthoc_outcome_ranking_not_actual_planner_choice": true,
+    "third_party_endpoints_lexicographic": [
+      "third_party_pair_collision",
+      "hard_braking_proxy",
+      "short_ttc_proxy"
+    ],
+    "human_behavior_calibration_not_established": true
+  },
+  "support_gap_bank_ablation.json": {
+    "cases": 1,
+    "valid_nested_bank_comparisons": 0,
+    "inconclusive_shared_candidate_inconsistency": 1,
+    "finite_bank_misses": 0,
+    "global_UNSAT_proven": false,
+    "labels_valid_only_under_explicit_CARLA_models": true
+  }
+}

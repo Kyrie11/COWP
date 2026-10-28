@@ -12,15 +12,19 @@ DURATION_S=8.0
 # Record all acceleration, but exclude the common start-up control transient
 # from the decision-dependent braking endpoint. Must be frozen before trials.
 BRAKE_OBSERVATION_START_S=1.0
-PROFILES=('cruise','early_slow','late_slow','mild_early','mild_late')
+PROFILES=('cruise','early_slow','late_slow','mild_early','mild_late',
+          'merge_early','merge_late')
 
 
 def target_speed_mps(profile: str, t: float, base=11.0):
     """Paired commands share speed-time integral but NOT guaranteed actual travel."""
-    if profile=='cruise':return base
+    if profile in ('cruise','merge_early','merge_late'):return base
     if profile not in PROFILES:raise ValueError(profile)
     if t<1.5 or t>=5.5:return base
-    amplitude=3.0 if profile.startswith('mild') else 5.5
+    # V4 yielded 4.6-13.3m paired-progress gaps at 8s. The new v5
+    # prespecified smaller amplitudes seek informative, task-matched pairs;
+    # empirical matching is STILL checked, never assumed from target speeds.
+    amplitude=1.8 if profile.startswith('mild') else 3.0
     low,high=max(0.5,base-amplitude),base+amplitude
     early=t<3.5
     if profile.endswith('early') or profile=='early_slow':return low if early else high

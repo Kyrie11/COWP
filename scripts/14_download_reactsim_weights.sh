@@ -13,6 +13,6 @@ if ! command -v hf >/dev/null 2>&1; then
   echo 'Install huggingface_hub in the ReactSim env: python -m pip install -U huggingface_hub' >&2
   exit 3
 fi
-hf download zzzy0729/ReactSim-Bench-Models --include "$weight" --local-dir "$out"
+hf download zzzy0729/ReactSim-Bench-Models --repo-type dataset --include "$weight" --local-dir "$out"
 test -s "$out/$weight" || { echo 'No nonempty model produced' >&2; exit 3; }
 ls -lh "$out/$weight"

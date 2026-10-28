@@ -9,9 +9,10 @@ import math, random
 
 # The frozen anchor protocol changed: old spawn-only manifests cannot be
 # silently reused in a revised map-search experiment.
-# v4 positions ego within the true merge gap and includes the
-# CARLA 0.9.16 yaw fix.  Old frozen anchors must be regenerated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v4_20261027"
+# v5 uses a longer insertion gap, a continuous target-lane centerline and
+# a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
+# of old v4 outputs. All v4 anchors MUST be invalidated.
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v5_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -30,34 +31,36 @@ def _xy(a,b):return math.hypot(a.x-b.x,a.y-b.y)
 
 
 def cut_in_candidate(wp, carla):
-    """Pre-contact adjacent-lane gap: front A, ego within gap, rear B.
+    """Front A(0), adjacent ego(-20), rear B(-45), all in driving direction.
 
-    The former constructor put ego 12 m *ahead* of A and allowed a route
-    through a junction. It thus did not create the claimed cut-in conflict.
-    Here positions are arc-ordered A(0), ego(-9), B(-22), with an actual
-    adjacent lane and a junction-free 90 m target corridor. Unavailable geometry is
-    rejected, never silently approximated.
+    V4's A-to-ego gap of 9 m led to ego/front collisions in all eight
+    observed cut-in trials.  We increase the opening and freeze its actual
+    centerline; this is a *new designed stress test*, not a claim that a
+    specific reaction or third-party collision must occur.
     """
     if not _driving(wp, carla):
         return None
-    middle = _one(wp.previous(9.0))
-    behind = _one(wp.previous(22.0))
-    if not all(_driving(v, carla) for v in (middle, behind)):
-        return None
-    if not all(v.road_id == wp.road_id and v.lane_id == wp.lane_id and
-               _same_dir(v, wp) for v in (middle, behind)):
-        return None
+    backwards=[wp]
+    for _ in range(9):
+        nxt=_one(backwards[-1].previous(5.0))
+        if (not _driving(nxt,carla) or nxt.lane_id!=wp.lane_id or
+                not _same_dir(nxt,wp)):
+            return None
+        backwards.append(nxt)
+    middle,behind=backwards[4],backwards[9]
     # The 8s rollout at 9m/s can travel ~72m. Requiring only 35m of
     # nonjunction road in v3 allowed 2513/3233 discovery trials to touch a
     # junction, and BehaviorAgent could exhaust a dead-end local route.
     # Verify a full 90m continuous target corridor, including the endpoint.
     cur = wp
+    forwards=[wp]
     for _ in range(18):
         nxt = _one(cur.next(5.0))
         if (not _driving(nxt, carla) or not _same_dir(nxt, wp) or
                 nxt.lane_id != wp.lane_id):
             return None
         cur = nxt
+        forwards.append(cur)
     end = cur
     # The neighbor must exist at the prospective ego insertion position.
     for neighbor in (middle.get_left_lane(), middle.get_right_lane()):
@@ -68,17 +71,35 @@ def cut_in_candidate(wp, carla):
         lateral = _xy(neighbor.transform.location, middle.transform.location)
         if not 2.4 <= lateral <= 6.5:
             continue
+        # Check the ego starting lane through the merge, not merely at one
+        # map waypoint. Otherwise the lane can end mid-manoeuvre.
+        ego_route=neighbor
+        valid_ego_route=True
+        for _ in range(12):
+            future=_one(ego_route.next(5.0))
+            if not _driving(future,carla) or not _same_dir(future,wp):
+                valid_ego_route=False;break
+            ego_route=future
+        if not valid_ego_route:
+            continue
         # Verify physical forward order with same-heading projection.
         angle = math.radians(float(wp.transform.rotation.yaw))
         hx, hy = math.cos(angle), math.sin(angle)
         def forward_gap(a, b):
             pa, pb = a.transform.location, b.transform.location
             return float((pa.x-pb.x)*hx + (pa.y-pb.y)*hy)
-        if not (6.0 <= forward_gap(wp, neighbor) <= 12.0 and
-                9.0 <= forward_gap(neighbor, behind) <= 17.0):
+        if not (17. <= forward_gap(wp, neighbor) <= 24. and
+                21. <= forward_gap(neighbor, behind) <= 30.):
             continue
+        # The target-lane centerline is much more stable than comparing the
+        # frozen follower road_id with the ego's *current* OpenDRIVE road_id.
+        centerline=list(reversed(backwards))+forwards[1:]
+        corridor=[[float(v.transform.location.x),float(v.transform.location.y)]
+                  for v in centerline]
         return {'ego': neighbor, 'follower_a': wp, 'follower_b': behind,
-                'end': end, '_target_lane_id': wp.lane_id}
+                'end': end, '_target_lane_id': wp.lane_id,
+                '_target_corridor_xy':corridor,
+                '_target_lane_width_m':float(getattr(wp,'lane_width',3.5))}
     return None
 
 
@@ -231,6 +252,8 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
         rows.append({'anchor':len(rows),'key':key,'coords':coords,
                      'waypoint_identities':identities,
                      'archetype':archetype,'target_lane_id':case.get('_target_lane_id'),
+                     'target_corridor_xy':case.get('_target_corridor_xy'),
+                     'target_lane_width_m':case.get('_target_lane_width_m'),
                      'map':road_map.name})
 
     if kind == 'intersection':
@@ -287,6 +310,17 @@ def restore(world,anchor,carla):
                 yaw_diff(wp.transform.rotation.yaw,expected['yaw'])>5.):
             raise RuntimeError('Frozen anchor road/lane or heading changed: '+k)
         scene[k]=wp
+    if anchor.get('archetype') in ('cut_in','support_gap'):
+        from ride.carla.lane_geometry import distance_to_polyline
+        corridor=anchor.get('target_corridor_xy')
+        if not corridor or len(corridor)<20:
+            raise RuntimeError('Missing v5 frozen target-lane corridor')
+        # Verify the physical target lane still matches the frozen corridor.
+        center=scene['follower_a'].transform.location
+        if distance_to_polyline(center.x,center.y,corridor) > 0.5:
+            raise RuntimeError('Frozen target lane centerline no longer matches map')
+        scene['_target_corridor_xy']=corridor
+        scene['_target_lane_width_m']=float(anchor['target_lane_width_m'])
     return scene
 
 
@@ -295,13 +329,16 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla):
                                     lane_type=carla.LaneType.Driving)
     if wp is None:raise RuntimeError('Ego exited supported drivable lane')
     if archetype in ('cut_in', 'support_gap'):
-        switch={'early_slow':1.5,'late_slow':4.5,'mild_early':2.5,'mild_late':3.5,'cruise':9.0}[profile]
+        switch={'early_slow':1.5,'late_slow':4.5,'mild_early':2.5,
+                'mild_late':3.5,'merge_early':1.5,'merge_late':4.5,'cruise':9.0}[profile]
         target_lane_id=scene['follower_a'].lane_id
         if t>=switch and wp.lane_id!=target_lane_id:
             choices=[x for x in (wp.get_left_lane(),wp.get_right_lane()) if x and
                      x.lane_id==target_lane_id and _driving(x,carla) and _same_dir(x,wp)]
             if choices:
-                nxt=_one(choices[0].next(7.))
+                # A longer waypoint lookahead avoids the sharp, short-radius
+                # lateral lunge in the old 7m-target cut-in controller.
+                nxt=_one(choices[0].next(15.))
                 if nxt is not None:return nxt
     ahead=wp.next(8.)
     if not ahead:return wp

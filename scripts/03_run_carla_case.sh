@@ -35,6 +35,7 @@ python -m ride.carla.run \
   --archetype "$CASE" --town "${CARLA_TOWN:-Town04}" \
   --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
+  --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --no-rendering --anchors-from "$FROZEN" \
   --timeout "${RIDE_CARLA_TIMEOUT:-120}" --world-reset "${RIDE_WORLD_RESET:-actors}" \
   --families "${RIDE_FAMILY_LIST[@]}" \
@@ -55,6 +56,9 @@ if [[ "${RIDE_SMOKE_REQUIRE_VALID:-1}" == 1 ]]; then
   # satisfy the validity predicate.
   if [[ "${RIDE_SMOKE_REQUIRE_ALL:-0}" == 1 ]]; then
     SMOKE_ARGS+=(--require-all)
+  fi
+  if [[ "${RIDE_SMOKE_REQUIRE_MECHANISM:-0}" == 1 ]]; then
+    SMOKE_ARGS+=(--require-mechanism)
   fi
   python -m ride.carla.smoke_validate --jsonl "$OUT" "${SMOKE_ARGS[@]}"
 fi

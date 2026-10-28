@@ -14,8 +14,10 @@ from typing import Any
 @dataclass(frozen=True)
 class Protocol:
     progress_m: float = 3.0
-    init_position_m: float = 1.0
-    init_speed_mps: float = 1.0
+    # V5 shared-PID warmup should support tighter starting-state parity.
+    # Fix BEFORE looking at V5 outcome rollouts, not post-hoc.
+    init_position_m: float = 0.5
+    init_speed_mps: float = 0.5
     min_action_xy_difference_m: float = 0.5
     min_action_speed_difference_mps: float = 0.35
     braking_mps2: float = -4.0

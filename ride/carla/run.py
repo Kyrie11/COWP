@@ -146,12 +146,6 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             # Traffic-signal cycles must start from the same phase in each trial.
             world.reset_all_traffic_lights()
             print('RIDE_TRAFFIC_LIGHTS_RESET', flush=True)
-        if family=='tm':
-            print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
-            tm=client.get_trafficmanager(args.tm_port)
-            print(f'RIDE_TM_CREATE_DONE port={args.tm_port}',flush=True)
-            tm.set_synchronous_mode(True)
-            tm.set_random_device_seed(seed)
         random.seed(seed)
         from ride.carla_scenarios import restore
         c=restore(world,anchor,carla)
@@ -175,7 +169,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # Initialize same longitudinal velocities in lane-forward direction.
         for role,v in vehicles.items():
             d=c[role].transform.get_forward_vector()
-            v.set_target_velocity(carla.Vector3D(d.x*args.cruise_mps,d.y*args.cruise_mps,0))
+            initial_speed=(args.cruise_mps + args.rear_speed_delta_mps
+                           if role=='follower_b' and args.archetype in ('cut_in','support_gap')
+                           else args.cruise_mps)
+            v.set_target_velocity(carla.Vector3D(d.x*initial_speed,d.y*initial_speed,0))
         # CARLA synchronous spawning and velocity updates must be committed by a
         # simulator tick. A zero-state read before this frame invalidates all
         # collision/overlap conclusions (as happened in the uploaded smoke A).
@@ -187,6 +184,25 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         print('RIDE_SPAWN_PRIME_TICK_DONE '+json.dumps(spawn_checks),flush=True)
         ego_ctrl=_pid(vehicles['ego'])
         responders={}
+        # POLICY-INDEPENDENT PRE-INTERVENTION STATE. V4 installed TM or
+        # BehaviorAgent before the warm-up. Different response models then
+        # *changed the starting state*, invalidating the paired intervention.
+        # V5 uses the same PID settle policy for every role across ALL arms.
+        # The first TM/BehaviorAgent control is applied only after the
+        # intervention start frame. This still requires recorded state parity.
+        settle_controllers={role:_pid(vehicles[role])
+                            for role in ('follower_a','follower_b')}
+        for j in range(args.warmup_ticks):
+            vehicles['ego'].apply_control(ego_ctrl.run_step(
+                args.cruise_mps*3.6,_target_waypoint(world,vehicles['ego'])))
+            for role,ctrl in settle_controllers.items():
+                speed=(args.cruise_mps+args.rear_speed_delta_mps
+                       if role=='follower_b' and args.archetype in ('cut_in','support_gap')
+                       else args.cruise_mps)
+                vehicles[role].apply_control(ctrl.run_step(
+                    speed*3.6,_target_waypoint(world,vehicles[role])))
+            world.tick()
+        print('RIDE_COMMON_WARMUP_DONE '+trial_uid,flush=True)
         if family=='behavior':
             from agents.navigation.behavior_agent import BehaviorAgent
             for role in ('follower_a','follower_b'):
@@ -194,6 +210,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 a.set_destination(c.get('end_follower',c['end']).transform.location)
                 responders[role]=a
         elif family=='tm':
+            print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
+            tm=client.get_trafficmanager(args.tm_port)
+            tm.set_synchronous_mode(True)
+            tm.set_random_device_seed(seed)
             for role in ('follower_a','follower_b'):
                 a=vehicles[role]
                 a.set_autopilot(True,args.tm_port)
@@ -205,16 +225,6 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 raise ValueError('joint_witness must specify two target speeds')
             responders={k:_pid(vehicles[k]) for k in ('follower_a','follower_b')}
         else:raise ValueError(family)
-        # Settling time is part of every branch; record actual initial state.
-        for j in range(args.warmup_ticks):
-            ctrl=ego_ctrl.run_step(args.cruise_mps*3.6,_target_waypoint(world,vehicles['ego']))
-            vehicles['ego'].apply_control(ctrl)
-            if family=='behavior':
-                for role,a in responders.items():vehicles[role].apply_control(a.run_step())
-            if family=='joint_witness':
-                for role,a in responders.items():vehicles[role].apply_control(
-                    a.run_step(args.cruise_mps*3.6,_target_waypoint(world,vehicles[role])))
-            world.tick()
         speeds={k:vehicle_speed(v) for k,v in vehicles.items()}
         init_xy={k:v.get_location() for k,v in vehicles.items()}
         xy0=init_xy['ego']
@@ -284,13 +294,19 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             s=dict(travel)
             # TM and BehaviorAgent may brake or route unexpectedly: explicit
             # offroad/lane-ID checks to prohibit invalid positive witnesses.
-            is_road=[]
+            from .lane_geometry import map_lane_center_valid, on_centerline, distance_to_polyline
+            is_road=[];road_role_valid={};road_role_strict={};road_lateral_offset={}
             for role,v in vehicles.items():
-                wp=world.get_map().get_waypoint(v.get_location(),project_to_road=False,
-                                               lane_type=carla.LaneType.Driving)
-                is_road.append(wp is not None and (getattr(args,'archetype','convoy')=='intersection'
-                                       or wp.lane_id==c[role].lane_id or
-                                       (getattr(args,'archetype','convoy') in ('cut_in','support_gap') and role=='ego')))
+                strict_wp=world.get_map().get_waypoint(v.get_location(),project_to_road=False,
+                                                      lane_type=carla.LaneType.Driving)
+                strict_ok=(strict_wp is not None and strict_wp.lane_type==carla.LaneType.Driving)
+                center_ok, offset=map_lane_center_valid(v.get_location(),world.get_map(),carla)
+                # For road validity, a planned merge can cross a lane boundary;
+                # road_id/initial lane_id equality is NOT a legal-road test.
+                road_role_valid[role]=center_ok
+                road_role_strict[role]=strict_ok
+                road_lateral_offset[role]=offset
+                is_road.append(center_ok)
             # TTC applies only to a verified same-road/same-lane following pair.
             # Using 18m plus individual odometers gives incorrect gap on bends,
             # lane changes and non-constant CARLA vehicle trajectories.
@@ -322,9 +338,14 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                                                     lane_type=carla.LaneType.Driving)
             a_wp_now=world.get_map().get_waypoint(now['follower_a'],project_to_road=False,
                                                   lane_type=carla.LaneType.Driving)
-            ego_in_target=bool(ego_wp_now and
-                ego_wp_now.road_id==c['follower_a'].road_id and
-                ego_wp_now.lane_id==c['follower_a'].lane_id)
+            corridor=c.get('_target_corridor_xy')
+            target_centerline_error=(distance_to_polyline(now['ego'].x,now['ego'].y,corridor)
+                                     if corridor is not None else None)
+            # A crossing from road_id 45 to road_id 6 is not a lane failure.
+            # The frozen physical corridor is checked regardless of road IDs.
+            ego_in_target=bool(corridor is not None and on_centerline(
+                now['ego'].x,now['ego'].y,corridor,
+                tolerance_m=min(1.5,0.42*c['_target_lane_width_m'])))
             # CARLA traffic-light observations: report traffic signal legality.
             # A trial that moves at a red signal is not a valid 'safe' witness.
             red_motion=[]
@@ -368,6 +389,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'target_lane_id':(int(c['follower_a'].lane_id)
                                   if getattr(args,'archetype','convoy') in ('cut_in','support_gap') else None),
                 'ego_in_target_lane':ego_in_target,
+                'ego_target_centerline_error_m':target_centerline_error,
                 'ego_in_junction':bool(ego_wp_now and ego_wp_now.is_junction),
                 'follower_a_in_junction':bool(a_wp_now and a_wp_now.is_junction),
                 'follower_a_accel':(new_speeds['follower_a']-speeds['follower_a'])/DT,
@@ -380,6 +402,9 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'follower_b_speed_mps':new_speeds['follower_b'],
                 'rear_pair_gap_m':gap,'rear_pair_ttc_s':min(ttc,9999.) if ttc is not None else None,
                 'road_valid_all':all(is_road),
+                'road_center_valid_by_role':road_role_valid,
+                'road_strict_valid_by_role':road_role_strict,
+                'road_center_offset_m_by_role':road_lateral_offset,
                 'rear_pair_ttc_applicable':bool(pair_same_lane and args.archetype!='intersection'),
                 'follower_a_progress_m':s['follower_a'],'follower_b_progress_m':s['follower_b'],
                 'ego_follower_a_distance_m':xy_distance(now['ego'],now['follower_a']),
@@ -462,6 +487,9 @@ def main():
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
     p.add_argument('--cruise-mps',type=float,default=9.)
+    p.add_argument('--rear-speed-delta-mps',type=float,default=0.,
+                   help='Extra initial and shared warm-up speed of rear follower on cut-in; '
+                        'prespecified stress factor, NOT a fitted behavioral truth')
     p.add_argument('--warmup-ticks',type=int,default=20,
                    help='common pre-action settle frames; action time t=0 starts after warmup')
     p.add_argument('--no-rendering',action='store_true')
@@ -485,7 +513,7 @@ def main():
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
-    if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0:
+    if a.duration_s<6 or a.cruise_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0 or not 0<=a.rear_speed_delta_mps<=4.:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
         raise ValueError('Recovery cutoff outside horizon')
@@ -517,7 +545,8 @@ def main():
             frozen.get('seed')!=a.seed or
             frozen.get('cruise_mps')!=a.cruise_mps or
             frozen.get('duration_s')!=a.duration_s or
-            frozen.get('warmup_ticks',0)!=a.warmup_ticks):
+            frozen.get('warmup_ticks',0)!=a.warmup_ticks or
+            frozen.get('rear_speed_delta_mps')!=a.rear_speed_delta_mps):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
         anchors=frozen.get('anchors',[])
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
@@ -556,6 +585,10 @@ def main():
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
               'seed':a.seed,'duration_s':a.duration_s,
+              'rear_speed_delta_mps':a.rear_speed_delta_mps,
+              'pre_intervention_policy':'shared_pid_all_roles',
+              'cut_in_profiles_use_lateral_switch_time_only':True,
+              'action_protocol_v5':'mild_speed_amplitude_1.8_mps_primary_3.0_mps_lateral_early_1.5_late_4.5',
               'joint_profile':a.joint_profile,'joint_limit':a.joint_limit,
               'joint_target_grid':a.joint_target_grid,
               'recovery_profile':a.recovery_profile,'warmup_ticks':a.warmup_ticks,
