@@ -105,3 +105,13 @@ def test_start_script_forwards_custom_port_and_adapter(tmp_path):
     assert '-carla-rpc-port='+str(port) in p.stdout
     assert '-graphicsadapter=1' in p.stdout
     assert '-RenderOffScreen' in p.stdout
+
+
+def test_one_time_map_shell_requires_explicit_consent_before_any_client_action():
+    env = os.environ.copy()
+    env.pop('RIDE_ALLOW_INITIAL_MAP_LOAD', None)
+    p = subprocess.run(['bash', 'scripts/02c_prepare_carla_town.sh', 'Town04'],
+                       env=env, cwd=ROOT, capture_output=True, text=True, timeout=10)
+    assert p.returncode == 2
+    assert 'RIDE_MAP_SETUP_REFUSED' in p.stderr
+    assert 'RIDE_ALLOW_INITIAL_MAP_LOAD=1' in p.stderr

@@ -49,7 +49,10 @@ def main(argv=None):
         if args.expected_town and not (before['map']==args.expected_town or
                                       before['map'].endswith('/'+args.expected_town)):
             raise RuntimeError('RIDE_MAP_MISMATCH_REFUSE_AUTO_LOAD: '+before['map']+
-                               ' != '+args.expected_town+'; start separate server already on requested Town')
+                               ' != '+args.expected_town+'; this inspect is deliberately read-only. '+
+                               'On your own dedicated idle CARLA server, run '+
+                               'RIDE_ALLOW_INITIAL_MAP_LOAD=1 bash scripts/02c_prepare_carla_town.sh '+
+                               args.expected_town)
         if args.require_empty and before['vehicles']:
             raise RuntimeError('RIDE_WORLD_NOT_EMPTY: '+str(before['vehicles'])+' existing vehicle(s)')
         if args.mode == 'reload':

@@ -39,6 +39,9 @@ if [[ -n "${RIDE_CARLA_START_MAP:-}" ]]; then
   esac
 fi
 printf 'RIDE_CARLA_LAUNCH_CONFIG quality=%s startup_map=%s\n' "$QUALITY" "${RIDE_CARLA_START_MAP:-default}" >&2
+# In some packaged 0.9.16 builds the UE4 positional map asset is ignored.
+# Never claim that CARLA_TOWN or RIDE_CARLA_START_MAP implies the world is loaded.
+echo 'RIDE_CARLA_MAP_UNVERIFIED: after startup check the actual server map with scripts/29_v9_carla_preflight.sh; if it differs, use the explicit one-time 02c_prepare_carla_town.sh on your own idle server.' >&2
 cd "$CARLA_ROOT"
 exec "$exe" "${STARTUP_ARGS[@]}" -RenderOffScreen "-quality-level=$QUALITY" \
   "-carla-rpc-port=$CARLA_RPC_PORT" -nosound "${GPU_ARGS[@]}" "$@"

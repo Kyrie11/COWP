@@ -97,6 +97,46 @@ source scripts/00_env.sh
 bash scripts/02_start_carla_headless.sh
 ```
 
+### CARLA 0.9.16 地图初始化：启动成功 != 已经在 Town04
+
+`export CARLA_TOWN=Town04` 只是 RIDE 侧的目标地图，不会修改已启动的 Unreal/CARLA 地图。
+某些 CARLA 0.9.16 release 包即使提供 `/Game/Carla/Maps/Town04` 启动位置参数，
+实际仍可能启动 `Carla/Maps/Town10HD_Opt`。必须读取 `get_world().get_map().name` 作为唯一依据。
+
+1. **终端 A**：在确保 2000/2001 端口没有其他 CARLA 实例后，启动无窗口引擎：
+
+   ```bash
+   source scripts/00_env.sh
+   export RIDE_CARLA_QUALITY=Epic
+   bash scripts/02_start_carla_headless.sh
+   ```
+
+2. **终端 B**：确定服务端是你专用、空闲、没有其他客户端或正在运行的实验时，
+   可以执行一次显式授权的地图初始化（如已在 Town04 则不加载）：
+
+   ```bash
+   source scripts/00_env.sh
+   export CARLA_TOWN=Town04
+   RIDE_ALLOW_INITIAL_MAP_LOAD=1 bash scripts/02c_prepare_carla_town.sh Town04
+   ```
+
+   `02c` 会检查 CARLA 0.9.16 的版本一致性、是否同步运行、当前动态 actor、
+   已安装地图；随后最多执行一次 `client.load_world('Town04')`，
+   **不自动重试**，再调用只读 `29_v9_carla_preflight.sh` 验证。
+   若这个独立地图切换会触发引擎崩溃，停止操作并检查 Unreal/Vulkan/Signal 11 日志；
+   不要在运行中的实验服务器上试图重建世界。
+
+   官方替代方法（**不包含项目防误操作保护**）：
+
+   ```bash
+   python "$CARLA_ROOT/PythonAPI/util/config.py" --host "$CARLA_HOST" \
+     --port "$CARLA_RPC_PORT" --map Town04
+   bash scripts/29_v9_carla_preflight.sh Town04
+   ```
+
+`29_v9_carla_preflight.sh` 仍然保持只读，不会加载地图，也不应该因为检测失败就自动切换地图。
+只允许在地图已经验证正确、世界干净时开始冻结场景或运行 M0。
+
 在**终端 B**：
 
 ```bash
