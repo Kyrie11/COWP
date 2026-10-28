@@ -10,7 +10,7 @@ FIELDS=('cutin_late_switch_s','cutin_lateral_lookahead_m',
         'cutin_rear_gap_m','cutin_ego_gap_m','rear_speed_delta_mps',
         'cruise_mps','warmup_ticks')
 
-def check(frozen,actual,required_version='ride_lane_corridor_v8_20261028'):
+def check(frozen,actual,required_version='ride_lane_corridor_v9_20261028'):
     if frozen.get('type')!='manifest':raise ValueError('Expected frozen manifest')
     differences={}
     for key in FIELDS:

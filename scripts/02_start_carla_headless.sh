@@ -21,6 +21,24 @@ printf 'RIDE CARLA: root=%s rpc=%s streaming=%s tm=%s graphics_adapter=%s\n' \
   "$CARLA_TM_PORT" "${CARLA_GPU_ADAPTER:-auto}" >&2
 # Offscreen is headless, but still initializes rendering/Vulkan. RIDE Python
 # trials enable no_rendering_mode for their state-only physical rollouts.
+# UE4.26/CARLA has documented crashes when switching to Town05 after a
+# -quality-level=Low launch. Default is Epic. To experiment, set
+# RIDE_CARLA_QUALITY=Low explicitly in a separate named diagnostic session.
+QUALITY="${RIDE_CARLA_QUALITY:-Epic}"
+case "$QUALITY" in
+  Epic|Low) ;;  *) echo "Unsupported RIDE_CARLA_QUALITY=$QUALITY" >&2; exit 2;;
+esac
+# A map may be provided as a CARLA UE4 startup asset. Its availability must
+# be verified with python -m ride.carla.health before any batch experiment.
+STARTUP_ARGS=()
+if [[ -n "${RIDE_CARLA_START_MAP:-}" ]]; then
+  case "$RIDE_CARLA_START_MAP" in
+    Town[0-9][0-9]|Town[0-9][0-9]_Opt)
+      STARTUP_ARGS+=("/Game/Carla/Maps/$RIDE_CARLA_START_MAP") ;;
+    *) echo "Invalid RIDE_CARLA_START_MAP=$RIDE_CARLA_START_MAP" >&2;exit 2;;
+  esac
+fi
+printf 'RIDE_CARLA_LAUNCH_CONFIG quality=%s startup_map=%s\n' "$QUALITY" "${RIDE_CARLA_START_MAP:-default}" >&2
 cd "$CARLA_ROOT"
-exec "$exe" -RenderOffScreen -quality-level=Low \
+exec "$exe" "${STARTUP_ARGS[@]}" -RenderOffScreen "-quality-level=$QUALITY" \
   "-carla-rpc-port=$CARLA_RPC_PORT" -nosound "${GPU_ARGS[@]}" "$@"

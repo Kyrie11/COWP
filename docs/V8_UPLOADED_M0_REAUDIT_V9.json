@@ -1,0 +1,131 @@
+{
+  "status": "ENGINEERING_EXCEPTION_BLOCKER",
+  "batch_completed": true,
+  "count": {
+    "trials": 20,
+    "family_tm": 10,
+    "family_behavior": 10,
+    "valid_behavior": 10,
+    "ego_safe_mechanism_behavior": 8
+  },
+  "invalid_reasons": {
+    "exception:ValueError": 10,
+    "exception": 10
+  },
+  "valid_within_family_action_pairs": 4,
+  "valid_cross_family_task_matched_pairs": 0,
+  "per_anchor_pairs": [
+    {
+      "anchor": 0,
+      "seed": 17,
+      "actions": [
+        "early_slow",
+        "late_slow"
+      ],
+      "within_family": {
+        "tm": {
+          "eligible": false,
+          "reason": "invalid_trial",
+          "delta_progress_m": null
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "delta_progress_m": 0.01687581307383823
+        }
+      },
+      "cross_family_errors": [
+        "early_slow:missing_initial_state:ego",
+        "early_slow:missing_or_unpaired_ego_execution",
+        "late_slow:missing_initial_state:ego",
+        "late_slow:missing_or_unpaired_ego_execution"
+      ],
+      "rq1_pair_eligible": false
+    },
+    {
+      "anchor": 0,
+      "seed": 17,
+      "actions": [
+        "mild_early",
+        "mild_late"
+      ],
+      "within_family": {
+        "tm": {
+          "eligible": false,
+          "reason": "invalid_trial",
+          "delta_progress_m": null
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "delta_progress_m": 0.005206625879424109
+        }
+      },
+      "cross_family_errors": [
+        "mild_early:missing_initial_state:ego",
+        "mild_early:missing_or_unpaired_ego_execution",
+        "mild_late:missing_initial_state:ego",
+        "mild_late:missing_or_unpaired_ego_execution"
+      ],
+      "rq1_pair_eligible": false
+    },
+    {
+      "anchor": 1,
+      "seed": 17,
+      "actions": [
+        "early_slow",
+        "late_slow"
+      ],
+      "within_family": {
+        "tm": {
+          "eligible": false,
+          "reason": "invalid_trial",
+          "delta_progress_m": null
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "delta_progress_m": 0.06988893564667364
+        }
+      },
+      "cross_family_errors": [
+        "early_slow:missing_initial_state:ego",
+        "early_slow:missing_or_unpaired_ego_execution",
+        "late_slow:missing_initial_state:ego",
+        "late_slow:missing_or_unpaired_ego_execution"
+      ],
+      "rq1_pair_eligible": false
+    },
+    {
+      "anchor": 1,
+      "seed": 17,
+      "actions": [
+        "mild_early",
+        "mild_late"
+      ],
+      "within_family": {
+        "tm": {
+          "eligible": false,
+          "reason": "invalid_trial",
+          "delta_progress_m": null
+        },
+        "behavior": {
+          "eligible": true,
+          "reason": "",
+          "delta_progress_m": 0.01084274689227982
+        }
+      },
+      "cross_family_errors": [
+        "mild_early:missing_initial_state:ego",
+        "mild_early:missing_or_unpaired_ego_execution",
+        "mild_late:missing_initial_state:ego",
+        "mild_late:missing_or_unpaired_ego_execution"
+      ],
+      "rq1_pair_eligible": false
+    }
+  ],
+  "rq1_established": false,
+  "rq2_established": false,
+  "scientific_note": "M0 is an engineering gate, not real-world causal truth or ex ante planner decision validation",
+  "broken_json_lines": 0
+}

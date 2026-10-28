@@ -64,7 +64,7 @@ def test_gameformer_headless_only_suppresses_gui():
 def test_dev_confirmation_frozen_parameter_lock():
     from ride.protocol_lock import check,FIELDS
     src={x:3.5 for x in FIELDS}
-    src.update(type='manifest',anchor_protocol_version='ride_lane_corridor_v8_20261028')
+    src.update(type='manifest',anchor_protocol_version='ride_lane_corridor_v9_20261028')
     actual={x:3.5 for x in FIELDS}
     assert check(src,actual)=={}
     actual['cutin_lateral_lookahead_m']=15.0

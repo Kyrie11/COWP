@@ -33,6 +33,8 @@ def main(argv=None):
     parser.add_argument('--port',type=int,default=int(os.getenv('CARLA_RPC_PORT','2000')))
     parser.add_argument('--timeout',type=float,default=30)
     parser.add_argument('--mode',choices=('inspect','reload'),default='inspect')
+    parser.add_argument('--expected-town',default='',help='Fail before any scene freeze when loaded map differs')
+    parser.add_argument('--require-empty',action='store_true',help='Refuse batch while actors from other experiments exist')
     parser.add_argument('--allow-destructive',action='store_true',
                         help='Required for reload; destroys all actors in the current world')
     args=parser.parse_args(argv)
@@ -44,6 +46,12 @@ def main(argv=None):
         client.set_timeout(args.timeout)
         before=inspect(client)
         print('RIDE_CARLA_HEALTH_BEFORE '+json.dumps(before,ensure_ascii=False),flush=True)
+        if args.expected_town and not (before['map']==args.expected_town or
+                                      before['map'].endswith('/'+args.expected_town)):
+            raise RuntimeError('RIDE_MAP_MISMATCH_REFUSE_AUTO_LOAD: '+before['map']+
+                               ' != '+args.expected_town+'; start separate server already on requested Town')
+        if args.require_empty and before['vehicles']:
+            raise RuntimeError('RIDE_WORLD_NOT_EMPTY: '+str(before['vehicles'])+' existing vehicle(s)')
         if args.mode == 'reload':
             if before['vehicles']:
                 raise RuntimeError('Refusing reload with pre-existing vehicles. '

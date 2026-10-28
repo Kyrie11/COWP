@@ -1,6 +1,9 @@
 """CARLA TrafficManager speed policy with explicit physical units.
 
 `vehicle_percentage_speed_difference(veh, 0)` runs at the map speed LIMIT.
+A requested 9m/s is 32.4km/h and is ILLEGAL in a 30km/h Town04 corridor.
+For prospective v9 use cruise=8.0m/s with 0 rear speed delta there.
+Never silently clamp TM while leaving BehaviorAgent and ego at the old speed.
 It is NOT comparable with a 9 m/s PID-controlled responder. CARLA vehicle
 speed limits are returned in km/h. The percentage represents fraction below
 that limit; log the effective speed target and verify observed rollout speeds.

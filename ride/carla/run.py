@@ -464,8 +464,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         # generating dozens of misleading per-trial invalid scientific rows.
         message = str(ex).lower()
         if ('time-out' in message or 'connection refused' in message or
-                'failed to connect' in message or 'rpc error' in message):
-            print('RIDE_FATAL_SIMULATOR_CONNECTION '+repr(ex),flush=True)
+                'failed to connect' in message or 'rpc error' in message or
+                'tm_desired_speed_exceeds_limit' in message or
+                'tm_speed_limit_unavailable' in message):
+            print('RIDE_FATAL_TRIAL_CONFIGURATION_OR_CONNECTION '+repr(ex),flush=True)
             raise
         result['simulation_exception']=type(ex).__name__+': '+str(ex)
         result['traceback']=traceback.format_exc(limit=4)
@@ -506,6 +508,9 @@ def main():
     p.add_argument('--host',default=os.getenv('CARLA_HOST','127.0.0.1'));p.add_argument('--port',type=int,default=int(os.getenv('CARLA_RPC_PORT','2000')))
     p.add_argument('--tm-port',type=int,default=int(os.getenv('CARLA_TM_PORT','8100')))
     p.add_argument('--town',default='Town04')
+    p.add_argument('--allow-world-switch',action='store_true',
+        help='DANGEROUS: deliberately call client.load_world before freezing. ' 
+             'Not for confirm panels; use dedicated map isolation instead.')
     p.add_argument('--timeout',type=float,default=120,
                    help='CARLA RPC timeout in seconds (map load can take >40 s)')
     p.add_argument('--world-reset',choices=('actors','reload'),default='actors',
@@ -521,7 +526,7 @@ def main():
     p.add_argument('--profiles',nargs='+',choices=PROFILES,default=list(PROFILES))
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
-    p.add_argument('--cruise-mps',type=float,default=9.)
+    p.add_argument('--cruise-mps',type=float,default=8.)
     p.add_argument('--cutin-ego-gap-m',type=float,default=20.,
                    help='Positive along-lane distance from lead A to adjacent ego (5m grid)')
     p.add_argument('--cutin-rear-gap-m',type=float,default=45.,
@@ -578,7 +583,13 @@ def main():
     world=client.get_world()
     if a.town and not (str(world.get_map().name)==a.town or
                         str(world.get_map().name).endswith('/'+a.town)):
-        print(f'RIDE_WORLD_SWITCH to {a.town}',flush=True)
+        if not a.allow_world_switch:
+            raise RuntimeError('RIDE_MAP_MISMATCH_REFUSE_AUTO_LOAD: loaded='+
+                str(world.get_map().name)+' requested='+str(a.town)+
+                '; the 0.9.16 Unreal server may segfault on map switch, '+
+                'especially with -quality-level=Low. Use a dedicated '+
+                'Town05 process and rerun map preflight. No scenes frozen.')
+        print(f'RIDE_EXPLICIT_DANGEROUS_WORLD_SWITCH to {a.town}',flush=True)
         world=client.load_world(a.town)
     else:
         print(f'RIDE_WORLD_REUSE {world.get_map().name}',flush=True)
@@ -661,7 +672,7 @@ def main():
               'anchor_protocol_version':ANCHOR_PROTOCOL_VERSION,
               'anchor_exclusion_sources':exclusion_sources,
               'anchor_exclusion_radius_m':a.exclude_radius_m,
-              'tm_speed_protocol':'speed_limit_percentage_to_nominal_mps_v8',
+              'tm_speed_protocol':'strict_limit_checked_percentage_to_nominal_mps_v9',
               'carla_server_version':server_version,'carla_client_version':client_version,'cruise_mps':a.cruise_mps,
               'physics_ticks_per_recorded_step':1,'physics_dt_s':DT,
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
