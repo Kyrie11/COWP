@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse, collections, json, math, random, statistics
 from pathlib import Path
-from .science import Protocol, assess_pair, same_initial
+from .science import Protocol, assess_pair, same_initial, same_ego_execution
 
 
 def read_jsonl(path):
@@ -94,6 +94,14 @@ def audit(rows, protocol=None):
             trials[(ref[0],ref[1],ref[2],f0,k[4],(),None)],
             trials[(ref[0],ref[1],ref[2],f1,k[4],(),None)],p)
         if not same_a or not same_b:continue
+        if str(manifest.get('anchor_protocol_version','')).startswith(('ride_lane_corridor_v5_',
+                                                                      'ride_lane_corridor_v6_')):
+            fa = trials[(ref[0],ref[1],ref[2],f0,k[3],(),None)]
+            fb = trials[(ref[0],ref[1],ref[2],f1,k[3],(),None)]
+            sa = trials[(ref[0],ref[1],ref[2],f0,k[4],(),None)]
+            sb = trials[(ref[0],ref[1],ref[2],f1,k[4],(),None)]
+            if not (same_ego_execution(fa,fb)[0] and same_ego_execution(sa,sb)[0]):
+                continue
         effects=[v[f]['signed_collision_effect'] for f in p.families]
         item={'archetype':k[0],'anchor':k[1],'seed':k[2],'action_a':k[3],'action_b':k[4],
               'families':list(p.families),'signed_effects':effects,

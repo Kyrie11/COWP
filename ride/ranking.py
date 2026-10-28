@@ -11,7 +11,7 @@ import json
 import math
 from pathlib import Path
 from .evidence import read_jsonl
-from .science import Protocol, same_initial, validate_pair
+from .science import Protocol, same_initial, same_ego_execution, validate_pair
 
 
 def risk_key(row, ttc_s=1.5):
@@ -61,6 +61,15 @@ def audit_rankings(rows, protocol=None):
             for action in (a,b):
                 ok,why=same_initial(fam[left][action],fam[right][action],p)
                 if not ok:reasons.append('cross_family:'+action+':'+why)
+                # v5/v6 physically executed CARLA trials must track near-identical
+                # ego interventions across response families. Synthetic fixtures
+                # and legacy datasets without this recorded protocol are excluded
+                # from the additional v6 gate rather than silently retroactively
+                # upgrading their evidence.
+                if str(meta.get('anchor_protocol_version','')).startswith(('ride_lane_corridor_v5_',
+                                                                            'ride_lane_corridor_v6_')):
+                    exec_ok,exec_why=same_ego_execution(fam[left][action],fam[right][action])
+                    if not exec_ok:reasons.append('cross_family:'+action+':'+exec_why)
             ranks={f:sign(metrics[f]['a'],metrics[f]['b']) for f in p.families}
             eligible=not reasons
             outcomes.append({'archetype':context[0],'anchor':context[1],'seed':context[2],

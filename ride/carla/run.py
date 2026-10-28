@@ -487,6 +487,10 @@ def main():
     p.add_argument('--families',nargs='+',choices=('tm','behavior'),default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
     p.add_argument('--cruise-mps',type=float,default=9.)
+    p.add_argument('--cutin-ego-gap-m',type=float,default=20.,
+                   help='Positive along-lane distance from lead A to adjacent ego (5m grid)')
+    p.add_argument('--cutin-rear-gap-m',type=float,default=45.,
+                   help='Positive along-lane distance from lead A to rear B (5m grid)')
     p.add_argument('--rear-speed-delta-mps',type=float,default=0.,
                    help='Extra initial and shared warm-up speed of rear follower on cut-in; '
                         'prespecified stress factor, NOT a fitted behavioral truth')
@@ -518,6 +522,11 @@ def main():
     if a.recovery_time_s<=0 or a.recovery_time_s>=a.duration_s:
         raise ValueError('Recovery cutoff outside horizon')
     if any(v<0 for v in a.joint_target_grid):raise ValueError('Negative responder speed not allowed')
+    if (a.cutin_ego_gap_m < 20. or a.cutin_rear_gap_m < a.cutin_ego_gap_m+15. or
+        a.cutin_rear_gap_m > 70. or
+        abs(a.cutin_ego_gap_m/5-round(a.cutin_ego_gap_m/5))>1e-8 or
+        abs(a.cutin_rear_gap_m/5-round(a.cutin_rear_gap_m/5))>1e-8):
+        raise ValueError('Invalid precommitted 5m-grid cut-in gap: ego>=20, rear>=ego+15, rear<=70')
     client=_carla().Client(a.host,a.port);client.set_timeout(a.timeout)
     server_version=str(client.get_server_version())
     client_version=str(client.get_client_version())
@@ -546,14 +555,18 @@ def main():
             frozen.get('cruise_mps')!=a.cruise_mps or
             frozen.get('duration_s')!=a.duration_s or
             frozen.get('warmup_ticks',0)!=a.warmup_ticks or
-            frozen.get('rear_speed_delta_mps')!=a.rear_speed_delta_mps):
+            frozen.get('rear_speed_delta_mps')!=a.rear_speed_delta_mps or
+            frozen.get('cutin_ego_gap_m')!=a.cutin_ego_gap_m or
+            frozen.get('cutin_rear_gap_m')!=a.cutin_rear_gap_m):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
         anchors=frozen.get('anchors',[])
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
     else:
         from ride.carla_scenarios import build_anchors
         anchors, anchor_stats=build_anchors(world,a.archetype,a.anchors,a.seed,
-                                           with_diagnostics=True)
+                                           with_diagnostics=True,
+                                           cutin_ego_gap_m=a.cutin_ego_gap_m,
+                                           cutin_rear_gap_m=a.cutin_rear_gap_m)
         print('CARLA_MAP_ANCHOR_DIAGNOSTICS '+json.dumps(anchor_stats,sort_keys=True),flush=True)
     if a.inspect_anchors:
         print(json.dumps({'town':a.town,'eligible_anchors':len(anchors),
@@ -586,6 +599,8 @@ def main():
               'profiles':a.profiles,'families':a.families,'repetitions':a.repetitions,
               'seed':a.seed,'duration_s':a.duration_s,
               'rear_speed_delta_mps':a.rear_speed_delta_mps,
+              'cutin_ego_gap_m':a.cutin_ego_gap_m,
+              'cutin_rear_gap_m':a.cutin_rear_gap_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'cut_in_profiles_use_lateral_switch_time_only':True,
               'action_protocol_v5':'mild_speed_amplitude_1.8_mps_primary_3.0_mps_lateral_early_1.5_late_4.5',

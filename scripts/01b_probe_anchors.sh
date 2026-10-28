@@ -14,4 +14,6 @@ python -m ride.carla.run \
   --archetype "$CASE" --town "$TOWN" \
   --anchors "${RIDE_ANCHORS:-1}" --seed "${RIDE_SEED:-17}" \
   --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
+  --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \
+  --cutin-rear-gap-m "${RIDE_CUTIN_REAR_GAP_M:-45}" \
   --inspect-anchors --no-rendering

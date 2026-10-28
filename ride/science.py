@@ -51,6 +51,35 @@ def same_initial(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
     return True, ''
 
 
+def same_ego_execution(a: dict, b: dict, *, pos_tol_m: float = 0.5,
+                       speed_tol_mps: float = 0.75) -> tuple[bool, str]:
+    """Guard a cross-response-family comparison of the SAME ego policy.
+
+    Labels and initial states alone do not guarantee matched interventions.
+    This conservative post-rollout check discards outcomes where different
+    reactive families cause large ego trajectory divergences. Do not interpret
+    a successful check as proof that their *human* counterfactuals are known.
+    """
+    ta, tb = a.get('trace') or [], b.get('trace') or []
+    if not ta or not tb or len(ta)!=len(tb):
+        return False, 'missing_or_unpaired_ego_execution'
+    for x,y in zip(ta,tb):
+        try:
+            if abs(float(x['t'])-float(y['t']))>1e-3:
+                return False, 'ego_execution_time_mismatch'
+            if abs(float(x['ego_target_speed_mps'])-float(y['ego_target_speed_mps']))>1e-3:
+                return False, 'ego_command_mismatch'
+            distance=math.dist(x['xy_by_role']['ego'],y['xy_by_role']['ego'])
+            dv=abs(float(x['ego_speed_mps'])-float(y['ego_speed_mps']))
+            if not all(math.isfinite(z) for z in (distance,dv)):
+                return False, 'ego_execution_nonfinite'
+            if distance > pos_tol_m or dv > speed_tol_mps:
+                return False, 'cross_family_ego_execution_mismatch'
+        except (KeyError,TypeError,ValueError):
+            return False, 'malformed_ego_execution'
+    return True, ''
+
+
 def distinct_executed_ego_actions(a: dict, b: dict, p: Protocol) -> tuple[bool, str]:
     """Verify physical action contrast, not merely different profile names.
 

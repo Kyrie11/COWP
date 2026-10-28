@@ -1,3 +1,9 @@
+# RIDE RQ1/RQ2 v6 (2026-10-28)
+
+**Latest instructions:** [README_V6_CN.md](README_V6_CN.md). The v5 files remain only as historical protocol docs. The v6 package includes `ride/reactsim_tokens.py`, `ride/carla/mechanism_audit.py`, new `scripts/17-20`, an explicit two-factor scene pilot and regression tests.
+
+---
+
 > **2026-10-27 actor lifecycle hotfix**：上传 smoke A 的全零初始位置造成无效的“初始重叠”，随后 smoke B 检查到 3 辆残留车。请先读 [中文修复、清理和实验有效性说明](docs/CARLA_ACTOR_LIFECYCLE_FIX_CN.md)。新增 `python -m ride.carla.actor_lifecycle`（默认只读）、首次同步 tick 与服务端验证的清理。`RIDE_SMOKE_PASS` 只是物理试验检查，不是 RQ1/RQ2 的研究结论。
 
 > **2026-10-27 CARLA reload timeout fix:** If `convoy` fails at `client.reload_world()` after `RIDE_TRIAL_RESET_BEGIN`, see [docs/CARLA_RELOAD_TIMEOUT_20261027_CN.md](docs/CARLA_RELOAD_TIMEOUT_20261027_CN.md). The default trial reset is now `actors` (reuse a dedicated current Town, respawn only RIDE vehicles) rather than `reload_world` per trial. Scientific cross-reset caveats and isolated tests are documented there.

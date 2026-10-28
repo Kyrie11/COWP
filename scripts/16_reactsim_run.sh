@@ -18,16 +18,16 @@ case "$cmd" in
    echo "NUPLAN_EXP_ROOT=$NUPLAN_EXP_ROOT"
    find -L data/custom_behaviors -maxdepth 1 -name '*.pkl' | wc -l
    echo "available db: $(find -L "$nuplan/nuplan-v1.1/splits/trainval" -name '*.db' | wc -l)"
-   [[ -d "$scenarios/processed_scenarios" ]] && echo 'processed val: READY' || echo 'processed val: MISSING (preprocess required)'
+   if [[ -d "$scenarios/processed_scenarios" ]]; then
+     val_count=$(find -L "$scenarios/processed_scenarios" -maxdepth 1 -name '*.pkl' | wc -l)
+     echo "processed val cache files: $val_count (full author val=2636; count alone is not proof of token alignment)"
+   else echo 'processed val: MISSING (preprocess required)'; fi
    [[ -f ckpts/smart.ckpt ]] && ls -lh ckpts/smart.ckpt || true
    [[ -f ckpts/mtr.pth ]] && ls -lh ckpts/mtr.pth || true
    ;;
  preprocess)
-   if [[ "${RIDE_ALLOW_FULL_REACTSIM_PREPROCESS:-0}" != 1 ]]; then
-     echo 'Preprocessing can span hundreds of thousands of nuPlan cases. Explicitly set RIDE_ALLOW_FULL_REACTSIM_PREPROCESS=1 after inspecting reactsim_data_pipeline/preprocess.sh' >&2;exit 3
-   fi
-   test -f reactsim_data_pipeline/preprocess.sh || { echo 'Author preprocess.sh missing' >&2;exit 3; }
-   (cd reactsim_data_pipeline && bash preprocess.sh)
+   echo 'RIDE v6: VAL-only verified preprocessing. Train caches are optional and need separate opt-in.' >&2
+   bash "$RIDE_HOME/scripts/17_reactsim_preprocess_checked.sh" val "$@"
    ;;
  smart|mtr)
    test -d "$scenarios/processed_scenarios" || { echo "Missing processed val data: $scenarios" >&2;exit 3; }

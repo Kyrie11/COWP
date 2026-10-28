@@ -1,0 +1,248 @@
+{
+  "project": "RIDE",
+  "research_stage": "experimental_gate_not_validated_planner",
+  "fix": "2026-10-27 CARLA 0.9.16 inherited-env, port collision and unnecessary TM creation guard",
+  "source_files": 60,
+  "files": {
+    "README.md": {
+      "sha256": "ab54187cbf42d1ff3e1a545c269e79cac99258a15f7ddaf0902a6e29b48f3b15",
+      "bytes": 14102
+    },
+    "docs/CARLA_PORT_ENV_FIX_CN.md": {
+      "sha256": "4231d02d8b2749a486129ef7263089a9527180c446a8b9651ca59a089671f204",
+      "bytes": 9207
+    },
+    "docs/CLEANUP_AND_SCIENCE_AUDIT_CN.md": {
+      "sha256": "1899b3d2306ca9c23276afc49bfa3a3c3e451e85a37dd7ae7a73c2a00b9bc229",
+      "bytes": 12074
+    },
+    "docs/CONVOY_ANCHOR_FIX_CN.md": {
+      "sha256": "c5fd74600cca62f579ae0f5cd6e42828c0efc5d67f8268fc5180d7afd885cbb9",
+      "bytes": 4747
+    },
+    "docs/RESEARCH_GAP_CN.md": {
+      "sha256": "dce602ace320f0f9d219641fa30978f8458f55c75c4937d4233334eec0c282a5",
+      "bytes": 12513
+    },
+    "inputs/predictions_SCHEMA_ONLY.csv": {
+      "sha256": "ed4793e269923013fee8b3293c960fe56293b038cf7fced13730a99d09752da3",
+      "bytes": 153
+    },
+    "pyproject.toml": {
+      "sha256": "1f13f463b0a579403a0ae16ec7afbb1fe4dae65d4c22da4754409667bb4882a0",
+      "bytes": 460
+    },
+    "references/prior_development_exclusion_ids.txt": {
+      "sha256": "46fa0603125cd9062de3cb52edbcae5c85e4d1f6e6a26f9a757c5ae3a3fa45e9",
+      "bytes": 122025
+    },
+    "ride/__init__.py": {
+      "sha256": "a59969c6b35de7b0015cbc3ee72dc7d5ed04ffec4fce3b3585cc694af686d7ef",
+      "bytes": 95
+    },
+    "ride/burden.py": {
+      "sha256": "158b6303e1d30f790115c4e18a19c8a9119d65ae49dc9cebdf0626b15ecb49fb",
+      "bytes": 4696
+    },
+    "ride/carla/__init__.py": {
+      "sha256": "867099826a52a3585a255544e710f396c998fc5876bebaaabbb060a61872520c",
+      "bytes": 50
+    },
+    "ride/carla/analyze.py": {
+      "sha256": "a79042d1148acdfcb650368d671d81a8c2f665c9140d9c365af47d00f2525cab",
+      "bytes": 9156
+    },
+    "ride/carla/ports.py": {
+      "sha256": "801bee165919f3f9cdfa7683ad9fd2c48244fffd39a2cf07b7093f7279a6ca1f",
+      "bytes": 3191
+    },
+    "ride/carla/protocol.py": {
+      "sha256": "f6f87ea45b0ff821bfdb2610d52c5ca1a8f94a50f68f9098c9f09b83cb177800",
+      "bytes": 4059
+    },
+    "ride/carla/run.py": {
+      "sha256": "18856b74719f29cc1fc318d5a6ba558d92182a2be848ba28ed4980c1493c8f59",
+      "bytes": 26718
+    },
+    "ride/carla_scenarios.py": {
+      "sha256": "ec4aa1fcf01f9a0edc0c830543f14a48e95bd6324a08025f94d4aac0802ed4b6",
+      "bytes": 12572
+    },
+    "ride/combine.py": {
+      "sha256": "82200e759e8eed40e43a658dd911e8ce37435dfedd641b05a026edec36c0968b",
+      "bytes": 2622
+    },
+    "ride/commit.py": {
+      "sha256": "a3f80761768fdef2665e1cb383b04c326ac71488d1d51a2c6f3b653e116e057d",
+      "bytes": 1051
+    },
+    "ride/datasets.py": {
+      "sha256": "d0d49f1f8c9bb4df701675557983c162cf65cb11313ac3ab87b4daedad2b9eac",
+      "bytes": 1621
+    },
+    "ride/decision.py": {
+      "sha256": "44fe21f7557e25763b4665d545b86de5775723985cbc5ef8a9a66c6719507b69",
+      "bytes": 6298
+    },
+    "ride/doctor.py": {
+      "sha256": "df5f35ab60348a60662290d78020485507301ef8f3c60d8843946449d8b860ed",
+      "bytes": 3079
+    },
+    "ride/evidence.py": {
+      "sha256": "c4d3cd0cf8efb69328e744aa2d55d68567a9cd97240568b366f0421d353edcd7",
+      "bytes": 7646
+    },
+    "ride/freeze_ids.py": {
+      "sha256": "1ddaf1bf1bfbde8e427eb0a231452efaa71f1140fa014ec49923ff8215f42c35",
+      "bytes": 2217
+    },
+    "ride/gates.py": {
+      "sha256": "b7eaa511a2bd9f68a8726d5b3456b94b9939b981899951fee4222e6d5fd0cf80",
+      "bytes": 2569
+    },
+    "ride/geometry.py": {
+      "sha256": "efc7d30c5b0938926c0cb2b3b4e0c5a72bbcf65494eeee1f523d1994f863da6d",
+      "bytes": 1600
+    },
+    "ride/ranking.py": {
+      "sha256": "8c724282325791216dcdbccd4cdc8e1aa8f03e6457ade8d222c5fb3eab12ee3b",
+      "bytes": 4727
+    },
+    "ride/science.py": {
+      "sha256": "9369276088a1be91074415be6eda7302d172e1d381ef766814b6eb73fb08b1b8",
+      "bytes": 5861
+    },
+    "ride/selectors.py": {
+      "sha256": "a4170016088331fb1d0be026e9a3bb9936b9c8aca70cda6254cdc3a24d4df055",
+      "bytes": 6653
+    },
+    "ride/support.py": {
+      "sha256": "5417ac721255674df3f86df7bbb6e7817ff8e24e598b19d61edf775df6d893a8",
+      "bytes": 6731
+    },
+    "ride/synthetic_fixture.py": {
+      "sha256": "9eef6199b49fd392712b07f17f6e7737054f8978bdc0e5fbf4a703f233393736",
+      "bytes": 1678
+    },
+    "ride/waymax/__init__.py": {
+      "sha256": "4118e096f6c6adf6f88e1ffec42d4ea94774c790ebacfd148c7f9b14df272a15",
+      "bytes": 38
+    },
+    "ride/waymax/paired_idm.py": {
+      "sha256": "a692fd6bb116673473cd5be82c3065d897e3f54497a4726152870e0b1d38bab9",
+      "bytes": 18285
+    },
+    "ride/womd/__init__.py": {
+      "sha256": "cab13cc2ccc5bab50cb6a8fc346d8c4a85e696a0f39ac8b9abe843cb85fcdec4",
+      "bytes": 63
+    },
+    "ride/womd/footprints.py": {
+      "sha256": "ede4d7ecae44b83ff54c0398a5ee3b61c131ec4b4d3e806eed0814709fabc6f7",
+      "bytes": 2400
+    },
+    "ride/womd/native.py": {
+      "sha256": "31fd439312ada92cf4ae5db022fee06f4c78f90e3282122f7f12f15577f32a31",
+      "bytes": 23864
+    },
+    "ride/womd/observational.py": {
+      "sha256": "3e527b7680cc93f18539df019994f846e5ce820f19406319c9e278b94c7334f8",
+      "bytes": 5414
+    },
+    "ride/womd/reactive.py": {
+      "sha256": "ab827695853ada6d9dd10a0c945f73ed41ad84004eb4c0bf229289755f41cda9",
+      "bytes": 14434
+    },
+    "scripts/00_check_ports.sh": {
+      "sha256": "d60f58385136e507d40956131cb8cbca9366dc64087e513eeb3107403515dee7",
+      "bytes": 195
+    },
+    "scripts/00_diagnose_carla.sh": {
+      "sha256": "2cefebe68392b700835f21f82cfb1f26dc50b9d83cc0fdc2b699e04a9f353ce9",
+      "bytes": 1291
+    },
+    "scripts/00_env.sh": {
+      "sha256": "5e16921a3621d4161351298df3ef5cc517cf0b1ed6db722576dc54464d97f780",
+      "bytes": 2649
+    },
+    "scripts/01_doctor.sh": {
+      "sha256": "3b1b39e87b21a4adb4264050914638d9f68c6c04d1c1613d8c6cd52ee90c4e0c",
+      "bytes": 497
+    },
+    "scripts/01b_probe_anchors.sh": {
+      "sha256": "a1292d638ffe52df430e2888846e03e9b6489fca913bd2dcea6a3987d6cfe599",
+      "bytes": 882
+    },
+    "scripts/02_start_carla_headless.sh": {
+      "sha256": "38b258ff0ae13b60c23e5c466731b6c7caaa28c36a21c9689c889a9b7a866098",
+      "bytes": 1266
+    },
+    "scripts/03_precommit_scenes.sh": {
+      "sha256": "1e2b24655ff6e3c3b75a4c6f115925e779abaf12e0c44f5413cd27a85d6e0c6e",
+      "bytes": 964
+    },
+    "scripts/03_run_carla_case.sh": {
+      "sha256": "92cdc0a521b9e5708798af6d00b7845cc9eb0ca665509c393d98934e8f8025db",
+      "bytes": 1860
+    },
+    "scripts/03_support_ablation.sh": {
+      "sha256": "cb42b9ae10d3e124f3b86c668e1b18203d4af4aecf5ecae1e5572c4969a10ecb",
+      "bytes": 1435
+    },
+    "scripts/04_analyze_carla.sh": {
+      "sha256": "1c3b769669d175217a0b4f2ff3aff185d3fa57717b5f38fa6ccb75dc0538a2e0",
+      "bytes": 915
+    },
+    "scripts/05_waymax.sh": {
+      "sha256": "85c5c4f038d3085862e5d5d5eb13c12021af86a1c2f2e960f6daadd92030ce08",
+      "bytes": 1519
+    },
+    "scripts/05b_waymax_native.sh": {
+      "sha256": "83bffdeb629186dee22aefaf85ed53e8aeb859440a13e722837408ee04ce8343",
+      "bytes": 2183
+    },
+    "scripts/06_compare_locked_planners.sh": {
+      "sha256": "bde6fd6b06a24ff13f1b0b95a4037617133d1a7b33671b78c896cb36ad4ca156",
+      "bytes": 740
+    },
+    "scripts/06a_lock_proxy_selectors.sh": {
+      "sha256": "16b2af271d54509da087b146356993f0ba2e350b4b976dc541b47bb38e694401",
+      "bytes": 487
+    },
+    "scripts/06b_burden_proxy_ablation.sh": {
+      "sha256": "8d6e6416d86d5e94a2803497c3b2489e0828fee3f49b73aa9637d078ddeafe8b",
+      "bytes": 394
+    },
+    "scripts/07_download_reactsim_data.sh": {
+      "sha256": "dc4cd3f59c3add7a81d0499abedce193bbbeada793bf9d99368358725d099610",
+      "bytes": 626
+    },
+    "scripts/08_clone_external_baselines.sh": {
+      "sha256": "defa1898d0eb38799daa09539d63a980a1da6fda690833c0df68337e4b18d8a7",
+      "bytes": 956
+    },
+    "scripts/09_native_womd_cohort.sh": {
+      "sha256": "8ec47f8a47ff1fed6ace9f0fbbc5f0de30de4abeddca6434a133ee193b6c8809",
+      "bytes": 1090
+    },
+    "scripts/10_bundle_run_outputs.sh": {
+      "sha256": "f4c9cf766f9faf58e1f6c5c79937a94219bb0cdb25f566d1e4d4b4ead1aea476",
+      "bytes": 999
+    },
+    "scripts/11_observational_response_calibration.sh": {
+      "sha256": "ac5e19b208413026c8008c4aee80855ca6f965b1a85d2ee3b1ba57d973e5bcf6",
+      "bytes": 560
+    },
+    "tests/test_carla_ports_env.py": {
+      "sha256": "b2356ff009dbea4b72718f724e813947ffff364e5e2330746bb887d0250b74e4",
+      "bytes": 4092
+    },
+    "tests/test_ride_regressions.py": {
+      "sha256": "be8c3b0ddd82635665fcf3782ca8b3144424ad3d37dc99f14996a77c1b7d4f8a",
+      "bytes": 16074
+    },
+    "tests/test_ride_science.py": {
+      "sha256": "3f521d7677acbd6447cdae5ca915eb4cf4ee6cdd32da96a794252a6e5abfb554",
+      "bytes": 8264
+    }
+  }
+}

@@ -1,0 +1,252 @@
+{
+  "cut_in": {
+    "trial_summary": {
+      "completed_trials": 20,
+      "valid": 18,
+      "mechanism_executed": 16,
+      "third_party_collisions": 0,
+      "sustained_rear_brakes": 17,
+      "cruise_rear_brakes": 4
+    },
+    "rq12_pairs": {
+      "within_family": 5,
+      "cross_family_strict_comparable": 2,
+      "strict_reversals": 0,
+      "ranking_checked": 4
+    },
+    "negative_control_cruise": [
+      {
+        "anchor": "0",
+        "family": "tm",
+        "first_brake_b_s": 1.75,
+        "burden_b_mps": 7.06719
+      },
+      {
+        "anchor": "0",
+        "family": "behavior",
+        "first_brake_b_s": 1.65,
+        "burden_b_mps": 1.69631
+      },
+      {
+        "anchor": "1",
+        "family": "tm",
+        "first_brake_b_s": 5.45,
+        "burden_b_mps": 3.63266
+      },
+      {
+        "anchor": "1",
+        "family": "behavior",
+        "first_brake_b_s": 6.3,
+        "burden_b_mps": 1.64228
+      }
+    ],
+    "valid_within_family_comparisons": [
+      {
+        "archetype": "cut_in",
+        "anchor": "0",
+        "seed": "17",
+        "family": "behavior",
+        "actions": [
+          "early_slow",
+          "late_slow"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 0.0034,
+        "binary_brake_pair": [
+          true,
+          true
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "cut_in",
+        "anchor": "0",
+        "seed": "17",
+        "family": "behavior",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 4e-05,
+        "binary_brake_pair": [
+          true,
+          true
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "cut_in",
+        "anchor": "0",
+        "seed": "17",
+        "family": "tm",
+        "actions": [
+          "early_slow",
+          "late_slow"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": -7.93973,
+        "binary_brake_pair": [
+          true,
+          true
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "cut_in",
+        "anchor": "0",
+        "seed": "17",
+        "family": "tm",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 0.1158,
+        "binary_brake_pair": [
+          true,
+          true
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "cut_in",
+        "anchor": "1",
+        "seed": "17",
+        "family": "tm",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": -0.42819,
+        "binary_brake_pair": [
+          true,
+          true
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      }
+    ]
+  },
+  "convoy": {
+    "trial_summary": {
+      "completed_trials": 20,
+      "valid": 20,
+      "mechanism_executed": 20,
+      "third_party_collisions": 0,
+      "sustained_rear_brakes": 0,
+      "cruise_rear_brakes": 0
+    },
+    "rq12_pairs": {
+      "within_family": 4,
+      "cross_family_strict_comparable": 2,
+      "strict_reversals": 0,
+      "ranking_checked": 4
+    },
+    "negative_control_cruise": [
+      {
+        "anchor": "0",
+        "family": "tm",
+        "first_brake_b_s": null,
+        "burden_b_mps": 0.0
+      },
+      {
+        "anchor": "0",
+        "family": "behavior",
+        "first_brake_b_s": null,
+        "burden_b_mps": 0.0
+      },
+      {
+        "anchor": "1",
+        "family": "tm",
+        "first_brake_b_s": null,
+        "burden_b_mps": 0.0
+      },
+      {
+        "anchor": "1",
+        "family": "behavior",
+        "first_brake_b_s": null,
+        "burden_b_mps": 0.0
+      }
+    ],
+    "valid_within_family_comparisons": [
+      {
+        "archetype": "convoy",
+        "anchor": "0",
+        "seed": "17",
+        "family": "behavior",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 0.0,
+        "binary_brake_pair": [
+          false,
+          false
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "convoy",
+        "anchor": "0",
+        "seed": "17",
+        "family": "tm",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": -0.00698,
+        "binary_brake_pair": [
+          false,
+          false
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "convoy",
+        "anchor": "1",
+        "seed": "17",
+        "family": "behavior",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 0.0,
+        "binary_brake_pair": [
+          false,
+          false
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      },
+      {
+        "archetype": "convoy",
+        "anchor": "1",
+        "seed": "17",
+        "family": "tm",
+        "actions": [
+          "mild_early",
+          "mild_late"
+        ],
+        "eligible": true,
+        "ineligible_reason": null,
+        "delta_burden_b_mps_a_minus_b": 0.0,
+        "binary_brake_pair": [
+          false,
+          false
+        ],
+        "WARNING": "EXPLORATORY scalar sensitivity only; not a preregistered RQ1 rank reversal"
+      }
+    ]
+  }
+}

@@ -12,7 +12,7 @@ import math, random
 # v5 uses a longer insertion gap, a continuous target-lane centerline and
 # a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
 # of old v4 outputs. All v4 anchors MUST be invalidated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v5_20261028"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v6_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -30,24 +30,29 @@ def _same_dir(wp,other):return yaw_diff(wp.transform.rotation.yaw,other.transfor
 def _xy(a,b):return math.hypot(a.x-b.x,a.y-b.y)
 
 
-def cut_in_candidate(wp, carla):
-    """Front A(0), adjacent ego(-20), rear B(-45), all in driving direction.
+def cut_in_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45.):
+    """Parametric adjacent-lane cut-in with physically verified gap geometry.
 
-    V4's A-to-ego gap of 9 m led to ego/front collisions in all eight
-    observed cut-in trials.  We increase the opening and freeze its actual
-    centerline; this is a *new designed stress test*, not a claim that a
-    specific reaction or third-party collision must occur.
+    Ego is -ego_gap_m behind A in an adjacent lane; B is -rear_gap_m
+    behind A in the target lane. These are precommitted stress settings,
+    never fit from post-intervention outcomes. Default reproduces v5 geometry.
     """
+    if (ego_gap_m < 20. or rear_gap_m < ego_gap_m+15. or
+        rear_gap_m > 70. or abs(ego_gap_m/5-round(ego_gap_m/5))>1e-8 or
+        abs(rear_gap_m/5-round(rear_gap_m/5))>1e-8):
+        raise ValueError('Cut-in gaps must be 5m multiples, ego>=20m, rear>=ego+15m, rear<=70m')
     if not _driving(wp, carla):
         return None
+    n_ego=int(round(ego_gap_m/5))
+    n_rear=int(round(rear_gap_m/5))
     backwards=[wp]
-    for _ in range(9):
+    for _ in range(n_rear):
         nxt=_one(backwards[-1].previous(5.0))
         if (not _driving(nxt,carla) or nxt.lane_id!=wp.lane_id or
                 not _same_dir(nxt,wp)):
             return None
         backwards.append(nxt)
-    middle,behind=backwards[4],backwards[9]
+    middle,behind=backwards[n_ego],backwards[n_rear]
     # The 8s rollout at 9m/s can travel ~72m. Requiring only 35m of
     # nonjunction road in v3 allowed 2513/3233 discovery trials to touch a
     # junction, and BehaviorAgent could exhaust a dead-end local route.
@@ -88,8 +93,8 @@ def cut_in_candidate(wp, carla):
         def forward_gap(a, b):
             pa, pb = a.transform.location, b.transform.location
             return float((pa.x-pb.x)*hx + (pa.y-pb.y)*hy)
-        if not (17. <= forward_gap(wp, neighbor) <= 24. and
-                21. <= forward_gap(neighbor, behind) <= 30.):
+        if not (abs(forward_gap(wp, neighbor)-ego_gap_m)<=3. and
+                abs(forward_gap(neighbor, behind)-(rear_gap_m-ego_gap_m))<=3.):
             continue
         # The target-lane centerline is much more stable than comparing the
         # frozen follower road_id with the ego's *current* OpenDRIVE road_id.
@@ -103,13 +108,13 @@ def cut_in_candidate(wp, carla):
     return None
 
 
-def support_gap_candidate(wp, carla):
+def support_gap_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45.):
     """Same *physical* gap class as cut_in, with finite-library diagnostics.
 
     This is not an independent fourth spatial archetype; S4 is a different
     scientific experiment (nested recourse coverage) on the cut-in geometry.
     """
-    return cut_in_candidate(wp, carla)
+    return cut_in_candidate(wp, carla, ego_gap_m, rear_gap_m)
 
 
 def _unique_lane_step(wp, distance, carla, *, backward=False):
@@ -210,7 +215,8 @@ def junction_candidate(wp,world,carla,incoming=None):
     return None
 
 
-def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
+def build_anchors(world, archetype, count, seed, *, with_diagnostics=False,
+                  cutin_ego_gap_m=20., cutin_rear_gap_m=45.):
     """Select map-grounded anchors, checking all candidate road geometry.
 
     First check recommended spawn points; if insufficient, search the map's
@@ -235,7 +241,7 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
             return junction_candidate(wp,world,carla,incoming)
         if kind == 'convoy':
             return convoy_candidate(wp,carla,diagnostics['rejections'])
-        return find(wp,carla)
+        return find(wp,carla,cutin_ego_gap_m,cutin_rear_gap_m)
 
     def add(case):
         center = case['follower_a'].transform.location
@@ -249,7 +255,15 @@ def build_anchors(world, archetype, count, seed, *, with_diagnostics=False):
         identities = {k:{'road_id':int(v.road_id),'lane_id':int(v.lane_id),
                           'yaw':round(float(v.transform.rotation.yaw),3)}
                       for k,v in case.items() if not k.startswith('_')}
-        rows.append({'anchor':len(rows),'key':key,'coords':coords,
+        geo=None
+        if archetype in ('cut_in','support_gap'):
+            forward=case['follower_a'].transform.get_forward_vector()
+            lead=case['follower_a'].transform.location
+            ego=case['ego'].transform.location
+            rear=case['follower_b'].transform.location
+            geo={'front_to_ego_m':round((lead.x-ego.x)*forward.x+(lead.y-ego.y)*forward.y,3),
+                 'front_to_rear_m':round((lead.x-rear.x)*forward.x+(lead.y-rear.y)*forward.y,3)}
+        rows.append({'anchor':len(rows),'key':key,'coords':coords,'gap_geometry_m':geo,
                      'waypoint_identities':identities,
                      'archetype':archetype,'target_lane_id':case.get('_target_lane_id'),
                      'target_corridor_xy':case.get('_target_corridor_xy'),

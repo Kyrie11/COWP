@@ -36,6 +36,8 @@ python -m ride.carla.run \
   --anchors "${RIDE_ANCHORS:-1}" --repetitions "${RIDE_REPEATS:-1}" \
   --seed "${RIDE_SEED:-17}" --cruise-mps "${RIDE_CRUISE_MPS:-9}" \
   --rear-speed-delta-mps "${RIDE_REAR_SPEED_DELTA_MPS:-0}" \
+  --cutin-ego-gap-m "${RIDE_CUTIN_EGO_GAP_M:-20}" \
+  --cutin-rear-gap-m "${RIDE_CUTIN_REAR_GAP_M:-45}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" --no-rendering --anchors-from "$FROZEN" \
   --timeout "${RIDE_CARLA_TIMEOUT:-120}" --world-reset "${RIDE_WORLD_RESET:-actors}" \
   --families "${RIDE_FAMILY_LIST[@]}" \
