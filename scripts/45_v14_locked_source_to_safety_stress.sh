@@ -47,13 +47,30 @@ python -m ride.v13_model_transfer lock --source "$SOURCE" --frozen "$FROZEN" \
  --target "$TARGET" --choices "$CHOICES" --commit "$COMMIT" \
  --source-family "$SOURCE_FAMILY" --target-family "$TARGET_FAMILY" \
  --tie-resolution 0.05 --meaningful-delta 0.25 --comfort-limit 2.0 --min-decisions 1
+# Precommit transparent courtesy selectors BEFORE the target branch exists.
+# Not a claim to replicate original RACP/HYPE/GameFormer planner.
+python -m ride.v16_transparent_selectors lock \
+ --source "$SOURCE" --frozen "$FROZEN" --target "$TARGET" \
+ --choices "$RIDE_V14_LOCKED_STRESS_ROOT/locks/v16_transparent_choices.json" \
+ --source-family "$SOURCE_FAMILY" --target-family "$TARGET_FAMILY" \
+ --budget "${RIDE_V16_COURTESY_BUDGET:-0.4}" --tie 0.05
 # At this point the target output does not exist and the SHA lock has committed.
 export RIDE_OUTPUT_ROOT="$RIDE_V14_LOCKED_STRESS_ROOT/target"
 export RIDE_FAMILIES="$TARGET_FAMILY"
 bash "$RIDE_HOME/scripts/03_run_carla_case.sh" chain_cut_in
+# A source-target choice difference is not scientific evidence if the target
+# brake intervention never actuates. Require raw C request/applied validation.
+python -m ride.v16_cross_stress actuation-gate \
+ --panel "$TARGET" \
+ --output "$RIDE_V14_LOCKED_STRESS_ROOT/v16_target_C_actuation_gate.json"
 python -m ride.v13_model_transfer evaluate --source "$SOURCE" --frozen "$FROZEN" \
  --target "$TARGET" --choices "$CHOICES" --commit "$COMMIT" \
  --output "$RIDE_V14_LOCKED_STRESS_ROOT/v13_target_decision_audit.json"
+python -m ride.v16_transparent_selectors evaluate \
+ --source "$SOURCE" --frozen "$FROZEN" --target "$TARGET" \
+ --choices "$RIDE_V14_LOCKED_STRESS_ROOT/locks/v16_transparent_choices.json" \
+ --source-family "$SOURCE_FAMILY" --target-family "$TARGET_FAMILY" \
+ --output "$RIDE_V14_LOCKED_STRESS_ROOT/v16_transparent_selector_audit.json"
 python -m ride.v14_counterfactual_audit --roots "$RIDE_V14_LOCKED_STRESS_ROOT" \
  --output "$RIDE_V14_LOCKED_STRESS_ROOT/v14_readonly_physics_audit.json"
 MERGED="$RIDE_V14_LOCKED_STRESS_ROOT/v14_merged_stress_panel.jsonl"

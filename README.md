@@ -1,3 +1,19 @@
+# RIDE v16 — Decision-Critical Third-Party Response Contrasts
+
+**READ THIS FIRST:** `docs/v16/RESEARCH_STORY_AND_COMMANDS_CN.md` — comprehensive research story,
+actual uploaded-v15 evidence, validity limits, v16 code changes and CARLA instructions.
+
+**Independent audit of the uploaded evidence:** `docs/v16/V15_UPLOADED_INDEPENDENT_AUDIT.json`.
+
+**Do not interpret** C brake command cap 0.85 as limited braking: the observed normal C
+BehaviorAgent commanded brake never exceeded 0.30 in the v15 panels. The new
+`v16_C_brake_control_actuation` per-trial record tests this explicitly.
+
+**Tests:** `python -m pytest -q` (simulator-free regression). New actual CARLA physics
+must still run on the user's dedicated 0.9.16 server.
+
+---
+
 # RIDE v14 repaired / v15 science gate (2026-10-29)
 
 **请以 [`docs/V15_REVIEW_AND_EXECUTION_CN.md`](docs/V15_REVIEW_AND_EXECUTION_CN.md) 为最新使用说明。** 它说明了这次上传的原始实验结果、`DELAYED_C_PARAMETERS_REQUIRE_EXPLORATORY_CHAIN_FAMILY` 冻结协议错误、v14 双阶段受控制动测试第二阻断、同场景重跑的负面/正面证据和全套服务器命令。以前 v14 的说明书只能作为历史记录。

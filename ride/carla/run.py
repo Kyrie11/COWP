@@ -395,6 +395,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                                      lateral_lookahead_m=args.cutin_lateral_lookahead_m)
             ego_command=ego_ctrl.run_step(target*3.6,ego_wp)
             vehicles['ego'].apply_control(ego_command)
+            c_command_audit_this_step=None
             if family in ('tm','behavior')+HETEROGENEOUS_FAMILIES:
                 for role,a in responders.items():
                     try:
@@ -406,6 +407,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                             f'original={type(exc).__name__}: {exc}') from exc
                     if role=='follower_c' and delayed_c_control is not None:
                         control=delayed_c_control.step(control)
+                        c_command_audit_this_step=dict(delayed_c_control.last_sample)
                     vehicles[role].apply_control(control)
             if family=='joint_witness':
                 for role,a in responders.items():
@@ -550,6 +552,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 'ego_follower_a_distance_m':xy_distance(now['ego'],now['follower_a']),
                 'xy_by_role':{k:[float(v.x),float(v.y)] for k,v in now.items()},
                 'third_party_pair_roles':list(pair_roles)}
+            if c_command_audit_this_step is not None:
+                frame['v16_C_command_fidelity']=c_command_audit_this_step
             if args.archetype == 'chain_cut_in':
                 frame['follower_c_accel']=(new_speeds['follower_c']-speeds['follower_c'])/DT
                 frame['follower_c_speed_mps']=new_speeds['follower_c']
@@ -577,6 +581,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
         result['kinematic_overlap_pairs']=[list(x) for x in sorted(overlap_proxy)]
         result['sensor_overlap_disagreement_pairs']=[list(x) for x in sorted(overlap_proxy-pairs)]
         result['metrics']=summarise_trial(result)
+        if delayed_c_control is not None:
+            result['v16_C_brake_control_actuation']=delayed_c_control.actuation_report()
         result['max_observed_follower_speed_mps']={role:max(
             float(frame[f'{role}_speed_mps']) for frame in result['trace'])
             for role in responders_roles}

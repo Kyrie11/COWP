@@ -29,10 +29,39 @@ class DelayedCController:
             raise ValueError('Delay must be integer multiple of simulator step')
         self.cap=brake_command_cap
         self.brake_buffer=deque(float(initial_control.brake) for _ in range(self.ticks))
+        self.requests=0
+        self.cap_binding_steps=0
+        self.lag_mismatch_steps=0
+        self.max_requested_brake=0.0
+        self.max_applied_brake=0.0
+        self.last_sample=None
 
     def step(self, newly_computed):
         """Delay only C's brake command, never lateral steering or throttle."""
         out=_clone(newly_computed)
-        self.brake_buffer.append(float(newly_computed.brake))
-        out.brake=min(self.brake_buffer.popleft(),self.cap)
+        requested=float(newly_computed.brake)
+        self.brake_buffer.append(requested)
+        delayed=float(self.brake_buffer.popleft())
+        applied=min(delayed,self.cap)
+        out.brake=applied
+        self.requests+=1
+        self.cap_binding_steps+=int(delayed>self.cap+1e-6)
+        self.lag_mismatch_steps+=int(abs(delayed-requested)>1e-6)
+        self.max_requested_brake=max(self.max_requested_brake,requested)
+        self.max_applied_brake=max(self.max_applied_brake,applied)
+        self.last_sample={'requested_brake':requested, 'delayed_brake':delayed,
+                          'applied_brake':applied,
+                          'cap_actually_binding':delayed>self.cap+1e-6,
+                          'lag_actually_changed_brake':abs(delayed-requested)>1e-6}
         return out
+
+    def actuation_report(self):
+        return {'requested_delay_ticks':self.ticks,'command_cap':self.cap,
+                'command_samples':self.requests,
+                'command_cap_binding_ticks':self.cap_binding_steps,
+                'delay_changed_command_ticks':self.lag_mismatch_steps,
+                'max_raw_requested_C_brake':self.max_requested_brake,
+                'max_applied_C_brake':self.max_applied_brake,
+                'effectiveness':'CAP_AND_DELAY' if self.cap_binding_steps and self.lag_mismatch_steps
+                    else 'CAP_ONLY' if self.cap_binding_steps else
+                         'DELAY_ONLY' if self.lag_mismatch_steps else 'NO_EFFECT'}
