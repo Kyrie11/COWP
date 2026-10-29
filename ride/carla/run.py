@@ -26,6 +26,30 @@ from .behavior_policy import cap_behavior_agent
 from .pair_geometry import longitudinal_pair_eligible
 
 
+def validate_v14_c_stress_family(archetype, families, delay_s, brake_cap,
+                                 *, inactive_metadata_only=False, manifest_only=False):
+    """Validate policy identity separately from declared stress settings.
+
+    A nonstandard C command may only affect the explicitly delayed family.
+    The locked *source* can carry frozen target stress metadata without
+    executing it, but must opt in and use the unmodified mixed C policy.
+    """
+    if (not math.isfinite(delay_s) or not 0<=delay_s<=1.5 or
+        abs(delay_s/DT-round(delay_s/DT))>1e-6 or
+        not math.isfinite(brake_cap) or not .15<=brake_cap<=1):
+        raise ValueError('INVALID_V14_HYPOTHETICAL_C_CONTROLLER')
+    active=('mixed_b_tm_c_delayed_behavior' in families)
+    source_only=(archetype=='chain_cut_in' and not manifest_only and
+                 list(families)==['mixed_b_tm_c_behavior'] and
+                 bool(inactive_metadata_only))
+    if inactive_metadata_only and not source_only:
+        raise ValueError('V14_INACTIVE_STRESS_METADATA_ONLY_FOR_LOCKED_UNMODIFIED_C_SOURCE')
+    if (delay_s>0 or brake_cap<1) and not (
+        archetype=='chain_cut_in' and (active or source_only)):
+        raise ValueError('DELAYED_C_PARAMETERS_REQUIRE_EXPLORATORY_CHAIN_FAMILY')
+    return source_only
+
+
 def xy_distance(a,b):return math.hypot(a.x-b.x,a.y-b.y)
 
 
@@ -644,6 +668,10 @@ def main():
                    help='Only for mixed_b_tm_c_delayed_behavior; applied C command delay [0,1.5]s')
     p.add_argument('--chain-c-brake-command-cap',type=float,default=1.0,
                    help='Only for mixed_b_tm_c_delayed_behavior; C brake command max [0.15,1]')
+    p.add_argument('--v14-source-inactive-stress-metadata',action='store_true',
+                   help='Only for the unmodified mixed_b_tm_c_behavior SOURCE of a locked '
+                        'delayed-C experiment: freeze target stress parameters without '
+                        'applying them; NEVER use for other families')
     p.add_argument('--cutin-paired-amplitude-mps',type=float,default=0.5,
                    help='New v12 speed_early/speed_late compensating speed pair')
     p.add_argument('--cutin-late-switch-s',type=float,default=4.5,
@@ -676,15 +704,13 @@ def main():
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
-    if (not math.isfinite(a.chain_c_control_delay_s) or
-        not 0<=a.chain_c_control_delay_s<=1.5 or
-        abs(a.chain_c_control_delay_s/DT-round(a.chain_c_control_delay_s/DT))>1e-6 or
-        not math.isfinite(a.chain_c_brake_command_cap) or
-        not 0.15<=a.chain_c_brake_command_cap<=1.):
-        raise ValueError('INVALID_V14_HYPOTHETICAL_C_CONTROLLER')
-    if (a.chain_c_control_delay_s>0 or a.chain_c_brake_command_cap<1) and not (
-           a.archetype=='chain_cut_in' and 'mixed_b_tm_c_delayed_behavior' in a.families):
-        raise ValueError('DELAYED_C_PARAMETERS_REQUIRE_EXPLORATORY_CHAIN_FAMILY')
+    inactive_source=validate_v14_c_stress_family(
+        a.archetype,a.families,a.chain_c_control_delay_s,a.chain_c_brake_command_cap,
+        inactive_metadata_only=a.v14_source_inactive_stress_metadata,
+        manifest_only=a.manifest_only)
+    if inactive_source:
+        print('V14_LOCKED_SOURCE_STRESS_METADATA_INACTIVE: '
+              'C brake delay/cap are recorded but NOT applied to BehaviorAgent',flush=True)
     if not (0 < a.cutin_paired_amplitude_mps<=0.8):
         raise ValueError('INVALID_COMPENSATED_SPEED_AMPLITUDE')
     if a.archetype not in ('cut_in','support_gap','chain_cut_in') and any(
@@ -831,6 +857,7 @@ def main():
               'chain_c_speed_delta_mps':a.chain_c_speed_delta_mps,
               'chain_c_control_delay_s':a.chain_c_control_delay_s,
               'chain_c_brake_command_cap':a.chain_c_brake_command_cap,
+              'v14_inactive_c_stress_metadata_only':bool(inactive_source),
               'v14_C_exploratory_protocol':('HYPOTHETICAL_DELAYED_C_CONTROL_V1' if
                  'mixed_b_tm_c_delayed_behavior' in a.families else 'NONE'),
               'behavior_speed_protocol':a.behavior_speed_protocol,

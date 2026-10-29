@@ -1,0 +1,621 @@
+{
+  "protocol": "2026-10-29 repaired v15",
+  "code_files": [
+    {
+      "file": "ride/__init__.py",
+      "sha256": "a59969c6b35de7b0015cbc3ee72dc7d5ed04ffec4fce3b3585cc694af686d7ef"
+    },
+    {
+      "file": "ride/baseline_inventory.py",
+      "sha256": "c601ce64f6221c7e19ad7f1744e77a39f69542f2fe391eefbd14d55c7bb5a778"
+    },
+    {
+      "file": "ride/baseline_readiness.py",
+      "sha256": "08fc86336363e7abb1ed166281c735174e11cd59f0fece7c6d025b8250bdc65b"
+    },
+    {
+      "file": "ride/burden.py",
+      "sha256": "158b6303e1d30f790115c4e18a19c8a9119d65ae49dc9cebdf0626b15ecb49fb"
+    },
+    {
+      "file": "ride/carla/__init__.py",
+      "sha256": "867099826a52a3585a255544e710f396c998fc5876bebaaabbb060a61872520c"
+    },
+    {
+      "file": "ride/carla/actor_lifecycle.py",
+      "sha256": "c271286c0fec51aa08e7f6efe7cae763066ff0858f52741f54097a6c228150e6"
+    },
+    {
+      "file": "ride/carla/analyze.py",
+      "sha256": "a79042d1148acdfcb650368d671d81a8c2f665c9140d9c365af47d00f2525cab"
+    },
+    {
+      "file": "ride/carla/behavior_policy.py",
+      "sha256": "af78c5ca6583e1252f13790930e31c3b45c990215074224738d37f691e67dce9"
+    },
+    {
+      "file": "ride/carla/health.py",
+      "sha256": "a5b92eef61bf6ab997e64f398164404f6f0da3ad2756e592404533706e3b4711"
+    },
+    {
+      "file": "ride/carla/lagged_controller.py",
+      "sha256": "8e10813ce57b52bfce11286ef94bfdf1ce6661c275beb8a802f1aea73ec9745c"
+    },
+    {
+      "file": "ride/carla/lane_geometry.py",
+      "sha256": "64573c6cd48e4baac055aeba2b6dee345da4a67b0f1f748d5f22ec8534b1270a"
+    },
+    {
+      "file": "ride/carla/m0_gate.py",
+      "sha256": "48b17ce97e61f6f765f7f512a6f9cbf4728b7f201a14fd40b0409fccbfe74e9f"
+    },
+    {
+      "file": "ride/carla/map_setup.py",
+      "sha256": "41f2fa8ae144529276fb4594f1f3c0713d3e5cdaea52df9633ded3a90cea87e5"
+    },
+    {
+      "file": "ride/carla/mechanism_audit.py",
+      "sha256": "2ec6bf6d001cd46f5486f4eb5b6cf8f531c80dbe2af2efb2cfba65742ba40055"
+    },
+    {
+      "file": "ride/carla/pair_geometry.py",
+      "sha256": "5a9342a631080ffd8e8909e3294aca2b46a01a6d437648e26b7ecfa8e35b5557"
+    },
+    {
+      "file": "ride/carla/pilot_report.py",
+      "sha256": "8cda414c9880f321731b57e857089d814c0a621ee6ca5afa60c2769fc42851f8"
+    },
+    {
+      "file": "ride/carla/ports.py",
+      "sha256": "801bee165919f3f9cdfa7683ad9fd2c48244fffd39a2cf07b7093f7279a6ca1f"
+    },
+    {
+      "file": "ride/carla/protocol.py",
+      "sha256": "f8a00311976822ae08e0a545180dacac62fa334d2bb48fc384aee9709ac9c0ff"
+    },
+    {
+      "file": "ride/carla/response_calibration.py",
+      "sha256": "087eef25afc58b7fe131aced918e37e3002fa788d8078c8a8a153992c73916ca"
+    },
+    {
+      "file": "ride/carla/roles.py",
+      "sha256": "e4c3a2a4d58ea34cd3843fbe839644ef188a792f25e316ee24602d4e6dfc9698"
+    },
+    {
+      "file": "ride/carla/route_protocol.py",
+      "sha256": "828fedef589e81d98197d9a8a9936409838346fb0d9b83dffed888f1860b6c99"
+    },
+    {
+      "file": "ride/carla/run.py",
+      "sha256": "e0aff5589f7990b926a4c1bfe2c960b990a74a81dc32e36a513ce29db0ab0593"
+    },
+    {
+      "file": "ride/carla/smoke_validate.py",
+      "sha256": "e1a031a719f1117922a602f5319100345f6d7d7deea58bf2099f65ec761a5c61"
+    },
+    {
+      "file": "ride/carla/tm_policy.py",
+      "sha256": "7367df63f8de9fe4c99096243b0001e4d10ece263b11e8940df1fae60b1c4634"
+    },
+    {
+      "file": "ride/carla_scenarios.py",
+      "sha256": "933dc91609ccf352e1e81092414a97581d971265488cff2bf5877cf93977b584"
+    },
+    {
+      "file": "ride/combine.py",
+      "sha256": "82200e759e8eed40e43a658dd911e8ce37435dfedd641b05a026edec36c0968b"
+    },
+    {
+      "file": "ride/commit.py",
+      "sha256": "a3f80761768fdef2665e1cb383b04c326ac71488d1d51a2c6f3b653e116e057d"
+    },
+    {
+      "file": "ride/datasets.py",
+      "sha256": "d0d49f1f8c9bb4df701675557983c162cf65cb11313ac3ab87b4daedad2b9eac"
+    },
+    {
+      "file": "ride/decision.py",
+      "sha256": "44fe21f7557e25763b4665d545b86de5775723985cbc5ef8a9a66c6719507b69"
+    },
+    {
+      "file": "ride/doctor.py",
+      "sha256": "df5f35ab60348a60662290d78020485507301ef8f3c60d8843946449d8b860ed"
+    },
+    {
+      "file": "ride/evidence.py",
+      "sha256": "515add1ac4824101b361c636568df77e01ebe06aafc5f17cbdc4353a40275f23"
+    },
+    {
+      "file": "ride/forensics.py",
+      "sha256": "a07ca5b332373012f8fc4ea3ce22e68f79ba1d88e395fe320ed7ea5302f3ddd6"
+    },
+    {
+      "file": "ride/freeze_ids.py",
+      "sha256": "1ddaf1bf1bfbde8e427eb0a231452efaa71f1140fa014ec49923ff8215f42c35"
+    },
+    {
+      "file": "ride/gameformer_headless.py",
+      "sha256": "e9c5edd6dea1560976497fa4e1d04febd677ae012f7cb8d97bcd6dd719b795bf"
+    },
+    {
+      "file": "ride/gates.py",
+      "sha256": "b7eaa511a2bd9f68a8726d5b3456b94b9939b981899951fee4222e6d5fd0cf80"
+    },
+    {
+      "file": "ride/geometry.py",
+      "sha256": "efc7d30c5b0938926c0cb2b3b4e0c5a72bbcf65494eeee1f523d1994f863da6d"
+    },
+    {
+      "file": "ride/nuplan_recovery_plan.py",
+      "sha256": "c92b718ceb8935ba0823a5c55330d3161a1b6c7f2f6570830f9692439d290c9d"
+    },
+    {
+      "file": "ride/protocol_lock.py",
+      "sha256": "883cb8ea0fdb592b05a5a15632e0798c3afe41f687026ae3ca69e9d66ff610df"
+    },
+    {
+      "file": "ride/ranking.py",
+      "sha256": "d9d4dd1db830eb8b4f94ee841510cfa844757a24ee8fe8b5f39e709d99903405"
+    },
+    {
+      "file": "ride/reactsim_coverage.py",
+      "sha256": "c33daa4eebc70d780e54e5fc53cf88eeff1614d6a968058684eb42917d9384f8"
+    },
+    {
+      "file": "ride/reactsim_db_coverage.py",
+      "sha256": "9fb32d32e77135cde72cbcaf58fe24fa54d2ad9b6d8392202ec298dcbaeb9ae1"
+    },
+    {
+      "file": "ride/reactsim_paired_audit.py",
+      "sha256": "2aba56967414405223b1028380e1bcad0153c8afca768d1489b108ad481df595"
+    },
+    {
+      "file": "ride/reactsim_research_subset.py",
+      "sha256": "f3394714a468f03950a7b454f332ccdd6db45286f93dd0786989757f53cd6642"
+    },
+    {
+      "file": "ride/reactsim_setup.py",
+      "sha256": "12612e85306cd8f0b7e045f715ffd3e9125f6d1c244370c5fecf8a2b879a4a78"
+    },
+    {
+      "file": "ride/reactsim_tokens.py",
+      "sha256": "448818664fc20675d23620f4d9c04d5c68bf4bbeb3ed62571f83e582f95c4f30"
+    },
+    {
+      "file": "ride/research_status.py",
+      "sha256": "e016b572a13869471d3c650698044a3a70b8ebb0b6b251ac4188fad489ba3689"
+    },
+    {
+      "file": "ride/science.py",
+      "sha256": "e6281549fca9bb4f071805c35816da727deedd17c5240e1ac80d8f79444a13c4"
+    },
+    {
+      "file": "ride/selectors.py",
+      "sha256": "a4170016088331fb1d0be026e9a3bb9936b9c8aca70cda6254cdc3a24d4df055"
+    },
+    {
+      "file": "ride/support.py",
+      "sha256": "6c366d6fac29d0471b56da3df76a9e9f9d2e9a3eb561d1217078d03b3a154ce1"
+    },
+    {
+      "file": "ride/synthetic_fixture.py",
+      "sha256": "9eef6199b49fd392712b07f17f6e7737054f8978bdc0e5fbf4a703f233393736"
+    },
+    {
+      "file": "ride/v10_mechanism_report.py",
+      "sha256": "6d5292ceffbd08145062541968768a293d3aa3ba1b02d06533683001f959a592"
+    },
+    {
+      "file": "ride/v11_chain_evidence.py",
+      "sha256": "a3e074663a3b3b7e285bea8b598214f4888438fd83922c32d921886d4c4eed17"
+    },
+    {
+      "file": "ride/v12_sensitivity.py",
+      "sha256": "d8d41418ed6821a319c63dda7c3336ddac1d90840406be5ef847f90fd8810e67"
+    },
+    {
+      "file": "ride/v12_speed_pair_audit.py",
+      "sha256": "ee7fe8b23a09ce5d14d75bf0f1989178867a1188c5abaa9d5d0393f9734c0bdc"
+    },
+    {
+      "file": "ride/v13_aggregate.py",
+      "sha256": "8d2cef00de3d9d0949a61e0699357371a2bcc8dc431f9eba4c2388663ac5fb06"
+    },
+    {
+      "file": "ride/v13_model_transfer.py",
+      "sha256": "67a03072578224523cee0ccf85d99fb4cef1d35115a818afff9f7eb0b6bd26a6"
+    },
+    {
+      "file": "ride/v14_counterfactual_audit.py",
+      "sha256": "823716ec1c6f29ce164ba8e4898dc5960d9c0fe5b69a2c3b9860fc109a9a69b7"
+    },
+    {
+      "file": "ride/v14_frozen_replay.py",
+      "sha256": "117b28a13078c86f34d392a56e6f736a0de72bc442da768823bda2d97de47fbf"
+    },
+    {
+      "file": "ride/v14_merge_carla_panels.py",
+      "sha256": "3bd3c5462667b35aae22353543313448f3b36da5574abd110226e8b84e2c7382"
+    },
+    {
+      "file": "ride/v14_safety_envelope.py",
+      "sha256": "082f9e9ffa71747446e208e337dfe6745756acfeb46f9fa2ec44f0337d5a6cff"
+    },
+    {
+      "file": "ride/v14_safety_stress_audit.py",
+      "sha256": "bc9f35b1a350cf934a2af72022a8eefc0ab374672a894cf8fa92fedd60853d4f"
+    },
+    {
+      "file": "ride/v15_protocol_check.py",
+      "sha256": "f5df1689809a8bebfee1157c53a9fcc1a103186d515af04416da88e59abde7fb"
+    },
+    {
+      "file": "ride/v15_reproducibility_audit.py",
+      "sha256": "5243456291c27724d3964b51b3d03f9102a1b5d31ea992f9574a2a0092e84f8d"
+    },
+    {
+      "file": "ride/v15_stress_frozen.py",
+      "sha256": "e178632845b5a80ff44fd980063b48aa2910d094bbe672ee1c3f76d72a96ea3c"
+    },
+    {
+      "file": "ride/v8_gate_audit.py",
+      "sha256": "4829af3bb41d9b6c214c2b5c022023b186a033e8a8a0c77bc5c839f6e6a09b4c"
+    },
+    {
+      "file": "ride/waymax/__init__.py",
+      "sha256": "4118e096f6c6adf6f88e1ffec42d4ea94774c790ebacfd148c7f9b14df272a15"
+    },
+    {
+      "file": "ride/waymax/paired_idm.py",
+      "sha256": "a692fd6bb116673473cd5be82c3065d897e3f54497a4726152870e0b1d38bab9"
+    },
+    {
+      "file": "ride/womd/__init__.py",
+      "sha256": "cab13cc2ccc5bab50cb6a8fc346d8c4a85e696a0f39ac8b9abe843cb85fcdec4"
+    },
+    {
+      "file": "ride/womd/footprints.py",
+      "sha256": "ede4d7ecae44b83ff54c0398a5ee3b61c131ec4b4d3e806eed0814709fabc6f7"
+    },
+    {
+      "file": "ride/womd/native.py",
+      "sha256": "31fd439312ada92cf4ae5db022fee06f4c78f90e3282122f7f12f15577f32a31"
+    },
+    {
+      "file": "ride/womd/observational.py",
+      "sha256": "3e527b7680cc93f18539df019994f846e5ce820f19406319c9e278b94c7334f8"
+    },
+    {
+      "file": "ride/womd/reactive.py",
+      "sha256": "ab827695853ada6d9dd10a0c945f73ed41ad84004eb4c0bf229289755f41cda9"
+    },
+    {
+      "file": "scripts/00_check_ports.sh",
+      "sha256": "d60f58385136e507d40956131cb8cbca9366dc64087e513eeb3107403515dee7"
+    },
+    {
+      "file": "scripts/00_diagnose_carla.sh",
+      "sha256": "2cefebe68392b700835f21f82cfb1f26dc50b9d83cc0fdc2b699e04a9f353ce9"
+    },
+    {
+      "file": "scripts/00_env.sh",
+      "sha256": "5e16921a3621d4161351298df3ef5cc517cf0b1ed6db722576dc54464d97f780"
+    },
+    {
+      "file": "scripts/01_doctor.sh",
+      "sha256": "3b1b39e87b21a4adb4264050914638d9f68c6c04d1c1613d8c6cd52ee90c4e0c"
+    },
+    {
+      "file": "scripts/01b_probe_anchors.sh",
+      "sha256": "1139a6cb955d6851dcf8b986458f974b1f5444defb54333a668124dcf4f21b39"
+    },
+    {
+      "file": "scripts/02_start_carla_headless.sh",
+      "sha256": "baace6ec56b82a68c8f8d4a3ed0dfddd0d1bc2427b5da7a67edfb650baab8872"
+    },
+    {
+      "file": "scripts/02a_probe_server.sh",
+      "sha256": "14e829f24beea108ddcb0839ccc8ff84fae21c7352a056cfffc965b520a0290a"
+    },
+    {
+      "file": "scripts/02b_collect_carla_diagnostics.sh",
+      "sha256": "09b9c0ff2510398eba245ccdabb1f985d34924c604b2e3468a166ea580e5f160"
+    },
+    {
+      "file": "scripts/02c_prepare_carla_town.sh",
+      "sha256": "9f0dc13b9b2b4b806f5f34d1557117cc287f22edc256aeebdcd0dd13125ea7ef"
+    },
+    {
+      "file": "scripts/03_precommit_scenes.sh",
+      "sha256": "dc17829ec60215e8272d6da55b1ba2275c34e88efab62cfaff4caa5b25a62fe3"
+    },
+    {
+      "file": "scripts/03_run_carla_case.sh",
+      "sha256": "cb8f2026218a2c294178ef058f5a2caccb6890b943d91bd236b366aff9f9362c"
+    },
+    {
+      "file": "scripts/03_support_ablation.sh",
+      "sha256": "4b74312f23e6f537a313167d5ed15423fcd747eda4e614a3cd24d0e977280626"
+    },
+    {
+      "file": "scripts/04_analyze_carla.sh",
+      "sha256": "92fd9dea2bd6ebb62d3d4495dc28074444ce33faf659f82fc10abe2cfa3b9a25"
+    },
+    {
+      "file": "scripts/05_waymax.sh",
+      "sha256": "85c5c4f038d3085862e5d5d5eb13c12021af86a1c2f2e960f6daadd92030ce08"
+    },
+    {
+      "file": "scripts/05b_waymax_native.sh",
+      "sha256": "83bffdeb629186dee22aefaf85ed53e8aeb859440a13e722837408ee04ce8343"
+    },
+    {
+      "file": "scripts/06_compare_locked_planners.sh",
+      "sha256": "bde6fd6b06a24ff13f1b0b95a4037617133d1a7b33671b78c896cb36ad4ca156"
+    },
+    {
+      "file": "scripts/06a_lock_proxy_selectors.sh",
+      "sha256": "16b2af271d54509da087b146356993f0ba2e350b4b976dc541b47bb38e694401"
+    },
+    {
+      "file": "scripts/06b_burden_proxy_ablation.sh",
+      "sha256": "8d6e6416d86d5e94a2803497c3b2489e0828fee3f49b73aa9637d078ddeafe8b"
+    },
+    {
+      "file": "scripts/07_download_reactsim_data.sh",
+      "sha256": "dc4cd3f59c3add7a81d0499abedce193bbbeada793bf9d99368358725d099610"
+    },
+    {
+      "file": "scripts/08_clone_external_baselines.sh",
+      "sha256": "defa1898d0eb38799daa09539d63a980a1da6fda690833c0df68337e4b18d8a7"
+    },
+    {
+      "file": "scripts/09_native_womd_cohort.sh",
+      "sha256": "8ec47f8a47ff1fed6ace9f0fbbc5f0de30de4abeddca6434a133ee193b6c8809"
+    },
+    {
+      "file": "scripts/10_bundle_run_outputs.sh",
+      "sha256": "f4c9cf766f9faf58e1f6c5c79937a94219bb0cdb25f566d1e4d4b4ead1aea476"
+    },
+    {
+      "file": "scripts/11_observational_response_calibration.sh",
+      "sha256": "ac5e19b208413026c8008c4aee80855ca6f965b1a85d2ee3b1ba57d973e5bcf6"
+    },
+    {
+      "file": "scripts/12_research_status.sh",
+      "sha256": "7d3a96913d84aaf1170761591fcbda3e12760f6eeaaa76d0bd3818427b733a59"
+    },
+    {
+      "file": "scripts/13_baseline_inventory.sh",
+      "sha256": "2217501dc844f00f2480da9eebb85f9b0aed64cadd4cd2f6ecd70a1c56e8180e"
+    },
+    {
+      "file": "scripts/14_download_reactsim_weights.sh",
+      "sha256": "149dfb5b566187421a45a00522c192b2fb47184715542ada9d0983d48da74358"
+    },
+    {
+      "file": "scripts/15_reactsim_nuplan_stage.sh",
+      "sha256": "218fa4c4243d46cf28b17b37b21ae6dfea6f1a617b93464227cc5df55a0c440c"
+    },
+    {
+      "file": "scripts/16_reactsim_run.sh",
+      "sha256": "0568003fe59ede797366f344433cc2c175c477b77ad8db3d72da3ff5b9829e9b"
+    },
+    {
+      "file": "scripts/17_reactsim_preprocess_checked.sh",
+      "sha256": "3aaf82c769ed9a72db4c9836fc6dc03948cb7a8b2ff28b2d994125a5737f4b98"
+    },
+    {
+      "file": "scripts/18_reaudit_mechanism.sh",
+      "sha256": "cbb5e7c7cc9bdcd8923625d00210238deb190306243b5251692dee893bf4095e"
+    },
+    {
+      "file": "scripts/19_cut_in_factorial_pilot.sh",
+      "sha256": "bf8f3d74a420aa769ad357eb17b6457d0cdfece358042ca22d3bb53202ef525f"
+    },
+    {
+      "file": "scripts/20_factorial_report.sh",
+      "sha256": "cefa6e3306e101246f48898efd6eb6f19509754dd85f427604c14f8b04c9ed15"
+    },
+    {
+      "file": "scripts/21_audit_factorial_mechanisms.sh",
+      "sha256": "232bf17a4f6f1ead52a31d7a28f2128e5f630f674d05d120303e987d15b6de2f"
+    },
+    {
+      "file": "scripts/22_reactsim_db_coverage.sh",
+      "sha256": "f0e9f5d837c80011f2a3b6c63333cdbc91712ef0e9fc5c9e9474af6ff9054fe2"
+    },
+    {
+      "file": "scripts/23_v8_smoke.sh",
+      "sha256": "fcda9dc7f642d6028b2dd14358f21db9edc84ccf0f5bd5ec06c53a124c42f8bf"
+    },
+    {
+      "file": "scripts/24_v8_confirm.sh",
+      "sha256": "c11efe1dd8baf873c1dae0879a57ea10f2b7fd08129c84d111bda50b2142a470"
+    },
+    {
+      "file": "scripts/25_v8_evidence_report.sh",
+      "sha256": "27399738bd20667eb71af2d2b0ab87eec6a8996556247e4edd7f4a33a04ef093"
+    },
+    {
+      "file": "scripts/26_v8_baseline_preflight.sh",
+      "sha256": "379c9c160d73c9b43f1d6660a7c008e5a03ff258215c021aea3b5c2b79936f53"
+    },
+    {
+      "file": "scripts/27_v8_nuplan_recovery.sh",
+      "sha256": "bdbc7fcce33c2c657b292048533910ae0c714f7195ff2339e88fc423745f6b07"
+    },
+    {
+      "file": "scripts/28_reactsim_research_subset.sh",
+      "sha256": "c825ae75da2d40460a04cd93c0649b3fc9b2aba9f7f1d720058f9327c36a5c71"
+    },
+    {
+      "file": "scripts/29_v9_carla_preflight.sh",
+      "sha256": "6811fbd9f01b70eef476dc6881af87010285b68bf3e51b8c84e9b76903ab66a0"
+    },
+    {
+      "file": "scripts/30_v9_crash_snapshot.sh",
+      "sha256": "2dba2f07b096eec12bc92bcfd0569175a1432ee58da103890c9748e97c507e25"
+    },
+    {
+      "file": "scripts/31_v10_chain_m0.sh",
+      "sha256": "8c98d4c6f268c74fc561f350b3c0323e8c6334251a5ce89aebab9eadce5ac8dc"
+    },
+    {
+      "file": "scripts/32_v10_reaudit.sh",
+      "sha256": "2b806f9d5d6dfe835a608b516d5d6338f910d3d21378ae6966afba5871a15a10"
+    },
+    {
+      "file": "scripts/33_v10_chain_confirm.sh",
+      "sha256": "513149d465f9c9f2a6ca08405a37786818a6fa2a1bc5f835cc95a9d3c44e6012"
+    },
+    {
+      "file": "scripts/34_v11_audit_uploaded.sh",
+      "sha256": "99ee52f303aecc8c5cfb386ee48a4c07a3465d0aeb81fe3d907e3cfd34a5ea7d"
+    },
+    {
+      "file": "scripts/35_v11_chain_discovery.sh",
+      "sha256": "88d14c03c8d020f932f5480b777cbdb7a3903bd421b4ac763816151f988a178c"
+    },
+    {
+      "file": "scripts/36_v11_mixed_response_smoke.sh",
+      "sha256": "9a5a39303793040ad6de97a9cf7b6685511f57d6098017307f7f168167354b34"
+    },
+    {
+      "file": "scripts/37_v12_chain_m0.sh",
+      "sha256": "dd293b45f536e5241f07561f6aeca6e75f89d0a3cfd16b9b0a2849ac7db95e23"
+    },
+    {
+      "file": "scripts/38_v12_reaudit_grid.sh",
+      "sha256": "cf9ad6ef6c70dae7a18c00de726540b0802cf333899d6d1ff5d6aa941c9f97ec"
+    },
+    {
+      "file": "scripts/39_v12_chain_confirm.sh",
+      "sha256": "583b9200128a172c35b045fb4c20d18411acb82a6702f8ed6358b17744ec8239"
+    },
+    {
+      "file": "scripts/40_v13_two_stage_probe.sh",
+      "sha256": "c1a8c205d113cd6e3203b0d2a650a70116cca84e377e9712edd14f3aa963259e"
+    },
+    {
+      "file": "scripts/41_v13_readonly_historical.sh",
+      "sha256": "d26ca1cca63b5cbcf23210b2785556bec17679e86162adb007764d9ca5e7aaca"
+    },
+    {
+      "file": "scripts/42_v14_replay_frozen_two_stage.sh",
+      "sha256": "c80372f642a592a92273ee53a2fed2118b689df6127e1134721bfd250a82f9c3"
+    },
+    {
+      "file": "scripts/43_v14_safety_stress_carla.sh",
+      "sha256": "492573450dc3a436d6bb3d749565a20f16201713183da9168c4176f966682497"
+    },
+    {
+      "file": "scripts/44_v14_readonly_audit.sh",
+      "sha256": "7a21b3de992f856acaa7ff4e95972f783daacf8fb49596cb4e7a067eb2505a50"
+    },
+    {
+      "file": "scripts/45_v14_locked_source_to_safety_stress.sh",
+      "sha256": "228f96049be4d0909c225576517f0510a88749610d2720741d23da5e3c314881"
+    },
+    {
+      "file": "tests/test_actor_lifecycle_fix.py",
+      "sha256": "b5ec21b54f73fc5370f71ea5e219c694bf254c8167a9136bfb00a546cdf11056"
+    },
+    {
+      "file": "tests/test_carla_map_setup.py",
+      "sha256": "f5fe709e2dc589c371fc7a905b83c8f6dbdc8088623634818abef21c1c8ca1ab"
+    },
+    {
+      "file": "tests/test_carla_ports_env.py",
+      "sha256": "e39f9bbca03e7686007a82bf33e5b3ad1aa17ea190aea2088009bac483945d73"
+    },
+    {
+      "file": "tests/test_carla_reload_resilience.py",
+      "sha256": "0b64889c6cb3cec81902bc11eb195c830c2d378738588cee6ebb1f2a34e7aec6"
+    },
+    {
+      "file": "tests/test_carla_timebase.py",
+      "sha256": "2797172e2287c44cd7187c63dc457a750e400b6d9c241d3690c92f6f321e4e61"
+    },
+    {
+      "file": "tests/test_reactsim_coverage.py",
+      "sha256": "c97862586c7a1b22f4a00ed3f89520f91838c80a12b5d98d5c850674477ff792"
+    },
+    {
+      "file": "tests/test_reactsim_paired_audit.py",
+      "sha256": "ee0d5eccb4c168e25c9ebb4978c7fc3b01d31b2237fc478e4b8885cd46249f33"
+    },
+    {
+      "file": "tests/test_reactsim_token_and_mechanism.py",
+      "sha256": "4bdc9924a9d5b48dbe614c3be9c14d32c30b5547aef033b446e1811491174390"
+    },
+    {
+      "file": "tests/test_ride_regressions.py",
+      "sha256": "de2cd92dc613ec8ce1f697248964e48107aea9c43a97a4c60cdb2e24b0cb7189"
+    },
+    {
+      "file": "tests/test_ride_science.py",
+      "sha256": "3f521d7677acbd6447cdae5ca915eb4cf4ee6cdd32da96a794252a6e5abfb554"
+    },
+    {
+      "file": "tests/test_ride_v4_audit.py",
+      "sha256": "8c70e7232a0355fb63c4695c65af4deb88990ceea88d239aafac1427a7408edf"
+    },
+    {
+      "file": "tests/test_ride_v5_scenario_nuplan.py",
+      "sha256": "1f15d49c41a636aa9f186a53e4f857d556cffd4a8258dad40040708fec3d79fd"
+    },
+    {
+      "file": "tests/test_v10_chain_science.py",
+      "sha256": "ef6c2057592e94eac88c8a87089ae7dbdf47ee4599ab4451b8e02d4925ab8e50"
+    },
+    {
+      "file": "tests/test_v11_chain_evidence.py",
+      "sha256": "ff5e3b3bec52f3ead42eeb54895b1f44706399b6bed4349e1bebab17e752435f"
+    },
+    {
+      "file": "tests/test_v12_route_and_evidence.py",
+      "sha256": "bf4e718e873b32339bb3090a2a15ebc9c9282af155ee1547d071eb5e8d0b5c1b"
+    },
+    {
+      "file": "tests/test_v13_aggregate.py",
+      "sha256": "d048465363395428f727a8dbc4bdb7ed497fcf94fe727a25fd99fa0952504193"
+    },
+    {
+      "file": "tests/test_v13_model_transfer.py",
+      "sha256": "e94a72f1499e864e60e3e23ace138fc01f1c1e600cdb421ee795711a662457f4"
+    },
+    {
+      "file": "tests/test_v14_research_gate.py",
+      "sha256": "bb05d04192a773f29353ab3833179f73df0b8cf2b785abeb745d721dbb387a8d"
+    },
+    {
+      "file": "tests/test_v14_stress_protocol_repair.py",
+      "sha256": "80df84813ccfd46cbf2e0231bd6d94ad0bcf3fd23137338b633aa6f386f6e56f"
+    },
+    {
+      "file": "tests/test_v15_protocol_check.py",
+      "sha256": "5c29fe881844df5328aa48f57c83ac7853c650a261927a1e6fa18f503d265c93"
+    },
+    {
+      "file": "tests/test_v15_stress_frozen.py",
+      "sha256": "b232dd29b9b9a0b0c642a43c78ec7bade4bae41735f7418f06732c563b641fa5"
+    },
+    {
+      "file": "tests/test_v8_research_protocol.py",
+      "sha256": "29b9b6d23ad904669d69bd04ad953fafc36cfe5d8cb3cea37c09105f66fc0ddc"
+    },
+    {
+      "file": "tests/test_v9_carla_stability.py",
+      "sha256": "0189c62dfe1077322d834f63d8510a7934e118be096a3ed5aeb4bf7323a0607a"
+    },
+    {
+      "file": "tests/test_v9_confirm_gate.py",
+      "sha256": "1f83dc0963c009ea25773bbdb57a4c08d3ce57dde9aff1504b29bc13ae682029"
+    },
+    {
+      "file": "tests/test_weight_download_script.py",
+      "sha256": "284b2d56440c7b0b2e062dd89ce9660617c9f296440cf8303ae207078dbd261c"
+    }
+  ]
+}

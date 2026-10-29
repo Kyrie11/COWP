@@ -33,6 +33,9 @@ ROLE = 'follower_c'
 DEFAULT_COST_THRESHOLD = 2.0  # m/s^2, threshold fixed before the next run
 DEFAULT_MEANINGFUL_DELTA = 0.25  # m/s integrated acceleration exceedance
 DEFAULT_TIE_RESOLUTION = 0.05  # m/s integrated acceleration exceedance
+# v14 controlled policy stress is NOT proof of response-model error. Keep the
+# exact pair explicit, instead of accepting every future mixed family.
+V14_CONTROLLED_C_STRESS_PAIR=('mixed_b_tm_c_behavior','mixed_b_tm_c_delayed_behavior')
 
 
 def sha256(path):
@@ -134,7 +137,8 @@ def _manifest_parity(src, target):
             'cutin_ego_gap_m','cutin_rear_gap_m','chain_bc_gap_m',
             'chain_c_speed_delta_mps','cutin_late_switch_s',
             'cutin_lateral_lookahead_m','cutin_paired_amplitude_mps',
-            'behavior_speed_protocol','behavior_route_protocol','anchors')
+            'behavior_speed_protocol','behavior_route_protocol','anchors',
+            'chain_c_control_delay_s','chain_c_brake_command_cap')
     for k in keys:
         if src.get(k) != target.get(k):
             return False, 'source_target_manifest_mismatch:' + k
@@ -176,8 +180,10 @@ def lock_choices(source_rows, *, source_family, target_family, frozen_sha,
                  tie_resolution=DEFAULT_TIE_RESOLUTION,
                  comfort_limit=DEFAULT_COST_THRESHOLD,
                  meaningful_delta=DEFAULT_MEANINGFUL_DELTA, placebo_same_family=False):
-    if source_family not in ('tm','behavior') or target_family not in ('tm','behavior'):
-        raise ValueError('Unsupported response family')
+    controlled_stress=(source_family,target_family)==V14_CONTROLLED_C_STRESS_PAIR
+    if not controlled_stress and (source_family not in ('tm','behavior') or
+                                  target_family not in ('tm','behavior')):
+        raise ValueError('Unsupported response family: controlled C-stress requires the exact v14 source/target pair')
     if (source_family==target_family) != bool(placebo_same_family):
         raise ValueError('Use distinct response families for model transfer, same family only for explicit placebo')
     m, index = _index(source_rows, source_family)
@@ -212,10 +218,14 @@ def lock_choices(source_rows, *, source_family, target_family, frozen_sha,
                             result['reason']='incomplete_source_cost:'+str(e)
                 records.append(result)
     return dict(
-        protocol=VERSION, mode=('PROSPECTIVE_SAME_MODEL_PLACEBO' if placebo_same_family else
+        protocol=VERSION, mode=('V14_CONTROLLED_C_POLICY_STRESS_NOT_MODEL_ERROR' if controlled_stress else
+                                'PROSPECTIVE_SAME_MODEL_PLACEBO' if placebo_same_family else
                                 'PROSPECTIVE_SOURCE_SIMULATOR_LOOKAHEAD'),
+        controlled_C_policy_stress=controlled_stress,
         placebo_same_family=bool(placebo_same_family),
-        warning='Source uses complete hypothetical model rollouts, NOT a deployed predictive planner; TM/BA share CARLA physics.',
+        warning=('Controlled v14 C brake policy perturbation is NOT independently calibrated human response or model error.'
+                 if controlled_stress else
+                 'Source uses complete hypothetical model rollouts, NOT a deployed predictive planner; TM/BA share CARLA physics.'),
         source_family=source_family, target_family=target_family,
         source_sha256=source_sha, frozen_sha256=frozen_sha,
         target_path_expected=str(Path(expected_target_path).resolve()),
@@ -308,9 +318,12 @@ def evaluate_lock(choices, source_rows, target_rows):
                       target_avoidable=(loss in ('AVOIDABLE_PRIMARY_THIRD_PARTY_LOSS','AVOIDABLE_C_BURDEN_LOSS')),
                       tie_induced_error=blind and loss.startswith('AVOIDABLE_'),
                       paired_model_induced_selection_error=(not choices.get('placebo_same_family',False) and
+                           not choices.get('controlled_C_policy_stress',False) and
                            loss.startswith('AVOIDABLE_') and ch['policy']=='SOURCE_THIRD_PARTY' and
                            (blind or wrong_rank)),
-                      evaluation_semantics='model-conditional simulator effect, NOT strong real-world planner failure')
+                      evaluation_semantics=('CONTROLLED_C_BRAKE_POLICY_STRESS_NOT_MODEL_MISSPECIFICATION'
+                              if choices.get('controlled_C_policy_stress',False) else
+                              'model-conditional simulator effect, NOT strong real-world planner failure'))
         outcomes.append(result)
     valid=[r for r in outcomes if r['scientific_status']!='UNKNOWN']
     eligible_anchor_contexts={(r['anchor'],r['seed']) for r in valid}
@@ -322,6 +335,9 @@ def evaluate_lock(choices, source_rows, target_rows):
         strict_wrong_model_orders=sum(r.get('strict_wrong_model_order',False) for r in valid),
         target_avoidable_choice_losses=sum(r.get('target_avoidable',False) for r in valid),
         diagnostic_model_induced_choice_errors=sum(r.get('paired_model_induced_selection_error',False) for r in valid),
+        controlled_C_policy_avoidable_choices=sum(
+            r.get('target_avoidable',False) and r.get('policy')=='SOURCE_THIRD_PARTY'
+            for r in valid) if choices.get('controlled_C_policy_stress',False) else 0,
         physical_anchor_contexts_with_valid_comparisons=len(eligible_anchor_contexts),
         physical_anchor_contexts_with_diagnostic_errors=len({(r['anchor'],r['seed']) for r in valid if r.get('paired_model_induced_selection_error')}),
         # Each row is a candidate *comparison*, NOT an IID real-world scene.
@@ -331,6 +347,7 @@ def evaluate_lock(choices, source_rows, target_rows):
         decision_error_verified_only_for_transparent_model_based_simulation_selector=True)
     return dict(protocol=VERSION, mode=choices['mode'],
                 source_family=source_family,target_family=target_family,
+                controlled_C_policy_stress=bool(choices.get('controlled_C_policy_stress',False)),
                 frozen_context=choices['frozen_context'], locked_params=params,
                 summary=summary, results=outcomes,
                 important_limitations=[

@@ -17,7 +17,10 @@ def merge(source,target):
     ma=next(x for x in a if x.get('type')=='manifest')
     mb=next(x for x in b if x.get('type')=='manifest')
     eq,reason=_manifest_parity(ma,mb)
-    if not eq:raise ValueError(reason)
+    if not eq:
+        if reason.endswith(('chain_c_control_delay_s','chain_c_brake_command_cap')):
+            raise ValueError('Frozen stress-control metadata mismatch')
+        raise ValueError(reason)
     if ma.get('archetype')!='chain_cut_in':raise ValueError('Four-car chain required')
     if ma.get('chain_c_control_delay_s')!=mb.get('chain_c_control_delay_s') or \
        ma.get('chain_c_brake_command_cap')!=mb.get('chain_c_brake_command_cap'):

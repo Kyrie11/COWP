@@ -9,6 +9,9 @@ FROZEN="$RIDE_OUTPUT_ROOT/frozen/${CASE}_anchors.jsonl"
 if [[ ! -f "$FROZEN" ]]; then echo "Freeze anchors first: bash scripts/03_precommit_scenes.sh $CASE" >&2; exit 3; fi
 if [[ -e "$OUT" ]]; then echo "REFUSING TO OVERWRITE outcome file $OUT; use a new RIDE_OUTPUT_ROOT" >&2; exit 3; fi
 EXTRA=()
+if [[ "${RIDE_V14_SOURCE_INACTIVE_STRESS_METADATA:-0}" == 1 ]]; then
+  EXTRA+=(--v14-source-inactive-stress-metadata)
+fi
 if [[ "$CASE" == "intersection" ]]; then
   EXTRA+=(--joint-profile early_slow --joint-limit 9 --joint-target-grid 6 9 12)
 fi

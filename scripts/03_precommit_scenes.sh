@@ -6,6 +6,14 @@ case "$CASE" in convoy|cut_in|chain_cut_in|intersection|support_gap) ;; *) echo 
 mkdir -p "$RIDE_OUTPUT_ROOT/frozen"
 OUT="$RIDE_OUTPUT_ROOT/frozen/${CASE}_anchors.jsonl"
 if [[ -e "$OUT" ]]; then echo "REFUSING TO OVERWRITE frozen anchors: $OUT" >&2; exit 3; fi
+# v14 repair: manifest-only must see the *intended* families and profiles.
+# Otherwise a delayed-C stress manifest falsely looks like ordinary tm/behavior
+# and is rejected by the protective responder-family gate.
+read -r -a RIDE_FAMILY_LIST <<< "${RIDE_FAMILIES:-tm behavior}"
+read -r -a RIDE_PROFILE_LIST <<< "${RIDE_PROFILES:-early_slow late_slow mild_early mild_late}"
+if (( ${#RIDE_FAMILY_LIST[@]} == 0 || ${#RIDE_PROFILE_LIST[@]} == 0 )); then
+  echo 'RIDE_FAMILIES/RIDE_PROFILES may not be empty at freeze time' >&2; exit 2
+fi
 read -r -a _EXCLUDE_FILES <<< "${RIDE_EXCLUDE_ANCHORS_FROM:-}"
 _EXCLUSION_ARGS=()
 if (( ${#_EXCLUDE_FILES[@]} )); then
@@ -33,5 +41,6 @@ python -m ride.carla.run \
   --cutin-lateral-lookahead-m "${RIDE_CUTIN_LATERAL_LOOKAHEAD_M:-15}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" \
   --timeout "${RIDE_CARLA_TIMEOUT:-120}" --manifest-only --no-rendering \
+  --families "${RIDE_FAMILY_LIST[@]}" --profiles "${RIDE_PROFILE_LIST[@]}" \
   "${_EXCLUSION_ARGS[@]}" --output "$OUT"
 echo "Frozen scene locations BEFORE outcome rollouts: $OUT"

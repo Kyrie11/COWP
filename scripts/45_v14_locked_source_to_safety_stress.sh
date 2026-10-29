@@ -23,9 +23,11 @@ export RIDE_BEHAVIOR_ROUTE_PROTOCOL=frozen_corridor
 export RIDE_BEHAVIOR_SPEED_PROTOCOL=nominal_cap
 export RIDE_PROFILES='cruise early_slow late_slow mild_early mild_late speed_early speed_late'
 export RIDE_WORLD_RESET="${RIDE_WORLD_RESET:-actors}"
+python -m ride.v15_protocol_check --mode locked
 bash "$RIDE_HOME/scripts/29_v9_carla_preflight.sh" "$CARLA_TOWN"
 mkdir -p "$RIDE_V14_LOCKED_STRESS_ROOT"/{freeze,source/frozen,target/frozen,locks}
 export RIDE_OUTPUT_ROOT="$RIDE_V14_LOCKED_STRESS_ROOT/freeze"
+export RIDE_FAMILIES='mixed_b_tm_c_behavior mixed_b_tm_c_delayed_behavior'
 bash "$RIDE_HOME/scripts/03_precommit_scenes.sh" chain_cut_in
 FROZEN="$RIDE_OUTPUT_ROOT/frozen/chain_cut_in_anchors.jsonl"
 cp "$FROZEN" "$RIDE_V14_LOCKED_STRESS_ROOT/source/frozen/chain_cut_in_anchors.jsonl"
@@ -34,7 +36,9 @@ SOURCE_FAMILY=mixed_b_tm_c_behavior
 TARGET_FAMILY=mixed_b_tm_c_delayed_behavior
 export RIDE_OUTPUT_ROOT="$RIDE_V14_LOCKED_STRESS_ROOT/source"
 export RIDE_FAMILIES="$SOURCE_FAMILY"
+export RIDE_V14_SOURCE_INACTIVE_STRESS_METADATA=1
 bash "$RIDE_HOME/scripts/03_run_carla_case.sh" chain_cut_in
+unset RIDE_V14_SOURCE_INACTIVE_STRESS_METADATA
 SOURCE="$RIDE_V14_LOCKED_STRESS_ROOT/source/carla/chain_cut_in.jsonl"
 TARGET="$RIDE_V14_LOCKED_STRESS_ROOT/target/carla/chain_cut_in.jsonl"
 CHOICES="$RIDE_V14_LOCKED_STRESS_ROOT/locks/source_model_choices.json"

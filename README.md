@@ -1,3 +1,11 @@
+# RIDE v14 repaired / v15 science gate (2026-10-29)
+
+**请以 [`docs/V15_REVIEW_AND_EXECUTION_CN.md`](docs/V15_REVIEW_AND_EXECUTION_CN.md) 为最新使用说明。** 它说明了这次上传的原始实验结果、`DELAYED_C_PARAMETERS_REQUIRE_EXPLORATORY_CHAIN_FAMILY` 冻结协议错误、v14 双阶段受控制动测试第二阻断、同场景重跑的负面/正面证据和全套服务器命令。以前 v14 的说明书只能作为历史记录。
+
+新增 `python -m ride.v15_protocol_check`、`python -m ride.v15_stress_frozen`、`python -m ride.v15_reproducibility_audit`，均不修改旧 CARLA 原始结果；新增实验必须使用未存在的输出目录。
+
+---
+
 # RIDE v14 — Counterfactual Third-Party Safety Audit (2026-10-29)
 
 **当前最优先阅读：[`docs/v14/V14_SCIENCE_AND_COMMANDS_CN.md`](docs/v14/V14_SCIENCE_AND_COMMANDS_CN.md)。** 基于三份 v13 真实原始输出的只读审计，新增同冻结道路 placebo、第三方反事实负担敏感性、C 制动命令延迟的 CARLA 受控压力测试，以及事前锁定选择再运行目标环境的协议。**没有宣称已经观察到 B–C 次生碰撞，也没有在本地运行 CARLA 闭环。** 原始 v13 及更早 README 保留如下，属于历史协议。
