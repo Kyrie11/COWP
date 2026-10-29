@@ -12,7 +12,7 @@ import math, random
 # v5 uses a longer insertion gap, a continuous target-lane centerline and
 # a common pre-policy warm-up. It is a NEW protocol, not a re-interpretation
 # of old v4 outputs. All v4 anchors MUST be invalidated.
-ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v11_20261028"
+ANCHOR_PROTOCOL_VERSION = "ride_lane_corridor_v12_20261028"
 
 
 def yaw_diff(a, b): return abs((float(a)-float(b)+180.)%360.-180.)
@@ -138,6 +138,28 @@ def chain_cut_in_candidate(wp, carla, ego_gap_m=20., rear_gap_m=45., chain_bc_ga
     if abs(projected - chain_bc_gap_m) > 3.:
         return None
     case['follower_c'] = behind
+    # v12 route-topology preflight. The BehaviorAgent normal route on some
+    # Town04 anchors contains only a few waypoints, then throws None.is_junction.
+    # These are NOT scientific negatives. Require a unique, nonjunction,
+    # >=75m follower corridor *for all three roles* before freezing.
+    def has_route(role, meters=75.):
+        cur=case[role] if role != 'follower_c' else behind
+        d=0.
+        while d < meters:
+            xs=cur.next(5.)
+            if len(xs)!=1:return False
+            nxt=xs[0]
+            if (not _driving(nxt,carla) or nxt.lane_id!=cur.lane_id or
+                    yaw_diff(nxt.transform.rotation.yaw,cur.transform.rotation.yaw)>12.):
+                return False
+            v=cur.transform.location;u=nxt.transform.location
+            delta=math.hypot(v.x-u.x,v.y-u.y)
+            if not 1.<delta<8.:return False
+            d+=delta
+            cur=nxt
+        return True
+    if not all(has_route(role) for role in ('follower_a','follower_b','follower_c')):
+        return None
     # The CARLA TTC checker must have a frozen target lane reaching C.
     # The original cut-in corridor stopped at B, incorrectly making B-C
     # 'non-collinear' whenever C was 20-45m further back.
@@ -419,7 +441,8 @@ def ego_target_waypoint(world,vehicle,scene,archetype,profile,t,carla,*,late_swi
     if wp is None:raise RuntimeError('Ego exited supported drivable lane')
     if archetype in ('cut_in', 'support_gap', 'chain_cut_in'):
         switch={'early_slow':1.5,'late_slow':late_switch_s,'mild_early':2.5,
-                'mild_late':3.5,'merge_early':1.5,'merge_late':late_switch_s,'cruise':9.0}[profile]
+                'mild_late':3.5,'merge_early':1.5,'merge_late':late_switch_s,'cruise':9.0,
+                'speed_early':2.5,'speed_late':2.5}[profile]
         target_lane_id=scene['follower_a'].lane_id
         if t>=switch and wp.lane_id!=target_lane_id:
             choices=[x for x in (wp.get_left_lane(),wp.get_right_lane()) if x and

@@ -53,7 +53,11 @@ def audit_intervention(treatment, cruise):
     tr=treatment.get('trace') or []; base=cruise.get('trace') or []
     if not tr or len(tr)!=len(base) or len(tr)<5:
         return {'eligible':False,'reason':'missing_or_unpaired_trace'}
-    t0=_treatment_time(treatment,tr)
+    # v12 speed-only arms intervene at 1.5s even though their first lateral
+    # waypoint command is at 2.5s. Starting at 2.5 would incorrectly treat
+    # their intended acceleration change as pre-intervention drift.
+    t0=(1.5 if treatment.get('profile') in ('speed_early','speed_late')
+        else _treatment_time(treatment,tr))
     if t0 is None:return {'eligible':False,'reason':'no_verified_intervention_command'}
     try:
         ts=[float(t['t']) for t in tr]; bt=[float(t['t']) for t in base]
@@ -176,7 +180,7 @@ def evaluate(paths):
             for fam in fams:
                 cruise=by.get((anchor,seed,fam,'cruise'))
                 if cruise is None:continue
-                for action in ('early_slow','late_slow','mild_early','mild_late'):
+                for action in ('early_slow','late_slow','mild_early','mild_late','speed_early','speed_late'):
                     a=by.get((anchor,seed,fam,action))
                     if a is None:continue
                     z=audit_intervention(a,cruise)

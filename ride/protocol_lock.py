@@ -8,8 +8,9 @@ import argparse,json
 from pathlib import Path
 FIELDS=('cutin_late_switch_s','cutin_lateral_lookahead_m',
         'cutin_rear_gap_m','cutin_ego_gap_m','rear_speed_delta_mps',
-        'cruise_mps','warmup_ticks','chain_bc_gap_m','chain_c_speed_delta_mps')
-TEXT_FIELDS=('behavior_speed_protocol',)
+        'cruise_mps','warmup_ticks','chain_bc_gap_m','chain_c_speed_delta_mps',
+        'cutin_paired_amplitude_mps')
+TEXT_FIELDS=('behavior_speed_protocol','behavior_route_protocol')
 
 def check(frozen,actual,required_version='ride_lane_corridor_v10_20261028'):
     if frozen.get('type')!='manifest':raise ValueError('Expected frozen manifest')
@@ -28,11 +29,12 @@ def check(frozen,actual,required_version='ride_lane_corridor_v10_20261028'):
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--frozen',required=True,type=Path)
+    p.add_argument('--required-version',default='ride_lane_corridor_v10_20261028')
     for name in FIELDS:p.add_argument('--'+name.replace('_','-'),type=float,required=True)
     for name in TEXT_FIELDS:p.add_argument('--'+name.replace('_','-'),required=True)
     a=p.parse_args(argv)
     frozen=json.loads(a.frozen.read_text().splitlines()[0]);actual={x:getattr(a,x) for x in FIELDS+TEXT_FIELDS}
-    diff=check(frozen,actual)
+    diff=check(frozen,actual,required_version=a.required_version)
     print(json.dumps({'locked_prospective_parameters':actual,'protocol_mismatch':diff},indent=2,ensure_ascii=False))
     if diff:raise SystemExit('STOP_CONFIRMATION: frozen controls differ from preregistered development; start a new named protocol instead.')
 if __name__=='__main__':main()

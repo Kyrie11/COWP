@@ -330,3 +330,13 @@ planner decision error. Retains the uploaded explicit safe map-change entry
 
 New scripts: `31_v10_chain_m0.sh`, `32_v10_reaudit.sh`,
 `33_v10_chain_confirm.sh`.
+
+## Latest v12 (2026-10-28)
+
+The new `ride_lane_corridor_v12_20261028` protocol adds an explicitly frozen
+BehaviorAgent route and a controlled 2.5s merge with compensated longitudinal
+speed pair. It is **not backward-comparable** to v11. See
+`docs/V12_SCIENCE_AND_COMMANDS_CN.md` for scientific evidence and commands.
+Use `scripts/37_v12_chain_m0.sh` for a new developmental physics panel,
+`38_v12_reaudit_grid.sh` for read-only historical evidence, and
+`39_v12_chain_confirm.sh` for held-out tests only after a clean v12 gate.

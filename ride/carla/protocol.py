@@ -13,12 +13,35 @@ DURATION_S=8.0
 # from the decision-dependent braking endpoint. Must be frozen before trials.
 BRAKE_OBSERVATION_START_S=1.0
 PROFILES=('cruise','early_slow','late_slow','mild_early','mild_late',
-          'merge_early','merge_late')
+          'merge_early','merge_late','speed_early','speed_late')
 
+
+
+def compensated_speed_pair(profile, t, base_mps, amplitude_mps):
+    """Two physically distinct, balanced longitudinal *commands*.
+
+    Both variants use the same 2.5s merge target; only the time-order of a
+    mild speed perturbation changes. Target-speed integrals are equal over
+    [1.5,5.5), but realized progress is verified separately. Do not confuse
+    this with a matched execution guarantee or causal mediation proof.
+    """
+    if profile not in ('speed_early','speed_late'):
+        raise ValueError('NOT_A_COMPENSATED_SPEED_PROFILE')
+    if not (math.isfinite(base_mps) and math.isfinite(amplitude_mps) and
+            base_mps>0 and 0 < amplitude_mps<=0.8 and base_mps>amplitude_mps):
+        raise ValueError('INVALID_COMPENSATED_SPEED_TARGET')
+    if not (1.5<=t<5.5):return float(base_mps)
+    first=t<3.5
+    # speed_early accepts a mild early reduction and compensates late;
+    # speed_late is the mirror image. They are labels, not human intentions.
+    low_first=(profile=='speed_early')
+    return float(base_mps)+(-amplitude_mps if first==low_first else amplitude_mps)
 
 def target_speed_mps(profile: str, t: float, base=11.0):
     """Paired commands share speed-time integral but NOT guaranteed actual travel."""
     if profile in ('cruise','merge_early','merge_late'):return base
+    if profile in ('speed_early','speed_late'):
+        raise ValueError('SPEED_PAIR_DEFINED_FOR_CUT_IN_ONLY')
     if profile not in PROFILES:raise ValueError(profile)
     if t<1.5 or t>=5.5:return base
     # V4 yielded 4.6-13.3m paired-progress gaps at 8s. The new v5

@@ -91,7 +91,7 @@ def test_freeze_boundary_roundtrip_rejects_ambiguous_c_identity():
     identities={'follower_c':{'road_id':41,'lane_id':-3,'yaw':90.}}
     assert _anchor_roundtrip_valid(Map(),Carla,{'follower_c':[1.00049,0.,0.]},identities)[0]
     assert not _anchor_roundtrip_valid(Map(),Carla,{'follower_c':[1.001,0.,0.]},identities)[0]
-    assert ANCHOR_PROTOCOL_VERSION=='ride_lane_corridor_v11_20261028'
+    assert ANCHOR_PROTOCOL_VERSION=='ride_lane_corridor_v12_20261028'
 
 
 def test_spatial_cluster_does_not_count_neighbor_anchors_as_independent():

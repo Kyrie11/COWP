@@ -18,7 +18,7 @@ To run from your CARLA root, ensure `import carla` and
 from __future__ import annotations
 import argparse, json, math, os, random, sys, traceback, time, uuid
 from pathlib import Path
-from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, closing_ttc, summarise_trial
+from .protocol import PROFILES, DT, DURATION_S, target_speed_mps, compensated_speed_pair, closing_ttc, summarise_trial
 from .actor_lifecycle import check_spawn_state, destroy_verified, inventory
 from .tm_policy import configure_tm_speed
 from .roles import all_roles, response_roles, primary_pair, nominal_speed, per_role_response_modes, HETEROGENEOUS_FAMILIES
@@ -142,7 +142,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             'causal_scope':'simulation_intervention_only',
             'world_reset_protocol':args.world_reset, 'trial_uid':trial_uid,
             'traffic_lights_reset':args.world_reset == 'actors',
-            'traffic_light_legality_verified':False, 'warmup_ticks':args.warmup_ticks}
+            'traffic_light_legality_verified':False, 'warmup_ticks':args.warmup_ticks,
+            'behavior_route_protocol':args.behavior_route_protocol}
     try:
         world.apply_settings(settings)
         print(f'RIDE_WORLD_SETTINGS_APPLIED family={family} profile={profile}',flush=True)
@@ -224,7 +225,25 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                 result['behavior_speed_configuration']={}
                 for role in behavior_roles:
                     a=BehaviorAgent(vehicles[role],behavior='normal')
-                    a.set_destination(c.get('end_follower',c['end']).transform.location)
+                    # v12: freeze a map-local LANEFOLLOW plan for the chain,
+                    # avoiding a global-route queue ending after 0.4s on some
+                    # valid Town04 anchors. This is a NEW protocol, not a
+                    # silent change to historical BehaviorAgent experiments.
+                    if (args.archetype=='chain_cut_in' and
+                            args.behavior_route_protocol=='frozen_corridor'):
+                        from .route_protocol import install_chain_lane_route
+                        details=install_chain_lane_route(
+                            a,vehicles[role],world.get_map(),carla,
+                            cruise_mps=nominal_speed(
+                                role,archetype=args.archetype,
+                                cruise_mps=args.cruise_mps,
+                                rear_speed_delta_mps=args.rear_speed_delta_mps,
+                                chain_c_speed_delta_mps=args.chain_c_speed_delta_mps),
+                            duration_s=args.duration_s)
+                    else:
+                        a.set_destination(c.get('end_follower',c['end']).transform.location)
+                        details={'protocol':'native_shortest_route_v11'}
+                    result.setdefault('behavior_route_configuration',{})[role]=details
                     # Detect CARLA BehaviorAgent's missing route waypoints
                     # before collecting an apparently valid partial trajectory.
                     # This is a *failure report*, not a fallback controller:
@@ -232,7 +251,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                     route_probe=getattr(a._local_planner,'get_incoming_waypoint_and_direction',None)
                     if route_probe is None:
                         raise RuntimeError('BEHAVIOR_ROUTE_PREFLIGHT_API_MISSING:'+role)
-                    wp_probe,_=route_probe(steps=3)
+                    wp_probe,_=route_probe(steps=10)
                     if wp_probe is None:
                         raise RuntimeError('BEHAVIOR_ROUTE_PREFLIGHT_NO_WAYPOINT:'+role)
                     if args.behavior_speed_protocol=='nominal_cap':
@@ -316,8 +335,14 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                     pct,limit=configure_tm_speed(tm,vehicles[role],speed_nom)
                     result['tm_speed_configuration'][role]['latest_limit_kmh']=round(limit,3)
                     result['tm_speed_configuration'][role]['latest_pct']=round(pct,3)
-            target=(args.cruise_mps if getattr(args,'archetype','convoy') in ('cut_in','support_gap','chain_cut_in')
-                    else target_speed_mps(profile,t,args.cruise_mps))
+            if (args.archetype in ('cut_in','support_gap','chain_cut_in') and
+                    profile in ('speed_early','speed_late')):
+                target=compensated_speed_pair(profile,t,args.cruise_mps,
+                                              args.cutin_paired_amplitude_mps)
+            elif args.archetype in ('cut_in','support_gap','chain_cut_in'):
+                target=args.cruise_mps  # v11 lateral-timing-only arms
+            else:
+                target=target_speed_mps(profile,t,args.cruise_mps)
             if recovery is not None and t>=args.recovery_time_s:
                 target=0. if recovery=='stop' else args.cruise_mps
             if getattr(args,'archetype','convoy')=='convoy':
@@ -330,7 +355,15 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             ego_command=ego_ctrl.run_step(target*3.6,ego_wp)
             vehicles['ego'].apply_control(ego_command)
             if family in ('tm','behavior')+HETEROGENEOUS_FAMILIES:
-                for role,a in responders.items():vehicles[role].apply_control(a.run_step())
+                for role,a in responders.items():
+                    try:
+                        control=a.run_step()
+                    except Exception as exc:
+                        raise RuntimeError('RESPONDER_POLICY_STEP_FAILURE: '
+                            f'family={family} role={role} t={t:.3f} '
+                            f'policy={type(a).__name__} '
+                            f'original={type(exc).__name__}: {exc}') from exc
+                    vehicles[role].apply_control(control)
             if family=='joint_witness':
                 for role,a in responders.items():
                     target_r=joint_targets[0 if role=='follower_a' else 1]
@@ -569,7 +602,8 @@ def main():
                    help='Minimum XY distance from a development anchor (90m default)')
     p.add_argument('--seed',type=int,default=7)
     p.add_argument('--repetitions',type=int,default=2)
-    p.add_argument('--profiles',nargs='+',choices=PROFILES,default=list(PROFILES))
+    p.add_argument('--profiles',nargs='+',choices=PROFILES,
+                   default=[x for x in PROFILES if x not in ('speed_early','speed_late')])
     p.add_argument('--families',nargs='+',choices=('tm','behavior')+HETEROGENEOUS_FAMILIES,default=['tm','behavior'])
     p.add_argument('--duration-s',type=float,default=DURATION_S)
     p.add_argument('--cruise-mps',type=float,default=8.)
@@ -581,8 +615,14 @@ def main():
                    help='B-to-C follower spacing in chain_cut_in [20,45] on 5m grid')
     p.add_argument('--chain-c-speed-delta-mps',type=float,default=0.,
                    help='C nominal-speed offset from cruise; default 0. Pre-register.')
+    p.add_argument('--behavior-route-protocol',choices=('native_shortest','frozen_corridor'),
+                   default='native_shortest',
+                   help='v12 chain: frozen_corridor fixes only the waypoint navigation route; '
+                        'requires new frozen anchors and cannot be pooled with v11')
     p.add_argument('--behavior-speed-protocol',choices=('nominal_cap','native'),
                    default='nominal_cap',help='Cap BA maximum speed to nominal or use unmodified agent')
+    p.add_argument('--cutin-paired-amplitude-mps',type=float,default=0.5,
+                   help='New v12 speed_early/speed_late compensating speed pair')
     p.add_argument('--cutin-late-switch-s',type=float,default=4.5,
                    help='Lateral switch time for late_slow/merge_late; freeze per protocol')
     p.add_argument('--cutin-lateral-lookahead-m',type=float,default=15.,
@@ -613,6 +653,11 @@ def main():
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
+    if not (0 < a.cutin_paired_amplitude_mps<=0.8):
+        raise ValueError('INVALID_COMPENSATED_SPEED_AMPLITUDE')
+    if a.archetype not in ('cut_in','support_gap','chain_cut_in') and any(
+            pr in ('speed_early','speed_late') for pr in a.profiles):
+        raise ValueError('SPEED_PAIR_REQUIRES_CUT_IN_SCENE')
     if a.duration_s<6 or a.cruise_mps<=0 or abs(a.chain_c_speed_delta_mps)>3.0 or a.cruise_mps+a.chain_c_speed_delta_mps<=0 or a.anchors<1 or a.repetitions<1 or a.joint_limit<0 or not 0<=a.rear_speed_delta_mps<=4.:
         raise ValueError('Invalid trial duration, speed, anchor count, repetition or search limit')
     if a.archetype != 'chain_cut_in' and any(f in HETEROGENEOUS_FAMILIES for f in a.families):
@@ -686,6 +731,8 @@ def main():
             frozen.get('chain_bc_gap_m',25.)!=a.chain_bc_gap_m or
             frozen.get('chain_c_speed_delta_mps',0.)!=a.chain_c_speed_delta_mps or
             frozen.get('behavior_speed_protocol')!=a.behavior_speed_protocol or
+            frozen.get('behavior_route_protocol')!=a.behavior_route_protocol or
+            frozen.get('cutin_paired_amplitude_mps')!=a.cutin_paired_amplitude_mps or
             frozen.get('cutin_late_switch_s',4.5)!=a.cutin_late_switch_s or
             frozen.get('cutin_lateral_lookahead_m',15.)!=a.cutin_lateral_lookahead_m):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
@@ -707,6 +754,12 @@ def main():
         return
     if a.exclude_anchors_from and len(anchors)<a.anchors:
         raise RuntimeError('HOLDOUT_INSUFFICIENT_DISJOINT_CORRIDORS: found %s vs requested %s; use new Town or smaller predeclared holdout size' % (len(anchors),a.anchors))
+    if (not a.anchors_from and a.archetype=='chain_cut_in' and
+            a.behavior_route_protocol=='frozen_corridor' and len(anchors)<a.anchors):
+        raise RuntimeError('V12_FROZEN_ROUTE_ANCHORS_INSUFFICIENT: requested '
+            +str(a.anchors)+', map provided '+str(len(anchors))+
+            '. Do not silently shrink the trial denominator; choose a new '
+            'pre-registered town/protocol with a fresh output root.')
     if not anchors:
         raise RuntimeError('NO_ELIGIBLE_MAP_ANCHOR: no eligible ' + a.archetype +
             ' corridor found after spawn-point AND map-waypoint scan on ' +
@@ -743,17 +796,23 @@ def main():
               'chain_bc_gap_m':a.chain_bc_gap_m,
               'chain_c_speed_delta_mps':a.chain_c_speed_delta_mps,
               'behavior_speed_protocol':a.behavior_speed_protocol,
+              'behavior_route_protocol':a.behavior_route_protocol,
+              'cutin_paired_amplitude_mps':a.cutin_paired_amplitude_mps,
               'cutin_late_switch_s':a.cutin_late_switch_s,
               'cutin_lateral_lookahead_m':a.cutin_lateral_lookahead_m,
               'pre_intervention_policy':'shared_pid_all_roles',
               'frozen_anchor_roundtrip_validated':True,
-              'cut_in_profiles_use_lateral_switch_time_only':True,
+              'cut_in_profiles_use_lateral_switch_time_only':False if any(
+                   x in ('speed_early','speed_late') for x in a.profiles) else True,
               'third_party_pair_roles':list(primary_pair(a.archetype)),
               'mixed_responder_families_exploratory_only':list(HETEROGENEOUS_FAMILIES),
               'action_semantics_protocol_v10':{'cut_in':'lateral_switch_time_only',
                                               'chain_cut_in':'lateral_switch_time_only',
                                               'support_gap':'lateral_switch_time_only',
                                               'convoy':'longitudinal_speed_profile'},
+              'action_semantics_addition_v12':{'speed_early':'merge 2.5s and early slow / late recover',
+                    'speed_late':'merge 2.5s and early recover / late slow',
+                    'equal_integral_target_speed_not_execution_guarantee':True},
               'joint_profile':a.joint_profile,'joint_limit':a.joint_limit,
               'joint_target_grid':a.joint_target_grid,
               'recovery_profile':a.recovery_profile,'warmup_ticks':a.warmup_ticks,

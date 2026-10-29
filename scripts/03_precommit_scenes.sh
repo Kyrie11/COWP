@@ -25,6 +25,8 @@ python -m ride.carla.run \
   --chain-bc-gap-m "${RIDE_CHAIN_BC_GAP_M:-25}" \
   --chain-c-speed-delta-mps "${RIDE_CHAIN_C_SPEED_DELTA_MPS:-0}" \
   --behavior-speed-protocol "${RIDE_BEHAVIOR_SPEED_PROTOCOL:-nominal_cap}" \
+  --behavior-route-protocol "${RIDE_BEHAVIOR_ROUTE_PROTOCOL:-native_shortest}" \
+  --cutin-paired-amplitude-mps "${RIDE_CUTIN_PAIRED_AMPLITUDE_MPS:-0.5}" \
   --cutin-late-switch-s "${RIDE_CUTIN_LATE_SWITCH_S:-4.5}" \
   --cutin-lateral-lookahead-m "${RIDE_CUTIN_LATERAL_LOOKAHEAD_M:-15}" \
   --warmup-ticks "${RIDE_WARMUP_TICKS:-20}" \
