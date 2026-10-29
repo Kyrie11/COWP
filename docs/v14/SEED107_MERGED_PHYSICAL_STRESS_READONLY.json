@@ -1,0 +1,1036 @@
+{
+  "protocol": "V14_CARLA_PHYSICAL_STRESS_NOT_HUMAN_GROUND_TRUTH",
+  "manifest_snapshot": {
+    "map": "Carla/Maps/Town04",
+    "anchor_protocol_version": "ride_lane_corridor_v12_20261028",
+    "c_delay_s": null,
+    "c_brake_command_cap": null,
+    "response_families": [
+      "behavior",
+      "tm"
+    ]
+  },
+  "summary": {
+    "pairs_checked": 36,
+    "status_counts": {
+      "NO_ACTION_DEPENDENT_BC_COLLISION": 26,
+      "UNKNOWN": 10
+    },
+    "independent_corridors_with_simulated_avoidable_collision": 0
+  },
+  "results": [
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.019763469867747574,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.3,
+          "first_C_extra_slow_t": 7.45,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.8,
+          "first_C_extra_slow_t": 3.4,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 13.822952507016536,
+        "late_slow": 14.681071623499715
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.009461356805786636,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.8,
+          "first_C_extra_slow_t": 7.55,
+          "B_before_C_proxy": true
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.8,
+          "first_C_extra_slow_t": 7.55,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 12.585595459771824,
+        "mild_late": 11.938304321620794
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.15222398809678594,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.75,
+          "first_C_extra_slow_t": 7.45,
+          "B_before_C_proxy": true
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.1,
+          "first_C_extra_slow_t": 5.4,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 9.344554690117082,
+        "speed_late": 9.381031996395341
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.06828401700347797,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.75,
+          "first_C_extra_slow_t": 6.8,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.9,
+          "first_C_extra_slow_t": 6.75,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 10.029863572209644,
+        "late_slow": 10.455518813151917
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.15222398809678594,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.45,
+          "first_C_extra_slow_t": 5.55,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 10.469658125179542,
+        "speed_late": 9.535239871010738
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.11733718253962167,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 13.863318025928432,
+        "late_slow": 13.814988210955706
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.05300684447733062,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 13.84803119641385,
+        "mild_late": 13.218058060814903
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.3774498654624736,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 14.737585072476271,
+        "speed_late": 13.834122335846065
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "cruise_initial_state_mismatch:initial_position_mismatch:follower_c,initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": 0.16820848960625767
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "cruise_initial_state_mismatch:initial_position_mismatch:follower_c,initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": 0.05428409414834334
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "cruise_initial_state_mismatch:initial_position_mismatch:follower_c,initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": 0.3769312349020524
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:invalid_trial",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:invalid_trial",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:invalid_trial",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.0775209063288429,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.65,
+          "first_C_extra_slow_t": 7.5,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.75,
+          "first_C_extra_slow_t": 7.9,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 15.212258039645924,
+        "late_slow": 15.604335415834484
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.08236461632268544,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.8,
+          "first_C_extra_slow_t": 7.9,
+          "B_before_C_proxy": true
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.75,
+          "first_C_extra_slow_t": 7.9,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 14.77594368809835,
+        "mild_late": 15.60482553766964
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.2886734208341437,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 6.0,
+          "first_C_extra_slow_t": 7.75,
+          "B_before_C_proxy": true
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.95,
+          "first_C_extra_slow_t": 7.55,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 12.243571094537351,
+        "speed_late": 10.894578397488383
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.281039457765317,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": 7.4,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 17.229724954875227,
+        "late_slow": 14.188690944350856
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.14383495665465063,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 22.576143181624364,
+        "mild_late": 22.126910693423326
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.44189087856386067,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 22.79540865038116,
+        "speed_late": 22.68160462784124
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.16056691593683325,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.0,
+          "first_C_extra_slow_t": 6.05,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.15,
+          "first_C_extra_slow_t": 6.35,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 12.422975464583297,
+        "late_slow": 11.767410943660472
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.14784850142632422,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.4,
+          "first_C_extra_slow_t": 6.35,
+          "B_before_C_proxy": true
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.15,
+          "first_C_extra_slow_t": 6.35,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 12.272918284300905,
+        "mild_late": 11.768370661431668
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.2576052934510358,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 16.095362597751343,
+        "late_slow": 16.095362597751343
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.13431840478610724,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 15.829126970355272,
+        "mild_late": 13.647319663281841
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.40659891065742926,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": null,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 12.33109505647109,
+        "speed_late": 16.185553215962074
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.23477873883985012,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 2.9,
+          "first_C_extra_slow_t": 3.15,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.9,
+          "first_C_extra_slow_t": 5.2,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 12.650346221318271,
+        "late_slow": 12.465390014433192
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.12620095020321997,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.9,
+          "first_C_extra_slow_t": 4.4,
+          "B_before_C_proxy": true
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.9,
+          "first_C_extra_slow_t": 5.2,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 10.417512908001425,
+        "mild_late": 14.1114119709835
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.3327075812521443,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.95,
+          "first_C_extra_slow_t": 4.45,
+          "B_before_C_proxy": true
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.95,
+          "first_C_extra_slow_t": 4.35,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 8.832992133811755,
+        "speed_late": 7.6921153155160225
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.004707227313183182,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": 6.15,
+          "B_before_C_proxy": false
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": null,
+          "first_C_extra_slow_t": 6.25,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 14.587869180021217,
+        "late_slow": 12.48026751882685
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:initial_position_mismatch:follower_b",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "behavior",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "UNKNOWN",
+      "reason": "invalid_task_pair:initial_position_mismatch:follower_c",
+      "ego_progress_diff_m": null
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.005375553699785485,
+      "measured_pair_collisions": {
+        "early_slow": false,
+        "late_slow": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "early_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 3.9,
+          "first_C_extra_slow_t": 4.8,
+          "B_before_C_proxy": true
+        },
+        "late_slow": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 6.6,
+          "first_C_extra_slow_t": 6.05,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "early_slow": 13.035198509951845,
+        "late_slow": 15.642847179409074
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.021653128210296302,
+      "measured_pair_collisions": {
+        "mild_early": false,
+        "mild_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "mild_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.95,
+          "first_C_extra_slow_t": 6.0,
+          "B_before_C_proxy": true
+        },
+        "mild_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 6.6,
+          "first_C_extra_slow_t": 6.05,
+          "B_before_C_proxy": false
+        }
+      },
+      "min_BC_TTC_s": {
+        "mild_early": 11.738784125008692,
+        "mild_late": 15.642847179409074
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "classification": "NO_ACTION_DEPENDENT_BC_COLLISION",
+      "reason": "",
+      "ego_progress_diff_m": 0.5510664276008796,
+      "measured_pair_collisions": {
+        "speed_early": false,
+        "speed_late": false
+      },
+      "B_to_C_temporal_proxy_by_action": {
+        "speed_early": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 5.9,
+          "first_C_extra_slow_t": 6.0,
+          "B_before_C_proxy": true
+        },
+        "speed_late": {
+          "status": "EXPLORATORY_ONLY_NO_MEDIATION_IDENTIFICATION",
+          "first_B_extra_slow_t": 4.45,
+          "first_C_extra_slow_t": 5.65,
+          "B_before_C_proxy": true
+        }
+      },
+      "min_BC_TTC_s": {
+        "speed_early": 15.642491407579627,
+        "speed_late": 9.303148963701164
+      }
+    }
+  ],
+  "same_controller_C_vs_lagged_C_parity": [],
+  "limits": [
+    "Controlled C delay is a stress condition, NOT a validated human driver.",
+    "Cruise is a no-merge negative control, NOT an equal-task substitute.",
+    "Use mixed_b_tm_c_behavior (not all-TM) to isolate the lag intervention.",
+    "B-before-C time sequence cannot identify B as a causal mediator.",
+    "Do not report a hypothetical stopping-margin violation as a collision.",
+    "A single collision witness does not establish systematic failure or strong planner deficit."
+  ]
+}

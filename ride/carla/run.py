@@ -132,6 +132,7 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
     settings.no_rendering_mode=bool(args.no_rendering)
     settings.substepping=True;settings.max_substep_delta_time=0.01;settings.max_substeps=10
     tm=None
+    delayed_c_control=None
     actors=[];sensors=[];collisions=[];overlap_proxy=set();vehicles={}
     # Unique identifier for every trial, enabling safe cleanup of future orphans.
     trial_uid=uuid.uuid4().hex[:12]
@@ -143,7 +144,10 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
             'world_reset_protocol':args.world_reset, 'trial_uid':trial_uid,
             'traffic_lights_reset':args.world_reset == 'actors',
             'traffic_light_legality_verified':False, 'warmup_ticks':args.warmup_ticks,
-            'behavior_route_protocol':args.behavior_route_protocol}
+            'behavior_route_protocol':args.behavior_route_protocol,
+            'chain_c_control_delay_s':args.chain_c_control_delay_s,
+            'chain_c_brake_command_cap':args.chain_c_brake_command_cap,
+            'delayed_C_hypothetical_not_human_calibrated':family=='mixed_b_tm_c_delayed_behavior'}
     try:
         world.apply_settings(settings)
         print(f'RIDE_WORLD_SETTINGS_APPLIED family={family} profile={profile}',flush=True)
@@ -263,6 +267,19 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                         result['behavior_speed_configuration'][role]={'protocol':'native_behavior_agent',
                             'original_max_kmh':float(a._behavior.max_speed)}
                     responders[role]=a
+            if family == 'mixed_b_tm_c_delayed_behavior':
+                from .lagged_controller import DelayedCController
+                delayed_c_control=DelayedCController(
+                    vehicles['follower_c'].get_control(),
+                    delay_s=args.chain_c_control_delay_s,
+                    brake_command_cap=args.chain_c_brake_command_cap,dt=DT)
+                result['stress_control_details']={
+                    'purpose':'EXPLORATORY_DELAYED_BRAKE_COMMAND_NOT_HUMAN_MODEL',
+                    'C_response_controller':'BehaviorAgent',
+                    'C_brake_only_delay_ticks':delayed_c_control.ticks,
+                    'C_brake_command_cap':args.chain_c_brake_command_cap,
+                    'B_response_controller':'CARLA_TM',
+                    'note':'No C human response calibration; cannot be claimed as real crash.'}
             if tm_roles:
                 print(f'RIDE_TM_CREATE_BEGIN port={args.tm_port} seed={seed}',flush=True)
                 tm=client.get_trafficmanager(args.tm_port)
@@ -363,6 +380,8 @@ def run_trial(args,anchor,family,profile,seed,*,joint_targets=None,recovery=None
                             f'family={family} role={role} t={t:.3f} '
                             f'policy={type(a).__name__} '
                             f'original={type(exc).__name__}: {exc}') from exc
+                    if role=='follower_c' and delayed_c_control is not None:
+                        control=delayed_c_control.step(control)
                     vehicles[role].apply_control(control)
             if family=='joint_witness':
                 for role,a in responders.items():
@@ -621,6 +640,10 @@ def main():
                         'requires new frozen anchors and cannot be pooled with v11')
     p.add_argument('--behavior-speed-protocol',choices=('nominal_cap','native'),
                    default='nominal_cap',help='Cap BA maximum speed to nominal or use unmodified agent')
+    p.add_argument('--chain-c-control-delay-s',type=float,default=0.0,
+                   help='Only for mixed_b_tm_c_delayed_behavior; applied C command delay [0,1.5]s')
+    p.add_argument('--chain-c-brake-command-cap',type=float,default=1.0,
+                   help='Only for mixed_b_tm_c_delayed_behavior; C brake command max [0.15,1]')
     p.add_argument('--cutin-paired-amplitude-mps',type=float,default=0.5,
                    help='New v12 speed_early/speed_late compensating speed pair')
     p.add_argument('--cutin-late-switch-s',type=float,default=4.5,
@@ -653,6 +676,15 @@ def main():
     if a.timeout <= 0:
         raise ValueError('--timeout must be positive')
     if a.warmup_ticks < 0: raise ValueError('Negative warmup ticks')
+    if (not math.isfinite(a.chain_c_control_delay_s) or
+        not 0<=a.chain_c_control_delay_s<=1.5 or
+        abs(a.chain_c_control_delay_s/DT-round(a.chain_c_control_delay_s/DT))>1e-6 or
+        not math.isfinite(a.chain_c_brake_command_cap) or
+        not 0.15<=a.chain_c_brake_command_cap<=1.):
+        raise ValueError('INVALID_V14_HYPOTHETICAL_C_CONTROLLER')
+    if (a.chain_c_control_delay_s>0 or a.chain_c_brake_command_cap<1) and not (
+           a.archetype=='chain_cut_in' and 'mixed_b_tm_c_delayed_behavior' in a.families):
+        raise ValueError('DELAYED_C_PARAMETERS_REQUIRE_EXPLORATORY_CHAIN_FAMILY')
     if not (0 < a.cutin_paired_amplitude_mps<=0.8):
         raise ValueError('INVALID_COMPENSATED_SPEED_AMPLITUDE')
     if a.archetype not in ('cut_in','support_gap','chain_cut_in') and any(
@@ -734,7 +766,9 @@ def main():
             frozen.get('behavior_route_protocol')!=a.behavior_route_protocol or
             frozen.get('cutin_paired_amplitude_mps')!=a.cutin_paired_amplitude_mps or
             frozen.get('cutin_late_switch_s',4.5)!=a.cutin_late_switch_s or
-            frozen.get('cutin_lateral_lookahead_m',15.)!=a.cutin_lateral_lookahead_m):
+            frozen.get('cutin_lateral_lookahead_m',15.)!=a.cutin_lateral_lookahead_m or
+            frozen.get('chain_c_control_delay_s',0.0)!=a.chain_c_control_delay_s or
+            frozen.get('chain_c_brake_command_cap',1.0)!=a.chain_c_brake_command_cap):
             raise RuntimeError('Frozen manifest map/version/archetype mismatch')
         anchors=frozen.get('anchors',[])
         if not anchors:raise RuntimeError('Frozen manifest has no anchors')
@@ -795,6 +829,10 @@ def main():
               'cutin_rear_gap_m':a.cutin_rear_gap_m,
               'chain_bc_gap_m':a.chain_bc_gap_m,
               'chain_c_speed_delta_mps':a.chain_c_speed_delta_mps,
+              'chain_c_control_delay_s':a.chain_c_control_delay_s,
+              'chain_c_brake_command_cap':a.chain_c_brake_command_cap,
+              'v14_C_exploratory_protocol':('HYPOTHETICAL_DELAYED_C_CONTROL_V1' if
+                 'mixed_b_tm_c_delayed_behavior' in a.families else 'NONE'),
               'behavior_speed_protocol':a.behavior_speed_protocol,
               'behavior_route_protocol':a.behavior_route_protocol,
               'cutin_paired_amplitude_mps':a.cutin_paired_amplitude_mps,

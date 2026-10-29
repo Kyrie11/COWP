@@ -1,0 +1,2249 @@
+{
+  "protocol": "V14_READONLY_POSTHOC_SENSITIVITY_AUDIT",
+  "reports": [
+    {
+      "root": "v13_dev_behavior_to_tm_seed17",
+      "source_family": "behavior",
+      "target_family": "tm",
+      "original_report_summary": {
+        "committed_records": 24,
+        "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+        "diagnostic_model_induced_choice_errors": 1,
+        "independent_human_response_validation": false,
+        "model_blind_distinctions": 2,
+        "official_strong_baselines_run": false,
+        "physical_anchor_contexts_with_diagnostic_errors": 1,
+        "physical_anchor_contexts_with_valid_comparisons": 3,
+        "same_model_placebo": false,
+        "source_unknown": 8,
+        "strict_wrong_model_orders": 0,
+        "target_avoidable_choice_losses": 3,
+        "target_or_parity_unknown": 4,
+        "valid_comparisons": 12
+      },
+      "unique_valid_action_pairs": 6,
+      "unique_pairs_with_model_errors": 1,
+      "cases_with_extreme_acceleration": 0,
+      "status_by_unique_pair": {
+        "NO_MEANINGFUL_TARGET_DIFFERENCE": 4,
+        "SELECTED_C_BURDEN_BETTER": 1,
+        "AVOIDABLE_C_BURDEN_LOSS": 1
+      },
+      "cases": [
+        {
+          "anchor": "1",
+          "seed": "17",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_late",
+          "alternative": "mild_early",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.062447,
+          "target_burden_diff_a_minus_b": 0.095511,
+          "counterfactual_sensitivity_error": 0.033064,
+          "response_amplitude_ratio": 0.849,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 12.486609024355198,
+            "mild_late": 24.653319504989046
+          },
+          "ego_progress_m": {
+            "mild_early": 58.95608051584413,
+            "mild_late": 58.94252892540929
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.544023,
+              "mild_late": 0.448512,
+              "chosen_minus_alternative": -0.095511
+            },
+            "cap6": {
+              "mild_early": 0.544023,
+              "mild_late": 0.448512,
+              "chosen_minus_alternative": -0.095511
+            },
+            "cap5": {
+              "mild_early": 0.544023,
+              "mild_late": 0.448512,
+              "chosen_minus_alternative": -0.095511
+            },
+            "median5": {
+              "mild_early": 0.271474,
+              "mild_late": 0.315964,
+              "chosen_minus_alternative": 0.04449
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.0": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            },
+            "4.5": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.689,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.0,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.938,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.0,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.9,
+            "mild_late": 5.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "2",
+          "seed": "17",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_early",
+          "alternative": "mild_late",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.011573,
+          "target_burden_diff_a_minus_b": 0.136887,
+          "counterfactual_sensitivity_error": 0.125314,
+          "response_amplitude_ratio": 2.223,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 14.222207624362127,
+            "mild_late": 14.900413651370883
+          },
+          "ego_progress_m": {
+            "mild_early": 58.7627708405193,
+            "mild_late": 58.75121405531937
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.679412,
+              "mild_late": 0.542525,
+              "chosen_minus_alternative": 0.136887
+            },
+            "cap6": {
+              "mild_early": 0.679412,
+              "mild_late": 0.542525,
+              "chosen_minus_alternative": 0.136887
+            },
+            "cap5": {
+              "mild_early": 0.679412,
+              "mild_late": 0.542525,
+              "chosen_minus_alternative": 0.136887
+            },
+            "median5": {
+              "mild_early": 0.448926,
+              "mild_late": 0.386629,
+              "chosen_minus_alternative": 0.062297
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.0": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.5": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.211,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.019,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.32,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.019,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.9,
+            "mild_late": 5.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "2",
+          "seed": "17",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_late",
+          "alternative": "speed_early",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.016347,
+          "target_burden_diff_a_minus_b": -0.141089,
+          "counterfactual_sensitivity_error": -0.124742,
+          "response_amplitude_ratio": 2.127,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 17.544130636175865,
+            "speed_late": 9.996284781790893
+          },
+          "ego_progress_m": {
+            "speed_early": 58.64689514541714,
+            "speed_late": 58.74460168592134
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 0.783956,
+              "speed_late": 0.925045,
+              "chosen_minus_alternative": 0.141089
+            },
+            "cap6": {
+              "speed_early": 0.783956,
+              "speed_late": 0.925045,
+              "chosen_minus_alternative": 0.141089
+            },
+            "cap5": {
+              "speed_early": 0.783956,
+              "speed_late": 0.925045,
+              "chosen_minus_alternative": 0.141089
+            },
+            "median5": {
+              "speed_early": 0.572927,
+              "speed_late": 0.674971,
+              "chosen_minus_alternative": 0.102044
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.05,
+              "speed_late": 0.05
+            },
+            "4.0": {
+              "speed_early": 0.05,
+              "speed_late": 0.05
+            },
+            "4.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.077,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.017,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.053,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.02,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.9,
+            "speed_late": 4.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "17",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "late_slow",
+          "alternative": "early_slow",
+          "decision_status": "SELECTED_C_BURDEN_BETTER",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.053546,
+          "target_burden_diff_a_minus_b": 0.656073,
+          "counterfactual_sensitivity_error": 0.602527,
+          "response_amplitude_ratio": 6.336,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 12.523288892160046,
+            "late_slow": 25.070683135837733
+          },
+          "ego_progress_m": {
+            "early_slow": 58.90841877761331,
+            "late_slow": 58.78080488519181
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 0.995725,
+              "late_slow": 0.339652,
+              "chosen_minus_alternative": -0.656073
+            },
+            "cap6": {
+              "early_slow": 0.995725,
+              "late_slow": 0.339652,
+              "chosen_minus_alternative": -0.656073
+            },
+            "cap5": {
+              "early_slow": 0.995725,
+              "late_slow": 0.339652,
+              "chosen_minus_alternative": -0.656073
+            },
+            "median5": {
+              "early_slow": 0.773318,
+              "late_slow": 0.180371,
+              "chosen_minus_alternative": -0.592947
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.05,
+              "late_slow": 0.05
+            },
+            "4.0": {
+              "early_slow": 0.05,
+              "late_slow": 0.0
+            },
+            "4.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.309,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.003,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.519,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.003,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.5,
+            "late_slow": 5.55
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "17",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_early",
+          "alternative": "mild_late",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.010549,
+          "target_burden_diff_a_minus_b": 0.068018,
+          "counterfactual_sensitivity_error": 0.078567,
+          "response_amplitude_ratio": 1.123,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 13.175255791014989,
+            "mild_late": 11.744043838618106
+          },
+          "ego_progress_m": {
+            "mild_early": 58.844164878664955,
+            "mild_late": 58.764192380028916
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.972329,
+              "mild_late": 0.904311,
+              "chosen_minus_alternative": 0.068018
+            },
+            "cap6": {
+              "mild_early": 0.972329,
+              "mild_late": 0.904311,
+              "chosen_minus_alternative": 0.068018
+            },
+            "cap5": {
+              "mild_early": 0.972329,
+              "mild_late": 0.904311,
+              "chosen_minus_alternative": 0.068018
+            },
+            "median5": {
+              "mild_early": 0.798685,
+              "mild_late": 0.673173,
+              "chosen_minus_alternative": 0.125512
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.0": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.577,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.004,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.251,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.004,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.5,
+            "mild_late": 5.55
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "17",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_late",
+          "alternative": "speed_early",
+          "decision_status": "AVOIDABLE_C_BURDEN_LOSS",
+          "model_error_reported": true,
+          "source_burden_diff_a_minus_b": 0.001641,
+          "target_burden_diff_a_minus_b": -0.460085,
+          "counterfactual_sensitivity_error": -0.461726,
+          "response_amplitude_ratio": 8.909,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 23.35865263100121,
+            "speed_late": 6.633257626716229
+          },
+          "ego_progress_m": {
+            "speed_early": 58.50046324745163,
+            "speed_late": 58.82172899328979
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 0.502622,
+              "speed_late": 0.962707,
+              "chosen_minus_alternative": 0.460085
+            },
+            "cap6": {
+              "speed_early": 0.502622,
+              "speed_late": 0.962707,
+              "chosen_minus_alternative": 0.460085
+            },
+            "cap5": {
+              "speed_early": 0.502622,
+              "speed_late": 0.962707,
+              "chosen_minus_alternative": 0.460085
+            },
+            "median5": {
+              "speed_early": 0.276529,
+              "speed_late": 0.716414,
+              "chosen_minus_alternative": 0.439885
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.05,
+              "speed_late": 0.15
+            },
+            "4.0": {
+              "speed_early": 0.0,
+              "speed_late": 0.05
+            },
+            "4.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.05
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.57,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.004,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.652,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.004,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.55,
+            "speed_late": 4.5
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        }
+      ],
+      "limits": [
+        "Same-model placebo on another road/seed is NOT paired repeatability.",
+        "Posthoc acceleration caps and median filtering are sensitivity analyses, not new precommitted endpoints.",
+        "B and C braking time order does not identify a causal mediated effect.",
+        "The source selector is a full CARLA model lookahead, not GameFormer or RACP.",
+        "No human counterfactual response is observed."
+      ]
+    },
+    {
+      "root": "v13_new_confirm_seed_107",
+      "source_family": "behavior",
+      "target_family": "tm",
+      "original_report_summary": {
+        "committed_records": 36,
+        "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+        "diagnostic_model_induced_choice_errors": 2,
+        "independent_human_response_validation": false,
+        "model_blind_distinctions": 4,
+        "official_strong_baselines_run": false,
+        "physical_anchor_contexts_with_diagnostic_errors": 2,
+        "physical_anchor_contexts_with_valid_comparisons": 5,
+        "same_model_placebo": false,
+        "source_unknown": 10,
+        "strict_wrong_model_orders": 2,
+        "target_avoidable_choice_losses": 5,
+        "target_or_parity_unknown": 4,
+        "valid_comparisons": 22
+      },
+      "unique_valid_action_pairs": 11,
+      "unique_pairs_with_model_errors": 2,
+      "cases_with_extreme_acceleration": 1,
+      "status_by_unique_pair": {
+        "NO_MEANINGFUL_TARGET_DIFFERENCE": 7,
+        "SELECTED_C_BURDEN_BETTER": 2,
+        "AVOIDABLE_C_BURDEN_LOSS": 1,
+        "AVOIDABLE_PRIMARY_THIRD_PARTY_LOSS": 1
+      },
+      "cases": [
+        {
+          "anchor": "0",
+          "seed": "107",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "late_slow",
+          "alternative": "early_slow",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.328907,
+          "target_burden_diff_a_minus_b": 0.046064,
+          "counterfactual_sensitivity_error": -0.282843,
+          "response_amplitude_ratio": 0.122,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 10.029863572209644,
+            "late_slow": 10.455518813151917
+          },
+          "ego_progress_m": {
+            "early_slow": 58.7830740192227,
+            "late_slow": 58.714790002219225
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 1.9225,
+              "late_slow": 1.876436,
+              "chosen_minus_alternative": -0.046064
+            },
+            "cap6": {
+              "early_slow": 1.9225,
+              "late_slow": 1.876436,
+              "chosen_minus_alternative": -0.046064
+            },
+            "cap5": {
+              "early_slow": 1.9225,
+              "late_slow": 1.876436,
+              "chosen_minus_alternative": -0.046064
+            },
+            "median5": {
+              "early_slow": 1.854267,
+              "late_slow": 1.581473,
+              "chosen_minus_alternative": -0.272794
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.25,
+              "late_slow": 0.15
+            },
+            "4.0": {
+              "early_slow": 0.15,
+              "late_slow": 0.05
+            },
+            "4.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.05
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.305,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.012,
+              "brake_4mps2_max_continuous_s": 0.15,
+              "brake_3_5mps2_max_continuous_s": 0.25,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.752,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.013,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.9,
+            "late_slow": 5.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "0",
+          "seed": "107",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_early",
+          "alternative": "speed_late",
+          "decision_status": "SELECTED_C_BURDEN_BETTER",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.370991,
+          "target_burden_diff_a_minus_b": -0.551333,
+          "counterfactual_sensitivity_error": -0.180342,
+          "response_amplitude_ratio": 1.31,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 10.469658125179542,
+            "speed_late": 9.535239871010738
+          },
+          "ego_progress_m": {
+            "speed_early": 58.683287625107944,
+            "speed_late": 58.83551161320473
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 1.816179,
+              "speed_late": 2.367512,
+              "chosen_minus_alternative": -0.551333
+            },
+            "cap6": {
+              "speed_early": 1.816179,
+              "speed_late": 2.367512,
+              "chosen_minus_alternative": -0.551333
+            },
+            "cap5": {
+              "speed_early": 1.816179,
+              "speed_late": 2.367512,
+              "chosen_minus_alternative": -0.551333
+            },
+            "median5": {
+              "speed_early": 1.466815,
+              "speed_late": 2.00205,
+              "chosen_minus_alternative": -0.535235
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.15,
+              "speed_late": 0.25
+            },
+            "4.0": {
+              "speed_early": 0.05,
+              "speed_late": 0.05
+            },
+            "4.5": {
+              "speed_early": 0.05,
+              "speed_late": 0.05
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.752,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.013,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.839,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.013,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.25,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.9,
+            "speed_late": 4.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "1",
+          "seed": "107",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "late_slow",
+          "alternative": "early_slow",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -6.6e-05,
+          "target_burden_diff_a_minus_b": 0.119204,
+          "counterfactual_sensitivity_error": 0.11927,
+          "response_amplitude_ratio": 2.381,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 14.035041638739479,
+            "late_slow": 26.36245945105255
+          },
+          "ego_progress_m": {
+            "early_slow": 58.81056562681805,
+            "late_slow": 58.978774116424304
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 0.356464,
+              "late_slow": 0.23726,
+              "chosen_minus_alternative": -0.119204
+            },
+            "cap6": {
+              "early_slow": 0.356464,
+              "late_slow": 0.23726,
+              "chosen_minus_alternative": -0.119204
+            },
+            "cap5": {
+              "early_slow": 0.356464,
+              "late_slow": 0.23726,
+              "chosen_minus_alternative": -0.119204
+            },
+            "median5": {
+              "early_slow": 0.14668,
+              "late_slow": 0.162246,
+              "chosen_minus_alternative": 0.015566
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            },
+            "4.0": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            },
+            "4.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.204,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.486,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 4.6,
+            "late_slow": 6.35
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "1",
+          "seed": "107",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_late",
+          "alternative": "mild_early",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.041824,
+          "target_burden_diff_a_minus_b": -0.193164,
+          "counterfactual_sensitivity_error": -0.15134,
+          "response_amplitude_ratio": 2.104,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 15.414466596843843,
+            "mild_late": 26.36245945105255
+          },
+          "ego_progress_m": {
+            "mild_early": 58.9124768474237,
+            "mild_late": 58.96676094157204
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.310895,
+              "mild_late": 0.504059,
+              "chosen_minus_alternative": 0.193164
+            },
+            "cap6": {
+              "mild_early": 0.310895,
+              "mild_late": 0.504059,
+              "chosen_minus_alternative": 0.193164
+            },
+            "cap5": {
+              "mild_early": 0.310895,
+              "mild_late": 0.504059,
+              "chosen_minus_alternative": 0.193164
+            },
+            "median5": {
+              "mild_early": 0.165017,
+              "mild_late": 0.293736,
+              "chosen_minus_alternative": 0.128719
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.0": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            },
+            "4.5": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.59,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.657,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 5.55,
+            "mild_late": 6.35
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "1",
+          "seed": "107",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_late",
+          "alternative": "speed_early",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.011386,
+          "target_burden_diff_a_minus_b": 0.015777,
+          "counterfactual_sensitivity_error": 0.027163,
+          "response_amplitude_ratio": 0.257,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 26.36245945105255,
+            "speed_late": 26.362433990372043
+          },
+          "ego_progress_m": {
+            "speed_early": 58.608893280372016,
+            "speed_late": 58.98582451527407
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 0.617308,
+              "speed_late": 0.601531,
+              "chosen_minus_alternative": -0.015777
+            },
+            "cap6": {
+              "speed_early": 0.617308,
+              "speed_late": 0.601531,
+              "chosen_minus_alternative": -0.015777
+            },
+            "cap5": {
+              "speed_early": 0.617308,
+              "speed_late": 0.601531,
+              "chosen_minus_alternative": -0.015777
+            },
+            "median5": {
+              "speed_early": 0.366935,
+              "speed_late": 0.432129,
+              "chosen_minus_alternative": 0.065194
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.05
+            },
+            "4.0": {
+              "speed_early": 0.0,
+              "speed_late": 0.05
+            },
+            "4.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.486,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.053,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.005,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 5.5,
+            "speed_late": 5.6
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "107",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "early_slow",
+          "alternative": "late_slow",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.090852,
+          "target_burden_diff_a_minus_b": 0.238113,
+          "counterfactual_sensitivity_error": 0.328965,
+          "response_amplitude_ratio": 1.691,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 12.422975464583297,
+            "late_slow": 11.767410943660472
+          },
+          "ego_progress_m": {
+            "early_slow": 58.61883756878783,
+            "late_slow": 58.458270652851
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 0.919488,
+              "late_slow": 0.681375,
+              "chosen_minus_alternative": 0.238113
+            },
+            "cap6": {
+              "early_slow": 0.919488,
+              "late_slow": 0.681375,
+              "chosen_minus_alternative": 0.238113
+            },
+            "cap5": {
+              "early_slow": 0.919488,
+              "late_slow": 0.681375,
+              "chosen_minus_alternative": 0.238113
+            },
+            "median5": {
+              "early_slow": 0.754703,
+              "late_slow": 0.536503,
+              "chosen_minus_alternative": 0.2182
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.15,
+              "late_slow": 0.15
+            },
+            "4.0": {
+              "early_slow": 0.05,
+              "late_slow": 0.05
+            },
+            "4.5": {
+              "early_slow": 0.05,
+              "late_slow": 0.05
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.773,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.011,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.515,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.3,
+            "late_slow": 5.3
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "107",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_early",
+          "alternative": "mild_late",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.020667,
+          "target_burden_diff_a_minus_b": 0.031428,
+          "counterfactual_sensitivity_error": 0.052095,
+          "response_amplitude_ratio": 0.445,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 12.272918284300905,
+            "mild_late": 11.768370661431668
+          },
+          "ego_progress_m": {
+            "mild_early": 58.53997159736986,
+            "mild_late": 58.39212309594354
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.742475,
+              "mild_late": 0.711047,
+              "chosen_minus_alternative": 0.031428
+            },
+            "cap6": {
+              "mild_early": 0.742475,
+              "mild_late": 0.711047,
+              "chosen_minus_alternative": 0.031428
+            },
+            "cap5": {
+              "mild_early": 0.742475,
+              "mild_late": 0.711047,
+              "chosen_minus_alternative": 0.031428
+            },
+            "median5": {
+              "mild_early": 0.587725,
+              "mild_late": 0.56224,
+              "chosen_minus_alternative": 0.025485
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.15,
+              "mild_late": 0.15
+            },
+            "4.0": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.528,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.578,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.25,
+            "mild_late": 5.3
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "4",
+          "seed": "107",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "early_slow",
+          "alternative": "late_slow",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.0,
+          "target_burden_diff_a_minus_b": -0.093326,
+          "counterfactual_sensitivity_error": -0.093326,
+          "response_amplitude_ratio": 1.867,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 12.650346221318271,
+            "late_slow": 12.465390014433192
+          },
+          "ego_progress_m": {
+            "early_slow": 58.731590474731256,
+            "late_slow": 58.496811735891406
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 1.81039,
+              "late_slow": 1.903716,
+              "chosen_minus_alternative": -0.093326
+            },
+            "cap6": {
+              "early_slow": 1.81039,
+              "late_slow": 1.903716,
+              "chosen_minus_alternative": -0.093326
+            },
+            "cap5": {
+              "early_slow": 1.81039,
+              "late_slow": 1.903716,
+              "chosen_minus_alternative": -0.093326
+            },
+            "median5": {
+              "early_slow": 1.443338,
+              "late_slow": 1.523933,
+              "chosen_minus_alternative": -0.080595
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.05,
+              "late_slow": 0.15
+            },
+            "4.0": {
+              "early_slow": 0.05,
+              "late_slow": 0.05
+            },
+            "4.5": {
+              "early_slow": 0.05,
+              "late_slow": 0.05
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.584,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.05,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.834,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.25,
+            "late_slow": 5.25
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "4",
+          "seed": "107",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_early",
+          "alternative": "mild_late",
+          "decision_status": "SELECTED_C_BURDEN_BETTER",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.007432,
+          "target_burden_diff_a_minus_b": -0.466494,
+          "counterfactual_sensitivity_error": -0.459062,
+          "response_amplitude_ratio": 8.123,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 10.417512908001425,
+            "mild_late": 14.1114119709835
+          },
+          "ego_progress_m": {
+            "mild_early": 58.6082758062883,
+            "mild_late": 58.48207485608508
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 1.897948,
+              "mild_late": 2.364442,
+              "chosen_minus_alternative": -0.466494
+            },
+            "cap6": {
+              "mild_early": 1.897948,
+              "mild_late": 2.364442,
+              "chosen_minus_alternative": -0.466494
+            },
+            "cap5": {
+              "mild_early": 1.897948,
+              "mild_late": 2.364442,
+              "chosen_minus_alternative": -0.466494
+            },
+            "median5": {
+              "mild_early": 1.481878,
+              "mild_late": 1.923443,
+              "chosen_minus_alternative": -0.441565
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.15,
+              "mild_late": 0.25
+            },
+            "4.0": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            },
+            "4.5": {
+              "mild_early": 0.05,
+              "mild_late": 0.05
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.704,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.15,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.886,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.011,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.25,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.25,
+            "mild_late": 5.25
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "4",
+          "seed": "107",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_late",
+          "alternative": "speed_early",
+          "decision_status": "AVOIDABLE_C_BURDEN_LOSS",
+          "model_error_reported": true,
+          "source_burden_diff_a_minus_b": 0.108143,
+          "target_burden_diff_a_minus_b": -2.34186,
+          "counterfactual_sensitivity_error": -2.450003,
+          "response_amplitude_ratio": 14.808,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 8.832992133811755,
+            "speed_late": 7.6921153155160225
+          },
+          "ego_progress_m": {
+            "speed_early": 58.225399607576215,
+            "speed_late": 58.55810718882836
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 1.901076,
+              "speed_late": 4.242936,
+              "chosen_minus_alternative": 2.34186
+            },
+            "cap6": {
+              "speed_early": 1.901076,
+              "speed_late": 2.677012,
+              "chosen_minus_alternative": 0.775936
+            },
+            "cap5": {
+              "speed_early": 1.901076,
+              "speed_late": 2.563379,
+              "chosen_minus_alternative": 0.662303
+            },
+            "median5": {
+              "speed_early": 1.565911,
+              "speed_late": 2.267678,
+              "chosen_minus_alternative": 0.701767
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.25,
+              "speed_late": 0.4
+            },
+            "4.0": {
+              "speed_early": 0.05,
+              "speed_late": 0.1
+            },
+            "4.5": {
+              "speed_early": 0.05,
+              "speed_late": 0.1
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.862,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.05,
+              "brake_3_5mps2_max_continuous_s": 0.25,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [
+                {
+                  "t": 4.5,
+                  "long_accel_mps2": -20.561
+                },
+                {
+                  "t": 4.55,
+                  "long_accel_mps2": -22.758
+                }
+              ],
+              "poststartup_extreme_accel_count": 2,
+              "min_c_accel_mps2": -22.758,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.01,
+              "brake_4mps2_max_continuous_s": 0.1,
+              "brake_3_5mps2_max_continuous_s": 0.4,
+              "brake_4_5mps2_max_continuous_s": 0.1
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.3,
+            "speed_late": 4.25
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": true,
+          "caveat": "KINEMATIC_OUTLIER: cannot treat this as a validated realistic braking event"
+        },
+        {
+          "anchor": "5",
+          "seed": "107",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "late_slow",
+          "alternative": "early_slow",
+          "decision_status": "AVOIDABLE_PRIMARY_THIRD_PARTY_LOSS",
+          "model_error_reported": true,
+          "source_burden_diff_a_minus_b": 0.02684,
+          "target_burden_diff_a_minus_b": -0.204385,
+          "counterfactual_sensitivity_error": -0.231225,
+          "response_amplitude_ratio": 2.66,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              1,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 13.035198509951845,
+            "late_slow": 15.642847179409074
+          },
+          "ego_progress_m": {
+            "early_slow": 58.27066281774322,
+            "late_slow": 58.27603837144301
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 1.899851,
+              "late_slow": 2.104236,
+              "chosen_minus_alternative": 0.204385
+            },
+            "cap6": {
+              "early_slow": 1.899851,
+              "late_slow": 2.104236,
+              "chosen_minus_alternative": 0.204385
+            },
+            "cap5": {
+              "early_slow": 1.899851,
+              "late_slow": 2.104236,
+              "chosen_minus_alternative": 0.204385
+            },
+            "median5": {
+              "early_slow": 1.737887,
+              "late_slow": 1.979089,
+              "chosen_minus_alternative": 0.241202
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.25,
+              "late_slow": 0.3
+            },
+            "4.0": {
+              "early_slow": 0.15,
+              "late_slow": 0.2
+            },
+            "4.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.05
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.255,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.011,
+              "brake_4mps2_max_continuous_s": 0.15,
+              "brake_3_5mps2_max_continuous_s": 0.25,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -4.601,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.012,
+              "brake_4mps2_max_continuous_s": 0.2,
+              "brake_3_5mps2_max_continuous_s": 0.3,
+              "brake_4_5mps2_max_continuous_s": 0.05
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.9,
+            "late_slow": 5.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        }
+      ],
+      "limits": [
+        "Same-model placebo on another road/seed is NOT paired repeatability.",
+        "Posthoc acceleration caps and median filtering are sensitivity analyses, not new precommitted endpoints.",
+        "B and C braking time order does not identify a causal mediated effect.",
+        "The source selector is a full CARLA model lookahead, not GameFormer or RACP.",
+        "No human counterfactual response is observed."
+      ]
+    },
+    {
+      "root": "v13_placebo_behavior_seed89",
+      "source_family": "behavior",
+      "target_family": "behavior",
+      "original_report_summary": {
+        "committed_records": 24,
+        "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+        "diagnostic_model_induced_choice_errors": 0,
+        "independent_human_response_validation": false,
+        "model_blind_distinctions": 0,
+        "official_strong_baselines_run": false,
+        "physical_anchor_contexts_with_diagnostic_errors": 0,
+        "physical_anchor_contexts_with_valid_comparisons": 3,
+        "same_model_placebo": true,
+        "source_unknown": 12,
+        "strict_wrong_model_orders": 0,
+        "target_avoidable_choice_losses": 0,
+        "target_or_parity_unknown": 4,
+        "valid_comparisons": 8
+      },
+      "unique_valid_action_pairs": 4,
+      "unique_pairs_with_model_errors": 0,
+      "cases_with_extreme_acceleration": 0,
+      "status_by_unique_pair": {
+        "NO_MEANINGFUL_TARGET_DIFFERENCE": 4
+      },
+      "cases": [
+        {
+          "anchor": "1",
+          "seed": "89",
+          "pair": [
+            "early_slow",
+            "late_slow"
+          ],
+          "selected_action": "early_slow",
+          "alternative": "late_slow",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.021067,
+          "target_burden_diff_a_minus_b": -0.044343,
+          "counterfactual_sensitivity_error": -0.023276,
+          "response_amplitude_ratio": 0.624,
+          "target_primary_by_action": {
+            "early_slow": [
+              0,
+              0,
+              0
+            ],
+            "late_slow": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "early_slow": 12.726720641526315,
+            "late_slow": 14.883960748892884
+          },
+          "ego_progress_m": {
+            "early_slow": 58.80843284202647,
+            "late_slow": 58.64969798600861
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "early_slow": 0.092531,
+              "late_slow": 0.136874,
+              "chosen_minus_alternative": -0.044343
+            },
+            "cap6": {
+              "early_slow": 0.092531,
+              "late_slow": 0.136874,
+              "chosen_minus_alternative": -0.044343
+            },
+            "cap5": {
+              "early_slow": 0.092531,
+              "late_slow": 0.136874,
+              "chosen_minus_alternative": -0.044343
+            },
+            "median5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0,
+              "chosen_minus_alternative": 0.0
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            },
+            "4.0": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            },
+            "4.5": {
+              "early_slow": 0.0,
+              "late_slow": 0.0
+            }
+          },
+          "trace_physics": {
+            "early_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.265,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.025,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "late_slow": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.345,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.024,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "early_slow": 3.45,
+            "late_slow": 5.4
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "1",
+          "seed": "89",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_late",
+          "alternative": "speed_early",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": 0.006052,
+          "target_burden_diff_a_minus_b": -0.04771,
+          "counterfactual_sensitivity_error": -0.053762,
+          "response_amplitude_ratio": 0.851,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 12.379407061893357,
+            "speed_late": 16.02751058475358
+          },
+          "ego_progress_m": {
+            "speed_early": 58.432422137683496,
+            "speed_late": 58.77193037016102
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 0.106045,
+              "speed_late": 0.153755,
+              "chosen_minus_alternative": 0.04771
+            },
+            "cap6": {
+              "speed_early": 0.106045,
+              "speed_late": 0.153755,
+              "chosen_minus_alternative": 0.04771
+            },
+            "cap5": {
+              "speed_early": 0.106045,
+              "speed_late": 0.153755,
+              "chosen_minus_alternative": 0.04771
+            },
+            "median5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0,
+              "chosen_minus_alternative": 0.0
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            },
+            "4.0": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            },
+            "4.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.265,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.024,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.509,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.024,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.45,
+            "speed_late": 4.4
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "2",
+          "seed": "89",
+          "pair": [
+            "mild_early",
+            "mild_late"
+          ],
+          "selected_action": "mild_early",
+          "alternative": "mild_late",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.043022,
+          "target_burden_diff_a_minus_b": 0.066332,
+          "counterfactual_sensitivity_error": 0.109354,
+          "response_amplitude_ratio": 0.713,
+          "target_primary_by_action": {
+            "mild_early": [
+              0,
+              0,
+              0
+            ],
+            "mild_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "mild_early": 20.17429264908222,
+            "mild_late": 11.894543305588495
+          },
+          "ego_progress_m": {
+            "mild_early": 57.85718724919456,
+            "mild_late": 57.831792509842536
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "mild_early": 0.351915,
+              "mild_late": 0.285583,
+              "chosen_minus_alternative": 0.066332
+            },
+            "cap6": {
+              "mild_early": 0.351915,
+              "mild_late": 0.285583,
+              "chosen_minus_alternative": 0.066332
+            },
+            "cap5": {
+              "mild_early": 0.351915,
+              "mild_late": 0.285583,
+              "chosen_minus_alternative": 0.066332
+            },
+            "median5": {
+              "mild_early": 0.043103,
+              "mild_late": 0.007658,
+              "chosen_minus_alternative": 0.035445
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            },
+            "4.0": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            },
+            "4.5": {
+              "mild_early": 0.0,
+              "mild_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "mild_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -3.003,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.013,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "mild_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.56,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.011,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "mild_early": 4.9,
+            "mild_late": 5.9
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        },
+        {
+          "anchor": "3",
+          "seed": "89",
+          "pair": [
+            "speed_early",
+            "speed_late"
+          ],
+          "selected_action": "speed_early",
+          "alternative": "speed_late",
+          "decision_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+          "model_error_reported": false,
+          "source_burden_diff_a_minus_b": -0.056659,
+          "target_burden_diff_a_minus_b": -0.008249,
+          "counterfactual_sensitivity_error": 0.04841,
+          "response_amplitude_ratio": 0.077,
+          "target_primary_by_action": {
+            "speed_early": [
+              0,
+              0,
+              0
+            ],
+            "speed_late": [
+              0,
+              0,
+              0
+            ]
+          },
+          "target_min_BC_ttc_by_action": {
+            "speed_early": 12.71501727946377,
+            "speed_late": 13.233846884553552
+          },
+          "ego_progress_m": {
+            "speed_early": 58.46740071067987,
+            "speed_late": 58.84244704861957
+          },
+          "raw_trajectory_sensitivity_not_a_replacement_of_preregistered_metric": {
+            "raw": {
+              "speed_early": 0.102206,
+              "speed_late": 0.110455,
+              "chosen_minus_alternative": -0.008249
+            },
+            "cap6": {
+              "speed_early": 0.102206,
+              "speed_late": 0.110455,
+              "chosen_minus_alternative": -0.008249
+            },
+            "cap5": {
+              "speed_early": 0.102206,
+              "speed_late": 0.110455,
+              "chosen_minus_alternative": -0.008249
+            },
+            "median5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0,
+              "chosen_minus_alternative": 0.0
+            }
+          },
+          "brake_duration_threshold_sensitivity": {
+            "3.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            },
+            "4.0": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            },
+            "4.5": {
+              "speed_early": 0.0,
+              "speed_late": 0.0
+            }
+          },
+          "trace_physics": {
+            "speed_early": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.275,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.025,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            },
+            "speed_late": {
+              "valid": true,
+              "poststartup_abs_accel_gt_10mps2": [],
+              "poststartup_extreme_accel_count": 0,
+              "min_c_accel_mps2": -2.341,
+              "max_speed_derivative_vs_physics_accel_diff_mps2": 0.024,
+              "brake_4mps2_max_continuous_s": 0.0,
+              "brake_3_5mps2_max_continuous_s": 0.0,
+              "brake_4_5mps2_max_continuous_s": 0.0
+            }
+          },
+          "ego_first_target_lane_t_s": {
+            "speed_early": 4.45,
+            "speed_late": 4.4
+          },
+          "no_collision_claim_verified": true,
+          "poststartup_extreme_c_accel": false,
+          "caveat": "CARLA conditional outcome only; C braking is not proven B-mediated"
+        }
+      ],
+      "limits": [
+        "Same-model placebo on another road/seed is NOT paired repeatability.",
+        "Posthoc acceleration caps and median filtering are sensitivity analyses, not new precommitted endpoints.",
+        "B and C braking time order does not identify a causal mediated effect.",
+        "The source selector is a full CARLA model lookahead, not GameFormer or RACP.",
+        "No human counterfactual response is observed."
+      ]
+    }
+  ],
+  "caveat": "This does not provide independent human validation or prove a third-party collision."
+}

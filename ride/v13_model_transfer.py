@@ -438,15 +438,15 @@ def main(argv=None):
     for child in (lock,ev):
         for k in ('source','frozen','choices','commit','target'):
             child.add_argument('--'+k,required=True)
-    lock.add_argument('--source-family',choices=('tm','behavior'),required=True)
-    lock.add_argument('--target-family',choices=('tm','behavior'),required=True)
+    lock.add_argument('--source-family',choices=('tm','behavior','mixed_b_tm_c_behavior','mixed_b_tm_c_delayed_behavior'),required=True)
+    lock.add_argument('--target-family',choices=('tm','behavior','mixed_b_tm_c_behavior','mixed_b_tm_c_delayed_behavior'),required=True)
     lock.add_argument('--min-decisions',type=int,default=1)
     lock.add_argument('--placebo',action='store_true',
                       help='SAME family source and target to measure CARLA reset/seed instability; never model errors')
     ev.add_argument('--output',required=True)
     rt.add_argument('--panel',required=True)
-    rt.add_argument('--source-family',choices=('tm','behavior'),default='behavior')
-    rt.add_argument('--target-family',choices=('tm','behavior'),default='tm')
+    rt.add_argument('--source-family',choices=('tm','behavior','mixed_b_tm_c_behavior','mixed_b_tm_c_delayed_behavior'),default='behavior')
+    rt.add_argument('--target-family',choices=('tm','behavior','mixed_b_tm_c_behavior','mixed_b_tm_c_delayed_behavior'),default='tm')
     rt.add_argument('--output',required=True)
     for child in (lock,rt):
         child.add_argument('--tie-resolution',type=float,default=DEFAULT_TIE_RESOLUTION)

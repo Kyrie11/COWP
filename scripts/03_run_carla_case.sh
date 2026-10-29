@@ -40,6 +40,8 @@ python -m ride.carla.run \
   --cutin-rear-gap-m "${RIDE_CUTIN_REAR_GAP_M:-45}" \
   --chain-bc-gap-m "${RIDE_CHAIN_BC_GAP_M:-25}" \
   --chain-c-speed-delta-mps "${RIDE_CHAIN_C_SPEED_DELTA_MPS:-0}" \
+  --chain-c-control-delay-s "${RIDE_CHAIN_C_CONTROL_DELAY_S:-0}" \
+  --chain-c-brake-command-cap "${RIDE_CHAIN_C_BRAKE_COMMAND_CAP:-1.0}" \
   --behavior-speed-protocol "${RIDE_BEHAVIOR_SPEED_PROTOCOL:-nominal_cap}" \
   --behavior-route-protocol "${RIDE_BEHAVIOR_ROUTE_PROTOCOL:-native_shortest}" \
   --cutin-paired-amplitude-mps "${RIDE_CUTIN_PAIRED_AMPLITUDE_MPS:-0.5}" \

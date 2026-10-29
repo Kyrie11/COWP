@@ -1,0 +1,1205 @@
+{
+  "protocol": "V14_ANALYTIC_BRAKING_ENVELOPE_NOT_OBSERVED_COLLISIONS",
+  "assumptions": {
+    "reaction_s": 0.6,
+    "c_max_decel_mps2": 3.5,
+    "b_hypothetical_decel_mps2": 5.0,
+    "standstill_clearance_m": 2.0,
+    "fixed_1d_lane_no_steering": true,
+    "no_proven_human_parameter_calibration": true
+  },
+  "panel": "/mnt/data/ride_review_20261029/evidence/v13_new_confirm_seed_107/target/carla/chain_cut_in.jsonl",
+  "summary": {
+    "arms": 42,
+    "task_matched_pairs": 16,
+    "measured_BC_collisions": 0,
+    "hypothetical_deficit_arms": 0
+  },
+  "candidate_arms": [
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 9,
+        "min_margin_m": 3.708,
+        "worst_frame": {
+          "t": 2.15,
+          "gap_m": 13.995,
+          "b_velocity_mps": 7.06,
+          "c_velocity_mps": 7.765,
+          "b_observed_accel_mps2": -1.75,
+          "hypothetical_required_gap_m": 10.288,
+          "margin_m": 3.708
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.15000000000000002,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 9,
+        "min_margin_m": 1.47,
+        "worst_frame": {
+          "t": 7.15,
+          "gap_m": 12.248,
+          "b_velocity_mps": 7.091,
+          "c_velocity_mps": 7.952,
+          "b_observed_accel_mps2": -2.04,
+          "hypothetical_required_gap_m": 10.778,
+          "margin_m": 1.47
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 7,
+        "min_margin_m": 1.715,
+        "worst_frame": {
+          "t": 7.65,
+          "gap_m": 12.415,
+          "b_velocity_mps": 7.296,
+          "c_velocity_mps": 8.028,
+          "b_observed_accel_mps2": -1.773,
+          "hypothetical_required_gap_m": 10.7,
+          "margin_m": 1.715
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 6,
+        "min_margin_m": 2.43,
+        "worst_frame": {
+          "t": 7.85,
+          "gap_m": 12.728,
+          "b_velocity_mps": 7.049,
+          "c_velocity_mps": 7.763,
+          "b_observed_accel_mps2": -1.54,
+          "hypothetical_required_gap_m": 10.298,
+          "margin_m": 2.43
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 7,
+        "min_margin_m": 2.673,
+        "worst_frame": {
+          "t": 7.05,
+          "gap_m": 11.99,
+          "b_velocity_mps": 7.291,
+          "c_velocity_mps": 7.536,
+          "b_observed_accel_mps2": -2.084,
+          "hypothetical_required_gap_m": 9.317,
+          "margin_m": 2.673
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 2,
+        "min_margin_m": 3.246,
+        "worst_frame": {
+          "t": 7.85,
+          "gap_m": 12.391,
+          "b_velocity_mps": 7.023,
+          "c_velocity_mps": 7.332,
+          "b_observed_accel_mps2": -2.052,
+          "hypothetical_required_gap_m": 9.145,
+          "margin_m": 3.246
+        }
+      }
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 17,
+        "min_margin_m": 1.107,
+        "worst_frame": {
+          "t": 6.25,
+          "gap_m": 12.586,
+          "b_velocity_mps": 6.892,
+          "c_velocity_mps": 8.099,
+          "b_observed_accel_mps2": -2.204,
+          "hypothetical_required_gap_m": 11.479,
+          "margin_m": 1.107
+        }
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 14,
+        "min_margin_m": 2.112,
+        "worst_frame": {
+          "t": 4.6,
+          "gap_m": 12.43,
+          "b_velocity_mps": 6.984,
+          "c_velocity_mps": 7.737,
+          "b_observed_accel_mps2": -2.541,
+          "hypothetical_required_gap_m": 10.317,
+          "margin_m": 2.112
+        }
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 11,
+        "min_margin_m": 3.358,
+        "worst_frame": {
+          "t": 6.2,
+          "gap_m": 12.348,
+          "b_velocity_mps": 7.054,
+          "c_velocity_mps": 7.29,
+          "b_observed_accel_mps2": -2.219,
+          "hypothetical_required_gap_m": 8.99,
+          "margin_m": 3.358
+        }
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 5,
+        "min_margin_m": 3.252,
+        "worst_frame": {
+          "t": 6.8,
+          "gap_m": 12.587,
+          "b_velocity_mps": 7.005,
+          "c_velocity_mps": 7.392,
+          "b_observed_accel_mps2": -2.74,
+          "hypothetical_required_gap_m": 9.335,
+          "margin_m": 3.252
+        }
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 15,
+        "min_margin_m": 3.149,
+        "worst_frame": {
+          "t": 6.7,
+          "gap_m": 12.566,
+          "b_velocity_mps": 6.892,
+          "c_velocity_mps": 7.365,
+          "b_observed_accel_mps2": -2.23,
+          "hypothetical_required_gap_m": 9.417,
+          "margin_m": 3.149
+        }
+      }
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 10,
+        "min_margin_m": 2.789,
+        "worst_frame": {
+          "t": 6.3,
+          "gap_m": 12.435,
+          "b_velocity_mps": 7.063,
+          "c_velocity_mps": 7.536,
+          "b_observed_accel_mps2": -2.831,
+          "hypothetical_required_gap_m": 9.646,
+          "margin_m": 2.789
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 13,
+        "min_margin_m": 2.177,
+        "worst_frame": {
+          "t": 7.1,
+          "gap_m": 12.356,
+          "b_velocity_mps": 7.1,
+          "c_velocity_mps": 7.746,
+          "b_observed_accel_mps2": -1.617,
+          "hypothetical_required_gap_m": 10.179,
+          "margin_m": 2.177
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 9,
+        "min_margin_m": 1.919,
+        "worst_frame": {
+          "t": 7.75,
+          "gap_m": 12.21,
+          "b_velocity_mps": 6.969,
+          "c_velocity_mps": 7.72,
+          "b_observed_accel_mps2": -1.602,
+          "hypothetical_required_gap_m": 10.291,
+          "margin_m": 1.919
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 8,
+        "min_margin_m": 2.543,
+        "worst_frame": {
+          "t": 7.0,
+          "gap_m": 12.608,
+          "b_velocity_mps": 7.179,
+          "c_velocity_mps": 7.746,
+          "b_observed_accel_mps2": -2.392,
+          "hypothetical_required_gap_m": 10.065,
+          "margin_m": 2.543
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 6,
+        "min_margin_m": 2.017,
+        "worst_frame": {
+          "t": 7.7,
+          "gap_m": 12.248,
+          "b_velocity_mps": 7.063,
+          "c_velocity_mps": 7.746,
+          "b_observed_accel_mps2": -2.449,
+          "hypothetical_required_gap_m": 10.23,
+          "margin_m": 2.017
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 12,
+        "min_margin_m": 2.174,
+        "worst_frame": {
+          "t": 6.8,
+          "gap_m": 12.675,
+          "b_velocity_mps": 6.869,
+          "c_velocity_mps": 7.746,
+          "b_observed_accel_mps2": -2.417,
+          "hypothetical_required_gap_m": 10.501,
+          "margin_m": 2.174
+        }
+      }
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 12,
+        "min_margin_m": 2.537,
+        "worst_frame": {
+          "t": 5.1,
+          "gap_m": 13.525,
+          "b_velocity_mps": 6.505,
+          "c_velocity_mps": 7.746,
+          "b_observed_accel_mps2": -1.93,
+          "hypothetical_required_gap_m": 10.989,
+          "margin_m": 2.537
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 22,
+        "min_margin_m": 2.082,
+        "worst_frame": {
+          "t": 5.3,
+          "gap_m": 12.562,
+          "b_velocity_mps": 6.859,
+          "c_velocity_mps": 7.734,
+          "b_observed_accel_mps2": -2.746,
+          "hypothetical_required_gap_m": 10.48,
+          "margin_m": 2.082
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 12,
+        "min_margin_m": 1.599,
+        "worst_frame": {
+          "t": 7.2,
+          "gap_m": 12.226,
+          "b_velocity_mps": 7.311,
+          "c_velocity_mps": 8.01,
+          "b_observed_accel_mps2": -2.092,
+          "hypothetical_required_gap_m": 10.626,
+          "margin_m": 1.599
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 22,
+        "min_margin_m": 1.497,
+        "worst_frame": {
+          "t": 7.2,
+          "gap_m": 12.109,
+          "b_velocity_mps": 7.275,
+          "c_velocity_mps": 7.987,
+          "b_observed_accel_mps2": -2.326,
+          "hypothetical_required_gap_m": 10.613,
+          "margin_m": 1.497
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 13,
+        "min_margin_m": 1.422,
+        "worst_frame": {
+          "t": 7.25,
+          "gap_m": 12.184,
+          "b_velocity_mps": 7.215,
+          "c_velocity_mps": 8.009,
+          "b_observed_accel_mps2": -1.54,
+          "hypothetical_required_gap_m": 10.762,
+          "margin_m": 1.422
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 15,
+        "min_margin_m": 3.344,
+        "worst_frame": {
+          "t": 6.7,
+          "gap_m": 13.792,
+          "b_velocity_mps": 6.89,
+          "c_velocity_mps": 7.737,
+          "b_observed_accel_mps2": -2.361,
+          "hypothetical_required_gap_m": 10.448,
+          "margin_m": 3.344
+        }
+      }
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 20,
+        "min_margin_m": 1.497,
+        "worst_frame": {
+          "t": 7.25,
+          "gap_m": 12.202,
+          "b_velocity_mps": 7.302,
+          "c_velocity_mps": 8.032,
+          "b_observed_accel_mps2": -1.782,
+          "hypothetical_required_gap_m": 10.705,
+          "margin_m": 1.497
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 19,
+        "min_margin_m": 1.425,
+        "worst_frame": {
+          "t": 6.1,
+          "gap_m": 12.185,
+          "b_velocity_mps": 7.073,
+          "c_velocity_mps": 7.938,
+          "b_observed_accel_mps2": -2.279,
+          "hypothetical_required_gap_m": 10.76,
+          "margin_m": 1.425
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 10,
+        "min_margin_m": 1.029,
+        "worst_frame": {
+          "t": 6.0,
+          "gap_m": 11.929,
+          "b_velocity_mps": 6.93,
+          "c_velocity_mps": 7.916,
+          "b_observed_accel_mps2": -2.275,
+          "hypothetical_required_gap_m": 10.9,
+          "margin_m": 1.029
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 15,
+        "min_margin_m": 2.776,
+        "worst_frame": {
+          "t": 7.0,
+          "gap_m": 11.93,
+          "b_velocity_mps": 7.145,
+          "c_velocity_mps": 7.398,
+          "b_observed_accel_mps2": -2.108,
+          "hypothetical_required_gap_m": 9.154,
+          "margin_m": 2.776
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 8,
+        "min_margin_m": 1.466,
+        "worst_frame": {
+          "t": 6.0,
+          "gap_m": 11.906,
+          "b_velocity_mps": 6.955,
+          "c_velocity_mps": 7.767,
+          "b_observed_accel_mps2": -2.069,
+          "hypothetical_required_gap_m": 10.44,
+          "margin_m": 1.466
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 17,
+        "min_margin_m": 0.785,
+        "worst_frame": {
+          "t": 6.0,
+          "gap_m": 12.303,
+          "b_velocity_mps": 6.633,
+          "c_velocity_mps": 7.991,
+          "b_observed_accel_mps2": -2.449,
+          "hypothetical_required_gap_m": 11.518,
+          "margin_m": 0.785
+        }
+      }
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.1,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 23,
+        "min_margin_m": 0.992,
+        "worst_frame": {
+          "t": 5.5,
+          "gap_m": 12.564,
+          "b_velocity_mps": 6.488,
+          "c_velocity_mps": 7.944,
+          "b_observed_accel_mps2": -2.007,
+          "hypothetical_required_gap_m": 11.572,
+          "margin_m": 0.992
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "cruise",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.0,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_QUALIFYING_B_BRAKE_OBSERVATION",
+        "frames": 0,
+        "min_margin_m": null
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "early_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.15000000000000002,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 19,
+        "min_margin_m": 1.33,
+        "worst_frame": {
+          "t": 7.9,
+          "gap_m": 12.073,
+          "b_velocity_mps": 7.114,
+          "c_velocity_mps": 7.952,
+          "b_observed_accel_mps2": -2.05,
+          "hypothetical_required_gap_m": 10.743,
+          "margin_m": 1.33
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "late_slow",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.2,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 14,
+        "min_margin_m": 1.656,
+        "worst_frame": {
+          "t": 6.45,
+          "gap_m": 12.106,
+          "b_velocity_mps": 7.201,
+          "c_velocity_mps": 7.893,
+          "b_observed_accel_mps2": -2.492,
+          "hypothetical_required_gap_m": 10.45,
+          "margin_m": 1.656
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.15000000000000002,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 20,
+        "min_margin_m": 1.048,
+        "worst_frame": {
+          "t": 6.55,
+          "gap_m": 12.072,
+          "b_velocity_mps": 6.933,
+          "c_velocity_mps": 7.961,
+          "b_observed_accel_mps2": -3.172,
+          "hypothetical_required_gap_m": 11.024,
+          "margin_m": 1.048
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "mild_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.2,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 14,
+        "min_margin_m": 1.656,
+        "worst_frame": {
+          "t": 6.45,
+          "gap_m": 12.106,
+          "b_velocity_mps": 7.201,
+          "c_velocity_mps": 7.893,
+          "b_observed_accel_mps2": -2.493,
+          "hypothetical_required_gap_m": 10.45,
+          "margin_m": 1.656
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_early",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.05,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 17,
+        "min_margin_m": 2.161,
+        "worst_frame": {
+          "t": 6.6,
+          "gap_m": 11.833,
+          "b_velocity_mps": 7.349,
+          "c_velocity_mps": 7.694,
+          "b_observed_accel_mps2": -1.913,
+          "hypothetical_required_gap_m": 9.672,
+          "margin_m": 2.161
+        }
+      }
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "profile": "speed_late",
+      "valid": true,
+      "measured_C_sustained_brake_s": 0.25,
+      "measured_BC_collision": false,
+      "hypothetical_screen": {
+        "status": "NO_STOP_MARGIN_DEFICIT_IN_SCREEN",
+        "frames": 19,
+        "min_margin_m": 0.786,
+        "worst_frame": {
+          "t": 5.25,
+          "gap_m": 12.008,
+          "b_velocity_mps": 6.586,
+          "c_velocity_mps": 7.866,
+          "b_observed_accel_mps2": -3.997,
+          "hypothetical_required_gap_m": 11.222,
+          "margin_m": 0.786
+        }
+      }
+    }
+  ],
+  "paired_margins": [
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.06828401700347797,
+      "margin_a_m": 1.47,
+      "margin_b_m": 1.715,
+      "margin_diff_a_minus_b_m": -0.245
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": false,
+      "invalid_reason": "initial_position_mismatch:follower_c",
+      "ego_progress_delta_m": null,
+      "margin_a_m": 2.43,
+      "margin_b_m": 2.673,
+      "margin_diff_a_minus_b_m": null
+    },
+    {
+      "anchor": "0",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.15222398809678594,
+      "margin_a_m": 3.246,
+      "margin_b_m": 1.107,
+      "margin_diff_a_minus_b_m": 2.139
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.16820848960625767,
+      "margin_a_m": 2.112,
+      "margin_b_m": null,
+      "margin_diff_a_minus_b_m": null
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.05428409414834334,
+      "margin_a_m": 3.358,
+      "margin_b_m": 3.252,
+      "margin_diff_a_minus_b_m": 0.106
+    },
+    {
+      "anchor": "1",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.3769312349020524,
+      "margin_a_m": 3.149,
+      "margin_b_m": 2.789,
+      "margin_diff_a_minus_b_m": 0.36
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.0775209063288429,
+      "margin_a_m": 2.177,
+      "margin_b_m": 1.919,
+      "margin_diff_a_minus_b_m": 0.258
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.08236461632268544,
+      "margin_a_m": 2.543,
+      "margin_b_m": 2.017,
+      "margin_diff_a_minus_b_m": 0.526
+    },
+    {
+      "anchor": "2",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.2886734208341437,
+      "margin_a_m": 2.174,
+      "margin_b_m": 2.537,
+      "margin_diff_a_minus_b_m": -0.363
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.16056691593683325,
+      "margin_a_m": 2.082,
+      "margin_b_m": 1.599,
+      "margin_diff_a_minus_b_m": 0.483
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.14784850142632422,
+      "margin_a_m": 1.497,
+      "margin_b_m": 1.422,
+      "margin_diff_a_minus_b_m": 0.075
+    },
+    {
+      "anchor": "3",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": false,
+      "invalid_reason": "initial_position_mismatch:follower_c",
+      "ego_progress_delta_m": null,
+      "margin_a_m": 3.344,
+      "margin_b_m": 1.497,
+      "margin_diff_a_minus_b_m": null
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.23477873883985012,
+      "margin_a_m": 1.425,
+      "margin_b_m": 1.029,
+      "margin_diff_a_minus_b_m": 0.396
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.12620095020321997,
+      "margin_a_m": 2.776,
+      "margin_b_m": 1.466,
+      "margin_diff_a_minus_b_m": 1.31
+    },
+    {
+      "anchor": "4",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.3327075812521443,
+      "margin_a_m": 0.785,
+      "margin_b_m": 0.992,
+      "margin_diff_a_minus_b_m": -0.207
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.005375553699785485,
+      "margin_a_m": 1.33,
+      "margin_b_m": 1.656,
+      "margin_diff_a_minus_b_m": -0.326
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.021653128210296302,
+      "margin_a_m": 1.048,
+      "margin_b_m": 1.656,
+      "margin_diff_a_minus_b_m": -0.608
+    },
+    {
+      "anchor": "5",
+      "seed": "107",
+      "family": "tm",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "valid_task_matched": true,
+      "invalid_reason": "",
+      "ego_progress_delta_m": 0.5510664276008796,
+      "margin_a_m": 2.161,
+      "margin_b_m": 0.786,
+      "margin_diff_a_minus_b_m": 1.375
+    }
+  ],
+  "WARNING": "A negative analytic stopping margin is conditional stress vulnerability, NOT an observed CARLA or human collision."
+}

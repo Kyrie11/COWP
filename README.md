@@ -1,3 +1,9 @@
+# RIDE v14 — Counterfactual Third-Party Safety Audit (2026-10-29)
+
+**当前最优先阅读：[`docs/v14/V14_SCIENCE_AND_COMMANDS_CN.md`](docs/v14/V14_SCIENCE_AND_COMMANDS_CN.md)。** 基于三份 v13 真实原始输出的只读审计，新增同冻结道路 placebo、第三方反事实负担敏感性、C 制动命令延迟的 CARLA 受控压力测试，以及事前锁定选择再运行目标环境的协议。**没有宣称已经观察到 B–C 次生碰撞，也没有在本地运行 CARLA 闭环。** 原始 v13 及更早 README 保留如下，属于历史协议。
+
+---
+
 # 最新实验协议：RIDE v11 (2026-10-28)
 
 **请先阅读 [README_V11_CN.md](README_V11_CN.md)。** 本工程包含从 v10 升级的 CARLA 四车机制研究和只读科学审计。下方历史 README 属于之前的版本，不构成当前 RQ1/RQ2 的通过证据。
