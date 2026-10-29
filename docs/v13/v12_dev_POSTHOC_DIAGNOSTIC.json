@@ -1,0 +1,1802 @@
+{
+  "frozen_context": {
+    "anchor_protocol_version": "ride_lane_corridor_v12_20261028",
+    "anchors": [
+      {
+        "anchor": 0,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -485.9306946,
+            261.4864197,
+            0.0
+          ],
+          "end": [
+            -482.57724,
+            153.1913757,
+            0.0
+          ],
+          "follower_a": [
+            -483.7336121,
+            242.8543549,
+            0.0
+          ],
+          "follower_b": [
+            -480.1794739,
+            274.5385742,
+            0.0
+          ],
+          "follower_c": [
+            -475.4081726,
+            292.1416321,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 18.599,
+          "front_to_rear_m": 31.732,
+          "rear_b_to_c_m": 17.67
+        },
+        "key": [
+          -483.7336120605469,
+          242.85435485839844,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -475.4081726074219,
+            292.1416320800781
+          ],
+          [
+            -476.7841796875,
+            287.7923278808594
+          ],
+          [
+            -478.0386962890625,
+            283.406494140625
+          ],
+          [
+            -479.1707458496094,
+            278.9873962402344
+          ],
+          [
+            -480.1794738769531,
+            274.53857421875
+          ],
+          [
+            -481.0640563964844,
+            270.06341552734375
+          ],
+          [
+            -481.8238830566406,
+            265.56536865234375
+          ],
+          [
+            -482.4582824707031,
+            261.0479431152344
+          ],
+          [
+            -482.966796875,
+            256.51458740234375
+          ],
+          [
+            -483.3490295410156,
+            251.9688720703125
+          ],
+          [
+            -483.6047058105469,
+            247.41429138183594
+          ],
+          [
+            -483.7336120605469,
+            242.85435485839844
+          ],
+          [
+            -483.7566833496094,
+            238.04373168945312
+          ],
+          [
+            -483.768310546875,
+            233.04884338378906
+          ],
+          [
+            -483.7538146972656,
+            228.2063751220703
+          ],
+          [
+            -483.69091796875,
+            223.36431884765625
+          ],
+          [
+            -483.5796203613281,
+            218.5231170654297
+          ],
+          [
+            -483.43060302734375,
+            213.56129455566406
+          ],
+          [
+            -483.2792663574219,
+            208.56358337402344
+          ],
+          [
+            -483.1279296875,
+            203.5658721923828
+          ],
+          [
+            -482.9771728515625,
+            198.52525329589844
+          ],
+          [
+            -482.86090087890625,
+            193.3690643310547
+          ],
+          [
+            -482.79620361328125,
+            188.21200561523438
+          ],
+          [
+            -482.7644348144531,
+            183.1914825439453
+          ],
+          [
+            -482.7332458496094,
+            178.1915740966797
+          ],
+          [
+            -482.7020568847656,
+            173.1909942626953
+          ],
+          [
+            -482.67083740234375,
+            168.1910858154297
+          ],
+          [
+            -482.6396484375,
+            163.19117736816406
+          ],
+          [
+            -482.60845947265625,
+            158.1912841796875
+          ],
+          [
+            -482.5772399902344,
+            153.19137573242188
+          ]
+        ],
+        "target_lane_id": 6,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": 5,
+            "road_id": 45,
+            "yaw": 262.802856
+          },
+          "end": {
+            "lane_id": 6,
+            "road_id": 41,
+            "yaw": 270.357513
+          },
+          "follower_a": {
+            "lane_id": 6,
+            "road_id": 45,
+            "yaw": 269.177673
+          },
+          "follower_b": {
+            "lane_id": 6,
+            "road_id": 45,
+            "yaw": 258.021729
+          },
+          "follower_c": {
+            "lane_id": 6,
+            "road_id": 45,
+            "yaw": 251.646912
+          }
+        }
+      },
+      {
+        "anchor": 1,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -261.6540222,
+            428.7973022,
+            0.0
+          ],
+          "end": [
+            -150.8922577,
+            419.5314331,
+            0.0
+          ],
+          "follower_a": [
+            -241.6668701,
+            425.2246399,
+            0.0
+          ],
+          "follower_b": [
+            -276.6666565,
+            425.3518372,
+            0.0
+          ],
+          "follower_c": [
+            -296.6665039,
+            425.4244995,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 20.0,
+          "front_to_rear_m": 35.0,
+          "rear_b_to_c_m": 20.0
+        },
+        "key": [
+          -241.6668701171875,
+          425.2246398925781,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -296.66650390625,
+            425.42449951171875
+          ],
+          [
+            -291.6665344238281,
+            425.4063415527344
+          ],
+          [
+            -286.66656494140625,
+            425.38818359375
+          ],
+          [
+            -281.6665954589844,
+            425.3699951171875
+          ],
+          [
+            -276.6666564941406,
+            425.3518371582031
+          ],
+          [
+            -271.66668701171875,
+            425.3336486816406
+          ],
+          [
+            -266.6667175292969,
+            425.31549072265625
+          ],
+          [
+            -261.666748046875,
+            425.2973327636719
+          ],
+          [
+            -256.6667785644531,
+            425.2791442871094
+          ],
+          [
+            -251.66680908203125,
+            425.260986328125
+          ],
+          [
+            -246.66683959960938,
+            425.2428283691406
+          ],
+          [
+            -241.6668701171875,
+            425.2246398925781
+          ],
+          [
+            -236.66690063476562,
+            425.20648193359375
+          ],
+          [
+            -231.66693115234375,
+            425.1883239746094
+          ],
+          [
+            -226.66697692871094,
+            425.1701354980469
+          ],
+          [
+            -221.66700744628906,
+            425.1519775390625
+          ],
+          [
+            -216.6670379638672,
+            425.1338195800781
+          ],
+          [
+            -211.66708374023438,
+            425.1156311035156
+          ],
+          [
+            -206.6671142578125,
+            425.09747314453125
+          ],
+          [
+            -201.66714477539062,
+            425.0793151855469
+          ],
+          [
+            -196.64895629882812,
+            425.05987548828125
+          ],
+          [
+            -191.51809692382812,
+            424.9588928222656
+          ],
+          [
+            -186.39138793945312,
+            424.72900390625
+          ],
+          [
+            -181.2720947265625,
+            424.37030029296875
+          ],
+          [
+            -176.16342163085938,
+            423.88299560546875
+          ],
+          [
+            -171.068603515625,
+            423.2674255371094
+          ],
+          [
+            -165.99087524414062,
+            422.52398681640625
+          ],
+          [
+            -160.9334716796875,
+            421.6531677246094
+          ],
+          [
+            -155.89952087402344,
+            420.6553955078125
+          ],
+          [
+            -150.8922576904297,
+            419.53143310546875
+          ]
+        ],
+        "target_lane_id": -1,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -2,
+            "road_id": 45,
+            "yaw": -0.208197
+          },
+          "end": {
+            "lane_id": -1,
+            "road_id": 45,
+            "yaw": -13.371362
+          },
+          "follower_a": {
+            "lane_id": -1,
+            "road_id": 45,
+            "yaw": -0.208197
+          },
+          "follower_b": {
+            "lane_id": -1,
+            "road_id": 45,
+            "yaw": -0.208197
+          },
+          "follower_c": {
+            "lane_id": -1,
+            "road_id": 45,
+            "yaw": -0.208197
+          }
+        }
+      },
+      {
+        "anchor": 2,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            173.9422302,
+            28.7804947,
+            8.3708544
+          ],
+          "end": [
+            283.8664551,
+            34.1573753,
+            2.2559092
+          ],
+          "follower_a": [
+            193.8795776,
+            32.6213303,
+            7.3731942
+          ],
+          "follower_b": [
+            158.8846741,
+            32.0239792,
+            9.0140171
+          ],
+          "follower_c": [
+            138.8875885,
+            31.6826363,
+            9.7314577
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 19.971,
+          "front_to_rear_m": 34.949,
+          "rear_b_to_c_m": 20.0
+        },
+        "key": [
+          193.87957763671875,
+          32.62133026123047,
+          7.373194217681885
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            138.88758850097656,
+            31.682636260986328
+          ],
+          [
+            143.88685607910156,
+            31.76797103881836
+          ],
+          [
+            148.88613891601562,
+            31.85330581665039
+          ],
+          [
+            153.88540649414062,
+            31.938644409179688
+          ],
+          [
+            158.88467407226562,
+            32.02397918701172
+          ],
+          [
+            163.88394165039062,
+            32.10931396484375
+          ],
+          [
+            168.8832244873047,
+            32.19465255737305
+          ],
+          [
+            173.8824920654297,
+            32.27998733520508
+          ],
+          [
+            178.8817596435547,
+            32.36532211303711
+          ],
+          [
+            183.8810272216797,
+            32.45065689086914
+          ],
+          [
+            188.88031005859375,
+            32.53599548339844
+          ],
+          [
+            193.87957763671875,
+            32.62133026123047
+          ],
+          [
+            198.87884521484375,
+            32.7066650390625
+          ],
+          [
+            203.8781280517578,
+            32.79199981689453
+          ],
+          [
+            208.8773956298828,
+            32.87733840942383
+          ],
+          [
+            213.8766632080078,
+            32.96267318725586
+          ],
+          [
+            218.8759307861328,
+            33.04800796508789
+          ],
+          [
+            223.8751983642578,
+            33.13334274291992
+          ],
+          [
+            228.87448120117188,
+            33.21868133544922
+          ],
+          [
+            233.87374877929688,
+            33.30401611328125
+          ],
+          [
+            238.87303161621094,
+            33.38935089111328
+          ],
+          [
+            243.87229919433594,
+            33.47468566894531
+          ],
+          [
+            248.87156677246094,
+            33.56002426147461
+          ],
+          [
+            253.87083435058594,
+            33.64535903930664
+          ],
+          [
+            258.8700866699219,
+            33.73069381713867
+          ],
+          [
+            263.869384765625,
+            33.81603240966797
+          ],
+          [
+            268.86865234375,
+            33.9013671875
+          ],
+          [
+            273.867919921875,
+            33.98670196533203
+          ],
+          [
+            278.8671875,
+            34.07203674316406
+          ],
+          [
+            283.866455078125,
+            34.15737533569336
+          ]
+        ],
+        "target_lane_id": 4,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": 3,
+            "road_id": 38,
+            "yaw": 0.977936
+          },
+          "end": {
+            "lane_id": 4,
+            "road_id": 38,
+            "yaw": 0.977936
+          },
+          "follower_a": {
+            "lane_id": 4,
+            "road_id": 38,
+            "yaw": 0.977936
+          },
+          "follower_b": {
+            "lane_id": 4,
+            "road_id": 38,
+            "yaw": 0.977936
+          },
+          "follower_c": {
+            "lane_id": 4,
+            "road_id": 38,
+            "yaw": 0.977936
+          }
+        }
+      },
+      {
+        "anchor": 3,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -104.6836243,
+            -157.3653564,
+            0.0
+          ],
+          "end": [
+            -200.1235046,
+            -105.5615845,
+            0.0
+          ],
+          "follower_a": [
+            -122.5926743,
+            -148.2409821,
+            0.0
+          ],
+          "follower_b": [
+            -95.5503006,
+            -169.5806274,
+            0.0
+          ],
+          "follower_c": [
+            -81.1219177,
+            -182.9796448,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 19.886,
+          "front_to_rear_m": 34.403,
+          "rear_b_to_c_m": 19.52
+        },
+        "key": [
+          -122.5926742553711,
+          -148.24098205566406,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -81.12191772460938,
+            -182.97964477539062
+          ],
+          [
+            -84.65522003173828,
+            -179.5511932373047
+          ],
+          [
+            -88.23822021484375,
+            -176.1747283935547
+          ],
+          [
+            -91.87017822265625,
+            -172.85098266601562
+          ],
+          [
+            -95.55030059814453,
+            -169.58062744140625
+          ],
+          [
+            -99.27781677246094,
+            -166.36439514160156
+          ],
+          [
+            -103.0519027709961,
+            -163.2029571533203
+          ],
+          [
+            -106.87178802490234,
+            -160.09701538085938
+          ],
+          [
+            -110.73662567138672,
+            -157.04718017578125
+          ],
+          [
+            -114.64561462402344,
+            -154.05416870117188
+          ],
+          [
+            -118.5979232788086,
+            -151.11854553222656
+          ],
+          [
+            -122.5926742553711,
+            -148.24098205566406
+          ],
+          [
+            -126.6290512084961,
+            -145.422119140625
+          ],
+          [
+            -130.7061767578125,
+            -142.66249084472656
+          ],
+          [
+            -134.82318115234375,
+            -139.96273803710938
+          ],
+          [
+            -138.97918701171875,
+            -137.32339477539062
+          ],
+          [
+            -143.17330932617188,
+            -134.7450714111328
+          ],
+          [
+            -147.4046630859375,
+            -132.22830200195312
+          ],
+          [
+            -151.7130889892578,
+            -129.72467041015625
+          ],
+          [
+            -156.0370635986328,
+            -127.21405792236328
+          ],
+          [
+            -160.36105346679688,
+            -124.70344543457031
+          ],
+          [
+            -164.63104248046875,
+            -122.26325225830078
+          ],
+          [
+            -168.9337158203125,
+            -119.9035873413086
+          ],
+          [
+            -173.27737426757812,
+            -117.6202621459961
+          ],
+          [
+            -177.66067504882812,
+            -115.41397857666016
+          ],
+          [
+            -182.08226013183594,
+            -113.28546142578125
+          ],
+          [
+            -186.5406951904297,
+            -111.23532104492188
+          ],
+          [
+            -191.03468322753906,
+            -109.26422882080078
+          ],
+          [
+            -195.562744140625,
+            -107.372802734375
+          ],
+          [
+            -200.12350463867188,
+            -105.56158447265625
+          ]
+        ],
+        "target_lane_id": -3,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -2,
+            "road_id": 23,
+            "yaw": 141.303833
+          },
+          "end": {
+            "lane_id": -3,
+            "road_id": 23,
+            "yaw": 158.846558
+          },
+          "follower_a": {
+            "lane_id": -3,
+            "road_id": 23,
+            "yaw": 144.65213
+          },
+          "follower_b": {
+            "lane_id": -3,
+            "road_id": 23,
+            "yaw": 138.792618
+          },
+          "follower_c": {
+            "lane_id": -3,
+            "road_id": 23,
+            "yaw": 135.444336
+          }
+        }
+      }
+    ],
+    "map": "Carla/Maps/Town04",
+    "seed": 17
+  },
+  "important_limitations": [
+    "Source lookahead runs hypothetical CARLA futures before target outcome; not a realtime predictor or strong planner.",
+    "Target and source use distinct CARLA responder policies but common engine; no human counterfactual truth.",
+    "Each action pair must pass initial-state, maneuver, matched-progress and cross-family ego-execution checks.",
+    "No measurable event may be inferred from an UNKNOWN, missing or invalid trial.",
+    "Cluster by physical corridor; do not treat choices/seeds/trials as independent road scenes.",
+    "Continuous burden is a newly preregistered diagnostic endpoint, not a retroactive pass of old RQ1."
+  ],
+  "locked_params": {
+    "comfort_threshold_mps2": 2.0,
+    "ego_cross_family_pos_tol_m": 0.5,
+    "ego_cross_family_speed_tol_mps": 0.75,
+    "meaningful_C_burden_delta_mps": 0.25,
+    "pairs": [
+      [
+        "early_slow",
+        "late_slow"
+      ],
+      [
+        "mild_early",
+        "mild_late"
+      ],
+      [
+        "speed_early",
+        "speed_late"
+      ]
+    ],
+    "policies": [
+      "SOURCE_THIRD_PARTY",
+      "PROGRESS_ONLY"
+    ],
+    "progress_tolerance_m": 3.0,
+    "short_TTC_threshold_s": 1.5,
+    "tie_resolution_mps": 0.05
+  },
+  "mode": "POSTHOC_RETROSPECTIVE_DIAGNOSTIC_NOT_PRECOMMITTED",
+  "protocol": "ride_v13_source_before_target_20261029",
+  "results": [
+    {
+      "anchor": "0",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "0",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.382434,
+      "selected_action": "mild_early",
+      "source_order": -1,
+      "status": "SELECTED",
+      "strict_wrong_model_order": true,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.0354845960651744,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.97884,
+          "ego_progress_m": 58.81134465385415,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 14.853692618869756,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.596406,
+          "ego_progress_m": 58.846829249919324,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 15.067022988677346,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.382434,
+      "selected_action": "mild_early",
+      "source_order": -1,
+      "status": "SELECTED",
+      "strict_wrong_model_order": true,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.0354845960651744,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.97884,
+          "ego_progress_m": 58.81134465385415,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 14.853692618869756,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.596406,
+          "ego_progress_m": 58.846829249919324,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 15.067022988677346,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.566588,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.28199792145532143,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.895048,
+          "ego_progress_m": 58.54392553787305,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 12.967746573996065,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 2.461636,
+          "ego_progress_m": 58.82592345932837,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 9.575648759863903,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.566588,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.28199792145532143,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.895048,
+          "ego_progress_m": 58.54392553787305,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 12.967746573996065,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 2.461636,
+          "ego_progress_m": 58.82592345932837,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 9.575648759863903,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.113274,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.06356593744990846,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.62639,
+          "ego_progress_m": 58.93384805059615,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.165244172728233,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.513116,
+          "ego_progress_m": 58.87028211314624,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 22.88392848049448,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.113274,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.06356593744990846,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.62639,
+          "ego_progress_m": 58.93384805059615,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.165244172728233,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.513116,
+          "ego_progress_m": 58.87028211314624,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 22.88392848049448,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": "mild_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": "mild_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.398139,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.2668372274200763,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.418156,
+          "ego_progress_m": 58.69929008829294,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 24.65346995461325,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.816295,
+          "ego_progress_m": 58.96612731571302,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 7.760220087104344,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.398139,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.2668372274200763,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.418156,
+          "ego_progress_m": 58.69929008829294,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 24.65346995461325,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.816295,
+          "ego_progress_m": 58.96612731571302,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 7.760220087104344,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "SELECTED_C_BURDEN_BETTER",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.271089,
+      "selected_action": "early_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": -1,
+      "target_progress_delta_m": 0.04225263361455234,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.499015,
+          "ego_progress_m": 58.801002257356025,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.210719080138647,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.770104,
+          "ego_progress_m": 58.75874962374147,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.097931177252196,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "SELECTED_C_BURDEN_BETTER",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.271089,
+      "selected_action": "early_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": -1,
+      "target_progress_delta_m": 0.04225263361455234,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.499015,
+          "ego_progress_m": 58.801002257356025,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.210719080138647,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.770104,
+          "ego_progress_m": 58.75874962374147,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.097931177252196,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.168716,
+      "selected_action": "mild_early",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.00394501978591677,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.679679,
+          "ego_progress_m": 58.7627708405193,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 14.227814285382296,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.848395,
+          "ego_progress_m": 58.758825820733385,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.10009219619004,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "17",
+      "selected_C_burden_excess_mps": -0.168716,
+      "selected_action": "mild_early",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.00394501978591677,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.679679,
+          "ego_progress_m": 58.7627708405193,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 14.227814285382296,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.848395,
+          "ego_progress_m": 58.758825820733385,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.10009219619004,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": "speed_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "2",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "17",
+      "selected_action": "speed_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.605408,
+      "selected_action": "early_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.1477314441692954,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.987022,
+          "ego_progress_m": 58.91016718710084,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.58024179371344,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.381614,
+          "ego_progress_m": 58.762435742931544,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.070683135837733,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.605408,
+      "selected_action": "early_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.1477314441692954,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.987022,
+          "ego_progress_m": 58.91016718710084,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.58024179371344,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.381614,
+          "ego_progress_m": 58.762435742931544,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.070683135837733,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.599004,
+      "selected_action": "mild_early",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.0701897682243029,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.060184,
+          "ego_progress_m": 58.835619496368786,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.017135816908457,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.46118,
+          "ego_progress_m": 58.76542972814448,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.070683135837733,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.599004,
+      "selected_action": "mild_early",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": 1,
+      "target_progress_delta_m": 0.0701897682243029,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 1.060184,
+          "ego_progress_m": 58.835619496368786,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 13.017135816908457,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.46118,
+          "ego_progress_m": 58.76542972814448,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.070683135837733,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": true,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.291143,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.4029864711436133,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.502622,
+          "ego_progress_m": 58.50046324745163,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 23.35865263100121,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.793765,
+          "ego_progress_m": 58.90344971859524,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 6.751468171144235,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    },
+    {
+      "anchor": "3",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": true,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "AVOIDABLE_C_BURDEN_LOSS",
+      "seed": "17",
+      "selected_C_burden_excess_mps": 0.291143,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": true,
+      "target_order": -1,
+      "target_progress_delta_m": 0.4029864711436133,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.502622,
+          "ego_progress_m": 58.50046324745163,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 23.35865263100121,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.793765,
+          "ego_progress_m": 58.90344971859524,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 6.751468171144235,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": true
+    }
+  ],
+  "source_family": "behavior",
+  "summary": {
+    "committed_records": 24,
+    "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+    "diagnostic_model_induced_choice_errors": 6,
+    "independent_human_response_validation": false,
+    "model_blind_distinctions": 12,
+    "official_strong_baselines_run": false,
+    "physical_anchor_contexts_with_diagnostic_errors": 3,
+    "physical_anchor_contexts_with_valid_comparisons": 4,
+    "prospective_evidence": false,
+    "source_unknown": 2,
+    "strict_wrong_model_orders": 2,
+    "target_avoidable_choice_losses": 12,
+    "target_or_parity_unknown": 4,
+    "valid_comparisons": 18
+  },
+  "target_family": "tm"
+}

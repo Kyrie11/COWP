@@ -1,0 +1,80 @@
+{
+  "evidence_status": "POSTHOC_HYPOTHESIS_GENERATION_NOT_PROSPECTIVE_VALIDATION",
+  "source": "behavior",
+  "target": "tm",
+  "per_panel": {
+    "dev": {
+      "committed_records": 24,
+      "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+      "diagnostic_model_induced_choice_errors": 6,
+      "independent_human_response_validation": false,
+      "model_blind_distinctions": 12,
+      "official_strong_baselines_run": false,
+      "physical_anchor_contexts_with_diagnostic_errors": 3,
+      "physical_anchor_contexts_with_valid_comparisons": 4,
+      "prospective_evidence": false,
+      "source_unknown": 2,
+      "strict_wrong_model_orders": 2,
+      "target_avoidable_choice_losses": 12,
+      "target_or_parity_unknown": 4,
+      "valid_comparisons": 18
+    },
+    "seed_23": {
+      "committed_records": 36,
+      "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+      "diagnostic_model_induced_choice_errors": 0,
+      "independent_human_response_validation": false,
+      "model_blind_distinctions": 0,
+      "official_strong_baselines_run": false,
+      "physical_anchor_contexts_with_diagnostic_errors": 0,
+      "physical_anchor_contexts_with_valid_comparisons": 3,
+      "prospective_evidence": false,
+      "source_unknown": 22,
+      "strict_wrong_model_orders": 0,
+      "target_avoidable_choice_losses": 0,
+      "target_or_parity_unknown": 4,
+      "valid_comparisons": 10
+    },
+    "seed_41": {
+      "committed_records": 36,
+      "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+      "diagnostic_model_induced_choice_errors": 1,
+      "independent_human_response_validation": false,
+      "model_blind_distinctions": 4,
+      "official_strong_baselines_run": false,
+      "physical_anchor_contexts_with_diagnostic_errors": 1,
+      "physical_anchor_contexts_with_valid_comparisons": 4,
+      "prospective_evidence": false,
+      "source_unknown": 14,
+      "strict_wrong_model_orders": 0,
+      "target_avoidable_choice_losses": 2,
+      "target_or_parity_unknown": 6,
+      "valid_comparisons": 16
+    },
+    "seed_73": {
+      "committed_records": 36,
+      "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+      "diagnostic_model_induced_choice_errors": 2,
+      "independent_human_response_validation": false,
+      "model_blind_distinctions": 4,
+      "official_strong_baselines_run": false,
+      "physical_anchor_contexts_with_diagnostic_errors": 2,
+      "physical_anchor_contexts_with_valid_comparisons": 4,
+      "prospective_evidence": false,
+      "source_unknown": 14,
+      "strict_wrong_model_orders": 0,
+      "target_avoidable_choice_losses": 4,
+      "target_or_parity_unknown": 6,
+      "valid_comparisons": 16
+    }
+  },
+  "physical_cluster_summary": {
+    "anchor_seed_occurrences": 22,
+    "caveat": "Corridor grouping is a spatial heuristic, NOT an IID sampling frame or human-effect prevalence.",
+    "corridors_with_diagnostic_model_error": 6,
+    "corridors_with_valid_comparisons": 10,
+    "physical_corridor_clusters": 12,
+    "reports": 4
+  },
+  "important": "Same roads reused across seeds, thresholds were chosen after prior data, source lookahead is not a trained planner; no claim of real-world or strong-baseline failures."
+}

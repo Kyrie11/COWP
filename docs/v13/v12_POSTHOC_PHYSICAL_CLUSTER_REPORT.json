@@ -1,0 +1,233 @@
+{
+  "clusters": [
+    {
+      "anchor_seed_occurrences": 1,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 2,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "0",
+          "report_index": 0,
+          "seed": "17"
+        }
+      ],
+      "valid_comparisons": 4
+    },
+    {
+      "anchor_seed_occurrences": 1,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 1,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "1",
+          "report_index": 0,
+          "seed": "17"
+        }
+      ],
+      "valid_comparisons": 4
+    },
+    {
+      "anchor_seed_occurrences": 1,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "2",
+          "report_index": 0,
+          "seed": "17"
+        }
+      ],
+      "valid_comparisons": 4
+    },
+    {
+      "anchor_seed_occurrences": 1,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 3,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "3",
+          "report_index": 0,
+          "seed": "17"
+        }
+      ],
+      "valid_comparisons": 6
+    },
+    {
+      "anchor_seed_occurrences": 2,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "0",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "3",
+          "report_index": 2,
+          "seed": "41"
+        }
+      ],
+      "valid_comparisons": 6
+    },
+    {
+      "anchor_seed_occurrences": 2,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "1",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "1",
+          "report_index": 2,
+          "seed": "41"
+        }
+      ],
+      "valid_comparisons": 6
+    },
+    {
+      "anchor_seed_occurrences": 3,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 1,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "2",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "0",
+          "report_index": 2,
+          "seed": "41"
+        },
+        {
+          "anchor": "3",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 14
+    },
+    {
+      "anchor_seed_occurrences": 3,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "3",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "2",
+          "report_index": 2,
+          "seed": "41"
+        },
+        {
+          "anchor": "1",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 4
+    },
+    {
+      "anchor_seed_occurrences": 3,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "4",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "4",
+          "report_index": 2,
+          "seed": "41"
+        },
+        {
+          "anchor": "5",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 0
+    },
+    {
+      "anchor_seed_occurrences": 2,
+      "any_diagnostic_model_error": false,
+      "diagnostic_error_rows": 0,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "5",
+          "report_index": 1,
+          "seed": "23"
+        },
+        {
+          "anchor": "4",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 0
+    },
+    {
+      "anchor_seed_occurrences": 2,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 1,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "5",
+          "report_index": 2,
+          "seed": "41"
+        },
+        {
+          "anchor": "0",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 6
+    },
+    {
+      "anchor_seed_occurrences": 1,
+      "any_diagnostic_model_error": true,
+      "diagnostic_error_rows": 1,
+      "map": "Carla/Maps/Town04",
+      "members": [
+        {
+          "anchor": "2",
+          "report_index": 3,
+          "seed": "73"
+        }
+      ],
+      "valid_comparisons": 6
+    }
+  ],
+  "mode": "POSTHOC_RETROSPECTIVE_DIAGNOSTIC_NOT_PRECOMMITTED",
+  "protocol": "ride_v13_source_before_target_20261029",
+  "radius_m": 90.0,
+  "summary": {
+    "anchor_seed_occurrences": 22,
+    "caveat": "Corridor grouping is a spatial heuristic, NOT an IID sampling frame or human-effect prevalence.",
+    "corridors_with_diagnostic_model_error": 6,
+    "corridors_with_valid_comparisons": 10,
+    "physical_corridor_clusters": 12,
+    "reports": 4
+  }
+}

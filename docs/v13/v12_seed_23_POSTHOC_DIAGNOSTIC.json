@@ -1,0 +1,2056 @@
+{
+  "frozen_context": {
+    "anchor_protocol_version": "ride_lane_corridor_v12_20261028",
+    "anchors": [
+      {
+        "anchor": 0,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            55.3522949,
+            269.0933838,
+            0.0
+          ],
+          "end": [
+            147.4309692,
+            212.5592041,
+            0.0
+          ],
+          "follower_a": [
+            68.5774384,
+            254.0110931,
+            0.0
+          ],
+          "follower_b": [
+            42.027462,
+            276.4544678,
+            0.0
+          ],
+          "follower_c": [
+            27.8975639,
+            290.543457,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 19.618,
+          "front_to_rear_m": 34.7,
+          "rear_b_to_c_m": 19.75
+        },
+        "key": [
+          68.57743835449219,
+          254.01109313964844,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            27.897563934326172,
+            290.54345703125
+          ],
+          [
+            31.421064376831055,
+            286.99591064453125
+          ],
+          [
+            34.94456100463867,
+            283.4483947753906
+          ],
+          [
+            38.46492385864258,
+            279.9190979003906
+          ],
+          [
+            42.027462005615234,
+            276.4544677734375
+          ],
+          [
+            45.64981460571289,
+            273.0523986816406
+          ],
+          [
+            49.330902099609375,
+            269.7140197753906
+          ],
+          [
+            53.06958770751953,
+            266.4402160644531
+          ],
+          [
+            56.864742279052734,
+            263.2320556640625
+          ],
+          [
+            60.715232849121094,
+            260.09051513671875
+          ],
+          [
+            64.6198501586914,
+            257.0165710449219
+          ],
+          [
+            68.57743835449219,
+            254.01109313964844
+          ],
+          [
+            72.5867919921875,
+            251.07501220703125
+          ],
+          [
+            76.64669036865234,
+            248.20925903320312
+          ],
+          [
+            80.75588989257812,
+            245.41464233398438
+          ],
+          [
+            84.91316986083984,
+            242.6920623779297
+          ],
+          [
+            89.11724853515625,
+            240.04232788085938
+          ],
+          [
+            93.36683654785156,
+            237.46621704101562
+          ],
+          [
+            97.66069030761719,
+            234.9645538330078
+          ],
+          [
+            101.9974594116211,
+            232.5380859375
+          ],
+          [
+            106.3758544921875,
+            230.18753051757812
+          ],
+          [
+            110.79452514648438,
+            227.91360473632812
+          ],
+          [
+            115.25215911865234,
+            225.717041015625
+          ],
+          [
+            119.74737548828125,
+            223.5984344482422
+          ],
+          [
+            124.27882385253906,
+            221.55850219726562
+          ],
+          [
+            128.84512329101562,
+            219.59780883789062
+          ],
+          [
+            133.44488525390625,
+            217.71697998046875
+          ],
+          [
+            138.07672119140625,
+            215.91656494140625
+          ],
+          [
+            142.73924255371094,
+            214.1971435546875
+          ],
+          [
+            147.43096923828125,
+            212.5592041015625
+          ]
+        ],
+        "target_lane_id": -2,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -3,
+            "road_id": 22,
+            "yaw": -40.707806
+          },
+          "end": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -18.745529
+          },
+          "follower_a": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -36.714664
+          },
+          "follower_b": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -43.702663
+          },
+          "follower_c": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -45.194698
+          }
+        }
+      },
+      {
+        "anchor": 1,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            243.3162842,
+            182.7867279,
+            0.0
+          ],
+          "end": [
+            340.2583923,
+            130.0505066,
+            0.0
+          ],
+          "follower_a": [
+            260.2925415,
+            171.6486664,
+            0.0
+          ],
+          "follower_b": [
+            228.0401001,
+            185.3619232,
+            0.0
+          ],
+          "follower_c": [
+            209.2578888,
+            192.4315643,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 20.0,
+          "front_to_rear_m": 35.046,
+          "rear_b_to_c_m": 20.046
+        },
+        "key": [
+          260.29254150390625,
+          171.64866638183594,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            209.2578887939453,
+            192.4315643310547
+          ],
+          [
+            213.97972106933594,
+            190.7346649169922
+          ],
+          [
+            218.68434143066406,
+            188.99066162109375
+          ],
+          [
+            223.3712921142578,
+            187.19969177246094
+          ],
+          [
+            228.04010009765625,
+            185.36192321777344
+          ],
+          [
+            232.69029235839844,
+            183.47756958007812
+          ],
+          [
+            237.32142639160156,
+            181.5467987060547
+          ],
+          [
+            241.9294891357422,
+            179.5731964111328
+          ],
+          [
+            246.52024841308594,
+            177.59205627441406
+          ],
+          [
+            251.1110076904297,
+            175.61093139648438
+          ],
+          [
+            255.7017822265625,
+            173.62979125976562
+          ],
+          [
+            260.29254150390625,
+            171.64866638183594
+          ],
+          [
+            264.88330078125,
+            169.6675262451172
+          ],
+          [
+            269.47406005859375,
+            167.6864013671875
+          ],
+          [
+            274.0648498535156,
+            165.70526123046875
+          ],
+          [
+            278.6556091308594,
+            163.72413635253906
+          ],
+          [
+            283.2463684082031,
+            161.7429962158203
+          ],
+          [
+            287.8371276855469,
+            159.76187133789062
+          ],
+          [
+            292.43682861328125,
+            157.7699432373047
+          ],
+          [
+            297.0248718261719,
+            155.6956024169922
+          ],
+          [
+            301.5701599121094,
+            153.52931213378906
+          ],
+          [
+            306.0709533691406,
+            151.2718963623047
+          ],
+          [
+            310.5253601074219,
+            148.92430114746094
+          ],
+          [
+            314.9315490722656,
+            146.4874725341797
+          ],
+          [
+            319.2878112792969,
+            143.96240234375
+          ],
+          [
+            323.5923156738281,
+            141.35011291503906
+          ],
+          [
+            327.8433532714844,
+            138.65167236328125
+          ],
+          [
+            332.0391845703125,
+            135.86817932128906
+          ],
+          [
+            336.1780700683594,
+            133.00071716308594
+          ],
+          [
+            340.2583923339844,
+            130.05050659179688
+          ]
+        ],
+        "target_lane_id": -2,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -3,
+            "road_id": 22,
+            "yaw": -23.342484
+          },
+          "end": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -36.445183
+          },
+          "follower_a": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -23.342484
+          },
+          "follower_b": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -21.772285
+          },
+          "follower_c": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -19.480455
+          }
+        }
+      },
+      {
+        "anchor": 2,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -373.4589539,
+            421.1920471,
+            0.0
+          ],
+          "end": [
+            -261.6412964,
+            432.2972717,
+            0.0
+          ],
+          "follower_a": [
+            -353.6829529,
+            429.4837952,
+            0.0
+          ],
+          "follower_b": [
+            -389.6060791,
+            419.3463135,
+            0.0
+          ],
+          "follower_c": [
+            -409.0317383,
+            410.483551,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 20.93,
+          "front_to_rear_m": 37.149,
+          "rear_b_to_c_m": 20.686
+        },
+        "key": [
+          -353.6829528808594,
+          429.4837951660156,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -409.03173828125,
+            410.4835510253906
+          ],
+          [
+            -404.2696533203125,
+            412.90106201171875
+          ],
+          [
+            -399.44219970703125,
+            415.18511962890625
+          ],
+          [
+            -394.55303955078125,
+            417.3341369628906
+          ],
+          [
+            -389.6060791015625,
+            419.3463134765625
+          ],
+          [
+            -384.6050109863281,
+            421.2201232910156
+          ],
+          [
+            -379.55377197265625,
+            422.9541320800781
+          ],
+          [
+            -374.4562683105469,
+            424.54693603515625
+          ],
+          [
+            -369.31646728515625,
+            425.9974365234375
+          ],
+          [
+            -364.1382751464844,
+            427.3043518066406
+          ],
+          [
+            -358.92578125,
+            428.4668273925781
+          ],
+          [
+            -353.6829528808594,
+            429.4837951660156
+          ],
+          [
+            -348.413818359375,
+            430.3546142578125
+          ],
+          [
+            -343.12255859375,
+            431.07855224609375
+          ],
+          [
+            -337.8132019042969,
+            431.655029296875
+          ],
+          [
+            -332.4898376464844,
+            432.0836486816406
+          ],
+          [
+            -327.1566467285156,
+            432.364013671875
+          ],
+          [
+            -321.8177490234375,
+            432.49591064453125
+          ],
+          [
+            -316.64093017578125,
+            432.49713134765625
+          ],
+          [
+            -311.6409606933594,
+            432.47894287109375
+          ],
+          [
+            -306.6409912109375,
+            432.4607849121094
+          ],
+          [
+            -301.6410217285156,
+            432.442626953125
+          ],
+          [
+            -296.64105224609375,
+            432.4244384765625
+          ],
+          [
+            -291.6410827636719,
+            432.4062805175781
+          ],
+          [
+            -286.64111328125,
+            432.38812255859375
+          ],
+          [
+            -281.6411437988281,
+            432.36993408203125
+          ],
+          [
+            -276.6412048339844,
+            432.3517761230469
+          ],
+          [
+            -271.6412353515625,
+            432.3335876464844
+          ],
+          [
+            -266.6412658691406,
+            432.3154296875
+          ],
+          [
+            -261.64129638671875,
+            432.2972717285156
+          ]
+        ],
+        "target_lane_id": -3,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -2,
+            "road_id": 45,
+            "yaw": 16.555897
+          },
+          "end": {
+            "lane_id": -3,
+            "road_id": 45,
+            "yaw": -0.208197
+          },
+          "follower_a": {
+            "lane_id": -3,
+            "road_id": 45,
+            "yaw": 10.181079
+          },
+          "follower_b": {
+            "lane_id": -3,
+            "road_id": 45,
+            "yaw": 21.337008
+          },
+          "follower_c": {
+            "lane_id": -3,
+            "road_id": 45,
+            "yaw": 27.711826
+          }
+        }
+      },
+      {
+        "anchor": 3,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -170.8140869,
+            12.7179708,
+            6.2415757
+          ],
+          "end": [
+            -280.8186951,
+            16.0704803,
+            1.2088069
+          ],
+          "follower_a": [
+            -190.8187561,
+            16.1911526,
+            5.2047691
+          ],
+          "follower_b": [
+            -155.8187866,
+            16.2380791,
+            7.0191808
+          ],
+          "follower_c": [
+            -135.8188019,
+            16.2648964,
+            8.0559874
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 19.973,
+          "front_to_rear_m": 34.953,
+          "rear_b_to_c_m": 20.0
+        },
+        "key": [
+          -190.81875610351562,
+          16.191152572631836,
+          5.204769134521484
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -135.8188018798828,
+            16.264896392822266
+          ],
+          [
+            -140.8188018798828,
+            16.25819206237793
+          ],
+          [
+            -145.81878662109375,
+            16.251487731933594
+          ],
+          [
+            -150.81878662109375,
+            16.244783401489258
+          ],
+          [
+            -155.81878662109375,
+            16.238079071044922
+          ],
+          [
+            -160.81878662109375,
+            16.23137664794922
+          ],
+          [
+            -165.8187713623047,
+            16.224672317504883
+          ],
+          [
+            -170.8187713623047,
+            16.217967987060547
+          ],
+          [
+            -175.8187713623047,
+            16.21126365661621
+          ],
+          [
+            -180.81875610351562,
+            16.204559326171875
+          ],
+          [
+            -185.81875610351562,
+            16.197856903076172
+          ],
+          [
+            -190.81875610351562,
+            16.191152572631836
+          ],
+          [
+            -195.81875610351562,
+            16.1844482421875
+          ],
+          [
+            -200.81875610351562,
+            16.177743911743164
+          ],
+          [
+            -205.81874084472656,
+            16.171039581298828
+          ],
+          [
+            -210.8187255859375,
+            16.164337158203125
+          ],
+          [
+            -215.8187255859375,
+            16.15763282775879
+          ],
+          [
+            -220.8187255859375,
+            16.150928497314453
+          ],
+          [
+            -225.8187255859375,
+            16.144224166870117
+          ],
+          [
+            -230.8187255859375,
+            16.13751983642578
+          ],
+          [
+            -235.81871032714844,
+            16.130817413330078
+          ],
+          [
+            -240.81871032714844,
+            16.124113082885742
+          ],
+          [
+            -245.81869506835938,
+            16.117408752441406
+          ],
+          [
+            -250.81869506835938,
+            16.11070442199707
+          ],
+          [
+            -255.81869506835938,
+            16.104000091552734
+          ],
+          [
+            -260.8186950683594,
+            16.09729766845703
+          ],
+          [
+            -265.8186950683594,
+            16.090593338012695
+          ],
+          [
+            -270.8186950683594,
+            16.08388900756836
+          ],
+          [
+            -275.8186950683594,
+            16.077184677124023
+          ],
+          [
+            -280.8186950683594,
+            16.070480346679688
+          ]
+        ],
+        "target_lane_id": -1,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -2,
+            "road_id": 40,
+            "yaw": -179.923172
+          },
+          "end": {
+            "lane_id": -1,
+            "road_id": 40,
+            "yaw": -179.923172
+          },
+          "follower_a": {
+            "lane_id": -1,
+            "road_id": 40,
+            "yaw": -179.923172
+          },
+          "follower_b": {
+            "lane_id": -1,
+            "road_id": 40,
+            "yaw": -179.923172
+          },
+          "follower_c": {
+            "lane_id": -1,
+            "road_id": 40,
+            "yaw": -179.923172
+          }
+        }
+      },
+      {
+        "anchor": 4,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            -506.9212036,
+            128.1023102,
+            0.0
+          ],
+          "end": [
+            -504.7564697,
+            238.1560669,
+            0.0
+          ],
+          "follower_a": [
+            -503.546051,
+            148.1237488,
+            0.0
+          ],
+          "follower_b": [
+            -503.3276672,
+            113.1244354,
+            0.0
+          ],
+          "follower_c": [
+            -503.161438,
+            92.9582977,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 20.0,
+          "front_to_rear_m": 35.0,
+          "rear_b_to_c_m": 20.167
+        },
+        "key": [
+          -503.5460510253906,
+          148.12374877929688,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            -503.16143798828125,
+            92.95829772949219
+          ],
+          [
+            -503.23406982421875,
+            98.12472534179688
+          ],
+          [
+            -503.2652587890625,
+            103.12462615966797
+          ],
+          [
+            -503.29644775390625,
+            108.1245346069336
+          ],
+          [
+            -503.3276672363281,
+            113.12443542480469
+          ],
+          [
+            -503.3588562011719,
+            118.12433624267578
+          ],
+          [
+            -503.3900451660156,
+            123.12423706054688
+          ],
+          [
+            -503.4212646484375,
+            128.1241455078125
+          ],
+          [
+            -503.45245361328125,
+            133.12403869628906
+          ],
+          [
+            -503.483642578125,
+            138.1239471435547
+          ],
+          [
+            -503.5148620605469,
+            143.1238555908203
+          ],
+          [
+            -503.5460510253906,
+            148.12374877929688
+          ],
+          [
+            -503.5772399902344,
+            153.1236572265625
+          ],
+          [
+            -503.60845947265625,
+            158.12355041503906
+          ],
+          [
+            -503.6396484375,
+            163.1234588623047
+          ],
+          [
+            -503.67083740234375,
+            168.1233673095703
+          ],
+          [
+            -503.7020568847656,
+            173.12327575683594
+          ],
+          [
+            -503.7332458496094,
+            178.1238555908203
+          ],
+          [
+            -503.7644348144531,
+            183.12374877929688
+          ],
+          [
+            -503.79608154296875,
+            188.11611938476562
+          ],
+          [
+            -503.8587646484375,
+            193.06321716308594
+          ],
+          [
+            -503.970947265625,
+            198.00941467285156
+          ],
+          [
+            -504.1202087402344,
+            202.99354553222656
+          ],
+          [
+            -504.27154541015625,
+            207.9912567138672
+          ],
+          [
+            -504.42291259765625,
+            212.9889678955078
+          ],
+          [
+            -504.57318115234375,
+            217.99937438964844
+          ],
+          [
+            -504.6886901855469,
+            223.05052185058594
+          ],
+          [
+            -504.753662109375,
+            228.1025848388672
+          ],
+          [
+            -504.7681579589844,
+            233.15504455566406
+          ],
+          [
+            -504.7564697265625,
+            238.15606689453125
+          ]
+        ],
+        "target_lane_id": -1,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -2,
+            "road_id": 41,
+            "yaw": 90.357513
+          },
+          "end": {
+            "lane_id": -1,
+            "road_id": 6,
+            "yaw": 89.866295
+          },
+          "follower_a": {
+            "lane_id": -1,
+            "road_id": 41,
+            "yaw": 90.357513
+          },
+          "follower_b": {
+            "lane_id": -1,
+            "road_id": 41,
+            "yaw": 90.357513
+          },
+          "follower_c": {
+            "lane_id": -1,
+            "road_id": 41,
+            "yaw": -267.817627
+          }
+        }
+      },
+      {
+        "anchor": 5,
+        "archetype": "chain_cut_in",
+        "coords": {
+          "ego": [
+            148.5557556,
+            215.8735504,
+            0.0
+          ],
+          "end": [
+            251.1110077,
+            175.6109314,
+            0.0
+          ],
+          "follower_a": [
+            166.4333954,
+            206.4141083,
+            0.0
+          ],
+          "follower_b": [
+            133.4448853,
+            217.71698,
+            0.0
+          ],
+          "follower_c": [
+            115.2521591,
+            225.717041,
+            0.0
+          ]
+        },
+        "gap_geometry_m": {
+          "front_to_ego_m": 19.914,
+          "front_to_rear_m": 34.865,
+          "rear_b_to_c_m": 19.768
+        },
+        "key": [
+          166.4333953857422,
+          206.4141082763672,
+          0.0
+        ],
+        "map": "Carla/Maps/Town04",
+        "target_corridor_xy": [
+          [
+            115.25215911865234,
+            225.717041015625
+          ],
+          [
+            119.74737548828125,
+            223.5984344482422
+          ],
+          [
+            124.27882385253906,
+            221.55850219726562
+          ],
+          [
+            128.84512329101562,
+            219.59780883789062
+          ],
+          [
+            133.44488525390625,
+            217.71697998046875
+          ],
+          [
+            138.07672119140625,
+            215.91656494140625
+          ],
+          [
+            142.73924255371094,
+            214.1971435546875
+          ],
+          [
+            147.43096923828125,
+            212.5592041015625
+          ],
+          [
+            152.1523895263672,
+            211.00244140625
+          ],
+          [
+            156.91273498535156,
+            209.47299194335938
+          ],
+          [
+            161.67306518554688,
+            207.9435577392578
+          ],
+          [
+            166.4333953857422,
+            206.4141082763672
+          ],
+          [
+            171.19374084472656,
+            204.88465881347656
+          ],
+          [
+            175.95407104492188,
+            203.355224609375
+          ],
+          [
+            180.71441650390625,
+            201.82577514648438
+          ],
+          [
+            185.47474670410156,
+            200.29632568359375
+          ],
+          [
+            190.23507690429688,
+            198.7668914794922
+          ],
+          [
+            194.99542236328125,
+            197.23744201660156
+          ],
+          [
+            199.76451110839844,
+            195.68325805664062
+          ],
+          [
+            204.5193328857422,
+            194.08114624023438
+          ],
+          [
+            209.2578887939453,
+            192.4315643310547
+          ],
+          [
+            213.97972106933594,
+            190.7346649169922
+          ],
+          [
+            218.68434143066406,
+            188.99066162109375
+          ],
+          [
+            223.3712921142578,
+            187.19969177246094
+          ],
+          [
+            228.04010009765625,
+            185.36192321777344
+          ],
+          [
+            232.69029235839844,
+            183.47756958007812
+          ],
+          [
+            237.32142639160156,
+            181.5467987060547
+          ],
+          [
+            241.9294891357422,
+            179.5731964111328
+          ],
+          [
+            246.52024841308594,
+            177.59205627441406
+          ],
+          [
+            251.1110076904297,
+            175.61093139648438
+          ]
+        ],
+        "target_lane_id": -2,
+        "target_lane_width_m": 3.5,
+        "waypoint_identities": {
+          "ego": {
+            "lane_id": -3,
+            "road_id": 22,
+            "yaw": -18.745529
+          },
+          "end": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -23.342484
+          },
+          "follower_a": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -17.811644
+          },
+          "follower_b": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -21.740385
+          },
+          "follower_c": {
+            "lane_id": -2,
+            "road_id": 22,
+            "yaw": -25.733526
+          }
+        }
+      }
+    ],
+    "map": "Carla/Maps/Town04",
+    "seed": 23
+  },
+  "important_limitations": [
+    "Source lookahead runs hypothetical CARLA futures before target outcome; not a realtime predictor or strong planner.",
+    "Target and source use distinct CARLA responder policies but common engine; no human counterfactual truth.",
+    "Each action pair must pass initial-state, maneuver, matched-progress and cross-family ego-execution checks.",
+    "No measurable event may be inferred from an UNKNOWN, missing or invalid trial.",
+    "Cluster by physical corridor; do not treat choices/seeds/trials as independent road scenes.",
+    "Continuous burden is a newly preregistered diagnostic endpoint, not a retroactive pass of old RQ1."
+  ],
+  "locked_params": {
+    "comfort_threshold_mps2": 2.0,
+    "ego_cross_family_pos_tol_m": 0.5,
+    "ego_cross_family_speed_tol_mps": 0.75,
+    "meaningful_C_burden_delta_mps": 0.25,
+    "pairs": [
+      [
+        "early_slow",
+        "late_slow"
+      ],
+      [
+        "mild_early",
+        "mild_late"
+      ],
+      [
+        "speed_early",
+        "speed_late"
+      ]
+    ],
+    "policies": [
+      "SOURCE_THIRD_PARTY",
+      "PROGRESS_ONLY"
+    ],
+    "progress_tolerance_m": 3.0,
+    "short_TTC_threshold_s": 1.5,
+    "tie_resolution_mps": 0.05
+  },
+  "mode": "POSTHOC_RETROSPECTIVE_DIAGNOSTIC_NOT_PRECOMMITTED",
+  "protocol": "ride_v13_source_before_target_20261029",
+  "results": [
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": -0.093536,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.09686355635117394,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.397992,
+          "ego_progress_m": 58.59143910876738,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 15.245158175372332,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.304456,
+          "ego_progress_m": 58.688302665118556,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": -0.093536,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.09686355635117394,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.397992,
+          "ego_progress_m": 58.59143910876738,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 15.245158175372332,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.304456,
+          "ego_progress_m": 58.688302665118556,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "0",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "0",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": -0.184597,
+      "selected_action": "speed_early",
+      "source_order": -1,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.15900720678450853,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.394641,
+          "ego_progress_m": 58.54687473324073,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.579238,
+          "ego_progress_m": 58.705881940025236,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "0",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.184597,
+      "selected_action": "speed_late",
+      "source_order": -1,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.15900720678450853,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.394641,
+          "ego_progress_m": 58.54687473324073,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.579238,
+          "ego_progress_m": 58.705881940025236,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 25.22814522051418,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": "early_slow",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "invalid_target_pair:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": "early_slow",
+      "status": "SELECTED",
+      "target_progress_delta_m": null
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_b",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "1",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:initial_position_mismatch:follower_b",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.122639,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.07705711253944258,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.873371,
+          "ego_progress_m": 58.70741484940254,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 11.940318813447902,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.99601,
+          "ego_progress_m": 58.78447196194198,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 10.72258074613141,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "1",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.122639,
+      "selected_action": "speed_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.07705711253944258,
+      "target_scores": {
+        "speed_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.873371,
+          "ego_progress_m": 58.70741484940254,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 11.940318813447902,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "speed_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.99601,
+          "ego_progress_m": 58.78447196194198,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 10.72258074613141,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.0,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.12992606467001622,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.79839314302333,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.92831920769335,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.77131441647586,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.0,
+      "selected_action": "late_slow",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.12992606467001622,
+      "target_scores": {
+        "early_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.79839314302333,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "late_slow": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.92831920769335,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.77131441647586,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.0,
+      "selected_action": "mild_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.04964828848299874,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.87867091921035,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.92831920769335,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "evaluation_semantics": "model-conditional simulator effect, NOT strong real-world planner failure",
+      "model_blind_distinction": false,
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "paired_model_induced_selection_error": false,
+      "policy": "PROGRESS_ONLY",
+      "reason": "",
+      "scientific_status": "NO_MEANINGFUL_TARGET_DIFFERENCE",
+      "seed": "23",
+      "selected_C_burden_excess_mps": 0.0,
+      "selected_action": "mild_late",
+      "source_order": 0,
+      "status": "SELECTED",
+      "strict_wrong_model_order": false,
+      "target_avoidable": false,
+      "target_order": 0,
+      "target_progress_delta_m": 0.04964828848299874,
+      "target_scores": {
+        "mild_early": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.87867091921035,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        },
+        "mild_late": {
+          "c_brake_episode": false,
+          "c_burden_mps": 0.0,
+          "ego_progress_m": 58.92831920769335,
+          "label": "SIMULATED_CARLA_OUTCOME_NOT_HUMAN_GROUND_TRUTH",
+          "min_BC_ttc_s": 27.770872025246064,
+          "primary": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "tie_induced_error": false
+    },
+    {
+      "anchor": "2",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "cross_response_mismatch:speed_early:initial_position_mismatch:follower_c,speed_late:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": "speed_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": 0.3558060013873572
+    },
+    {
+      "anchor": "2",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "cross_response_mismatch:speed_early:initial_position_mismatch:follower_c,speed_late:initial_position_mismatch:follower_c",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": "speed_late",
+      "status": "SELECTED",
+      "target_progress_delta_m": 0.3558060013873572
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "3",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "4",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "early_slow",
+        "late_slow"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "mild_early",
+        "mild_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "SOURCE_THIRD_PARTY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    },
+    {
+      "anchor": "5",
+      "pair": [
+        "speed_early",
+        "speed_late"
+      ],
+      "policy": "PROGRESS_ONLY",
+      "reason": "source_evidence_unknown:invalid_source_pair:invalid_trial",
+      "scientific_status": "UNKNOWN",
+      "seed": "23",
+      "selected_action": null,
+      "status": "UNKNOWN"
+    }
+  ],
+  "source_family": "behavior",
+  "summary": {
+    "committed_records": 36,
+    "decision_error_verified_only_for_transparent_model_based_simulation_selector": true,
+    "diagnostic_model_induced_choice_errors": 0,
+    "independent_human_response_validation": false,
+    "model_blind_distinctions": 0,
+    "official_strong_baselines_run": false,
+    "physical_anchor_contexts_with_diagnostic_errors": 0,
+    "physical_anchor_contexts_with_valid_comparisons": 3,
+    "prospective_evidence": false,
+    "source_unknown": 22,
+    "strict_wrong_model_orders": 0,
+    "target_avoidable_choice_losses": 0,
+    "target_or_parity_unknown": 4,
+    "valid_comparisons": 10
+  },
+  "target_family": "tm"
+}

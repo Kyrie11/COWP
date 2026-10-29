@@ -340,3 +340,16 @@ speed pair. It is **not backward-comparable** to v11. See
 Use `scripts/37_v12_chain_m0.sh` for a new developmental physics panel,
 `38_v12_reaudit_grid.sh` for read-only historical evidence, and
 `39_v12_chain_confirm.sh` for held-out tests only after a clean v12 gate.
+
+## V13: Response evidence → locked candidate choice → independent outcome
+
+For a scientifically conservative pre-algorithm mechanism test, read
+[`docs/v13/RIDE_V13_SCIENTIFIC_POSITION_AND_RUNBOOK_CN.md`](docs/v13/RIDE_V13_SCIENTIFIC_POSITION_AND_RUNBOOK_CN.md).
+
+`bash scripts/40_v13_two_stage_probe.sh` runs a SOURCE response-family
+lookahead, locks the source-model selector choices with checksums BEFORE any
+TARGET family simulation, then audits actual task-matched third-party outcome
+loss. The two CARLA controllers are not independent human models; this is not an
+official strong planner comparison. Historical v12 results may only be assessed
+using `ride.v13_model_transfer retrospective`, which explicitly marks them as
+post-hoc. Model-conditional effect ≠ evidence of real-world systemic failure.
